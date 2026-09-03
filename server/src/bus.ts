@@ -2,12 +2,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import Redis from 'ioredis';
+import { getLogger } from './logger';
 
 export interface MessageBus {
   publish(channel: string, message: unknown): void;
   subscribe(channel: string, listener: (msg: unknown) => void): () => void;
   get<T = unknown>(key: string): T | null;
   set(key: string, value: unknown, ttlSeconds?: number): void;
+  del(key: string): void;
   keys(pattern: string): string[];
   close(): void;
 }
@@ -72,6 +74,10 @@ export class RedisBus implements MessageBus {
     throw new Error('use keysAsync');
   }
 
+  del(_key: string): void {
+    throw new Error('use delAsync');
+  }
+
   async getAsync<T = unknown>(key: string): Promise<T | null> {
     const val = await this.client.get(key);
     if (val === null) return null;
@@ -90,6 +96,10 @@ export class RedisBus implements MessageBus {
 
   async keysAsync(pattern: string): Promise<string[]> {
     return this.client.keys(pattern);
+  }
+
+  async delAsync(key: string): Promise<void> {
+    await this.client.del(key);
   }
 
   close(): void {
@@ -186,6 +196,11 @@ export class MemoryBus implements MessageBus {
     });
   }
 
+  del(key: string): void {
+    this.store.delete(key);
+    this.dirty = true;
+  }
+
   close(): void {
     this.flush();
   }
@@ -195,15 +210,23 @@ let bus: MessageBus | null = null;
 
 export async function initBus(redisConfig: { host: string; port: number; db: number }): Promise<MessageBus> {
   if (bus) return bus;
+  
+  const logger = getLogger();
+  
   if (process.env.COTEAM_FORCE_MEMORY === '1') {
+    logger.info('Using in-memory message bus (forced by COTEAM_FORCE_MEMORY)');
     bus = new MemoryBus();
     return bus;
   }
+  
   try {
+    logger.info('Connecting to Redis', { host: redisConfig.host, port: redisConfig.port, db: redisConfig.db });
     const redisBus = new RedisBus(redisConfig.host, redisConfig.port, redisConfig.db);
     await redisBus.ping();
     bus = redisBus as unknown as MessageBus;
-  } catch {
+    logger.info('Redis connection successful');
+  } catch (error) {
+    logger.warn('Redis connection failed, using in-memory message bus', { error: String(error) });
     bus = new MemoryBus();
   }
   return bus;
@@ -236,4 +259,10 @@ export async function busKeys(pattern: string): Promise<string[]> {
   const b = getBus() as MessageBus & Partial<RedisBus>;
   if (typeof (b as RedisBus).keysAsync === 'function') return (b as RedisBus).keysAsync(pattern);
   return b.keys(pattern);
+}
+
+export async function busDel(key: string): Promise<void> {
+  const b = getBus() as MessageBus & Partial<RedisBus>;
+  if (typeof (b as RedisBus).delAsync === 'function') return (b as RedisBus).delAsync(key);
+  return b.del(key);
 }

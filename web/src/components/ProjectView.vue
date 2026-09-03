@@ -50,12 +50,13 @@
         <div class="pd-history">
           <div class="section-title">开发历史</div>
           <div v-if="!detail?.tasks.length" class="empty mono">还没有任务 — 发起新任务开始开发</div>
-          <div v-for="t in detail?.tasks || []" :key="t.task_id" class="hist-row" @click="$emit('open-detail', t.task_id)">
-            <span class="h-status mono" :class="t.status">{{ statusGlyph(t.status) }}</span>
-            <div class="h-body">
+          <div v-for="t in detail?.tasks || []" :key="t.task_id" class="hist-row">
+            <span class="h-status mono" :class="t.status" @click="$emit('open-detail', t.task_id)">{{ statusGlyph(t.status) }}</span>
+            <div class="h-body" @click="$emit('open-detail', t.task_id)">
               <div class="h-desc">{{ t.description || t.task_id }}</div>
               <div class="h-meta mono">{{ fmt(t.updated_at) }} · {{ t.nodes.filter((n) => n.status === 'completed').length }}/{{ t.nodes.length }} 节点<span v-if="t.git_commit"> · ⎇ {{ t.git_commit.branch }}</span></div>
             </div>
+            <el-button size="small" link type="danger" @click.stop="deleteTask(t.task_id)">删除</el-button>
           </div>
         </div>
 
@@ -70,6 +71,7 @@
             <div v-for="(m, i) in detail?.memory || []" :key="i" class="mem-item" :class="m.kind">
               <span class="mem-kind mono">{{ m.kind === 'manual' ? '规范' : m.text.startsWith('问题') ? '问题' : m.text.startsWith('已解决') ? '解决' : '经验' }}</span>
               <span class="mem-text">{{ m.text }}</span>
+              <span v-if="m.ts" class="mem-ts mono">{{ fmtShort(m.ts) }}</span>
             </div>
             <div v-if="!detail?.memory.length" class="empty mono">暂无记忆 — 开发过程中的问题与解决会自动沉淀</div>
           </div>
@@ -95,7 +97,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type ProjectDetail, type ProjectSummary } from '../api';
 
 const emit = defineEmits<{ (e: 'open-detail', taskId: string): void; (e: 'review', taskId: string): void; (e: 'changed'): void }>();
@@ -120,6 +122,14 @@ function statusGlyph(s: string): string {
 }
 function fmt(ts: string): string {
   return ts ? new Date(ts).toLocaleString() : '';
+}
+function fmtShort(ts: string): string {
+  if (!ts) return '';
+  try {
+    return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return ts;
+  }
 }
 const issueCount = computed(() => (detail.value?.memory || []).filter((m) => m.text.startsWith('问题')).length);
 
@@ -192,6 +202,21 @@ async function addMemory() {
   }
 }
 
+async function deleteTask(taskId: string) {
+  try {
+    await ElMessageBox.confirm('确定删除该任务？', '删除确认', { type: 'warning' });
+  } catch {
+    return;
+  }
+  try {
+    await api.deleteTask(taskId);
+    ElMessage.success('任务已删除');
+    await refreshDetail();
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
 onMounted(() => {
   void loadProjects();
   poll = window.setInterval(() => {
@@ -234,6 +259,7 @@ defineExpose({ loadProjects, refreshDetail });
 .mem-add .el-input { flex: 1; }
 .mem-item { display: flex; gap: 8px; padding: 6px 8px; border-bottom: 1px dotted var(--ct-border); font-size: 12px; align-items: baseline; }
 .mem-kind { flex-shrink: 0; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--ct-border2); color: var(--ct-text3); }
-.mem-item .mem-text { color: var(--ct-text2); }
+.mem-item .mem-text { color: var(--ct-text2); flex: 1; }
+.mem-ts { flex-shrink: 0; font-size: 10px; color: var(--ct-text3); }
 </style>
 

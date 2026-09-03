@@ -26,12 +26,17 @@
           <AgentCards :agents="agents" @show-detail="detailAgent = $event" />
           <TaskList
             :tasks="tasks"
+            :total="taskTotal"
+            :current-page="taskPage"
+            :page-size="taskPageSize"
             @approve="onApprove"
             @cancel="onCancel"
+            @delete="onDeleteTask"
             @show-logs="openChat"
             @show-dag="dagTaskId = $event"
             @show-detail="detailTaskId = $event"
             @review="openReview"
+            @page-change="onTaskPageChange"
           />
           <EventLog :events="events" @clear="clearEvents" />
         </main>
@@ -88,7 +93,7 @@ import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
 import ProjectView from './components/ProjectView.vue';
 
-const { agents, tasks, events, connected, loadJournals, loadAgents, loadTasks, clearEvents } = useDashboard();
+const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadJournals, loadAgents, loadTasks, clearEvents } = useDashboard();
 const { theme, toggle } = useTheme();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
@@ -100,11 +105,11 @@ const detailTaskId = ref<string | null>(null);
 
 function openReview(taskId: string) {
   reviewTaskId.value = taskId;
-  void loadTasks();
+  void loadTasks(taskPage.value, taskPageSize.value);
 }
 function onPlanStarted() {
   reviewTaskId.value = null;
-  void loadTasks();
+  void loadTasks(taskPage.value, taskPageSize.value);
 }
 
 const detailAgent = ref<AgentLiveState | null>(null);
@@ -147,6 +152,20 @@ async function onCancel(taskId: string) {
   } catch (e: any) {
     ElMessage.error(e.message);
   }
+}
+
+async function onDeleteTask(taskId: string) {
+  try {
+    await api.deleteTask(taskId);
+    ElMessage.success('任务已删除');
+    await loadTasks(taskPage.value, taskPageSize.value);
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
+function onTaskPageChange(page: number) {
+  void loadTasks(page, taskPageSize.value);
 }
 
 async function onReloadAgents() {

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 
 export interface PermissionPolicy {
   whitelistCommands: string[] | null;
@@ -113,4 +113,85 @@ export function executeCommand(command: string, cwd: string, policy: PermissionP
       stderr: timedOut ? `timeout after ${timeout / 1000}s` : String(e).slice(0, 500),
     };
   }
+}
+
+/** Async version of executeCommand that supports AbortSignal for cancellation. */
+export function executeCommandAsync(
+  command: string,
+  cwd: string,
+  policy: PermissionPolicy,
+  timeoutSec?: number,
+  signal?: AbortSignal
+): Promise<CommandResult> {
+  return new Promise((resolve) => {
+    if (!canExecute(policy, command)) {
+      resolve({ command, allowed: false, returncode: -1, stdout: '', stderr: 'command not in whitelist' });
+      return;
+    }
+
+    const timeout = (timeoutSec ?? policy.maxTimeSec) * 1000;
+    let stdout = '';
+    let stderr = '';
+    let killed = false;
+
+    const proc = spawn(command, {
+      shell: true,
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    const cleanup = () => {
+      if (!proc.killed) {
+        proc.kill();
+        killed = true;
+      }
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', cleanup, { once: true });
+    }
+
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve({
+        command,
+        allowed: true,
+        returncode: -1,
+        stdout: stdout.slice(-4000),
+        stderr: `timeout after ${timeout / 1000}s`,
+      });
+    }, timeout);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', cleanup);
+      resolve({
+        command,
+        allowed: true,
+        returncode: code ?? -1,
+        stdout: stdout.slice(-4000),
+        stderr: stderr.slice(-2000),
+      });
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', cleanup);
+      resolve({
+        command,
+        allowed: true,
+        returncode: -1,
+        stdout: '',
+        stderr: killed ? 'cancelled' : String(err).slice(0, 500),
+      });
+    });
+  });
 }

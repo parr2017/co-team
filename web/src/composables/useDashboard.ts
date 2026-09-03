@@ -28,6 +28,9 @@ export function useDashboard() {
   let ws: WebSocket | null = null;
   let closed = false;
   const nodeLogsCache = reactive<Record<string, Record<string, import('../api').AgentConversation[]>>>({});
+  const taskTotal = ref(0);
+  const taskPage = ref(1);
+  const taskPageSize = ref(20);
 
   function ensureAgent(name: string): AgentLiveState {
     if (!agents[name]) {
@@ -114,19 +117,21 @@ export function useDashboard() {
     };
   }
 
-  async function loadTasks() {
+  async function loadTasks(page = 1, pageSize = 20) {
     try {
-      const d = await api.listTasks();
+      const d = await api.listTasks(page, pageSize);
+      taskTotal.value = d.total;
+      taskPage.value = d.page;
+      taskPageSize.value = d.pageSize;
+      // Clear tasks and repopulate with current page
+      for (const key of Object.keys(tasks)) delete tasks[key];
       for (const raw of d.tasks) {
         const t = raw as Record<string, any>;
-        // list endpoint returns `id`; normalize so components can rely on task_id
         const taskId = String(t.task_id || t.id);
         const normalized = { ...t, id: taskId, task_id: taskId } as unknown as TaskGraph;
-        if (!tasks[taskId]) tasks[taskId] = normalized;
-        else Object.assign(tasks[taskId], normalized);
+        tasks[taskId] = normalized;
       }
-      // hydrate agent card states from persisted node statuses so a fresh page
-      // (or a WS reconnect) reflects reality instead of sitting on "idle"
+      // hydrate agent card states from persisted node statuses
       for (const t of Object.values(tasks)) {
         for (const n of t.nodes || []) {
           if (!n.agent || n.agent === 'orchestrator') continue;
@@ -172,5 +177,5 @@ export function useDashboard() {
     ws?.close();
   });
 
-  return { agents, tasks, events, connected, loadTasks, loadAgents, loadJournals, clearEvents: () => { events.value = []; } };
+  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadTasks, loadAgents, loadJournals, clearEvents: () => { events.value = []; } };
 }

@@ -19,14 +19,17 @@ function getClient(entry: ModelEntry): OpenAI {
   return client;
 }
 
-export async function chat(entry: ModelEntry, messages: { role: string; content: string }[], maxTokens = 8192, temperature = 0): Promise<LlmResponse> {
+export async function chat(entry: ModelEntry, messages: { role: string; content: string }[], maxTokens = 8192, temperature = 0, signal?: AbortSignal): Promise<LlmResponse> {
   const client = getClient(entry);
-  const completion = await client.chat.completions.create({
-    model: entry.name,
-    messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    max_tokens: maxTokens,
-    temperature,
-  });
+  const completion = await client.chat.completions.create(
+    {
+      model: entry.name,
+      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      max_tokens: maxTokens,
+      temperature,
+    },
+    { signal }
+  );
   const content = completion.choices[0]?.message?.content || '';
   const usage = completion.usage;
   let promptTokens = usage?.prompt_tokens ?? 0;

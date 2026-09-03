@@ -30,6 +30,7 @@ import {
   addProjectMemory,
 } from '../store';
 import { TaskGraph, TaskNode, TaskStatus, AgentResult, AgentConversation } from '../types';
+import { getLogger } from '../logger';
 
 export interface OrchestratorOptions {
   agentsDir: string;
@@ -98,6 +99,7 @@ export class Orchestrator {
   private tokenBudget?: number;
   private agentsDir: string;
   private taskTokens = new Map<string, number>();
+  private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
 
   constructor(opts: OrchestratorOptions) {
@@ -111,6 +113,12 @@ export class Orchestrator {
     this.branchWorkflow = opts.branchWorkflow ?? true;
     this.tokenBudget = opts.tokenBudget;
     this.router = new Router([], DEFAULT_RULES, this.makeLlmRouter());
+    this.logger.info('Orchestrator initialized', {
+      agentsDir: opts.agentsDir,
+      maxRetries: opts.maxRetries,
+      sandboxEnabled: opts.sandboxEnabled,
+      gitEnabled: opts.gitEnabled,
+    });
   }
 
   async loadAgents(): Promise<void> {
@@ -143,15 +151,28 @@ export class Orchestrator {
   }
 
   async createTask(description: string, workspace: string, projectId?: string): Promise<{ taskId: string; graph: PlannedGraph }> {
+    this.logger.info('Creating task', { description, workspace, projectId });
+    
     // project mode: agents get up to speed from the project's accumulated memory
     let requestWithContext = description;
     if (projectId) {
       const pm = await getProjectMemory(projectId, 10);
       if (pm.length) requestWithContext += '\n\n[本项目开发背景与规范]\n' + pm.map((m) => '- ' + m.text).join('\n');
     }
+    
+    this.logger.debug('Generating task graph', { description: requestWithContext.slice(0, 100) });
     const planned = appendMergeNode(stripMergeNodes(await this.plan(requestWithContext)));
+    
     const taskId = Math.random().toString(36).slice(2, 10);
     const nodes = planned.nodes.map((n) => newNode(n, taskId));
+    
+    this.logger.info('Task created', { 
+      taskId, 
+      nodesCount: nodes.length, 
+      edgesCount: planned.edges.length,
+      agents: [...new Set(nodes.map(n => n.agent))]
+    });
+    
     // plans wait for user review: status stays "planned" until explicitly executed
     await saveTaskGraph(taskId, nodes, planned.edges, { description, workspace, status: 'planned', project_id: projectId });
     return { taskId, graph: planned };
@@ -189,8 +210,20 @@ export class Orchestrator {
   }
 
   async execute(taskId: string, workspace: string): Promise<Record<string, any>> {
+    this.logger.taskStart(taskId, '');
+    
     const graph = await loadGraph(taskId);
-    if (!graph) return { status: 'error', message: 'Task graph not found' };
+    if (!graph) {
+      this.logger.error('Task graph not found', { taskId });
+      return { status: 'error', message: 'Task graph not found' };
+    }
+
+    this.logger.info('Task execution started', { 
+      taskId, 
+      workspace, 
+      nodesCount: graph.nodes.length,
+      description: graph.description?.slice(0, 50)
+    });
 
     // reset non-completed nodes so re-runs (after approval) resume cleanly
     for (const node of graph.nodes) {
@@ -201,14 +234,26 @@ export class Orchestrator {
     await persistGraph(graph);
     await emitProgress('execute_start', { task_id: taskId, workspace, total_nodes: graph.nodes.length });
 
-    const sandbox = this.sandboxEnabled ? createSandbox(workspace) : workspace;
+    let sandbox: string;
+    try {
+      sandbox = this.sandboxEnabled ? createSandbox(workspace) : workspace;
+      this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled });
+    } catch (error) {
+      this.logger.error('Failed to create sandbox', { taskId, error: String(error) });
+      return { status: 'failed', error: `Failed to create sandbox: ${error}` };
+    }
+
     if (this.branchWorkflow && this.gitEnabled) {
       // baseline snapshot: all agent branches start from here
       await gitTool.ensureBase(sandbox).catch(() => {});
     }
+    
     let result: Record<string, any> = { status: 'failed', error: 'execution did not run' };
     try {
       result = await this.runGraph(taskId, graph, sandbox);
+    } catch (error) {
+      this.logger.error('Task execution failed', { taskId, error: String(error) });
+      result = { status: 'failed', error: `Execution failed: ${error}` };
     } finally {
       if (this.sandboxEnabled && sandbox !== workspace) {
         if (result?.status === 'success') {
@@ -221,10 +266,19 @@ export class Orchestrator {
           }
         }
         cleanupSandbox(sandbox);
+        this.logger.debug('Sandbox cleaned up', { taskId });
       }
     }
 
     const status = String(result.status);
+    this.logger.info('Task execution completed', { 
+      taskId, 
+      status, 
+      changes: (result.changes || []).length,
+      completedNodes: graph.nodes.filter((n) => n.status === 'completed').length,
+      totalNodes: graph.nodes.length,
+    });
+
     if (status === 'success' && this.gitEnabled && (result.changes || []).length) {
       result.git_commit = await this.gitCommit(taskId, workspace, result.changes as string[]);
     }
@@ -335,6 +389,8 @@ export class Orchestrator {
   // ---------- single node ----------
 
   private async executeNode(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, _workers: number): Promise<void> {
+    this.logger.nodeStart(taskId, node.id, node.agent, node.name);
+    
     node.status = 'running';
     node.started_at = new Date().toISOString();
     node.updated_at = node.started_at;
@@ -377,6 +433,15 @@ export class Orchestrator {
 
     let error = '';
     for (let attempt = 0; attempt < Math.max(1, this.maxRetries); attempt++) {
+      // Check for cancellation before each retry attempt
+      if (await isCancelled(taskId)) {
+        node.status = 'cancelled';
+        node.finished_at = new Date().toISOString();
+        node.error = 'task cancelled';
+        await persistGraph(graph);
+        await emitProgress('node_cancelled', { task_id: taskId, node_id: node.id, name: node.name });
+        return;
+      }
       if (attempt > 0) {
         node.status = 'retrying';
         node.retry_count = attempt;
@@ -385,6 +450,8 @@ export class Orchestrator {
       }
       const result = await this.dispatch(taskId, node, plugin, sandbox, false, '', `第 ${attempt + 1} 次尝试`);
       if (result.status === 'success') {
+        this.logger.nodeComplete(taskId, node.id, node.agent);
+        
         node.status = 'completed';
         node.finished_at = new Date().toISOString();
         node.result = result;
@@ -425,6 +492,9 @@ export class Orchestrator {
     node.error = result.error || error;
     node.result = result;
     node.needs_human = true;
+    
+    this.logger.nodeFailed(taskId, node.id, node.agent, node.error);
+    
     await persistGraph(graph);
     await this.recordAgentLife(taskId, graph, node, false, result.tokens || 0);
     await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
@@ -513,25 +583,49 @@ export class Orchestrator {
 
   private async dispatch(taskId: string, node: TaskNode, plugin: AgentPlugin, workspace: string, escalate: boolean, lastError: string, attemptLabel: string): Promise<AgentResult> {
     await this.checkBudget(taskId);
-    if (!this.pool) return { status: 'failed', error: 'No available model' };
+    if (!this.pool) {
+      this.logger.error('No model pool available', { taskId, nodeId: node.id });
+      return { status: 'failed', error: 'No available model' };
+    }
 
     const primary = this.pool.selectModel(plugin.tags, node.complexity);
-    if (!primary) return { status: 'failed', error: 'No available model' };
+    if (!primary) {
+      this.logger.error('No model available for agent', { taskId, nodeId: node.id, agent: plugin.name });
+      return { status: 'failed', error: 'No available model' };
+    }
 
+    this.logger.agentDispatch(taskId, node.id, plugin.name, primary.name);
+    
     const chain = this.pool.fallbackChain(primary, plugin.tags);
     let lastErr = '';
     for (const entry of chain) {
+      // Check for cancellation before trying each model in fallback chain
+      if (await isCancelled(taskId)) {
+        return { status: 'failed', error: 'task cancelled' };
+      }
       const acquired = await this.acquireWithWait(entry);
-      if (!acquired) continue;
+      if (!acquired) {
+        this.logger.warn('Could not acquire model slot', { taskId, model: entry.name });
+        continue;
+      }
       try {
         const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastError, attemptLabel);
         this.pool.markSuccess(entry);
+        this.logger.agentResponse(taskId, node.id, plugin.name, result.tokens || 0);
         return result;
       } catch (e: any) {
         if (String(e?.message).includes('token budget')) {
+          this.logger.error('Token budget exceeded', { taskId, nodeId: node.id });
           return { status: 'failed', error: 'token budget exceeded for this task' };
         }
         lastErr = String(e).slice(0, 500);
+        this.logger.error('Agent dispatch failed', { 
+          taskId, 
+          nodeId: node.id, 
+          agent: plugin.name, 
+          model: entry.name, 
+          error: lastErr 
+        });
         this.pool.markFailure(entry);
       } finally {
         this.pool.release(entry);
@@ -640,6 +734,10 @@ export class Orchestrator {
       let parsed: Record<string, any> | null = null;
       let content = '';
       for (let round = 0; round < 3; round++) {
+        // Check for cancellation before each LLM call
+        if (await isCancelled(taskId)) {
+          return { status: 'failed', error: 'task cancelled', tokens: record.tokens };
+        }
         await emitProgress('agent_activity', {
           task_id: taskId, node_id: node.id, agent: plugin.name,
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,

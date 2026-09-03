@@ -7,11 +7,12 @@ import type { Server } from 'node:http';
 import { Orchestrator } from '../orchestrator/orchestrator';
 import { ModelPool } from '../scheduler';
 import { busGet, busKeys, busSet, getBus } from '../bus';
-import { getTaskGraph, listTaskGraphs, persistGraph, saveTaskGraph } from '../store';
+import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask } from '../store';
 import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
 import type { AppConfig, OrchestrationConfig } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
+import { getLogger } from '../logger';
 
 export interface ApiContext {
   config: AppConfig;
@@ -34,20 +35,44 @@ export class HttpError extends Error {
 
 export function createApi(ctx: ApiContext): Hono {
   const app = new Hono();
+  const logger = getLogger();
 
   const runInBackground = (taskId: string, workspace: string): void => {
+    logger.info('Starting background task execution', { taskId, workspace });
     void (async () => {
       try {
         await ctx.orchestrator.execute(taskId, workspace);
+        logger.info('Background task execution completed', { taskId });
       } catch (e: any) {
-        await busSet(`task:graph:${taskId}:bg_error`, { error: String(e).slice(0, 500) }).catch(() => {});
+        const error = String(e).slice(0, 500);
+        logger.error('Background task execution failed', { taskId, error });
+        await busSet(`task:graph:${taskId}:bg_error`, { error }).catch(() => {});
       }
     })();
   };
 
   app.onError((err, c) => {
     const status = err instanceof HttpError ? err.status : 500;
+    logger.error('API error', { error: err.message, status, stack: err.stack });
     return c.json({ detail: err.message }, status as any);
+  });
+
+  // 请求日志中间件
+  app.use('*', async (c, next) => {
+    const start = Date.now();
+    const method = c.req.method;
+    const path = new URL(c.req.url).pathname;
+    
+    await next();
+    
+    const duration = Date.now() - start;
+    const status = c.res.status;
+    
+    if (status >= 400) {
+      logger.warn('API request failed', { method, path, status, duration });
+    } else if (path.startsWith('/api/')) {
+      logger.debug('API request', { method, path, status, duration });
+    }
   });
 
   // ---------- projects ----------
@@ -109,7 +134,18 @@ export function createApi(ctx: ApiContext): Hono {
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
     const workspace = validateWorkspace(body.workspace || '');
+    
+    logger.info('Creating task', { description: description.slice(0, 100), workspace, auto_run: body.auto_run });
+    
     const { taskId, graph } = await ctx.orchestrator.createTask(description, workspace, body.project_id);
+    
+    logger.info('Task created', { 
+      taskId, 
+      nodesCount: graph.nodes.length,
+      edgesCount: graph.edges.length,
+      auto_run: body.auto_run === true 
+    });
+    
     // tasks land in "planned" state waiting for user review in the plan review panel;
     // auto_run is opt-in for script/API callers
     if (body.auto_run === true) runInBackground(taskId, workspace);
@@ -121,7 +157,10 @@ export function createApi(ctx: ApiContext): Hono {
     const graph = await getTaskGraph(taskId);
     if (!graph) throw new HttpError(404, 'task not found');
     const ws = validateWorkspace(c.req.query('workspace') || graph.workspace || '.');
+    
+    logger.info('Executing task', { taskId, workspace: ws });
     runInBackground(taskId, ws);
+    
     return c.json({ status: 'started', task_id: taskId, workspace: ws });
   });
 
@@ -152,18 +191,33 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json(graph);
   });
 
+  app.delete('/api/tasks/:taskId', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    await deleteTask(taskId);
+    return c.json({ status: 'deleted', task_id: taskId });
+  });
+
   app.get('/api/tasks', async (c) => {
-    const graphs = await listTaskGraphs();
+    const page = parseInt(c.req.query('page') || '1');
+    const pageSize = parseInt(c.req.query('pageSize') || '20');
+    
+    const paged = await listTaskGraphsPaged(page, pageSize);
     return c.json({
-      tasks: graphs.map((g: TaskGraph) => ({
+      tasks: paged.items.map((g: TaskGraph) => ({
         id: g.task_id,
         description: g.description,
         workspace: g.workspace,
         status: g.status,
         nodes: g.nodes,
         edges: g.edges,
+        created_at: g.created_at,
         updated_at: g.updated_at,
       })),
+      total: paged.total,
+      page: paged.page,
+      pageSize: paged.pageSize,
     });
   });
 
@@ -322,6 +376,39 @@ export function createApi(ctx: ApiContext): Hono {
     ctx.config.model_pool = pool;
     ctx.modelPool.replaceModels(pool);
     return c.json({ status: 'saved', model_pool: pool });
+  });
+
+  app.post('/api/config/model-pool/test', async (c) => {
+    const { chat } = await import('../llm');
+    const { makeEntry } = await import('../scheduler');
+    const body = await c.req.json<{ name?: string; api_key?: string; base_url?: string }>();
+    
+    if (!body.name || !body.api_key || !body.base_url) {
+      throw new HttpError(400, 'name, api_key and base_url are required');
+    }
+
+    const entry = makeEntry({
+      name: body.name,
+      api_key: body.api_key,
+      base_url: body.base_url,
+    });
+
+    const start = Date.now();
+    try {
+      const result = await chat(entry, [{ role: 'user', content: 'ping' }], 32, 0);
+      return c.json({
+        ok: true,
+        latency_ms: Date.now() - start,
+        model: body.name,
+        response_preview: result.content.slice(0, 100),
+      });
+    } catch (e: any) {
+      return c.json({
+        ok: false,
+        error: String(e.message || e).slice(0, 300),
+        latency_ms: Date.now() - start,
+      }, 400);
+    }
   });
 
   // ---------- status / metrics / fs ----------

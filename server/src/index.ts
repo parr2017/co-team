@@ -10,6 +10,7 @@ import { Orchestrator } from './orchestrator/orchestrator';
 import { ModelPool } from './scheduler';
 import { policyFromConfig } from './sandbox';
 import { emitProgress } from './store';
+import { initLogger, getLogger } from './logger';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -45,9 +46,42 @@ function staticMiddleware(webDist: string) {
 }
 
 async function main(): Promise<void> {
+  // 初始化日志系统
+  const logger = initLogger({
+    level: (process.env.COTEAM_LOG_LEVEL as any) || 'info',
+    logDir: process.env.COTEAM_LOG_DIR || path.join(PROJECT_ROOT, 'logs'),
+  });
+
+  // 全局错误处理
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught Exception:', error);
+    console.error('Uncaught Exception:', error);
+    // 不立即退出，让错误处理有机会执行
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection:', reason);
+    console.error('Unhandled Rejection:', reason);
+    // 不立即退出，让错误处理有机会执行
+  });
+
+  logger.info('Starting co-team...');
+  
   const config = loadConfig(process.env.COTEAM_ROOT || PROJECT_ROOT);
+  logger.info('Configuration loaded', { 
+    agentsDir: config.agents_dir,
+    port: config.dashboard.port,
+    modelsCount: config.model_pool.length 
+  });
+
   await initBus(config.redis);
+  logger.info('Message bus initialized');
+
   const modelPool = new ModelPool(config.model_pool);
+  logger.info('Model pool initialized', { 
+    models: config.model_pool.map(m => m.name) 
+  });
+
   const orchestrator = new Orchestrator({
     agentsDir: config.agents_dir,
     modelPool,
@@ -58,7 +92,12 @@ async function main(): Promise<void> {
     branchWorkflow: config.orchestrator.branch_workflow,
     tokenBudget: config.orchestrator.token_budget,
   });
+
   await orchestrator.loadAgents();
+  logger.info('Agents loaded', { 
+    agents: [...orchestrator.plugins.keys()] 
+  });
+
   orchestrator.onProgress = (type, payload) => void emitProgress(type, payload);
 
   const ctx: ApiContext = { config, orchestrator, modelPool };
@@ -66,17 +105,22 @@ async function main(): Promise<void> {
 
   // static hosting of the built web dashboard (SPA fallback to index.html)
   const webDist = process.env.COTEAM_WEB_DIST || path.resolve(PROJECT_ROOT, 'web', 'dist');
-  if (fs.existsSync(webDist)) app.use('*', staticMiddleware(webDist));
+  if (fs.existsSync(webDist)) {
+    app.use('*', staticMiddleware(webDist));
+    logger.info('Web dashboard loaded from', { path: webDist });
+  }
 
   const server = serve({ fetch: app.fetch, port: config.dashboard.port, hostname: config.dashboard.host }, (info) => {
-    console.log(`[co-team] dashboard  http://localhost:${info.port}`);
-    console.log(`[co-team] agents    ${[...orchestrator.plugins.keys()].join(', ') || '(none)'}`);
-    console.log(`[co-team] models    ${config.model_pool.map((m) => m.name).join(', ') || '(none)'}`);
+    logger.info(`Dashboard started`, { 
+      url: `http://localhost:${info.port}`,
+      agents: [...orchestrator.plugins.keys()],
+      models: config.model_pool.map((m) => m.name)
+    });
   });
   attachWebSocket(server as unknown as import('node:http').Server, 'coteam:dashboard');
 
   const shutdown = () => {
-    console.log('\n[co-team] shutting down...');
+    logger.info('Shutting down...');
     closeBus();
     process.exit(0);
   };
@@ -85,6 +129,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
+  const logger = getLogger();
+  logger.error('Fatal error during startup:', e);
   console.error('[co-team] fatal:', e);
   process.exit(1);
 });

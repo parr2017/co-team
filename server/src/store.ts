@@ -1,4 +1,4 @@
-import { busGet, busSet, busKeys, getBus } from './bus';
+import { busGet, busSet, busKeys, busDel, getBus } from './bus';
 import { CHANNELS, ProjectMemoryItem, TaskGraph, TaskNode } from './types';
 
 export function nowIso(): string {
@@ -44,6 +44,21 @@ export async function listTaskGraphs(): Promise<TaskGraph[]> {
   }
   graphs.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
   return graphs;
+}
+
+export interface PagedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export async function listTaskGraphsPaged(page = 1, pageSize = 20): Promise<PagedResult<TaskGraph>> {
+  const allGraphs = await listTaskGraphs();
+  const total = allGraphs.length;
+  const start = (page - 1) * pageSize;
+  const items = allGraphs.slice(start, start + pageSize);
+  return { items, total, page, pageSize };
 }
 
 export async function emitEvent(channel: string, type: string, payload: Record<string, unknown>): Promise<void> {
@@ -230,4 +245,24 @@ export async function getAgentProfiles(): Promise<Record<string, AgentProfile>> 
     profiles[name] = (await busGet<AgentProfile>(key)) || { name, tasks: [], stats: { total: 0, success: 0, failed: 0, tokens: 0 } };
   }
   return profiles;
+}
+
+// ---------- delete operations ----------
+
+export async function deleteTask(taskId: string): Promise<void> {
+  await busDel(`task:graph:${taskId}`);
+  await busDel(`task:events:${taskId}`);
+  await busDel(`task:cancel:${taskId}`);
+  await busDel(`task:approvals:${taskId}`);
+  await busDel(`task:feedbacks:${taskId}`);
+  
+  const journalKeys = await busKeys(`task:${taskId}:agent:*:journal`);
+  for (const key of journalKeys) {
+    await busDel(key);
+  }
+  
+  const sessionKeys = await busKeys(`task:${taskId}:agent:*:session`);
+  for (const key of sessionKeys) {
+    await busDel(key);
+  }
 }

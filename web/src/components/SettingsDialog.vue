@@ -51,6 +51,7 @@
             数字越小越优先；权重用于同优先级内随机加权；simple 任务自动选成本最低的模型
           </span>
           <el-button size="small" @click="loadAll">放弃修改</el-button>
+          <el-button size="small" @click="testModelPool" :loading="testingModel">测试连通性</el-button>
           <el-button size="small" type="primary" :loading="savingModels" @click="saveModels">保存并热生效</el-button>
         </div>
       </el-tab-pane>
@@ -117,6 +118,7 @@ const pool = ref<(ModelConfig & { tagsText?: string })[]>([]);
 const agents = ref<AgentDefinition[]>([]);
 const savingModels = ref(false);
 const savingAgent = ref(false);
+const testingModel = ref(false);
 const agentEditorVisible = ref(false);
 const editingOriginal = ref<string | null>(null);
 const editing = ref<Partial<AgentDefinition> & { tagsText?: string }>({});
@@ -178,6 +180,38 @@ async function saveModels() {
   } finally {
     savingModels.value = false;
   }
+}
+
+async function testModelPool() {
+  const models = pool.value.map(({ tagsText, ...m }) => ({
+    ...m,
+    tags: (tagsText || '').split(',').map((t) => t.trim()).filter(Boolean),
+  }));
+  const valid = models.filter((m) => m.name && m.api_key && m.base_url);
+  if (!valid.length) {
+    ElMessage.warning('请先填写至少一个完整的模型配置');
+    return;
+  }
+  testingModel.value = true;
+  let success = 0;
+  let fail = 0;
+  for (const m of valid) {
+    try {
+      const result = await api.testModel(m);
+      if (result.ok) {
+        success++;
+        ElMessage.success(`${m.name}: 连通 (${result.latency_ms}ms)`);
+      } else {
+        fail++;
+        ElMessage.error(`${m.name}: ${result.error || '连接失败'}`);
+      }
+    } catch (e: any) {
+      fail++;
+      ElMessage.error(`${m.name}: ${e.message}`);
+    }
+  }
+  testingModel.value = false;
+  ElMessage.info(`测试完成: ${success} 成功, ${fail} 失败`);
 }
 
 function editAgent(row: AgentDefinition | null) {

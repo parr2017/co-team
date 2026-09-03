@@ -44,6 +44,7 @@ export interface TaskGraph {
   description: string;
   workspace: string;
   status: string;
+  created_at: string;
   updated_at: string;
   git_commit?: { branch: string; commit: string | null };
   merged_branches?: string[];
@@ -212,8 +213,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description, workspace, auto_run: autoRun, project_id: projectId }),
     }),
-  listTasks: () => request<{ tasks: TaskGraph[] }>('/api/tasks'),
+  listTasks: (page = 1, pageSize = 20) =>
+    request<{ tasks: TaskGraph[]; total: number; page: number; pageSize: number }>(
+      `/api/tasks?page=${page}&pageSize=${pageSize}`
+    ),
   getTask: (id: string) => request<TaskGraph>(`/api/tasks/${id}`),
+  deleteTask: (id: string) => request(`/api/tasks/${id}`, { method: 'DELETE' }),
   cancelTask: (id: string) => request(`/api/tasks/${id}/cancel`, { method: 'POST' }),
   executeTask: (id: string) => request(`/api/tasks/${id}/execute`, { method: 'POST' }),
   taskEvents: (id: string) => request<{ task_id: string; events: TaskEvent[] }>(`/api/tasks/${id}/events`),
@@ -242,6 +247,11 @@ export const api = {
   getModelPool: () => request<{ model_pool: ModelConfig[] }>('/api/config/model-pool'),
   saveModelPool: (model_pool: ModelConfig[]) =>
     request('/api/config/model-pool', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_pool }) }),
+  testModel: (model: ModelConfig) =>
+    request<{ ok: boolean; latency_ms: number; response_preview?: string; error?: string }>(
+      '/api/config/model-pool/test',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(model) }
+    ),
   reloadAgents: () => request('/api/agents/reload', { method: 'POST' }),
   status: () => request<StatusResponse>('/api/status'),
   metrics: () => request<MetricsResponse>('/api/metrics'),
