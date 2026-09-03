@@ -31,6 +31,8 @@ export interface AgentResult {
   tool_calls?: ToolCall[];
   escalated?: boolean;
   conflicts?: string[];
+  tokens?: number;
+  model?: string;
   merged?: string[];
   git_commit?: { branch: string; commit: string | null };
   command_results?: { command: string; returncode: number; stderr: string }[];

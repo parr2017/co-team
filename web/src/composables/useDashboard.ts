@@ -6,6 +6,8 @@ export interface AgentLiveState {
   role: string;
   status: 'idle' | 'running' | 'done' | 'error';
   task: { id: string; taskId?: string; name: string; error?: string } | null;
+  currentAction?: string;
+  model?: string;
   changes: string[];
   history: { ts: string; text: string; type: string }[];
   taskCount: number;
@@ -60,7 +62,20 @@ export function useDashboard() {
       else if (ev === 'execute_waiting_approval') task.status = 'waiting_approval';
     }
 
-    if (p.agent && ['node_start', 'node_complete', 'node_error'].includes(ev)) {
+    // fine-grained agent life events: keep the "what is it doing right now" line fresh
+  if (p.agent && ['agent_activity', 'agent_round', 'agent_final'].includes(ev)) {
+    const a = ensureAgent(p.agent as string);
+    if (p.model) a.model = p.model as string;
+    if (ev === 'agent_activity') a.currentAction = p.text as string;
+    else if (ev === 'agent_round') a.currentAction = `第 ${p.round} 轮对话完成`;
+    else if (ev === 'agent_final') a.currentAction = p.ok ? `汇报: ${String(p.summary || '').slice(0, 40)}` : `汇报失败: ${String(p.summary || '').slice(0, 40)}`;
+    if (p.task_id) {
+      const tk = tasks[p.task_id as string];
+      if (!tk) void loadTasks();
+    }
+  }
+
+  if (p.agent && ['node_start', 'node_complete', 'node_error'].includes(ev)) {
       const agent = ensureAgent(p.agent as string);
       agent.history.unshift({ ts: msg.ts, text: p.name || ev, type: ev });
       if (agent.history.length > 50) agent.history.pop();
@@ -70,6 +85,7 @@ export function useDashboard() {
         agent.taskCount += 1;
       } else if (ev === 'node_complete') {
         agent.status = 'done';
+        agent.currentAction = '完成，等待主 Agent 下一步安排';
         if (agent.task && p.task_id) agent.task.taskId = p.task_id as string;
         agent.changes = (p.changes as string[]) || [];
         agent.changeCount += ((p.changes as string[]) || []).length;
@@ -141,11 +157,9 @@ export function useDashboard() {
     }
   }
 
-  async function loadNodeLogs(taskId: string) {
-    if (nodeLogsCache[taskId]) return nodeLogsCache[taskId];
-    const d = await api.taskLogs(taskId);
-    nodeLogsCache[taskId] = d.logs;
-    return d.logs;
+  async function loadJournals(taskId: string) {
+    const d = await api.taskJournals(taskId);
+    return d.journals;
   }
 
   onMounted(() => {
@@ -158,5 +172,5 @@ export function useDashboard() {
     ws?.close();
   });
 
-  return { agents, tasks, events, connected, loadTasks, loadAgents, loadNodeLogs, clearEvents: () => { events.value = []; } };
+  return { agents, tasks, events, connected, loadTasks, loadAgents, loadJournals, clearEvents: () => { events.value = []; } };
 }

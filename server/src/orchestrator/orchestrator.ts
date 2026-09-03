@@ -12,13 +12,17 @@ import { notify } from '../notify';
 import { chat, extractJson, stripCodeFence } from '../llm';
 import { busGet, busSet } from '../bus';
 import {
+  addAgentMemory,
   addMemory,
+  appendJournal,
   emitProgress,
+  getAgentMemory,
   getApprovals,
   getMemory,
   getTaskGraph,
   isCancelled,
   persistGraph,
+  recordAgentTask,
   saveTaskGraph,
   getTaskGraph as loadGraph,
 } from '../store';
@@ -381,6 +385,7 @@ export class Orchestrator {
           if (commit && node.result) (node.result as AgentResult).git_commit = { branch: node.branch, commit };
         }
         await persistGraph(graph);
+        await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
         await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: result.summary || '' });
         return;
       }
@@ -401,6 +406,7 @@ export class Orchestrator {
         if (commit) (node.result as any).git_commit = { branch: node.branch, commit };
       }
       await persistGraph(graph);
+      await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
       await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: (result.summary || '') + '（主 Agent 接管后完成）' });
       return;
     }
@@ -411,8 +417,31 @@ export class Orchestrator {
     node.result = result;
     node.needs_human = true;
     await persistGraph(graph);
+    await this.recordAgentLife(taskId, graph, node, false, result.tokens || 0);
     await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
     notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」重试与接管均失败，需要人工介入`);
+  }
+
+  /** Agent life: update its persistent profile and write a lesson to its memory. */
+  private async recordAgentLife(taskId: string, graph: TaskGraph, node: TaskNode, success: boolean, tokens: number): Promise<void> {
+    if (node.agent === 'orchestrator') return;
+    try {
+      await recordAgentTask(node.agent, {
+        task_id: taskId,
+        description: graph.description || taskId,
+        node: node.name,
+        status: success ? 'completed' : 'failed',
+        ts: new Date().toISOString(),
+        tokens,
+        model: node.result?.model,
+      });
+      const lesson = success
+        ? `任务「${(graph.description || taskId).slice(0, 30)}」中完成「${node.name}」，产出: ${(node.result?.changes || []).slice(0, 3).join('; ') || '无文件变更'}`
+        : `任务「${(graph.description || taskId).slice(0, 30)}」中节点「${node.name}」失败: ${(node.error || '').slice(0, 120)}`;
+      await addAgentMemory(node.agent, lesson);
+    } catch {
+      /* life bookkeeping is best-effort */
+    }
   }
 
   // ---------- dispatch with degradation chain ----------
@@ -530,8 +559,12 @@ export class Orchestrator {
       ? `\n\n## 重要：主 Agent 接管\n该任务之前已尝试 ${this.maxRetries} 次均失败，最近一次错误：${lastError}\n请调整策略：换一种实现思路，或把任务范围缩小到可完成的最小闭环，确保本次成功。`
       : '';
 
+    // per-agent life: cross-task lessons ride along in the system prompt
+    const memories = await getAgentMemory(plugin.name, 5);
+
     const systemMsg = [
       plugin.prompt || '你是开发 Agent。',
+      memories.length ? '\n\n## 你过往的经验记忆\n' + memories.map((m) => '- ' + m).join('\n') : '',
       '\n你可以请求读取工具（返回 JSON 时附带 tool_calls 字段）:',
       ' {"tool_calls":[{"tool":"list_files"}]} 或 {"tool_calls":[{"tool":"read_file","path":"xxx"}]}',
       '\n最终输出必须是 JSON（不要 markdown 代码块）：',
@@ -561,15 +594,33 @@ export class Orchestrator {
       error: '',
     };
     const startedAt = Date.now();
+
+    // session continuity: same agent keeps its conversation across nodes of this task
+    const sessionKey = `task:${taskId}:agent:${plugin.name}:session`;
+    const priorSession = (await busGet<{ role: 'user' | 'assistant'; content: string }[]>(sessionKey)) || [];
+    const compacted = priorSession.slice(-10).map((m) =>
+      m.role === 'assistant' ? { role: m.role, content: this.compactAssistant(m.content) } : m
+    );
     const messages: { role: string; content: string }[] = [
       { role: 'system', content: systemMsg },
+      ...compacted,
       { role: 'user', content: userMsg },
     ];
+
+    // war-room journal: master briefing
+    await appendJournal(taskId, plugin.name, {
+      role: 'master', kind: 'brief', text: userMsg, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name,
+    });
+    await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: '接收任务简报', model: entry.name });
 
     try {
       let parsed: Record<string, any> | null = null;
       let content = '';
       for (let round = 0; round < 3; round++) {
+        await emitProgress('agent_activity', {
+          task_id: taskId, node_id: node.id, agent: plugin.name,
+          text: `第 ${round + 1} 轮对话中…`, model: entry.name,
+        });
         const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
         this.pool!.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
@@ -581,37 +632,73 @@ export class Orchestrator {
           roundEntry.parse_error = 'output was not valid JSON';
           record.rounds.push(roundEntry);
           record.error = 'failed to parse agent output as JSON';
-          return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000) };
+          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: '输出无法解析为 JSON', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens, meta: { raw: content.slice(0, 1500) } });
+          await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
+          return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
         }
         const toolCalls = parsed.tool_calls || [];
         if (toolCalls.length === 0) {
           record.rounds.push(roundEntry);
+          await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens });
           break;
         }
+        await emitProgress('agent_activity', {
+          task_id: taskId, node_id: node.id, agent: plugin.name,
+          text: '请求读取工具: ' + toolCalls.map((t: any) => t.tool + (t.path ? ':' + t.path : '')).join(', '),
+          model: entry.name,
+        });
         const results = applyToolCalls(workspace, toolCalls);
         roundEntry.tool_results = results;
         record.rounds.push(roundEntry);
+        await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, tool_calls: toolCalls });
+        await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'round', text: `请求读取工具: ${toolCalls.map((t: any) => t.tool + (t.path ? ':' + t.path : '')).join(', ')}`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
         messages.push({ role: 'assistant', content });
         messages.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results).slice(0, 8000)}\n\n请基于以上信息给出最终 JSON 结果。` });
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
+        await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
       }
 
       if (parsed!.status !== 'success') {
         record.error = (parsed!.errors || []).join('; ') || parsed!.summary || 'agent reported failure';
-        return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000) };
+        await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: record.tokens });
+        await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
+        return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
       }
 
-      const task: AgentTask = { description: node.name, node_id: node.id, workspace, context: {} };
       let result: AgentResult = parsed as AgentResult;
       result = applyFinalOutput(workspace, result as Record<string, any>, this.policy) as AgentResult;
       result = plugin.handler.postRun ? plugin.handler.postRun(result) : result;
-      void task;
       delete (result as Record<string, any>).tool_calls;
+      result.tokens = record.tokens;
+      result.model = entry.name;
+
+      // session continuity: remember this exchange for the agent's next node in this task
+      await busSet(sessionKey, [...priorSession, { role: 'user', content: userMsg }, { role: 'assistant', content }].slice(-20));
+
+      // war-room journal: agent's final report
+      await appendJournal(taskId, plugin.name, {
+        role: 'agent', kind: 'final',
+        text: result.summary || '完成',
+        ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+        model: entry.name, tokens: record.tokens,
+        meta: { changes: result.changes || [], errors: result.errors || [], files: (result.files || []).map((f) => f.path), commands: result.commands || [] },
+      });
+      await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: true, summary: result.summary || '', changes: result.changes || [] });
+      if ((result.files || []).length) {
+        await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: `写入文件: ${(result.files || []).map((f) => f.path).join(', ')}`, model: entry.name });
+      }
       return result;
     } finally {
       record.duration_sec = Math.round((Date.now() - startedAt) / 100) / 10;
       await saveConversation(taskId, node.id, record);
     }
+  }
+
+  /** Shrink a stored assistant turn so old sessions fit the context budget. */
+  private compactAssistant(content: string): string {
+    const parsed = extractJson(content);
+    if (!parsed) return content.slice(0, 1500);
+    return JSON.stringify({ status: parsed.status, summary: parsed.summary, changes: parsed.changes });
   }
 
   private async upstreamContext(taskId: string, node: TaskNode): Promise<string> {

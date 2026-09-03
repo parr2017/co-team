@@ -16,7 +16,9 @@
           <span class="dot" :class="a.status"></span>
           <span class="status-text mono">{{ statusText(a.status) }}</span>
         </div>
-        <div class="agent-task" :class="{ empty: !a.task }">{{ a.task ? a.task.name : 'idle' }}</div>
+        <div class="agent-task" :class="{ empty: !a.task }">{{ taskLine(a) }}</div>
+        <div v-if="a.currentAction && a.status === 'running'" class="agent-action mono">{{ a.currentAction }}</div>
+        <div v-if="a.model" class="agent-model mono">{{ a.model }}</div>
         <div class="agent-stats mono">
           <span>tasks {{ a.taskCount }}</span>
           <span>changes {{ a.changeCount }}</span>
@@ -66,7 +68,16 @@ const codes = computed(() => {
 });
 function badge(n: string) { return codes.value[n] || '??'; }
 function statusText(s: string) { return ({ idle: 'idle', running: 'running', done: 'done', error: 'error' } as Record<string, string>)[s] || s; }
+function taskLine(a: AgentLiveState): string {
+  if (a.task) return a.task.name;
+  if (a.taskCount) return '休息中 · 上次: ' + (lastOf(a) || '—');
+  return 'idle';
+}
+function lastOf(a: AgentLiveState): string {
+  return (a.task && a.task.name) || '';
+}
 function pct(a: AgentLiveState) { return a.status === 'running' ? 65 : a.status === 'done' ? 100 : 0; }
+
 </script>
 
 <style scoped>
@@ -90,6 +101,8 @@ function pct(a: AgentLiveState) { return a.status === 'running' ? 65 : a.status 
 .status-text { font-size: 11px; color: var(--ct-text2); }
 .agent-task { font-size: 12px; color: var(--ct-text2); background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 4px; padding: 6px 8px; min-height: 30px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-task.empty { color: var(--ct-text3); font-style: italic; }
+.agent-action { font-size: 10px; color: var(--ct-yellow); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-model { font-size: 10px; color: var(--ct-accent); margin-top: 3px; }
 .agent-stats { display: flex; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--ct-text3); }
 .progress-track { position: absolute; bottom: 0; left: 0; right: 0; height: 2px; background: transparent; }
 .progress-fill { height: 100%; background: var(--ct-accent); transition: width 0.5s; }

@@ -131,6 +131,35 @@ export interface AgentDefinition {
   prompt: string;
 }
 
+export interface JournalEntry {
+  role: 'master' | 'agent';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error';
+  text: string;
+  ts: string;
+  node_id: string;
+  node_name: string;
+  model?: string;
+  tokens?: number;
+  meta?: Record<string, any>;
+}
+
+export interface AgentProfileInfo {
+  name: string;
+  role: string;
+  description: string;
+  tags: string[];
+  version: string;
+  timeout: number;
+  memory?: string[];
+  profile: {
+    name: string;
+    tasks: { task_id: string; description: string; node: string; status: string; ts: string; tokens?: number; model?: string }[];
+    stats: { total: number; success: number; failed: number; tokens: number };
+    last_model?: string;
+    last_active?: string;
+  };
+}
+
 export interface FsListing {
   path: string;
   parent: string | null;
@@ -168,6 +197,8 @@ export const api = {
   updateNode: (taskId: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }) =>
     request(`/api/tasks/${taskId}/nodes/${nodeId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   roadmap: () => request<{ content: string; updated_at: string }>('/api/system/roadmap'),
+  taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
+  agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
   taskLogs: (id: string) => request<{ task_id: string; logs: Record<string, AgentConversation[]> }>(`/api/tasks/${id}/logs`),
   listAgents: () => request<{ agents: AgentInfo[] }>('/api/agents'),

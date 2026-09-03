@@ -46,12 +46,12 @@
         </aside>
       </div>
 
-      <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid) => { detailAgent = null; detailTaskId = tid; }" />
-      <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :logs="chatLogs" :task="chatTask" />
+      <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid: string) => { detailAgent = null; detailTaskId = tid; }" />
+      <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :journal="chatJournal" :task="chatTask" />
       <TaskDagDialog :model-value="dagTaskId !== null" :task="dagTaskId ? tasks[dagTaskId] : null" @close="dagTaskId = null" />
       <SettingsDialog v-model="settingsVisible" @changed="refreshStatus" />
       <PlanReviewDialog :model-value="reviewTaskId !== null" :task-id="reviewTaskId || ''" @close="reviewTaskId = null" @started="onPlanStarted" @cancelled="loadTasks" @changed="loadTasks" />
-      <TaskDetailDialog :model-value="detailTaskId !== null" :task-id="detailTaskId || ''" @close="detailTaskId = null" />
+      <TaskDetailDialog :model-value="detailTaskId !== null" :task-id="detailTaskId || ''" :live-agents="agents" @close="detailTaskId = null" />
       <RoadmapDialog v-model="roadmapVisible" />
     </div>
   </el-config-provider>
@@ -60,7 +60,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, onUnmounted } from 'vue';
 import { ElMessage } from 'element-plus';
-import { api, type AgentConversation, type StatusResponse } from './api';
+import { api, type JournalEntry, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
 import { useTheme } from './composables/useTheme';
 import TaskForm from './components/TaskForm.vue';
@@ -77,7 +77,7 @@ import PlanReviewDialog from './components/PlanReviewDialog.vue';
 import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
 
-const { agents, tasks, events, connected, loadNodeLogs, loadAgents, loadTasks, clearEvents } = useDashboard();
+const { agents, tasks, events, connected, loadJournals, loadAgents, loadTasks, clearEvents } = useDashboard();
 const { theme, toggle } = useTheme();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
@@ -99,7 +99,7 @@ const detailAgent = ref<AgentLiveState | null>(null);
 const chatVisible = ref(false);
 const chatTaskId = ref('');
 const chatNodeId = ref('');
-const chatLogs = ref<AgentConversation[]>([]);
+const chatJournal = ref<JournalEntry[]>([]);
 const chatTask = computed(() => tasks[chatTaskId.value] ?? null);
 const dagTaskId = ref<string | null>(null);
 
@@ -115,7 +115,8 @@ async function openChat(taskId: string, nodeId: string) {
   chatTaskId.value = taskId;
   chatNodeId.value = nodeId;
   chatVisible.value = true;
-  chatLogs.value = (await loadNodeLogs(taskId))[nodeId] || [];
+  const journals = await loadJournals(taskId);
+  chatJournal.value = journals[chatTask.value?.nodes.find((n) => n.id === nodeId)?.agent || ''] || [];
 }
 
 async function onApprove(taskId: string, nodeId: string) {

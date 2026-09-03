@@ -126,6 +126,36 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ task_id: taskId, events: await getTaskEvents(taskId) });
   });
 
+  app.get('/api/tasks/:taskId/journals', async (c) => {
+    const { getTaskJournals } = await import('../store');
+    const taskId = c.req.param('taskId');
+    return c.json({ task_id: taskId, journals: await getTaskJournals(taskId) });
+  });
+
+  app.get('/api/agents/profiles', async (c) => {
+    const { getAgentProfiles, getAgentMemory } = await import('../store');
+    const profiles = await getAgentProfiles();
+    // merge yaml identity so the UI can render person cards without extra calls
+    const merged = await Object.fromEntries(
+      await Promise.all(
+        [...ctx.orchestrator.plugins.values()].map(async (p) => [
+          p.name,
+          {
+            name: p.name,
+            role: p.role,
+            description: p.description,
+            tags: p.tags,
+            version: p.version,
+            timeout: p.timeout,
+            memory: (await getAgentMemory(p.name, 8).catch(() => [])) || [],
+            profile: profiles[p.name] || { name: p.name, tasks: [], stats: { total: 0, success: 0, failed: 0, tokens: 0 } },
+          },
+        ])
+      )
+    );
+    return c.json({ agents: merged });
+  });
+
   app.post('/api/tasks/:taskId/replan', async (c) => {
     const taskId = c.req.param('taskId');
     const body = await c.req.json<{ feedback?: string }>().catch(() => ({ feedback: '' }));
