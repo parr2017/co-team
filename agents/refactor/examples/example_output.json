@@ -1,0 +1,8 @@
+{
+  "status": "success",
+  "changes": ["src/utils.py: 新增格式化工具函数"],
+  "summary": "实现了日期格式化工具并验证通过",
+  "errors": [],
+  "files": [{"path": "src/utils.py", "content": "def fmt_date(d):\n    return d.strftime('%Y-%m-%d')\n"}],
+  "commands": ["python -c \"import src.utils\""]
+}

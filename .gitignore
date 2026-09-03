@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+
+# build output (rebuild with: npm run build)
+server/dist/
+web/dist/
+
+# logs & temp
+logs/
+tmp-*/
+*.log
+
+# runtime state
+*.state.json
+.coteam/
+
+# python legacy artifacts
+__pycache__/
+*.pyc
+legacy-python/src/co_team.egg-info/
+legacy-python/src/__pycache__/
+legacy-python/tests/__pycache__/
+.venv/
+
+# secrets: real config contains API keys; use config.example.yaml
+config/config.yaml
+
+# editor
+.idea/
+.vscode/
+.zcode/

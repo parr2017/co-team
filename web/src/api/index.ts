@@ -1,0 +1,187 @@
+// Shared API client + types mirroring the server contract.
+
+export type TaskStatus = 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
+
+export interface AgentResult {
+  status?: 'success' | 'failed';
+  error?: string;
+  changes?: string[];
+  summary?: string;
+  errors?: string[];
+  escalated?: boolean;
+}
+
+export interface TaskNode {
+  id: string;
+  task_id: string;
+  name: string;
+  status: TaskStatus;
+  agent: string;
+  result: AgentResult | null;
+  error: string;
+  retry_count: number;
+  complexity: string;
+  requires_approval: boolean;
+  needs_human: boolean;
+  reason?: string;
+  branch?: string;
+  started_at?: string;
+  finished_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskEvent {
+  type: string;
+  ts: string;
+  payload: Record<string, any>;
+}
+
+export interface TaskGraph {
+  task_id: string;
+  nodes: TaskNode[];
+  edges: [string, string][];
+  description: string;
+  workspace: string;
+  status: string;
+  updated_at: string;
+  git_commit?: { branch: string; commit: string | null };
+  merged_branches?: string[];
+}
+
+export interface AgentInfo {
+  name: string;
+  role: string;
+  description: string;
+  tags: string[];
+  modelOverride: string | null;
+  maxTokens: number;
+  timeout: number;
+}
+
+export interface ConversationRound {
+  assistant?: string;
+  user?: string;
+  tool_results?: unknown[] | null;
+  parse_error?: string | null;
+}
+
+export interface AgentConversation {
+  label: string;
+  agent: string;
+  model: string;
+  node_name: string;
+  started_at: string;
+  system: string;
+  rounds: ConversationRound[];
+  tokens: number;
+  error: string;
+  duration_sec?: number;
+}
+
+export interface ModelStatus {
+  concurrency: number;
+  active: number;
+  available: number;
+  priority: number;
+  tags: string[];
+  healthy: boolean;
+  cost_per_1k: number;
+}
+
+export interface StatusResponse {
+  status: string;
+  time: string;
+  model_pool: Record<string, ModelStatus>;
+  agents_dir: string;
+  tokens_total: number;
+  cost_total: number;
+}
+
+export interface MetricsResponse {
+  tasks: { total: number; success: number; success_rate: number };
+  agents: Record<string, { tasks: number; completed: number; failed: number; retries: number; tokens: number }>;
+  token_usage: Record<string, { prompt_tokens: number; completion_tokens: number; calls: number; cost: number }>;
+  tokens_total: number;
+  cost_total: number;
+}
+
+export interface ModelConfig {
+  name: string;
+  provider?: string;
+  api_key: string;
+  base_url: string;
+  concurrency?: number;
+  priority?: number;
+  professional_weight?: number;
+  cost_per_1k?: number;
+  tags?: string[];
+}
+
+export interface AgentDefinition {
+  name: string;
+  dir: string;
+  role: string;
+  description: string;
+  tags: string[];
+  model_override: string | null;
+  max_tokens: number;
+  timeout: number;
+  version: string;
+  prompt: string;
+}
+
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  dirs: { name: string; path: string }[];
+  shortcuts: { name: string; path: string }[];
+}
+
+export interface EventEnvelope {
+  type: string;
+  ts: string;
+  payload: Record<string, any>;
+}
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((body as any).detail || res.statusText);
+  return body as T;
+}
+
+export const api = {
+  createTask: (description: string, workspace: string, autoRun = true) =>
+    request<{ task_id: string }>('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description, workspace, auto_run: autoRun }),
+    }),
+  listTasks: () => request<{ tasks: TaskGraph[] }>('/api/tasks'),
+  getTask: (id: string) => request<TaskGraph>(`/api/tasks/${id}`),
+  cancelTask: (id: string) => request(`/api/tasks/${id}/cancel`, { method: 'POST' }),
+  executeTask: (id: string) => request(`/api/tasks/${id}/execute`, { method: 'POST' }),
+  taskEvents: (id: string) => request<{ task_id: string; events: TaskEvent[] }>(`/api/tasks/${id}/events`),
+  replan: (id: string, feedback: string) =>
+    request<{ summary: string }>(`/api/tasks/${id}/replan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }) }),
+  updateNode: (taskId: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }) =>
+    request(`/api/tasks/${taskId}/nodes/${nodeId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
+  roadmap: () => request<{ content: string; updated_at: string }>('/api/system/roadmap'),
+  approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
+  taskLogs: (id: string) => request<{ task_id: string; logs: Record<string, AgentConversation[]> }>(`/api/tasks/${id}/logs`),
+  listAgents: () => request<{ agents: AgentInfo[] }>('/api/agents'),
+  agentDefinitions: () => request<{ agents: AgentDefinition[] }>('/api/agents/definitions'),
+  createAgent: (def: Partial<AgentDefinition>) =>
+    request('/api/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(def) }),
+  updateAgent: (dirName: string, def: Partial<AgentDefinition>) =>
+    request(`/api/agents/${dirName}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(def) }),
+  deleteAgent: (dirName: string) => request(`/api/agents/${dirName}`, { method: 'DELETE' }),
+  getModelPool: () => request<{ model_pool: ModelConfig[] }>('/api/config/model-pool'),
+  saveModelPool: (model_pool: ModelConfig[]) =>
+    request('/api/config/model-pool', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_pool }) }),
+  reloadAgents: () => request('/api/agents/reload', { method: 'POST' }),
+  status: () => request<StatusResponse>('/api/status'),
+  metrics: () => request<MetricsResponse>('/api/metrics'),
+  fsList: (path: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(path)}`),
+};

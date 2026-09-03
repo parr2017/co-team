@@ -1,0 +1,12 @@
+name: test
+role: 测试
+version: 1.0.0
+description: 编写并运行单元测试、集成测试，关注覆盖率
+tags: [test, qa, pytest, coverage]
+model_override: null
+max_tokens: 8192
+timeout: 600
+permissions:
+  - read_code
+  - write_code
+  - run_tests

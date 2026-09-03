@@ -1,0 +1,125 @@
+import { chat, extractJson, stripCodeFence } from '../llm';
+import { getMemory } from '../store';
+import type { ModelPool } from '../scheduler';
+import type { Router } from '../router';
+import type { Complexity } from '../types';
+
+export interface PlannedGraph {
+  nodes: Record<string, any>[];
+  edges: [string, string][];
+  summary: string;
+}
+
+function fallbackGraph(request: string, plugins: Map<string, any>): PlannedGraph {
+  const pick = (name: string) => (plugins.has(name) ? name : 'dev');
+  const nodes = [
+    { id: 'main', name: 'Main Task', agent: 'orchestrator', complexity: 'simple' as Complexity, requires_approval: false, reason: '任务基线' },
+    { id: 'dev', name: `Development: ${request.slice(0, 40)}`, agent: 'dev', complexity: 'normal' as Complexity, requires_approval: false, reason: '通用开发实现' },
+    { id: 'test', name: 'Testing', agent: pick('test'), complexity: 'normal' as Complexity, requires_approval: false, reason: '验证功能可用' },
+    { id: 'merge', name: '主 Agent 合并分支', agent: 'orchestrator', complexity: 'simple' as Complexity, requires_approval: false, reason: '全部节点分支合并回基线' },
+  ];
+  return {
+    nodes,
+    edges: [['main', 'dev'], ['dev', 'test'], ['test', 'merge']],
+    summary: '（离线回退计划）',
+  };
+}
+
+const GRANULARITY_RULES = [
+  '拆解粒度要求：',
+  '1. 每个节点只做一件事，有明确可验收的产出（一个接口/一个模块/一份配置/一组测试）',
+  '2. 禁止笼统的大节点（如“开发”“实现功能”）；必须拆到具体功能点、接口或文件级别',
+  '3. 中等复杂度的需求至少 4-6 个节点；每个开发节点之后应紧跟对应的测试或验证节点',
+  '4. 节点命名格式「动作 + 对象」，例如：实现用户注册接口 /api/register',
+  '5. 每个节点给出 agent 分配理由 reason（一句话，中文），说明为什么这个 agent 适合',
+].join('\n');
+
+function buildPlanMessages(request: string, available: string[], agentDesc: string, memory: string, previousPlan: PlannedGraph | null, feedbacks: string[]) {
+  const content = [
+    '你是任务规划器。你只能使用这些 agent 名字：' + available.join(', ') + '。不要发明新的 agent 名字。',
+    '',
+    '可用 agent 及职责：',
+    agentDesc,
+    '',
+    '历史经验（跨任务记忆，避免重复犯错）：',
+    memory,
+    '',
+    GRANULARITY_RULES,
+    '',
+    '把需求拆解为有序任务节点。注意：',
+    '1. 节点按依赖排序，edges 描述依赖关系（[前, 后]）；无依赖的节点可以并行',
+    '2. 涉及部署/删除等危险操作的节点标记 requires_approval: true',
+    '3. 为每个节点标注 complexity: simple|normal|complex',
+    '4. 每个开发节点应产出代码并由后续节点验证；系统会在计划末尾自动追加主 Agent 合并分支的节点，你不需要规划合并',
+    '5. 计划末尾给出 summary（一句话概括拆解思路）',
+    '返回 JSON：{"nodes":[{"id":"1","name":"...","agent":"dev","reason":"...","complexity":"normal","requires_approval":false}],"edges":[["1","2"]],"summary":"..."}',
+  ];
+  if (previousPlan) {
+    content.push('', '当前已生成的计划（将被替换）：', JSON.stringify({ nodes: previousPlan.nodes, edges: previousPlan.edges }, null, 1).slice(0, 4000));
+  }
+  if (feedbacks.length) {
+    content.push('', '用户的调整反馈（按先后顺序，必须逐条响应）：', ...feedbacks.map((f, i) => `${i + 1}. ${f}`));
+  }
+  content.push('', '需求：' + request);
+  return content.join('\n');
+}
+
+function normalizePlan(graph: any, available: string[]): PlannedGraph | null {
+  if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return null;
+  const nodeIds = new Set<string>();
+  const nodes = graph.nodes.map((n: any, i: number) => {
+    const id = String(n.id ?? i + 1);
+    nodeIds.add(id);
+    return {
+      id,
+      name: String(n.name ?? `Task ${i + 1}`),
+      agent: available.includes(n.agent) ? n.agent : 'dev',
+      reason: String(n.reason ?? ''),
+      complexity: (['simple', 'normal', 'complex'] as Complexity[]).includes(n.complexity) ? n.complexity : 'normal',
+      requires_approval: !!n.requires_approval,
+    };
+  });
+  let edges: [string, string][] = (graph.edges || [])
+    .filter((e: any) => Array.isArray(e) && e.length === 2 && nodeIds.has(String(e[0])) && nodeIds.has(String(e[1])))
+    .map((e: any) => [String(e[0]), String(e[1])]);
+  if (edges.length === 0 && nodes.length > 1) {
+    edges = nodes.slice(0, -1).map((n: any, i: number) => [n.id, nodes[i + 1].id]);
+  }
+  return { nodes, edges, summary: String(graph.summary || '') };
+}
+
+export async function generateTaskGraph(request: string, pool: ModelPool | null, router: Router, options?: { previousPlan?: PlannedGraph | null; feedbacks?: string[] }): Promise<PlannedGraph> {
+  const previousPlan = options?.previousPlan ?? null;
+  const feedbacks = options?.feedbacks ?? [];
+  if (pool) {
+    const model = pool.selectModel(['code'], 'complex');
+    if (model) {
+      const result = await llmPlan(request, pool, router, model, previousPlan, feedbacks);
+      if (result) return result;
+    }
+  }
+  if (previousPlan && feedbacks.length) {
+    // offline: apply feedback as best effort (keep previous plan)
+    return { ...previousPlan, summary: (previousPlan.summary || '') + '（离线模式：反馈未应用，保留原计划）' };
+  }
+  return fallbackGraph(request, router.getAvailable());
+}
+
+async function llmPlan(request: string, pool: ModelPool, router: Router, model: any, previousPlan: PlannedGraph | null, feedbacks: string[]): Promise<PlannedGraph | null> {
+  const available = [...router.getAvailable().keys()];
+  const agentDesc =
+    [...router.getAvailable().values()].map((p) => `- ${p.name}: ${p.role || p.description} (tags: ${p.tags.join(',')})`).join('\n') || '- dev: 开发实现';
+  const memory = (await getMemory()).map((m) => `- ${m}`).join('\n') || '（暂无历史经验）';
+
+  try {
+    const resp = await chat(model, [
+      { role: 'system', content: 'You are a task planner. Use ONLY the given agent names. Output valid JSON only.' },
+      { role: 'user', content: buildPlanMessages(request, available, agentDesc, memory, previousPlan, feedbacks) },
+    ], 8192);
+    pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
+    const graph = extractJson(stripCodeFence(resp.content));
+    return normalizePlan(graph, available);
+  } catch {
+    return null;
+  }
+}

@@ -1,0 +1,11 @@
+name: docs
+role: 文档
+version: 1.0.0
+description: 编写 README、API 文档与代码注释
+tags: [docs, documentation, readme]
+model_override: null
+max_tokens: 8192
+timeout: 300
+permissions:
+  - read_code
+  - write_code

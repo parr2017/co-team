@@ -1,0 +1,61 @@
+agents_dir: ./agents
+dashboard:
+  host: 0.0.0.0
+  port: 8855
+model_pool:
+  - api_key: sk_your_api_key_here
+    base_url: https://tokenrhythm.studio/v1
+    concurrency: 4
+    cost_per_1k: 0.005
+    name: deepseek-v4-flash
+    priority: 6
+    professional_weight: 80
+    provider: rhythm
+    tags:
+      - code
+      - logic
+      - review
+  - api_key: sk_your_api_key_here
+    base_url: https://tokenrhythm.studio/v1
+    concurrency: 4
+    cost_per_1k: 0.004
+    name: glm-5.3-flash
+    priority: 6
+    professional_weight: 70
+    provider: rhythm
+    tags:
+      - code
+      - debug
+  - name: qwen3.6
+    provider: ''
+    api_key: '12345'
+    base_url: http://192.168.1.237:8001/v1
+    concurrency: 4
+    priority: 1
+    professional_weight: 90
+    cost_per_1k: 0
+    tags: []
+orchestrator:
+  max_retries: 3
+  model: deepseek-v4-flash
+  sandbox: true
+  git: true
+permissions:
+  level: normal
+  whitelist_commands:
+    - python
+    - pip
+    - git
+    - npm
+    - node
+    - mkdir
+    - cp
+    - mv
+    - rm
+    - ls
+    - cat
+    - chmod
+redis:
+  db: 0
+  host: 127.0.0.1
+  port: 6379

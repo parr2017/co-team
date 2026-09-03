@@ -1,0 +1,362 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { Hono } from 'hono';
+import { WebSocket, WebSocketServer } from 'ws';
+import type { Server } from 'node:http';
+import { Orchestrator } from '../orchestrator/orchestrator';
+import { ModelPool } from '../scheduler';
+import { busGet, busKeys, busSet, getBus } from '../bus';
+import { getTaskGraph, listTaskGraphs, persistGraph, saveTaskGraph } from '../store';
+import { getTaskConversations } from '../transcript';
+import { toAgentInfo } from '../agents';
+import type { AppConfig, OrchestrationConfig } from '../config';
+import type { TaskGraph, TaskNode } from '../types';
+
+export interface ApiContext {
+  config: AppConfig;
+  orchestrator: Orchestrator;
+  modelPool: ModelPool;
+}
+
+function validateWorkspace(workspace: string): string {
+  const ws = (workspace || '').trim().replace(/^"|"$/g, '');
+  if (!ws) throw new HttpError(400, 'workspace is required');
+  if (!path.isAbsolute(ws)) throw new HttpError(400, `workspace must be an absolute path, got: ${ws}`);
+  return ws;
+}
+
+export class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+export function createApi(ctx: ApiContext): Hono {
+  const app = new Hono();
+
+  const runInBackground = (taskId: string, workspace: string): void => {
+    void (async () => {
+      try {
+        await ctx.orchestrator.execute(taskId, workspace);
+      } catch (e: any) {
+        await busSet(`task:graph:${taskId}:bg_error`, { error: String(e).slice(0, 500) }).catch(() => {});
+      }
+    })();
+  };
+
+  app.onError((err, c) => {
+    const status = err instanceof HttpError ? err.status : 500;
+    return c.json({ detail: err.message }, status as any);
+  });
+
+  // ---------- tasks ----------
+
+  app.post('/api/tasks', async (c) => {
+    const body = await c.req.json<{ description?: string; request?: string; workspace?: string; auto_run?: boolean }>();
+    const description = body.description || body.request || '';
+    if (!description) throw new HttpError(400, 'description is required');
+    const workspace = validateWorkspace(body.workspace || '');
+    const { taskId, graph } = await ctx.orchestrator.createTask(description, workspace);
+    // tasks land in "planned" state waiting for user review in the plan review panel;
+    // auto_run is opt-in for script/API callers
+    if (body.auto_run === true) runInBackground(taskId, workspace);
+    return c.json({ status: 'created', task_id: taskId, graph, auto_run: body.auto_run === true });
+  });
+
+  app.post('/api/tasks/:taskId/execute', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const ws = validateWorkspace(c.req.query('workspace') || graph.workspace || '.');
+    runInBackground(taskId, ws);
+    return c.json({ status: 'started', task_id: taskId, workspace: ws });
+  });
+
+  app.post('/api/tasks/:taskId/cancel', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    await busSet(`task:cancel:${taskId}`, true);
+    return c.json({ status: 'cancelling', task_id: taskId });
+  });
+
+  app.post('/api/tasks/:taskId/approve/:nodeId', async (c) => {
+    const taskId = c.req.param('taskId');
+    const nodeId = c.req.param('nodeId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const approvals = (await busGet<string[]>(`task:approvals:${taskId}`)) || [];
+    if (!approvals.includes(nodeId)) approvals.push(nodeId);
+    await busSet(`task:approvals:${taskId}`, approvals);
+    const ws = graph.workspace || '.';
+    runInBackground(taskId, ws);
+    return c.json({ status: 'approved', task_id: taskId, node_id: nodeId });
+  });
+
+  app.get('/api/tasks/:taskId', async (c) => {
+    const graph = await getTaskGraph(c.req.param('taskId'));
+    if (!graph) throw new HttpError(404, 'task not found');
+    return c.json(graph);
+  });
+
+  app.get('/api/tasks', async (c) => {
+    const graphs = await listTaskGraphs();
+    return c.json({
+      tasks: graphs.map((g: TaskGraph) => ({
+        id: g.task_id,
+        description: g.description,
+        workspace: g.workspace,
+        status: g.status,
+        nodes: g.nodes,
+        edges: g.edges,
+        updated_at: g.updated_at,
+      })),
+    });
+  });
+
+  app.get('/api/tasks/:taskId/logs', async (c) => {
+    const taskId = c.req.param('taskId');
+    return c.json({ task_id: taskId, logs: await getTaskConversations(taskId) });
+  });
+
+  app.get('/api/tasks/:taskId/events', async (c) => {
+    const { getTaskEvents } = await import('../store');
+    const taskId = c.req.param('taskId');
+    return c.json({ task_id: taskId, events: await getTaskEvents(taskId) });
+  });
+
+  app.post('/api/tasks/:taskId/replan', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await c.req.json<{ feedback?: string }>().catch(() => ({ feedback: '' }));
+    try {
+      const graph = await ctx.orchestrator.replan(taskId, body.feedback || '');
+      return c.json({ status: 'replanned', summary: graph.summary, graph });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  app.put('/api/tasks/:taskId/nodes/:nodeId', async (c) => {
+    const taskId = c.req.param('taskId');
+    const nodeId = c.req.param('nodeId');
+    const body = await c.req.json<{ name?: string; agent?: string; action?: 'delete' }>();
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node) throw new HttpError(404, 'node not found');
+
+    if (body.action === 'delete') {
+      graph.nodes = graph.nodes.filter((n) => n.id !== nodeId);
+      graph.edges = graph.edges.filter(([a, b]) => a !== nodeId && b !== nodeId);
+    } else {
+      if (body.name) node.name = body.name;
+      if (body.agent) {
+        if (body.agent !== 'orchestrator' && !ctx.orchestrator.plugins.has(body.agent)) {
+          throw new HttpError(400, `unknown agent: ${body.agent}`);
+        }
+        node.agent = body.agent;
+      }
+    }
+    // keep the auto merge node waiting on every agent node
+    const merge = graph.nodes.find((n) => n.id === 'merge-auto');
+    if (merge) {
+      graph.edges = graph.edges.filter(([, dst]) => dst !== 'merge-auto');
+      for (const n of graph.nodes) {
+        if (n.id !== 'merge-auto' && n.agent !== 'orchestrator') {
+          graph.edges.push([n.id, 'merge-auto']);
+        }
+      }
+    }
+    await persistGraph(graph);
+    return c.json({ status: 'updated', graph });
+  });
+
+  app.get('/api/system/roadmap', async (c) => {
+    const { PROJECT_ROOT } = await import('../config');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const file = path.join(PROJECT_ROOT, '开发路线.md');
+    if (!fs.existsSync(file)) throw new HttpError(404, 'roadmap file not found');
+    return c.json({ content: fs.readFileSync(file, 'utf-8'), updated_at: fs.statSync(file).mtime.toISOString() });
+  });
+
+  // ---------- agents ----------
+
+  app.get('/api/agents', (c) => {
+    return c.json({ agents: [...ctx.orchestrator.plugins.values()].map(toAgentInfo) });
+  });
+
+  app.get('/api/agents/definitions', async (c) => {
+    const { listAgentDirs, readAgentDefinition } = await import('../configStore');
+    const defs = listAgentDirs(ctx.config.agents_dir).map((dir) => readAgentDefinition(ctx.config.agents_dir, dir));
+    return c.json({ agents: defs });
+  });
+
+  app.post('/api/agents', async (c) => {
+    const { writeAgentDefinition } = await import('../configStore');
+    const body = await c.req.json();
+    const dirName = writeAgentDefinition(ctx.config.agents_dir, null, body);
+    const names = await ctx.orchestrator.reloadAgents();
+    return c.json({ status: 'created', agent: dirName, agents: names });
+  });
+
+  app.put('/api/agents/:dirName', async (c) => {
+    const { writeAgentDefinition } = await import('../configStore');
+    const dirName = c.req.param('dirName');
+    const body = await c.req.json();
+    const newDir = writeAgentDefinition(ctx.config.agents_dir, dirName, { ...body, name: body.name || dirName });
+    const names = await ctx.orchestrator.reloadAgents();
+    return c.json({ status: 'updated', agent: newDir, agents: names });
+  });
+
+  app.delete('/api/agents/:dirName', async (c) => {
+    const { deleteAgent } = await import('../configStore');
+    deleteAgent(ctx.config.agents_dir, c.req.param('dirName'));
+    const names = await ctx.orchestrator.reloadAgents();
+    return c.json({ status: 'deleted', agents: names });
+  });
+
+  app.post('/api/agents/reload', async (c) => {
+    const names = await ctx.orchestrator.reloadAgents();
+    return c.json({ status: 'reloaded', agents: names });
+  });
+
+  // ---------- config management ----------
+
+  app.get('/api/config/model-pool', (c) => {
+    return c.json({ model_pool: ctx.config.model_pool });
+  });
+
+  app.put('/api/config/model-pool', async (c) => {
+    const { saveModelPool } = await import('../configStore');
+    const body = await c.req.json<{ model_pool?: any[] }>();
+    const pool = body.model_pool;
+    if (!Array.isArray(pool)) throw new HttpError(400, 'model_pool must be an array');
+    for (const m of pool) {
+      if (!m.name || !m.api_key || !m.base_url) throw new HttpError(400, 'each model needs name, api_key and base_url');
+    }
+    saveModelPool(pool);
+    ctx.config.model_pool = pool;
+    ctx.modelPool.replaceModels(pool);
+    return c.json({ status: 'saved', model_pool: pool });
+  });
+
+  // ---------- status / metrics / fs ----------
+
+  app.get('/api/status', (c) => {
+    return c.json({
+      status: 'running',
+      time: new Date().toISOString(),
+      model_pool: ctx.modelPool.getStatus(),
+      agents_dir: ctx.config.agents_dir,
+      tokens_total: ctx.modelPool.totalTokens(),
+      cost_total: ctx.modelPool.totalCost(),
+    });
+  });
+
+  app.get('/api/metrics', async (c) => {
+    const agentStats: Record<string, { tasks: number; completed: number; failed: number; retries: number; tokens: number }> = {};
+    let tasksTotal = 0;
+    let tasksSuccess = 0;
+    for (const graph of await listTaskGraphs()) {
+      tasksTotal += 1;
+      if (graph.status === 'success') tasksSuccess += 1;
+      for (const node of graph.nodes) {
+        const agent = node.agent || 'unknown';
+        const stat = (agentStats[agent] ||= { tasks: 0, completed: 0, failed: 0, retries: 0, tokens: 0 });
+        stat.tasks += 1;
+        if (node.status === 'completed') stat.completed += 1;
+        else if (node.status === 'failed') stat.failed += 1;
+        stat.retries += node.retry_count || 0;
+        stat.tokens += 0; // per-node token usage lives in conversations
+      }
+    }
+    return c.json({
+      tasks: {
+        total: tasksTotal,
+        success: tasksSuccess,
+        success_rate: tasksTotal ? Math.round((tasksSuccess / tasksTotal) * 1000) / 1000 : 0,
+      },
+      agents: agentStats,
+      model_pool: ctx.modelPool.getStatus(),
+      token_usage: ctx.modelPool.getUsage(),
+      tokens_total: ctx.modelPool.totalTokens(),
+      cost_total: ctx.modelPool.totalCost(),
+    });
+  });
+
+  app.get('/api/fs', async (c) => {
+    const query = (c.req.query('path') || '').trim();
+    if (!query) {
+      const home = os.homedir();
+      const drives: { name: string; path: string }[] = [];
+      if (process.platform === 'win32') {
+        for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+          const drive = `${letter}:\\`;
+          if (fs.existsSync(drive)) drives.push({ name: drive, path: drive });
+        }
+      }
+      return c.json({ path: '', parent: null, dirs: drives, shortcuts: [{ name: '主目录', path: home }] });
+    }
+    let p = path.resolve(query);
+    if (!fs.existsSync(p)) throw new HttpError(404, `path not found: ${query}`);
+    if (fs.statSync(p).isFile()) p = path.dirname(p);
+    const dirs: { name: string; path: string }[] = [];
+    try {
+      for (const entry of fs.readdirSync(p, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name.startsWith('.') || entry.name.startsWith('$')) continue;
+        dirs.push({ name: entry.name, path: path.join(p, entry.name) });
+        if (dirs.length >= 300) break;
+      }
+    } catch {
+      /* permission denied: return what we have */
+    }
+    const parent = path.dirname(p);
+    return c.json({ path: p, parent: parent === p ? null : parent, dirs, shortcuts: [] });
+  });
+
+  return app;
+}
+
+export function attachWebSocket(server: Server, dashboardChannel: string): WebSocketServer {
+  const wss = new WebSocketServer({ noServer: true });
+  const clients = new Set<WebSocket>();
+
+  server.on('upgrade', (request: any, socket: any, head: any) => {
+    const url = new URL(request.url, 'http://localhost');
+    if (url.pathname !== '/ws/events') return;
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  });
+
+  wss.on('connection', (ws) => {
+    clients.add(ws);
+    const unsubscribe = getBus().subscribe(dashboardChannel, (msg) => {
+      try {
+        ws.send(JSON.stringify(msg));
+      } catch {
+        /* client gone */
+      }
+    });
+    const ping = setInterval(() => {
+      try {
+        ws.send('{"type":"ping"}');
+      } catch {
+        /* noop */
+      }
+    }, 15_000);
+    ws.on('close', () => {
+      clients.delete(ws);
+      clearInterval(ping);
+      unsubscribe();
+    });
+  });
+
+  return wss;
+}
+
+export type { TaskNode };
+export { saveTaskGraph, persistGraph };
