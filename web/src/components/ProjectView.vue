@@ -219,7 +219,8 @@ defineExpose({ loadProjects, refreshDetail });
 .ph { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
 .ph-name { font-size: 16px; font-weight: 700; color: var(--ct-text); }
 .ph-ws { font-size: 11px; color: var(--ct-text3); }
-.pd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.pd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+.pd-history, .pd-memory { max-height: calc(100vh - 300px); overflow-y: auto; padding-right: 4px; }
 .hist-row { display: flex; gap: 10px; padding: 10px 12px; background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 8px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.15s; }
 .hist-row:hover { border-color: var(--ct-border2); }
 .h-status { font-size: 13px; width: 18px; }

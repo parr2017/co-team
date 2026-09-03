@@ -189,3 +189,46 @@ function onClose() {
 onUnmounted(() => window.clearInterval(pollTimer));
 </script>
 
+<style scoped>
+.detail { font-size: 13px; }
+.meta { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+.meta-main { flex: 1; min-width: 0; }
+.desc { font-size: 13px; font-weight: 600; color: var(--ct-text); margin-bottom: 4px; }
+.meta-sub { font-size: 11px; color: var(--ct-text3); }
+.progress { flex: 0 0 160px; height: 6px; background: var(--ct-panel2); border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--ct-accent); transition: width 0.5s; }
+.warroom { display: grid; grid-template-columns: 480px 1fr; gap: 16px; align-items: start; }
+.wr-left, .wr-right { max-height: calc(88vh - 200px); overflow-y: auto; }
+.wr-left { padding-right: 12px; }
+.wr-hint { font-size: 10px; color: var(--ct-text3); margin-top: 6px; }
+.wr-right { display: flex; flex-direction: column; min-width: 0; }
+.live-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--ct-panel2); border-radius: 6px; margin-bottom: 8px; font-size: 11px; flex-wrap: wrap; }
+.live-agent { font-weight: 700; color: var(--ct-text); }
+.live-model { color: var(--ct-accent); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 6px; }
+.live-action { color: var(--ct-yellow); }
+.live-chat { max-height: calc(88vh - 290px); overflow-y: auto; }
+.body-grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
+.left { border-right: 1px solid var(--ct-border); padding-right: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
+.right { min-width: 0; max-height: calc(88vh - 200px); overflow-y: auto; }
+.branches { margin-top: 14px; }
+.sub-title { font-size: 10px; color: var(--ct-text3); text-transform: uppercase; letter-spacing: 0.6px; margin: 12px 0 6px; }
+.branch-row { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; color: var(--ct-text2); }
+.b-commit { color: var(--ct-text3); }
+.node-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.stamp { font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 1px 5px; border: 1px solid currentColor; border-radius: 2px; transform: rotate(-3deg); }
+.stamp.completed { color: var(--ct-green); }
+.stamp.failed { color: var(--ct-red); }
+.stamp.running, .stamp.retrying { color: var(--ct-yellow); }
+.stamp.waiting_approval { color: var(--ct-accent); }
+.n-name { color: var(--ct-text); font-weight: 600; }
+.n-meta { color: var(--ct-text3); font-size: 11px; }
+.reason { font-size: 12px; color: var(--ct-text2); font-style: italic; margin-bottom: 6px; }
+.error { color: var(--ct-red); font-size: 12px; margin-bottom: 6px; }
+.summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 8px; white-space: pre-wrap; }
+.changes .change { font-size: 11px; color: var(--ct-text2); padding: 1px 0; }
+.tl-err { color: var(--ct-red); font-size: 11px; }
+.tl-type { color: var(--ct-text2); font-size: 11px; }
+.tl-node { color: var(--ct-text3); font-size: 11px; }
+.tl-sum { color: var(--ct-text3); font-size: 11px; }
+.empty { color: var(--ct-text3); text-align: center; padding: 40px 0; }
+</style>

@@ -214,11 +214,17 @@ html.dark {
   --el-color-danger: var(--ct-red);
   --el-color-warning: var(--ct-yellow);
 }
+html, body { height: 100%; overflow: hidden; }
 body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 13px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--ct-border2); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ct-text3); }
+::-webkit-scrollbar-track { background: transparent; }
+* { scrollbar-width: thin; scrollbar-color: var(--ct-border2) transparent; }
 .mono { font-family: var(--ct-mono); }
-.app-shell { min-height: 100vh; }
+.app-shell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .app-header {
-  position: sticky; top: 0; z-index: 50; height: 48px; padding: 0 20px;
+  flex-shrink: 0; z-index: 50; height: 48px; padding: 0 20px;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   background: var(--ct-panel); border-bottom: 1px solid var(--ct-border);
 }
@@ -238,9 +244,10 @@ body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: 
 .conn.off i { background: var(--ct-red); }
 .theme-toggle { font-family: var(--ct-mono); font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
 .theme-toggle:hover { color: var(--ct-text); border-color: var(--ct-border2); }
-.layout { display: grid; grid-template-columns: 1fr 340px; }
-.main { padding: 20px 24px; border-right: 1px solid var(--ct-border); }
-.side { padding: 16px; }
+.layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
+.main { overflow-y: auto; padding: 20px 24px; border-right: 1px solid var(--ct-border); }
+.side { overflow-y: auto; padding: 16px; }
+.el-dialog__body { max-height: calc(88vh - 110px); overflow-y: auto; }
 .section { margin-bottom: 24px; }
 .section-title { font-family: var(--ct-mono); font-size: 11px; font-weight: 500; color: var(--ct-text3); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px; }
 .panel { background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 6px; padding: 14px; margin-bottom: 16px; }
