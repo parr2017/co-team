@@ -109,7 +109,7 @@ cd server && npx vitest
 
 ## 问题反馈
 
-- GitHub Issues: [https://github.com/your-username/co-team/issues](https://github.com/your-username/co-team/issues)
+- GitHub Issues: [https://github.com/parr2017/co-team/issues](https://github.com/parr2017/co-team/issues)
 
 ## 许可证
 

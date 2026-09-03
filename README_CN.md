@@ -27,7 +27,7 @@ Co-Team 是一个开源的多智能体协作框架，通过 AI 驱动的专业�
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/co-team.git
+git clone https://github.com/parr2017/co-team.git
 cd co-team
 
 # 安装依赖
