@@ -131,6 +131,13 @@ export interface AgentDefinition {
   prompt: string;
 }
 
+export interface ProjectMemoryItem {
+  text: string;
+  ts: string;
+  kind: 'auto' | 'manual';
+  task_id?: string;
+}
+
 export interface JournalEntry {
   role: 'master' | 'agent';
   kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error';
@@ -160,6 +167,24 @@ export interface AgentProfileInfo {
   };
 }
 
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  workspace: string;
+  description?: string;
+  created_at: string;
+  task_count: number;
+  done_count: number;
+  running: boolean;
+  issues: number;
+  updated_at: string;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  memory: ProjectMemoryItem[];
+  tasks: TaskGraph[];
+}
+
 export interface FsListing {
   path: string;
   parent: string | null;
@@ -181,11 +206,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  createTask: (description: string, workspace: string, autoRun = true) =>
+  createTask: (description: string, workspace: string, autoRun = true, projectId?: string) =>
     request<{ task_id: string }>('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description, workspace, auto_run: autoRun }),
+      body: JSON.stringify({ description, workspace, auto_run: autoRun, project_id: projectId }),
     }),
   listTasks: () => request<{ tasks: TaskGraph[] }>('/api/tasks'),
   getTask: (id: string) => request<TaskGraph>(`/api/tasks/${id}`),
@@ -197,6 +222,12 @@ export const api = {
   updateNode: (taskId: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }) =>
     request(`/api/tasks/${taskId}/nodes/${nodeId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   roadmap: () => request<{ content: string; updated_at: string }>('/api/system/roadmap'),
+  createProject: (name: string, workspace: string, description?: string) =>
+    request<{ project_id: string }>('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace, description }) }),
+  listProjects: () => request<{ projects: ProjectSummary[] }>('/api/projects'),
+  getProject: (id: string) => request<ProjectDetail & { id: string }>(`/api/projects/${id}`),
+  addProjectMemory: (id: string, text: string) =>
+    request(`/api/projects/${id}/memory`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) }),
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),

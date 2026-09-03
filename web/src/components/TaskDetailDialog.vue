@@ -1,5 +1,5 @@
 <template>
-  <el-dialog :model-value="modelValue" title="任务详情" width="1080px" @open="onOpen" @close="onClose">
+  <el-dialog :model-value="modelValue" title="任务详情" width="94%" style="max-width: 1320px" top="3vh" @open="onOpen" @close="onClose">
     <div v-if="task" class="detail">
       <!-- 顶部任务元信息 -->
       <div class="meta">
@@ -31,7 +31,7 @@
                 <span v-if="selectedLive?.currentAction" class="live-action">{{ selectedLive.currentAction }}</span>
               </div>
               <div class="live-chat">
-                <ConversationView :journal="selectedJournal" :sub-agent="selectedAgent || 'agent'" />
+                <ConversationView :journal="selectedJournal" :sub-agent="selectedAgent || 'agent'" :typing="agentTyping" />
               </div>
             </div>
           </div>
@@ -119,6 +119,11 @@ const progressPct = computed(() => (task.value?.nodes.length ? Math.round((compl
 const nodeEvents = computed(() => events.value.filter((e) => e.payload?.node_id === selectedNodeId.value));
 const selectedJournal = computed(() => (selectedAgent.value ? journals.value[selectedAgent.value] || [] : []));
 const selectedLive = computed(() => (selectedAgent.value ? props.liveAgents?.[selectedAgent.value] || null : null));
+const agentTyping = computed(() => {
+  if (!task.value || task.value.status !== 'running') return false;
+  const node = task.value.nodes.find((n) => n.agent === selectedAgent.value && (n.status === 'running' || n.status === 'retrying'));
+  return !!node;
+});
 const branches = ref<{ name: string; commit: string }[]>([]);
 
 const agentsInTask = computed(() => [...new Set((task.value?.nodes || []).map((n) => n.agent).filter((a) => a !== 'orchestrator'))]);

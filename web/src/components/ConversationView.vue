@@ -5,6 +5,7 @@
     <template v-for="(e, i) in entries" :key="i">
       <!-- 主 Agent：任务简报 -->
       <div v-if="e.kind === 'brief'" class="row master">
+        <div class="avatar master-av mono" title="主 Agent">主</div>
         <div class="bubble master-b">
           <div class="b-head mono"><span class="who">主 Agent</span><span class="when">{{ fmt(e.ts) }}</span></div>
           <div class="brief">
@@ -17,6 +18,7 @@
 
       <!-- 主 Agent：工具数据附件 -->
       <div v-else-if="e.kind === 'tool_results'" class="row master">
+        <div class="avatar master-av mono">主</div>
         <div class="bubble master-b slim">
           <div class="b-head mono"><span class="who">主 Agent</span><span class="when">{{ fmt(e.ts) }}</span></div>
           <details class="attach">
@@ -47,6 +49,7 @@ commands: {{ (e.meta?.commands || []).join(' | ') }}</pre>
           </details>
           <div class="b-foot mono">{{ e.model }} · {{ e.tokens }} tok</div>
         </div>
+        <div class="avatar sub-av mono" :title="subAgent">{{ avatarText }}</div>
       </div>
 
       <!-- 子 Agent：错误 -->
@@ -59,8 +62,17 @@ commands: {{ (e.meta?.commands || []).join(' | ') }}</pre>
             <pre class="pre mono">{{ e.meta.raw }}</pre>
           </details>
         </div>
+        <div class="avatar sub-av mono err" :title="subAgent">{{ avatarText }}</div>
       </div>
     </template>
+
+    <!-- 打字指示器：agent 正在思考 -->
+    <div v-if="typing" class="row sub">
+      <div class="bubble sub-b typing-b">
+        <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span>
+        <span class="typing-label mono">{{ subAgent }} 正在输入…</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -68,9 +80,10 @@ commands: {{ (e.meta?.commands || []).join(' | ') }}</pre>
 import { computed } from 'vue';
 import type { JournalEntry } from '../api';
 
-const props = defineProps<{ journal: JournalEntry[]; subAgent: string; filterNodeId?: string }>();
+const props = defineProps<{ journal: JournalEntry[]; subAgent: string; filterNodeId?: string; typing?: boolean; avatarText?: string }>();
 
 const entries = computed(() => (props.filterNodeId ? props.journal.filter((e) => e.node_id === props.filterNodeId) : props.journal));
+const avatarText = computed(() => (props.subAgent || '??').replace(/[^a-z]/gi, '').slice(0, 2).toUpperCase());
 
 function briefLines(text: string): { k: string; v: string }[] {
   const out: { k: string; v: string }[] = [];
@@ -93,6 +106,20 @@ function dump(v: unknown): string {
 
 <style scoped>
 .chat-thread { display: flex; flex-direction: column; gap: 8px; padding: 2px; }
+.avatar { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; align-self: flex-end; margin-bottom: 12px; }
+.master-av { background: var(--ct-accent); color: #fff; align-self: flex-start; }
+.sub-av { background: var(--ct-panel2); border: 2px solid var(--ct-green); color: var(--ct-text); }
+.sub-av.err { border-color: var(--ct-red); }
+.avatar.pulse, .sub-av.pulse { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(210,153,34,0.5); } 50% { box-shadow: 0 0 0 8px rgba(210,153,34,0); } }
+.typing-b { display: flex; align-items: center; gap: 4px; }
+.dot-t { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-text3); animation: bob 1.2s infinite; }
+.dot-t:nth-child(2) { animation-delay: 0.15s; }
+.dot-t:nth-child(3) { animation-delay: 0.3s; }
+@keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
+.typing-label { font-size: 10px; color: var(--ct-text3); margin-left: 6px; }
+.chat-enter-active { transition: all 0.3s ease; }
+.chat-enter-from { opacity: 0; transform: translateY(8px); }
 .empty { color: var(--ct-text3); text-align: center; padding: 24px; font-size: 12px; }
 .row { display: flex; }
 .row.master { justify-content: flex-start; }

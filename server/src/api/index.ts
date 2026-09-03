@@ -50,14 +50,66 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ detail: err.message }, status as any);
   });
 
+  // ---------- projects ----------
+
+  app.post('/api/projects', async (c) => {
+    const body = await c.req.json<{ name?: string; workspace?: string; description?: string }>();
+    if (!body.name || !body.workspace) throw new HttpError(400, 'name and workspace are required');
+    const workspace = validateWorkspace(body.workspace);
+    const id = Math.random().toString(36).slice(2, 10);
+    const { saveProject } = await import('../store');
+    await saveProject({ id, name: body.name, workspace, description: body.description, created_at: new Date().toISOString() });
+    return c.json({ status: 'created', project_id: id });
+  });
+
+  app.get('/api/projects', async (c) => {
+    const { listProjects, listProjectTasks, getProjectMemory } = await import('../store');
+    const projects = await listProjects();
+    const out = [];
+    for (const p of projects) {
+      const tasks = await listProjectTasks(p.id);
+      const memory = await getProjectMemory(p.id, 50);
+      const done = tasks.filter((t) => t.status === 'success').length;
+      out.push({
+        ...p,
+        task_count: tasks.length,
+        done_count: done,
+        running: tasks.some((t) => t.status === 'running'),
+        issues: memory.filter((m) => m.text.startsWith('问题:')).length,
+        updated_at: tasks[0]?.updated_at || p.created_at,
+      });
+    }
+    out.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+    return c.json({ projects: out });
+  });
+
+  app.get('/api/projects/:id', async (c) => {
+    const { getProject, listProjectTasks, getProjectMemory } = await import('../store');
+    const id = c.req.param('id');
+    const info = await getProject(id);
+    if (!info) throw new HttpError(404, 'project not found');
+    const tasks = await listProjectTasks(id);
+    const memory = await getProjectMemory(id, 50);
+    return c.json({ ...info, tasks, memory });
+  });
+
+  app.post('/api/projects/:id/memory', async (c) => {
+    const { addProjectMemory } = await import('../store');
+    const id = c.req.param('id');
+    const body = await c.req.json<{ text?: string }>();
+    if (!body.text) throw new HttpError(400, 'text is required');
+    await addProjectMemory(id, body.text, 'manual');
+    return c.json({ status: 'added' });
+  });
+
   // ---------- tasks ----------
 
   app.post('/api/tasks', async (c) => {
-    const body = await c.req.json<{ description?: string; request?: string; workspace?: string; auto_run?: boolean }>();
+    const body = await c.req.json<{ description?: string; request?: string; workspace?: string; auto_run?: boolean; project_id?: string }>();
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
     const workspace = validateWorkspace(body.workspace || '');
-    const { taskId, graph } = await ctx.orchestrator.createTask(description, workspace);
+    const { taskId, graph } = await ctx.orchestrator.createTask(description, workspace, body.project_id);
     // tasks land in "planned" state waiting for user review in the plan review panel;
     // auto_run is opt-in for script/API callers
     if (body.auto_run === true) runInBackground(taskId, workspace);

@@ -1,5 +1,5 @@
 import { busGet, busSet, busKeys, getBus } from './bus';
-import { CHANNELS, TaskGraph, TaskNode } from './types';
+import { CHANNELS, ProjectMemoryItem, TaskGraph, TaskNode } from './types';
 
 export function nowIso(): string {
   return new Date().toISOString().replace('T', ' ').split('.')[0];
@@ -9,7 +9,7 @@ export async function saveTaskGraph(
   taskId: string,
   nodes: TaskNode[],
   edges: [string, string][],
-  meta?: { description?: string; workspace?: string; status?: string }
+  meta?: { description?: string; workspace?: string; status?: string; project_id?: string }
 ): Promise<void> {
   const existing = await getTaskGraph(taskId);
   const graph: TaskGraph = {
@@ -19,6 +19,7 @@ export async function saveTaskGraph(
     description: meta?.description ?? existing?.description ?? '',
     workspace: meta?.workspace ?? existing?.workspace ?? '',
     status: meta?.status ?? existing?.status ?? 'pending',
+    project_id: meta?.project_id ?? existing?.project_id ?? undefined,
     created_at: existing?.created_at ?? new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -91,6 +92,53 @@ export async function isCancelled(taskId: string): Promise<boolean> {
 
 export async function getApprovals(taskId: string): Promise<string[]> {
   return (await busGet<string[]>(`task:approvals:${taskId}`)) || [];
+}
+
+// ---------- project mode ----------
+
+export interface ProjectRecord {
+  id: string;
+  name: string;
+  workspace: string;
+  description?: string;
+  created_at: string;
+}
+
+export async function saveProject(p: ProjectRecord): Promise<void> {
+  await busSet(`project:${p.id}`, p);
+}
+
+export async function getProject(id: string): Promise<ProjectRecord | null> {
+  return busGet<ProjectRecord>(`project:${id}`);
+}
+
+export async function listProjects(): Promise<ProjectRecord[]> {
+  const keys = await busKeys('project:*');
+  const out: ProjectRecord[] = [];
+  for (const key of keys) {
+    if (key.endsWith(':deleted')) continue;
+    const p = await busGet<ProjectRecord>(key);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+export async function addProjectMemory(projectId: string, text: string, kind: 'auto' | 'manual' = 'auto', taskId?: string): Promise<void> {
+  if (!text) return;
+  const key = `project:${projectId}:memory`;
+  const items = (await busGet<ProjectMemoryItem[]>(key)) || [];
+  items.push({ text, ts: new Date().toISOString(), kind, task_id: taskId });
+  await busSet(key, items.slice(-50));
+}
+
+export async function getProjectMemory(projectId: string, limit = 10): Promise<ProjectMemoryItem[]> {
+  const items = (await busGet<ProjectMemoryItem[]>(`project:${projectId}:memory`)) || [];
+  return items.slice(-limit);
+}
+
+export async function listProjectTasks(projectId: string): Promise<TaskGraph[]> {
+  const graphs = await listTaskGraphs();
+  return graphs.filter((g) => g.project_id === projectId);
 }
 
 // ---------- agent life: memory, profile, task session journal ----------

@@ -25,6 +25,9 @@ import {
   recordAgentTask,
   saveTaskGraph,
   getTaskGraph as loadGraph,
+  getProject,
+  getProjectMemory,
+  addProjectMemory,
 } from '../store';
 import { TaskGraph, TaskNode, TaskStatus, AgentResult, AgentConversation } from '../types';
 
@@ -139,12 +142,18 @@ export class Orchestrator {
     return generateTaskGraph(request, this.pool, this.router);
   }
 
-  async createTask(description: string, workspace: string): Promise<{ taskId: string; graph: PlannedGraph }> {
-    const planned = appendMergeNode(stripMergeNodes(await this.plan(description)));
+  async createTask(description: string, workspace: string, projectId?: string): Promise<{ taskId: string; graph: PlannedGraph }> {
+    // project mode: agents get up to speed from the project's accumulated memory
+    let requestWithContext = description;
+    if (projectId) {
+      const pm = await getProjectMemory(projectId, 10);
+      if (pm.length) requestWithContext += '\n\n[本项目开发背景与规范]\n' + pm.map((m) => '- ' + m.text).join('\n');
+    }
+    const planned = appendMergeNode(stripMergeNodes(await this.plan(requestWithContext)));
     const taskId = Math.random().toString(36).slice(2, 10);
     const nodes = planned.nodes.map((n) => newNode(n, taskId));
     // plans wait for user review: status stays "planned" until explicitly executed
-    await saveTaskGraph(taskId, nodes, planned.edges, { description, workspace, status: 'planned' });
+    await saveTaskGraph(taskId, nodes, planned.edges, { description, workspace, status: 'planned', project_id: projectId });
     return { taskId, graph: planned };
   }
 
@@ -439,6 +448,13 @@ export class Orchestrator {
         ? `任务「${(graph.description || taskId).slice(0, 30)}」中完成「${node.name}」，产出: ${(node.result?.changes || []).slice(0, 3).join('; ') || '无文件变更'}`
         : `任务「${(graph.description || taskId).slice(0, 30)}」中节点「${node.name}」失败: ${(node.error || '').slice(0, 120)}`;
       await addAgentMemory(node.agent, lesson);
+      if (graph.project_id) {
+        if (!success) {
+          await addProjectMemory(graph.project_id, `问题: 节点「${node.name}」失败 — ${(node.error || '').slice(0, 100)}`, 'auto', taskId);
+        } else if (node.retry_count > 0) {
+          await addProjectMemory(graph.project_id, `已解决: 「${node.name}」曾失败，经重试与主 Agent 接管后完成，产出: ${(node.result?.changes || []).slice(0, 2).join('; ') || '无'}`, 'auto', taskId);
+        }
+      }
     } catch {
       /* life bookkeeping is best-effort */
     }
@@ -561,9 +577,16 @@ export class Orchestrator {
 
     // per-agent life: cross-task lessons ride along in the system prompt
     const memories = await getAgentMemory(plugin.name, 5);
+    // project mode: the project's own rules & lessons make agents productive immediately
+    const projectId = (await getTaskGraph(taskId))?.project_id;
+    const projectMemory = projectId ? await getProjectMemory(projectId, 8) : [];
+    const projectBlock = projectMemory.length
+      ? '\n\n## 本项目开发规范与经验\n' + projectMemory.map((m) => '- ' + m.text).join('\n')
+      : '';
 
     const systemMsg = [
       plugin.prompt || '你是开发 Agent。',
+      projectBlock,
       memories.length ? '\n\n## 你过往的经验记忆\n' + memories.map((m) => '- ' + m).join('\n') : '',
       '\n你可以请求读取工具（返回 JSON 时附带 tool_calls 字段）:',
       ' {"tool_calls":[{"tool":"list_files"}]} 或 {"tool_calls":[{"tool":"read_file","path":"xxx"}]}',

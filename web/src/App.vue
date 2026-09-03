@@ -6,6 +6,10 @@
           <span class="logo-mark">co-team</span>
           <span class="logo-env">multi-agent orchestrator</span>
         </div>
+        <nav class="nav mono">
+          <button class="nav-tab" :class="{ active: page === 'workbench' }" @click="page = 'workbench'">工作台</button>
+          <button class="nav-tab" :class="{ active: page === 'project' }" @click="page = 'project'">项目开发</button>
+        </nav>
         <div class="header-right">
           <div class="header-metrics mono" v-if="status">
             <span class="metric">tok <b>{{ status.tokens_total.toLocaleString() }}</b></span>
@@ -16,7 +20,7 @@
         </div>
       </header>
 
-      <div class="layout">
+      <div class="layout" v-if="page === 'workbench'">
         <main class="main">
           <TaskForm @planned="openReview" />
           <AgentCards :agents="agents" @show-detail="detailAgent = $event" />
@@ -44,6 +48,12 @@
             </div>
           </div>
         </aside>
+      </div>
+
+      <div class="layout" v-if="page === 'project'">
+        <main class="main">
+          <ProjectView @open-detail="detailTaskId = $event" @review="openReview" />
+        </main>
       </div>
 
       <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid: string) => { detailAgent = null; detailTaskId = tid; }" />
@@ -76,12 +86,14 @@ import SettingsDialog from './components/SettingsDialog.vue';
 import PlanReviewDialog from './components/PlanReviewDialog.vue';
 import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
+import ProjectView from './components/ProjectView.vue';
 
 const { agents, tasks, events, connected, loadJournals, loadAgents, loadTasks, clearEvents } = useDashboard();
 const { theme, toggle } = useTheme();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
 const settingsVisible = ref(false);
+const page = ref<'workbench' | 'project'>('workbench');
 const roadmapVisible = ref(false);
 const reviewTaskId = ref<string | null>(null);
 const detailTaskId = ref<string | null>(null);
@@ -213,6 +225,10 @@ body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: 
 .logo { display: flex; align-items: baseline; gap: 10px; }
 .logo-mark { font-family: var(--ct-mono); font-size: 14px; font-weight: 600; color: var(--ct-text); }
 .logo-env { font-family: var(--ct-mono); font-size: 11px; color: var(--ct-text3); }
+.nav { display: flex; gap: 4px; margin-left: 24px; }
+.nav-tab { font-family: var(--ct-mono); font-size: 12px; color: var(--ct-text3); background: transparent; border: none; border-bottom: 2px solid transparent; padding: 6px 10px; cursor: pointer; }
+.nav-tab.active { color: var(--ct-text); border-bottom-color: var(--ct-accent); }
+.nav-tab:hover { color: var(--ct-text); }
 .header-right { display: flex; align-items: center; gap: 14px; }
 .header-metrics { display: flex; gap: 14px; font-size: 11px; color: var(--ct-text3); }
 .header-metrics b { color: var(--ct-text2); font-weight: 500; }

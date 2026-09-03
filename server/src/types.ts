@@ -59,6 +59,21 @@ export interface TaskNode {
   updated_at: string;
 }
 
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  workspace: string;
+  description?: string;
+  created_at: string;
+}
+
+export interface ProjectMemoryItem {
+  text: string;
+  ts: string;
+  kind: 'auto' | 'manual';
+  task_id?: string;
+}
+
 export interface TaskGraph {
   task_id: string;
   nodes: TaskNode[];
@@ -68,6 +83,7 @@ export interface TaskGraph {
   status: string;
   created_at: string;
   updated_at: string;
+  project_id?: string;
 }
 
 export interface EventEnvelope {
