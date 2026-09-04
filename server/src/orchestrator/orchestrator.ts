@@ -598,6 +598,7 @@ export class Orchestrator {
     
     const chain = this.pool.fallbackChain(primary, plugin.tags);
     let lastErr = '';
+    let triedCount = 0;
     for (const entry of chain) {
       // Check for cancellation before trying each model in fallback chain
       if (await isCancelled(taskId)) {
@@ -608,11 +609,19 @@ export class Orchestrator {
         this.logger.warn('Could not acquire model slot', { taskId, model: entry.name });
         continue;
       }
+      triedCount++;
       try {
         const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastError, attemptLabel);
-        this.pool.markSuccess(entry);
-        this.logger.agentResponse(taskId, node.id, plugin.name, result.tokens || 0);
-        return result;
+        if (result.status === 'success') {
+          this.pool.markSuccess(entry);
+          this.logger.agentResponse(taskId, node.id, plugin.name, result.tokens || 0);
+          if (triedCount > 1) this.logger.info('Model degraded successfully', { taskId, nodeId: node.id, agent: plugin.name, tried: triedCount, finalModel: entry.name });
+          return result;
+        }
+        // Failed result — try next model in chain
+        lastErr = result.error || 'agent reported failure';
+        this.logger.warn('Model returned failure, trying next', { taskId, nodeId: node.id, agent: plugin.name, model: entry.name, error: lastErr });
+        this.pool.markFailure(entry);
       } catch (e: any) {
         if (String(e?.message).includes('token budget')) {
           this.logger.error('Token budget exceeded', { taskId, nodeId: node.id });
@@ -631,7 +640,7 @@ export class Orchestrator {
         this.pool.release(entry);
       }
     }
-    return { status: 'failed', error: `all models failed: ${lastErr || 'unknown'}` };
+    return { status: 'failed', error: `all models failed (${triedCount} tried): ${lastErr || 'unknown'}` };
   }
 
   private async acquireWithWait(entry: ModelEntry, timeoutMs = 120_000): Promise<boolean> {
@@ -683,10 +692,16 @@ export class Orchestrator {
       projectBlock,
       memories.length ? '\n\n## 你过往的经验记忆\n' + memories.map((m) => '- ' + m).join('\n') : '',
       '\n你可以请求读取工具（返回 JSON 时附带 tool_calls 字段）:',
-      ' {"tool_calls":[{"tool":"list_files"}]} 或 {"tool_calls":[{"tool":"read_file","path":"xxx"}]}',
+      ' {"tool_calls":[{"tool":"list_files"}]}',
+      ' {"tool_calls":[{"tool":"read_file","path":"src/main.py"}]}',
+      ' {"tool_calls":[{"tool":"grep","pattern":"正则表达式","path":"src/"}]}',
+      ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
+      ' {"tool_calls":[{"tool":"git_log"}]}',
+      ' {"tool_calls":[{"tool":"git_diff"}]}',
       '\n最终输出必须是 JSON（不要 markdown 代码块）：',
       '{"status":"success|failed","changes":["file: desc"],"summary":"摘要","errors":[],',
       '"files":[{"path":"相对路径","content":"完整文件内容"}],"commands":["要执行的命令"]}',
+      '\n如果任务是分析/调查类（不需要写代码），可在 summary 中写详细分析结果，files 和 commands 留空即可。',
       '\nfiles 中给出需要创建或修改的文件的完整内容；commands 会在沙箱中执行（仅限白名单命令）。',
     ].join('\n');
 
@@ -750,18 +765,60 @@ export class Orchestrator {
         parsed = extractJson(content);
         const roundEntry: Record<string, any> = { assistant: content, tool_results: null, parse_error: null };
         if (!parsed) {
-          roundEntry.parse_error = 'output was not valid JSON';
-          record.rounds.push(roundEntry);
-          record.error = 'failed to parse agent output as JSON';
-          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: '输出无法解析为 JSON', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens, meta: { raw: content.slice(0, 1500) } });
-          await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
-          return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+          // If this is the last round and the model returned substantial text,
+          // treat it as a successful analysis result (wrap as JSON)
+          if (round >= 2 && content.trim().length > 20) {
+            parsed = {
+              status: 'success',
+              summary: content.trim(),
+              changes: [],
+              errors: [],
+              files: [],
+              commands: [],
+            };
+            this.logger.info('Auto-wrapped non-JSON output as analysis result', { taskId, nodeId: node.id, agent: plugin.name, model: entry.name, contentLength: content.length });
+          } else {
+            roundEntry.parse_error = 'output was not valid JSON';
+            record.rounds.push(roundEntry);
+            await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: '输出无法解析为 JSON', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens, meta: { raw: content.slice(0, 1500) } });
+            await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
+            // If this was the last round, return failure
+            if (round >= 2) {
+              record.error = 'failed to parse agent output as JSON';
+              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+            }
+            // Otherwise, inject correction message and retry
+            messages.push({ role: 'assistant', content });
+            messages.push({ role: 'user', content: '你返回的内容无法解析为 JSON。请严格按照以下格式输出（不要包含任何 markdown 或额外文字）：\n{"status":"success|failed","changes":[],"summary":"你的分析或结果","errors":[],"files":[],"commands":[]}' });
+            continue;
+          }
         }
         const toolCalls = parsed.tool_calls || [];
         if (toolCalls.length === 0) {
           record.rounds.push(roundEntry);
           await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens });
           break;
+        }
+        // If this is the last round and model still requests tools, force final output
+        if (round >= 2) {
+          messages.push({ role: 'assistant', content });
+          messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","errors":[],"files":[],"commands":[]}' });
+          // Do one more round to get final output
+          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
+          this.pool!.recordUsage(entry.name, finalResp.promptTokens, finalResp.completionTokens);
+          this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + finalResp.promptTokens + finalResp.completionTokens);
+          record.tokens += finalResp.promptTokens + finalResp.completionTokens;
+          content = stripCodeFence(finalResp.content);
+          parsed = extractJson(content);
+          if (parsed && !parsed.tool_calls) {
+            roundEntry.assistant = content;
+            record.rounds.push(roundEntry);
+            await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: finalResp.completionTokens });
+            break;
+          }
+          // If still tool_calls or no JSON, return failure
+          record.error = 'agent failed to produce final output after tool calls';
+          return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
         }
         await emitProgress('agent_activity', {
           task_id: taskId, node_id: node.id, agent: plugin.name,

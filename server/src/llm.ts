@@ -54,9 +54,38 @@ export function stripCodeFence(content: string): string {
 }
 
 export function extractJson(content: string): Record<string, any> | null {
-  const match = content.match(/\{[\s\S]*\}/);
+  let text = content.trim();
+
+  // 1. Strip markdown code fences (```json ... ``` or ``` ... ```)
+  text = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+  // 2. Try to find the outermost JSON object using brace-depth tracking
+  //    This handles models that output explanation text before/after the JSON
+  const startIdx = text.indexOf('{');
+  if (startIdx !== -1) {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let endIdx = -1;
+    for (let i = startIdx; i < text.length; i++) {
+      const ch = text[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\' && inString) { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { endIdx = i; break; } }
+    }
+    if (endIdx !== -1) {
+      const candidate = text.slice(startIdx, endIdx + 1);
+      try { return JSON.parse(candidate); } catch { /* fall through */ }
+    }
+  }
+
+  // 3. Fallback: original regex approach
+  const match = text.match(/\{[\s\S]*\}/);
   try {
-    return JSON.parse(match ? match[0] : content);
+    return JSON.parse(match ? match[0] : text);
   } catch {
     return null;
   }

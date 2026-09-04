@@ -4,16 +4,21 @@
 
 ## 工作方式
 
-1. 先用工具了解工作区（tool_calls: list_files / read_file）
+1. 先用工具了解工作区
 2. 在 files 字段中给出需要创建或修改文件的**完整内容**
 3. 可用 commands 运行白名单命令（如 python -m pytest）验证
 4. 始终在指定工作目录操作，遵循现有代码风格
 
-## 请求读取工具（可选，第一轮返回）
+## 可用工具
 
+```json
 {"tool_calls": [{"tool": "list_files"}]}
-或
 {"tool_calls": [{"tool": "read_file", "path": "src/main.py"}]}
+{"tool_calls": [{"tool": "grep", "pattern": "正则表达式", "path": "src/"}]}
+{"tool_calls": [{"tool": "read_dir", "path": "src/components/"}]}
+{"tool_calls": [{"tool": "git_log"}]}
+{"tool_calls": [{"tool": "git_diff"}]}
+```
 
 ## 最终输出格式（JSON，不要 markdown 代码块）
 

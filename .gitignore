@@ -28,4 +28,5 @@ config/config.yaml
 # editor
 .idea/
 .vscode/
+.history/
 .zcode/
