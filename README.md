@@ -70,6 +70,8 @@ npm run dev:web
 
 访问 http://localhost:8855 即可使用 Dashboard。
 
+> **Dev mode**: `npm run dev:server` starts the backend on port 8855, `npm run dev:web` starts the frontend dev server on port **8856** (with hot reload, proxying `/api` and `/ws` to 8855). Visit http://localhost:8856 during development.
+
 ## 🏗️ 项目结构
 
 ```

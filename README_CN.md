@@ -66,6 +66,8 @@ npm run dev:web
 
 访问 http://localhost:8855 即可使用 Dashboard。
 
+> **开发模式**：`npm run dev:server` 启动后端（端口 8855），`npm run dev:web` 启动前端开发服务器（端口 **8856**，带热更新，自动代理 `/api`、`/ws` 到 8855）。开发时访问 http://localhost:8856。
+
 ## 🏗️ 项目结构
 
 ```
