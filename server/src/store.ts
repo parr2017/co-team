@@ -53,8 +53,15 @@ export interface PagedResult<T> {
   pageSize: number;
 }
 
-export async function listTaskGraphsPaged(page = 1, pageSize = 20): Promise<PagedResult<TaskGraph>> {
-  const allGraphs = await listTaskGraphs();
+export async function listTaskGraphsPaged(
+  page = 1,
+  pageSize = 20,
+  filter?: { project_id?: string | null }
+): Promise<PagedResult<TaskGraph>> {
+  let allGraphs = await listTaskGraphs();
+  if (filter && 'project_id' in filter) {
+    allGraphs = allGraphs.filter((g) => (g.project_id ?? null) === (filter.project_id ?? null));
+  }
   const total = allGraphs.length;
   const start = (page - 1) * pageSize;
   const items = allGraphs.slice(start, start + pageSize);
@@ -103,6 +110,11 @@ export async function getMemory(limit = 10): Promise<string[]> {
 
 export async function isCancelled(taskId: string): Promise<boolean> {
   return !!(await busGet(`task:cancel:${taskId}`));
+}
+
+/** Clear the cancel flag so a cancelled task can be executed again. */
+export async function clearCancelled(taskId: string): Promise<void> {
+  await busDel(`task:cancel:${taskId}`);
 }
 
 export async function getApprovals(taskId: string): Promise<string[]> {
@@ -175,6 +187,8 @@ export async function appendJournal(taskId: string, agent: string, entry: Journa
   const journal = (await busGet<JournalEntry[]>(key)) || [];
   journal.push(entry);
   await busSet(key, journal.slice(-120));
+  // push the delta so chat surfaces stream live instead of polling
+  await emitProgress('journal_append', { task_id: taskId, agent, entry });
 }
 
 export async function getTaskJournals(taskId: string): Promise<Record<string, JournalEntry[]>> {

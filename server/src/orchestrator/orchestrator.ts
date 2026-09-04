@@ -15,6 +15,7 @@ import {
   addAgentMemory,
   addMemory,
   appendJournal,
+  clearCancelled,
   emitProgress,
   getAgentMemory,
   getApprovals,
@@ -225,6 +226,9 @@ export class Orchestrator {
       description: graph.description?.slice(0, 50)
     });
 
+    // a fresh run clears any previous cancel flag so the task can execute again
+    await clearCancelled(taskId);
+
     // reset non-completed nodes so re-runs (after approval) resume cleanly
     for (const node of graph.nodes) {
       if (node.status !== 'completed' && node.status !== 'cancelled') node.status = 'pending';
@@ -239,7 +243,17 @@ export class Orchestrator {
       sandbox = this.sandboxEnabled ? createSandbox(workspace) : workspace;
       this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled });
     } catch (error) {
+      // persist the failure — otherwise the graph stays 'running' forever
       this.logger.error('Failed to create sandbox', { taskId, error: String(error) });
+      graph.status = 'failed';
+      await persistGraph(graph);
+      await emitProgress('execute_failed', {
+        task_id: taskId,
+        completed: 0,
+        total: graph.nodes.length,
+        status: 'failed',
+        error: `Failed to create sandbox: ${error}`,
+      });
       return { status: 'failed', error: `Failed to create sandbox: ${error}` };
     }
 
@@ -257,16 +271,31 @@ export class Orchestrator {
     } finally {
       if (this.sandboxEnabled && sandbox !== workspace) {
         if (result?.status === 'success') {
-          if (this.branchWorkflow && this.gitEnabled) {
-            // merged result lives on the sandbox base branch; sync files to the real workspace
-            await gitTool.syncToWorkspace(sandbox, workspace, 'coteam/base');
-            result.merged_branches = result.merged_branches || [];
-          } else {
-            result.merged_files = mergeChanges(sandbox, workspace);
+          try {
+            if (this.branchWorkflow && this.gitEnabled) {
+              // merged result lives on the sandbox base branch; sync files to the real workspace
+              await gitTool.syncToWorkspace(sandbox, workspace, 'coteam/base');
+              result.merged_branches = result.merged_branches || [];
+            } else {
+              result.merged_files = mergeChanges(sandbox, workspace);
+            }
+          } catch (mergeError) {
+            // a failed merge must NOT be reported as success — the work never reached the workspace
+            this.logger.error('Failed to merge sandbox changes into workspace', { taskId, error: String(mergeError) });
+            result = {
+              status: 'failed',
+              error: `Failed to merge changes into workspace: ${String(mergeError).slice(0, 300)}`,
+              changes: result.changes || [],
+            };
           }
         }
-        cleanupSandbox(sandbox);
-        this.logger.debug('Sandbox cleaned up', { taskId });
+        try {
+          cleanupSandbox(sandbox);
+          this.logger.debug('Sandbox cleaned up', { taskId });
+        } catch (cleanupError) {
+          // cleanup failures (e.g. fs.rmSync EBUSY on Windows) must not swallow the final status write
+          this.logger.warn('Sandbox cleanup failed (non-fatal)', { taskId, error: String(cleanupError) });
+        }
       }
     }
 
@@ -347,10 +376,13 @@ export class Orchestrator {
       return { status: 'cancelled' };
     }
 
-    const completed = graph.nodes.filter((n) => n.status === 'completed');
-    if (completed.length === 0 && graph.nodes.some((n) => n.status === 'waiting_approval')) {
+    // guard: never report success while some nodes are still waiting for approval
+    // (they are no longer 'pending', so the ready-loop above exits without touching them)
+    if (graph.nodes.some((n) => n.status === 'waiting_approval' || n.status === 'running' || n.status === 'retrying')) {
       return { status: 'waiting_approval', changes: [] };
     }
+
+    const completed = graph.nodes.filter((n) => n.status === 'completed');
     return {
       status: 'success',
       completed: completed.length,
@@ -388,7 +420,23 @@ export class Orchestrator {
 
   // ---------- single node ----------
 
-  private async executeNode(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, _workers: number): Promise<void> {
+  /** Safety wrapper: a node must ALWAYS land on a terminal status, even if the inner pipeline throws. */
+  private async executeNode(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, workers: number): Promise<void> {
+    try {
+      await this.executeNodeInner(taskId, graph, node, sandbox, workers);
+    } catch (e: any) {
+      if (node.status === 'completed' || node.status === 'cancelled') return;
+      this.logger.error('Node execution crashed unexpectedly', { taskId, nodeId: node.id, error: String(e) });
+      node.status = 'failed';
+      node.finished_at = new Date().toISOString();
+      node.error = node.error || String(e?.message || e).slice(0, 300);
+      node.needs_human = true;
+      await persistGraph(graph).catch(() => {});
+      await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error }).catch(() => {});
+    }
+  }
+
+  private async executeNodeInner(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, _workers: number): Promise<void> {
     this.logger.nodeStart(taskId, node.id, node.agent, node.name);
     
     node.status = 'running';
@@ -582,7 +630,12 @@ export class Orchestrator {
   }
 
   private async dispatch(taskId: string, node: TaskNode, plugin: AgentPlugin, workspace: string, escalate: boolean, lastError: string, attemptLabel: string): Promise<AgentResult> {
-    await this.checkBudget(taskId);
+    try {
+      await this.checkBudget(taskId);
+    } catch (e: any) {
+      // budget exhaustion must surface as a normal failed result, not an exception
+      return { status: 'failed', error: String(e?.message || e) };
+    }
     if (!this.pool) {
       this.logger.error('No model pool available', { taskId, nodeId: node.id });
       return { status: 'failed', error: 'No available model' };

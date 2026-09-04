@@ -46,6 +46,15 @@ export function createApi(ctx: ApiContext): Hono {
       } catch (e: any) {
         const error = String(e).slice(0, 500);
         logger.error('Background task execution failed', { taskId, error });
+        // surface the failure on the graph itself — a task must never be left 'running' or vanish from the list
+        try {
+          const { getTaskGraph, persistGraph } = await import('../store');
+          const graph = await getTaskGraph(taskId);
+          if (graph) {
+            graph.status = 'failed';
+            await persistGraph(graph);
+          }
+        } catch { /* best effort */ }
         await busSet(`task:graph:${taskId}:bg_error`, { error }).catch(() => {});
       }
     })();
@@ -203,13 +212,18 @@ export function createApi(ctx: ApiContext): Hono {
     const page = parseInt(c.req.query('page') || '1');
     const pageSize = parseInt(c.req.query('pageSize') || '20');
     
-    const paged = await listTaskGraphsPaged(page, pageSize);
+    const scope = c.req.query('scope');
+    const projectId = c.req.query('project_id');
+    // scope=external → only tasks without a project (workbench ad-hoc tasks)
+    const filter = scope === 'external' ? { project_id: null } : projectId ? { project_id: projectId } : undefined;
+    const paged = await listTaskGraphsPaged(page, pageSize, filter);
     return c.json({
       tasks: paged.items.map((g: TaskGraph) => ({
         id: g.task_id,
         description: g.description,
         workspace: g.workspace,
         status: g.status,
+        project_id: g.project_id ?? null,
         nodes: g.nodes,
         edges: g.edges,
         created_at: g.created_at,
