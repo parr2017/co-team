@@ -1,5 +1,5 @@
 import { busGet, busSet, busKeys, busDel, getBus } from './bus';
-import { CHANNELS, ProjectMemoryItem, TaskGraph, TaskNode } from './types';
+import { CHANNELS, ProjectMemoryItem, TaskGraph, TaskNode, TaskLevel } from './types';
 
 export function nowIso(): string {
   return new Date().toISOString().replace('T', ' ').split('.')[0];
@@ -9,7 +9,7 @@ export async function saveTaskGraph(
   taskId: string,
   nodes: TaskNode[],
   edges: [string, string][],
-  meta?: { description?: string; workspace?: string; status?: string; project_id?: string }
+  meta?: { description?: string; workspace?: string; status?: string; project_id?: string; level?: TaskLevel; main_model_id?: string }
 ): Promise<void> {
   const existing = await getTaskGraph(taskId);
   const graph: TaskGraph = {
@@ -20,6 +20,8 @@ export async function saveTaskGraph(
     workspace: meta?.workspace ?? existing?.workspace ?? '',
     status: meta?.status ?? existing?.status ?? 'pending',
     project_id: meta?.project_id ?? existing?.project_id ?? undefined,
+    level: meta?.level ?? existing?.level ?? undefined,
+    main_model_id: meta?.main_model_id ?? existing?.main_model_id ?? undefined,
     created_at: existing?.created_at ?? new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

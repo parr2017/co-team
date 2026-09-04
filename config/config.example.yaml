@@ -40,6 +40,10 @@ orchestrator:
   model: deepseek-v4-flash
   sandbox: true
   git: true
+  branch_workflow: true
+  max_fix_rounds: 3
+knowledge:
+  dir: ./data/knowledge
 permissions:
   level: normal
   whitelist_commands:

@@ -6,7 +6,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import type { Server } from 'node:http';
 import { Orchestrator } from '../orchestrator/orchestrator';
 import { ModelPool } from '../scheduler';
-import { busGet, busKeys, busSet, getBus } from '../bus';
+import { busGet, busKeys, busSet, busDel, getBus } from '../bus';
 import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask } from '../store';
 import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
@@ -87,13 +87,26 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- projects ----------
 
   app.post('/api/projects', async (c) => {
-    const body = await c.req.json<{ name?: string; workspace?: string; description?: string }>();
+    const body = await c.req.json<{ name?: string; workspace?: string; description?: string; scaffold?: boolean }>();
     if (!body.name || !body.workspace) throw new HttpError(400, 'name and workspace are required');
     const workspace = validateWorkspace(body.workspace);
     const id = Math.random().toString(36).slice(2, 10);
     const { saveProject } = await import('../store');
     await saveProject({ id, name: body.name, workspace, description: body.description, created_at: new Date().toISOString() });
-    return c.json({ status: 'created', project_id: id });
+    // standard initialization workflow: scaffold dirs + structured docs + git repo
+    let scaffoldResult = null;
+    try {
+      if (body.scaffold) {
+        const { scaffoldProject } = await import('../scaffold');
+        scaffoldResult = await scaffoldProject(workspace, { name: body.name, description: body.description });
+      } else {
+        const { initGitOnly } = await import('../scaffold');
+        await initGitOnly(workspace);
+      }
+    } catch (e: any) {
+      logger.warn('Project git/scaffold initialization failed (project still created)', { id, error: String(e?.message || e) });
+    }
+    return c.json({ status: 'created', project_id: id, scaffold: scaffoldResult });
   });
 
   app.get('/api/projects', async (c) => {
@@ -139,26 +152,96 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- tasks ----------
 
   app.post('/api/tasks', async (c) => {
-    const body = await c.req.json<{ description?: string; request?: string; workspace?: string; auto_run?: boolean; project_id?: string }>();
+    const body = await c.req.json<{
+      description?: string; request?: string; workspace?: string; auto_run?: boolean; project_id?: string;
+      main_model_id?: string; level?: string; skip_clarification?: boolean;
+    }>();
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
     const workspace = validateWorkspace(body.workspace || '');
-    
-    logger.info('Creating task', { description: description.slice(0, 100), workspace, auto_run: body.auto_run });
-    
-    const { taskId, graph } = await ctx.orchestrator.createTask(description, workspace, body.project_id);
-    
-    logger.info('Task created', { 
-      taskId, 
+
+    logger.info('Creating task', {
+      description: description.slice(0, 100), workspace, auto_run: body.auto_run,
+      main_model_id: body.main_model_id, level: body.level,
+    });
+
+    const { taskId, graph, needsClarification, questions, summary, level } = await ctx.orchestrator.createTask(description, workspace, body.project_id, {
+      mainModelId: body.main_model_id,
+      level: body.level,
+    });
+
+    logger.info('Task created', {
+      taskId,
       nodesCount: graph.nodes.length,
       edgesCount: graph.edges.length,
-      auto_run: body.auto_run === true 
+      auto_run: body.auto_run === true,
+      needsClarification: !!needsClarification,
+      level,
     });
-    
+
+    // clarification gate (improvement 5): never auto-run an unclarified task
+    if (needsClarification) {
+      return c.json({ status: 'needs_clarification', task_id: taskId, questions: questions || [], summary, level });
+    }
+
     // tasks land in "planned" state waiting for user review in the plan review panel;
     // auto_run is opt-in for script/API callers
     if (body.auto_run === true) runInBackground(taskId, workspace);
-    return c.json({ status: 'created', task_id: taskId, graph, auto_run: body.auto_run === true });
+    return c.json({ status: 'created', task_id: taskId, graph, auto_run: body.auto_run === true, level });
+  });
+
+  // improvement 5: clarification loop — human answers, then explicit confirmation
+  app.post('/api/tasks/:taskId/clarify', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await c.req.json<{ answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }>();
+    try {
+      const result = await ctx.orchestrator.clarify(taskId, body);
+      return c.json({ task_id: taskId, ...result });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  // improvement 11: mid-task main-agent model change (user-initiated)
+  app.put('/api/tasks/:taskId/model', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await c.req.json<{ model_id?: string }>();
+    if (!body.model_id) throw new HttpError(400, 'model_id is required');
+    try {
+      const result = await ctx.orchestrator.setMainModel(taskId, body.model_id);
+      return c.json({ task_id: taskId, ...result });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  // improvement 9: global goal query / update
+  app.get('/api/tasks/:taskId/goal', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    return c.json({ task_id: taskId, ...(await ctx.orchestrator.getGoal(taskId)) });
+  });
+
+  app.put('/api/tasks/:taskId/goal', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await c.req.json<{ content?: string }>();
+    if (!body.content) throw new HttpError(400, 'content is required');
+    try {
+      const result = await ctx.orchestrator.updateGoal(taskId, body.content);
+      return c.json({ task_id: taskId, ...result });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  // improvement 6: human-side progress query (real-time snapshot, no polling of events)
+  app.get('/api/tasks/:taskId/progress', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const { computeProgress } = await import('../progress');
+    return c.json(computeProgress(graph));
   });
 
   app.post('/api/tasks/:taskId/execute', async (c) => {
@@ -205,6 +288,9 @@ export function createApi(ctx: ApiContext): Hono {
     const graph = await getTaskGraph(taskId);
     if (!graph) throw new HttpError(404, 'task not found');
     await deleteTask(taskId);
+    await busDel(`task:clarify:${taskId}`);
+    await busDel(`task:goal:${taskId}`);
+    await busDel(`ssot:docs:${taskId}`);
     return c.json({ status: 'deleted', task_id: taskId });
   });
 
@@ -224,6 +310,8 @@ export function createApi(ctx: ApiContext): Hono {
         workspace: g.workspace,
         status: g.status,
         project_id: g.project_id ?? null,
+        level: g.level ?? null,
+        main_model_id: g.main_model_id ?? null,
         nodes: g.nodes,
         edges: g.edges,
         created_at: g.created_at,
@@ -331,6 +419,100 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ content: fs.readFileSync(file, 'utf-8'), updated_at: fs.statSync(file).mtime.toISOString() });
   });
 
+  // ---------- knowledge base (improvement 3) ----------
+
+  app.get('/api/knowledge', async (c) => {
+    const { listKnowledge, searchKnowledge } = await import('../knowledge');
+    const category = c.req.query('category') as 'general-tech' | 'project' | undefined;
+    const projectId = c.req.query('project_id') || undefined;
+    const q = c.req.query('q') || '';
+    const limit = parseInt(c.req.query('limit') || '50');
+    if (q) {
+      return c.json({ entries: searchKnowledge(q, { category, project_id: projectId, limit }) });
+    }
+    return c.json({ entries: listKnowledge({ category, project_id: projectId, limit }) });
+  });
+
+  app.post('/api/knowledge', async (c) => {
+    const { writeKnowledge } = await import('../knowledge');
+    const body = await c.req.json<{ title?: string; content?: string; category?: string; project_id?: string; tags?: string[] }>();
+    if (!body.title || !body.content) throw new HttpError(400, 'title and content are required');
+    try {
+      const result = writeKnowledge({
+        title: body.title,
+        content: body.content,
+        category: body.category === 'project' ? 'project' : 'general-tech',
+        project_id: body.project_id,
+        tags: body.tags,
+        source: 'user',
+      });
+      return c.json({ status: result.updated ? 'updated' : 'created', id: result.id });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  app.get('/api/knowledge/:id', async (c) => {
+    const { getKnowledge } = await import('../knowledge');
+    const entry = getKnowledge(c.req.param('id'));
+    if (!entry) throw new HttpError(404, 'knowledge entry not found');
+    return c.json(entry);
+  });
+
+  app.put('/api/knowledge/:id', async (c) => {
+    const { updateKnowledge } = await import('../knowledge');
+    const body = await c.req.json<{ title?: string; content?: string; tags?: string[] }>();
+    const updated = updateKnowledge(c.req.param('id'), body);
+    if (!updated) throw new HttpError(404, 'knowledge entry not found');
+    return c.json({ status: 'updated', entry: updated });
+  });
+
+  app.delete('/api/knowledge/:id', async (c) => {
+    const { deleteKnowledge } = await import('../knowledge');
+    const ok = deleteKnowledge(c.req.param('id'));
+    if (!ok) throw new HttpError(404, 'knowledge entry not found');
+    return c.json({ status: 'deleted', id: c.req.param('id') });
+  });
+
+  // ---------- snapshots (improvement 10) ----------
+
+  app.get('/api/snapshots', async (c) => {
+    const { listSnapshots } = await import('../snapshot');
+    const taskId = c.req.query('task_id') || undefined;
+    const tag = c.req.query('tag') || undefined;
+    return c.json({ snapshots: await listSnapshots({ task_id: taskId, tag }) });
+  });
+
+  app.post('/api/snapshots', async (c) => {
+    const { createSnapshot } = await import('../snapshot');
+    const body = await c.req.json<{ task_id?: string; tag?: string; note?: string }>();
+    if (!body.task_id) throw new HttpError(400, 'task_id is required');
+    const graph = await getTaskGraph(body.task_id);
+    if (!graph) throw new HttpError(404, 'task not found');
+    try {
+      const meta = await createSnapshot(body.task_id, { tag: body.tag || 'manual', note: body.note });
+      return c.json({ status: 'created', snapshot: meta });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  app.post('/api/snapshots/:id/rollback', async (c) => {
+    const { rollbackSnapshot } = await import('../snapshot');
+    const body = await c.req.json<{ confirm?: boolean }>().catch(() => ({ confirm: false }));
+    try {
+      const result = await rollbackSnapshot(c.req.param('id'), { confirmed: body.confirm === true });
+      return c.json(result);
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  app.get('/api/snapshots/audit', async (c) => {
+    const { getAuditLog } = await import('../snapshot');
+    return c.json({ audit: await getAuditLog() });
+  });
+
   // ---------- agents ----------
 
   app.get('/api/agents', (c) => {
@@ -375,7 +557,8 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- config management ----------
 
   app.get('/api/config/model-pool', (c) => {
-    return c.json({ model_pool: ctx.config.model_pool });
+    // health info rides along so the UI model picker can show availability (improvement 11)
+    return c.json({ model_pool: ctx.config.model_pool, health: ctx.modelPool.getStatus() });
   });
 
   app.put('/api/config/model-pool', async (c) => {

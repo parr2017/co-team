@@ -50,6 +50,11 @@ export class ModelPool {
     return m.failCount < 3 || Date.now() - m.lastFailureAt > 60_000;
   }
 
+  /** Look up a model entry by name (used for task-pinned main-agent models). */
+  getModel(name: string): ModelEntry | null {
+    return this.models.find((m) => m.name === name) ?? null;
+  }
+
   availableSlots(m: ModelEntry): number {
     return Math.max(0, m.concurrency - m.activeSlots);
   }

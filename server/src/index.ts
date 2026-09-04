@@ -91,6 +91,7 @@ async function main(): Promise<void> {
     gitEnabled: config.orchestrator.git,
     branchWorkflow: config.orchestrator.branch_workflow,
     tokenBudget: config.orchestrator.token_budget,
+    maxFixRounds: config.orchestrator.max_fix_rounds,
   });
 
   await orchestrator.loadAgents();

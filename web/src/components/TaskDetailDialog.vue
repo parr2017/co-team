@@ -95,6 +95,76 @@
             </el-timeline-item>
           </el-timeline>
         </el-tab-pane>
+
+        <!-- 管理：进度 / 主Agent模型 / 全局目标 / 快照回滚 -->
+        <el-tab-pane label="管理" name="manage">
+          <div class="manage">
+            <div class="mg-card">
+              <div class="mg-title mono">PROGRESS · 实时进度</div>
+              <div v-if="progress" class="mg-body">
+                <div class="mg-progress">
+                  <el-progress :percentage="progress.percent" :stroke-width="10" />
+                </div>
+                <div class="mg-line mono">
+                  {{ progress.completed }}/{{ progress.total }} 节点 · 状态 {{ progress.status }}
+                  <template v-if="progress.eta_sec !== undefined"> · 预计剩余 {{ Math.ceil(progress.eta_sec / 60) }} 分钟</template>
+                </div>
+                <div v-if="progress.current_nodes.length" class="mg-line">
+                  进行中: <el-tag v-for="n in progress.current_nodes" :key="n.id" size="small" type="warning" class="mg-tag">{{ n.name }} ({{ n.agent }})</el-tag>
+                </div>
+              </div>
+              <div v-else class="mg-empty mono">加载中...</div>
+            </div>
+
+            <div class="mg-card">
+              <div class="mg-title mono">MAIN AGENT MODEL · 主 Agent 模型（锁定）</div>
+              <div class="mg-body mg-row">
+                <span class="mg-model mono">{{ task.main_model_id || '自动选择' }}</span>
+                <el-select v-model="newModel" size="small" style="width: 220px" placeholder="选择新模型">
+                  <el-option v-for="m in modelOptions" :key="m.name" :value="m.name" :label="m.name">
+                    <span class="model-opt"><i class="dot" :class="m.healthy ? 'on' : 'off'"></i>{{ m.name }}</span>
+                  </el-option>
+                </el-select>
+                <el-button size="small" :disabled="!newModel || newModel === task.main_model_id" :loading="changingModel" @click="changeModel">更换模型</el-button>
+                <span class="mg-hint">创建时锁定，任务全程使用；更换后立即生效并留痕</span>
+              </div>
+            </div>
+
+            <div class="mg-card">
+              <div class="mg-title mono">GLOBAL GOAL · 全局目标</div>
+              <div class="mg-body">
+                <div v-if="!goalEditing" class="mg-goal">{{ goal.content || '（尚未生成）' }}</div>
+                <el-input v-else v-model="goalDraft" type="textarea" :rows="5" />
+                <div class="mg-row">
+                  <el-button v-if="!goalEditing" size="small" @click="goalEditing = true; goalDraft = goal.content">编辑目标</el-button>
+                  <template v-else>
+                    <el-button size="small" @click="goalEditing = false">取消</el-button>
+                    <el-button size="small" type="primary" :loading="savingGoal" @click="saveGoal">保存（Agent 下次调用生效）</el-button>
+                  </template>
+                  <span class="mg-hint">所有 Agent 的每次调用都会注入该目标，并要求汇报对目标的贡献</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="mg-card">
+              <div class="mg-title mono">SNAPSHOTS · 快照与回滚</div>
+              <div class="mg-body">
+                <div class="mg-row">
+                  <el-button size="small" type="primary" :loading="creatingSnap" @click="createSnap">创建快照</el-button>
+                  <span class="mg-hint">任务开始 / replan 决策点 / 任务结束 会自动创建快照</span>
+                </div>
+                <div v-if="!snapshots.length" class="mg-empty mono">暂无快照</div>
+                <div v-for="s in snapshots" :key="s.id" class="snap-row mono">
+                  <span class="snap-tag" :class="s.tag">{{ s.tag }}</span>
+                  <span class="snap-time">{{ fmtTime(s.created_at) }}</span>
+                  <span class="snap-ref">{{ s.git_ref?.slice(0, 8) || 'no-git' }}</span>
+                  <span v-if="s.note" class="snap-note">{{ s.note }}</span>
+                  <el-button size="small" link type="danger" @click="rollback(s)">回滚到此处</el-button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
       </el-tabs>
     </div>
   </el-dialog>
@@ -102,7 +172,8 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
-import { api, type TaskEvent, type TaskGraph, type TaskNode } from '../api';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { api, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, type SnapshotMeta } from '../api';
 import PipelineTrack from './PipelineTrack.vue';
 import CollabGraph from './CollabGraph.vue';
 import ChatStream from './ChatStream.vue';
@@ -116,6 +187,18 @@ const selectedNodeId = ref('');
 const selectedAgent = ref('');
 const tab = ref('warroom');
 let pollTimer: number | undefined;
+
+// manage tab state (improvements 6/9/10/11)
+const progress = ref<ProgressInfo | null>(null);
+const modelOptions = ref<{ name: string; healthy: boolean }[]>([]);
+const newModel = ref('');
+const changingModel = ref(false);
+const goal = ref<{ content: string }>({ content: '' });
+const goalEditing = ref(false);
+const goalDraft = ref('');
+const savingGoal = ref(false);
+const snapshots = ref<SnapshotMeta[]>([]);
+const creatingSnap = ref(false);
 
 const selected = computed(() => task.value?.nodes.find((n) => n.id === selectedNodeId.value) || null);
 const completedCount = computed(() => task.value?.nodes.filter((n) => n.status === 'completed').length || 0);
@@ -156,10 +239,105 @@ async function refresh() {
   events.value = ev.events;
 }
 
+async function refreshManage() {
+  if (!props.modelValue) return;
+  try {
+    progress.value = await api.taskProgress(props.taskId);
+  } catch { /* ignore */ }
+  try {
+    goal.value = await api.getTaskGoal(props.taskId);
+  } catch { /* ignore */ }
+  try {
+    snapshots.value = (await api.listSnapshots(props.taskId)).snapshots;
+  } catch { /* ignore */ }
+}
+
+async function loadModels() {
+  try {
+    const d = await api.getModelPool();
+    const health = (d as any).health || {};
+    modelOptions.value = d.model_pool.map((m) => ({ name: m.name, healthy: health[m.name]?.healthy !== false }));
+  } catch { /* ignore */ }
+}
+
+async function changeModel() {
+  if (!newModel.value) return;
+  changingModel.value = true;
+  try {
+    await api.setTaskModel(props.taskId, newModel.value);
+    ElMessage.success(`主 Agent 模型已切换为 ${newModel.value}`);
+    task.value = await api.getTask(props.taskId);
+    newModel.value = '';
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    changingModel.value = false;
+  }
+}
+
+async function saveGoal() {
+  savingGoal.value = true;
+  try {
+    await api.updateTaskGoal(props.taskId, goalDraft.value);
+    goal.value = { content: goalDraft.value };
+    goalEditing.value = false;
+    ElMessage.success('全局目标已更新');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    savingGoal.value = false;
+  }
+}
+
+async function createSnap() {
+  creatingSnap.value = true;
+  try {
+    await api.createSnapshot(props.taskId, 'manual');
+    ElMessage.success('快照已创建');
+    snapshots.value = (await api.listSnapshots(props.taskId)).snapshots;
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    creatingSnap.value = false;
+  }
+}
+
+async function rollback(s: SnapshotMeta) {
+  try {
+    await ElMessageBox.confirm(
+      `确定回滚到快照 ${s.created_at}（${s.tag}）？\n任务状态、Agent 会话与协作状态将恢复为快照时点。`,
+      '回滚确认',
+      { type: 'warning' }
+    );
+  } catch {
+    return;
+  }
+  try {
+    const r = await api.rollbackSnapshot(s.id);
+    ElMessage.success(`回滚完成：${r.git_action}，恢复 ${r.kv_restored} 项状态`);
+    await refresh();
+    await refreshManage();
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
+function fmtTime(ts: string): string {
+  try {
+    return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return ts;
+  }
+}
+
 async function onOpen() {
   tab.value = 'warroom';
   selectedNodeId.value = '';
+  newModel.value = '';
+  goalEditing.value = false;
   await refresh();
+  await refreshManage();
+  void loadModels();
   const lg = await api.taskLogs(props.taskId);
   branches.value = (task.value?.nodes || [])
     .filter((n) => n.branch)
@@ -217,4 +395,30 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .tl-node { color: var(--ct-text3); font-size: 11px; }
 .tl-sum { color: var(--ct-text3); font-size: 11px; }
 .empty { color: var(--ct-text3); text-align: center; padding: 40px 0; }
+/* manage tab */
+.manage { display: flex; flex-direction: column; gap: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
+.mg-card { border: 1px solid var(--ct-border); border-radius: 8px; padding: 12px 14px; }
+.mg-title { font-size: 10px; color: var(--ct-text3); letter-spacing: 1px; margin-bottom: 10px; }
+.mg-body { display: flex; flex-direction: column; gap: 8px; }
+.mg-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mg-line { font-size: 12px; color: var(--ct-text2); }
+.mg-tag { margin-right: 4px; }
+.mg-model { font-size: 13px; color: var(--ct-accent); font-weight: 600; }
+.mg-hint { font-size: 11px; color: var(--ct-text3); }
+.mg-goal { white-space: pre-wrap; font-size: 12px; color: var(--ct-text2); background: var(--ct-panel2); border-radius: 6px; padding: 10px; }
+.mg-empty { color: var(--ct-text3); font-size: 12px; }
+.mg-progress { max-width: 420px; }
+.snap-row { display: flex; align-items: center; gap: 10px; font-size: 11px; padding: 6px 0; border-bottom: 1px dotted var(--ct-border); }
+.snap-tag { border: 1px solid currentColor; border-radius: 3px; padding: 0 6px; font-size: 10px; }
+.snap-tag.manual { color: var(--ct-accent); }
+.snap-tag.task-start { color: var(--ct-green); }
+.snap-tag.task-end { color: var(--ct-text3); }
+.snap-tag.decision { color: var(--ct-yellow); }
+.snap-time { color: var(--ct-text2); }
+.snap-ref { color: var(--ct-text3); }
+.snap-note { color: var(--ct-text3); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-opt { display: inline-flex; align-items: center; gap: 6px; }
+.model-opt .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.model-opt .dot.on { background: var(--ct-green); }
+.model-opt .dot.off { background: var(--ct-red); }
 </style>

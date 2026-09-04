@@ -26,6 +26,9 @@
           <el-form-item label="项目名"><el-input v-model="form.name" placeholder="如 客户管理系统" /></el-form-item>
           <el-form-item label="工作区"><el-input v-model="form.workspace" placeholder="项目绝对路径，如 D:\projects\cms" /></el-form-item>
           <el-form-item label="描述"><el-input v-model="form.description" placeholder="一句话描述（可选）" /></el-form-item>
+          <el-form-item label="初始化">
+            <el-checkbox v-model="form.scaffold">生成标准脚手架（docs/src/tests/config 目录 + README/CONTRIBUTING/ARCHITECTURE 文档 + git 初始化）</el-checkbox>
+          </el-form-item>
         </el-form>
         <template #footer>
           <el-button size="small" @click="createVisible = false">取消</el-button>
@@ -58,7 +61,7 @@ const projects = ref<ProjectSummary[]>([]);
 const current = ref<string | null>(null);
 const createVisible = ref(false);
 const creating = ref(false);
-const form = ref({ name: '', workspace: '', description: '' });
+const form = ref({ name: '', workspace: '', description: '', scaffold: true });
 
 function pct(p: ProjectSummary): number {
   return p.task_count ? Math.round((p.done_count / p.task_count) * 100) : 0;
@@ -74,10 +77,14 @@ async function create() {
   if (!form.value.name || !form.value.workspace) { ElMessage.warning('填写项目名和工作区'); return; }
   creating.value = true;
   try {
-    await api.createProject(form.value.name, form.value.workspace, form.value.description);
-    ElMessage.success('项目已创建');
+    const d = await api.createProject(form.value.name, form.value.workspace, form.value.description, form.value.scaffold);
+    if (d.scaffold) {
+      ElMessage.success(`项目已创建，脚手架完成：${d.scaffold.dirs.length} 个目录、${d.scaffold.files.length} 份文档${d.scaffold.git_initialized ? '、git 已初始化' : ''}`);
+    } else {
+      ElMessage.success('项目已创建');
+    }
     createVisible.value = false;
-    form.value = { name: '', workspace: '', description: '' };
+    form.value = { name: '', workspace: '', description: '', scaffold: true };
     await loadProjects();
   } catch (e: any) { ElMessage.error(e.message); } finally { creating.value = false; }
 }

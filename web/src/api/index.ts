@@ -1,6 +1,51 @@
 // Shared API client + types mirroring the server contract.
 
-export type TaskStatus = 'pending' | 'planned' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
+export type TaskStatus = 'pending' | 'planned' | 'clarifying' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
+
+export type TaskLevel = 'light' | 'standard' | 'heavy';
+
+export interface ProgressInfo {
+  task_id: string;
+  status: string;
+  percent: number;
+  completed: number;
+  total: number;
+  eta_sec?: number;
+  current_nodes: { id: string; name: string; agent: string }[];
+  message?: string;
+  error?: string;
+  updated_at: string;
+}
+
+export interface ClarifyAnswer {
+  question: string;
+  answer: string;
+}
+
+export interface KnowledgeEntry {
+  id: string;
+  title: string;
+  category: 'general-tech' | 'project';
+  project_id?: string;
+  tags: string[];
+  source: string;
+  created_at: string;
+  updated_at: string;
+  updated_by?: string;
+  content: string;
+}
+
+export interface SnapshotMeta {
+  id: string;
+  task_id: string;
+  tag: string;
+  workspace: string;
+  git_ref: string | null;
+  branch: string | null;
+  kv_keys: string[];
+  created_at: string;
+  note?: string;
+}
 
 export interface AgentResult {
   status?: 'success' | 'failed';
@@ -45,6 +90,8 @@ export interface TaskGraph {
   workspace: string;
   status: string;
   project_id?: string | null;
+  level?: TaskLevel | null;
+  main_model_id?: string | null;
   created_at: string;
   updated_at: string;
   git_commit?: { branch: string; commit: string | null };
@@ -208,12 +255,43 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  createTask: (description: string, workspace: string, autoRun = true, projectId?: string) =>
-    request<{ task_id: string }>('/api/tasks', {
+  createTask: (description: string, workspace: string, autoRun = true, projectId?: string, opts?: { mainModelId?: string; level?: string }) =>
+    request<{ task_id: string; status?: string; questions?: string[]; summary?: string; level?: string; graph?: TaskGraph }>('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description, workspace, auto_run: autoRun, project_id: projectId }),
+      body: JSON.stringify({ description, workspace, auto_run: autoRun, project_id: projectId, main_model_id: opts?.mainModelId, level: opts?.level }),
     }),
+  clarifyTask: (id: string, payload: { answers?: ClarifyAnswer[]; confirm?: boolean; text?: string }) =>
+    request<{ status: string; questions?: string[]; graph?: TaskGraph }>(`/api/tasks/${id}/clarify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  setTaskModel: (id: string, modelId: string) =>
+    request(`/api/tasks/${id}/model`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_id: modelId }) }),
+  getTaskGoal: (id: string) => request<{ task_id: string; content: string; updated_at?: string; updated_by?: string }>(`/api/tasks/${id}/goal`),
+  updateTaskGoal: (id: string, content: string) =>
+    request(`/api/tasks/${id}/goal`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }),
+  taskProgress: (id: string) => request<ProgressInfo>(`/api/tasks/${id}/progress`),
+  listKnowledge: (params: { category?: string; project_id?: string; q?: string; limit?: number } = {}) => {
+    const sp = new URLSearchParams();
+    if (params.category) sp.set('category', params.category);
+    if (params.project_id) sp.set('project_id', params.project_id);
+    if (params.q) sp.set('q', params.q);
+    if (params.limit) sp.set('limit', String(params.limit));
+    return request<{ entries: KnowledgeEntry[] }>(`/api/knowledge?${sp}`);
+  },
+  createKnowledge: (payload: { title: string; content: string; category?: string; project_id?: string; tags?: string[] }) =>
+    request<{ status: string; id: string }>('/api/knowledge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  updateKnowledge: (id: string, payload: { title?: string; content?: string; tags?: string[] }) =>
+    request<{ status: string; entry: KnowledgeEntry }>(`/api/knowledge/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  deleteKnowledge: (id: string) => request(`/api/knowledge/${id}`, { method: 'DELETE' }),
+  listSnapshots: (taskId?: string) =>
+    request<{ snapshots: SnapshotMeta[] }>(`/api/snapshots${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ''}`),
+  createSnapshot: (taskId: string, tag = 'manual', note?: string) =>
+    request<{ status: string; snapshot: SnapshotMeta }>('/api/snapshots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: taskId, tag, note }) }),
+  rollbackSnapshot: (id: string) =>
+    request<{ ok: boolean; git_action: string; kv_restored: number; details: string[] }>(`/api/snapshots/${id}/rollback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) }),
   listTasks: (page = 1, pageSize = 20, filter?: { scope?: 'external'; projectId?: string }) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (filter?.scope) params.set('scope', filter.scope);
@@ -230,8 +308,8 @@ export const api = {
   updateNode: (taskId: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }) =>
     request(`/api/tasks/${taskId}/nodes/${nodeId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   roadmap: () => request<{ content: string; updated_at: string }>('/api/system/roadmap'),
-  createProject: (name: string, workspace: string, description?: string) =>
-    request<{ project_id: string }>('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace, description }) }),
+  createProject: (name: string, workspace: string, description?: string, scaffold = false) =>
+    request<{ project_id: string; scaffold?: { dirs: string[]; files: string[]; git_initialized: boolean } | null }>('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace, description, scaffold }) }),
   listProjects: () => request<{ projects: ProjectSummary[] }>('/api/projects'),
   getProject: (id: string) => request<ProjectDetail & { id: string }>(`/api/projects/${id}`),
   addProjectMemory: (id: string, text: string) =>

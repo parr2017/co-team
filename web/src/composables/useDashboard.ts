@@ -75,6 +75,8 @@ function handleEvent(msg: EventEnvelope) {
     else if (ev === 'execute_failed') task.status = 'failed';
     else if (ev === 'execute_cancelled') task.status = 'cancelled';
     else if (ev === 'execute_waiting_approval') task.status = 'waiting_approval';
+    else if (ev === 'task_needs_clarification') task.status = 'clarifying';
+    else if (ev === 'task_clarified') task.status = 'planned';
   }
 
   // fine-grained agent life events: keep the "what is it doing right now" line fresh

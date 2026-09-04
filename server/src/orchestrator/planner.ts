@@ -2,7 +2,9 @@ import { chat, extractJson, stripCodeFence } from '../llm';
 import { getMemory } from '../store';
 import type { ModelPool } from '../scheduler';
 import type { Router } from '../router';
-import type { Complexity } from '../types';
+import type { Complexity, TaskLevel } from '../types';
+import { relevantKnowledge } from '../knowledge';
+import { LEVEL_PROFILES } from '../grader';
 
 export interface PlannedGraph {
   nodes: Record<string, any>[];
@@ -34,7 +36,9 @@ const GRANULARITY_RULES = [
   '5. 每个节点给出 agent 分配理由 reason（一句话，中文），说明为什么这个 agent 适合',
 ].join('\n');
 
-function buildPlanMessages(request: string, available: string[], agentDesc: string, memory: string, previousPlan: PlannedGraph | null, feedbacks: string[]) {
+function buildPlanMessages(request: string, available: string[], agentDesc: string, memory: string, previousPlan: PlannedGraph | null, feedbacks: string[], level?: TaskLevel, knowledge?: string[], goalContributionRule = true) {
+  const levelRule = level ? LEVEL_PROFILES[level].planRule : '';
+  const maxNodesRule = level ? `本次计划节点数不超过 ${LEVEL_PROFILES[level].maxNodes} 个。` : '';
   const content = [
     '你是任务规划器。你只能使用这些 agent 名字：' + available.join(', ') + '。不要发明新的 agent 名字。',
     '',
@@ -43,16 +47,23 @@ function buildPlanMessages(request: string, available: string[], agentDesc: stri
     '',
     '历史经验（跨任务记忆，避免重复犯错）：',
     memory,
+    ...(knowledge && knowledge.length
+      ? ['', '相关知识库条目（通用经验/项目经验，规划时参考）：', ...knowledge.map((k) => `- ${k}`)]
+      : []),
     '',
     GRANULARITY_RULES,
+    ...(levelRule ? ['', levelRule, maxNodesRule] : []),
     '',
     '把需求拆解为有序任务节点。注意：',
     '1. 节点按依赖排序，edges 描述依赖关系（[前, 后]）；无依赖的节点可以并行',
     '2. 涉及部署/删除等危险操作的节点标记 requires_approval: true',
     '3. 为每个节点标注 complexity: simple|normal|complex',
-    '4. 每个开发节点应产出代码并由后续节点验证；系统会在计划末尾自动追加主 Agent 合并分支的节点，你不需要规划合并',
-    '5. 计划末尾给出 summary（一句话概括拆解思路）',
-    '返回 JSON：{"nodes":[{"id":"1","name":"...","agent":"dev","reason":"...","complexity":"normal","requires_approval":false}],"edges":[["1","2"]],"summary":"..."}',
+    ...(goalContributionRule
+      ? ['4. 每个节点给出 goal_link 字段：一句话说明该节点对全局目标的贡献（所有节点共同服务同一目标）']
+      : []),
+    '5. 每个开发节点应产出代码并由后续节点验证；系统会在计划末尾自动追加主 Agent 合并分支的节点，你不需要规划合并',
+    '6. 计划末尾给出 summary（一句话概括拆解思路）',
+    '返回 JSON：{"nodes":[{"id":"1","name":"...","agent":"dev","reason":"...","complexity":"normal","requires_approval":false,"goal_link":"对全局目标的贡献"}],"edges":[["1","2"]],"summary":"..."}',
   ];
   if (previousPlan) {
     content.push('', '当前已生成的计划（将被替换）：', JSON.stringify({ nodes: previousPlan.nodes, edges: previousPlan.edges }, null, 1).slice(0, 4000));
@@ -77,6 +88,7 @@ function normalizePlan(graph: any, available: string[]): PlannedGraph | null {
       reason: String(n.reason ?? ''),
       complexity: (['simple', 'normal', 'complex'] as Complexity[]).includes(n.complexity) ? n.complexity : 'normal',
       requires_approval: !!n.requires_approval,
+      goal_link: String(n.goal_link ?? ''),
     };
   });
   let edges: [string, string][] = (graph.edges || [])
@@ -88,13 +100,23 @@ function normalizePlan(graph: any, available: string[]): PlannedGraph | null {
   return { nodes, edges, summary: String(graph.summary || '') };
 }
 
-export async function generateTaskGraph(request: string, pool: ModelPool | null, router: Router, options?: { previousPlan?: PlannedGraph | null; feedbacks?: string[] }): Promise<PlannedGraph> {
+export async function generateTaskGraph(request: string, pool: ModelPool | null, router: Router, options?: { previousPlan?: PlannedGraph | null; feedbacks?: string[]; level?: TaskLevel; pinnedModel?: string; projectId?: string }): Promise<PlannedGraph> {
   const previousPlan = options?.previousPlan ?? null;
   const feedbacks = options?.feedbacks ?? [];
+  const level = options?.level;
+  const pinnedModel = options?.pinnedModel;
+  const projectId = options?.projectId;
   if (pool) {
-    const model = pool.selectModel(['code'], 'complex');
+    // main-agent model pinning (improvement 11): the pinned model wins at creation;
+    // only a hard failure degrades to dynamic selection (logged, never silently re-pinned)
+    const pinnedEntry = pinnedModel ? pool.getModel(pinnedModel) : null;
+    if (pinnedModel && !pinnedEntry) {
+      const { getLogger } = await import('../logger');
+      getLogger().warn('Pinned main-agent model not found in pool, degrading to dynamic selection', { pinnedModel });
+    }
+    const model = pinnedEntry ?? pool.selectModel(['code'], 'complex');
     if (model) {
-      const result = await llmPlan(request, pool, router, model, previousPlan, feedbacks);
+      const result = await llmPlan(request, pool, router, model, previousPlan, feedbacks, level, pinnedEntry ? pinnedModel : undefined, projectId);
       if (result) return result;
     }
   }
@@ -105,21 +127,27 @@ export async function generateTaskGraph(request: string, pool: ModelPool | null,
   return fallbackGraph(request, router.getAvailable());
 }
 
-async function llmPlan(request: string, pool: ModelPool, router: Router, model: any, previousPlan: PlannedGraph | null, feedbacks: string[]): Promise<PlannedGraph | null> {
+async function llmPlan(request: string, pool: ModelPool, router: Router, model: any, previousPlan: PlannedGraph | null, feedbacks: string[], level?: TaskLevel, pinnedModel?: string, projectId?: string): Promise<PlannedGraph | null> {
   const available = [...router.getAvailable().keys()];
   const agentDesc =
     [...router.getAvailable().values()].map((p) => `- ${p.name}: ${p.role || p.description} (tags: ${p.tags.join(',')})`).join('\n') || '- dev: 开发实现';
   const memory = (await getMemory()).map((m) => `- ${m}`).join('\n') || '（暂无历史经验）';
+  const knowledge = relevantKnowledge(request, { project_id: projectId, limit: 4 }).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
 
   try {
     const resp = await chat(model, [
       { role: 'system', content: 'You are a task planner. Use ONLY the given agent names. Output valid JSON only.' },
-      { role: 'user', content: buildPlanMessages(request, available, agentDesc, memory, previousPlan, feedbacks) },
+      { role: 'user', content: buildPlanMessages(request, available, agentDesc, memory, previousPlan, feedbacks, level, knowledge) },
     ], 8192);
     pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
     const graph = extractJson(stripCodeFence(resp.content));
     return normalizePlan(graph, available);
-  } catch {
+  } catch (e) {
+    if (pinnedModel) {
+      // pinned main-agent model failed: degradation is allowed but must be traceable
+      const { getLogger } = await import('../logger');
+      getLogger().warn('Pinned main-agent model failed, degrading to dynamic selection', { pinnedModel, error: String(e).slice(0, 200) });
+    }
     return null;
   }
 }

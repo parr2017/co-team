@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { generateTaskGraph, PlannedGraph } from './planner';
 import type { ModelPool, ModelEntry } from '../scheduler';
@@ -5,12 +6,13 @@ import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
 import { createSandbox, cleanupSandbox, mergeChanges, PermissionPolicy } from '../sandbox';
 import { applyFinalOutput, applyToolCalls, listFiles } from '../tools';
+import type { KnowledgeToolContext } from '../tools';
 import * as gitTool from '../git';
 import { simpleGit } from 'simple-git';
 import { saveConversation } from '../transcript';
 import { notify } from '../notify';
 import { chat, extractJson, stripCodeFence } from '../llm';
-import { busGet, busSet } from '../bus';
+import { busGet, busSet, busKeys, busDel } from '../bus';
 import {
   addAgentMemory,
   addMemory,
@@ -30,8 +32,15 @@ import {
   getProjectMemory,
   addProjectMemory,
 } from '../store';
-import { TaskGraph, TaskNode, TaskStatus, AgentResult, AgentConversation } from '../types';
+import { TaskGraph, TaskNode, TaskStatus, TaskLevel, AgentResult, AgentConversation, ProgressInfo } from '../types';
 import { getLogger } from '../logger';
+import { assessRequirement, isConfirmation, MAX_CLARIFY_ROUNDS, type ClarifyAnswer } from '../clarify';
+import { gradeTask, normalizeLevel, LEVEL_PROFILES } from '../grader';
+import { computeProgress, shouldBroadcast, clearProgressThrottle } from '../progress';
+import { writeKnowledge, relevantKnowledge } from '../knowledge';
+import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract, docsSection, getDocRegistry } from '../ssot';
+import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, MAX_FIX_ROUNDS } from '../testloop';
+import { createSnapshot } from '../snapshot';
 
 export interface OrchestratorOptions {
   agentsDir: string;
@@ -42,6 +51,7 @@ export interface OrchestratorOptions {
   gitEnabled: boolean;
   branchWorkflow?: boolean;
   tokenBudget?: number;
+  maxFixRounds?: number;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -60,6 +70,7 @@ function newNode(base: Record<string, any>, taskId: string): TaskNode {
     requires_approval: !!base.requires_approval,
     needs_human: false,
     reason: String(base.reason ?? ''),
+    goal_link: String(base.goal_link ?? ''),
     branch: '',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -98,6 +109,7 @@ export class Orchestrator {
   private gitEnabled: boolean;
   private branchWorkflow: boolean;
   private tokenBudget?: number;
+  private maxFixRounds: number;
   private agentsDir: string;
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
@@ -113,6 +125,7 @@ export class Orchestrator {
     this.gitEnabled = opts.gitEnabled;
     this.branchWorkflow = opts.branchWorkflow ?? true;
     this.tokenBudget = opts.tokenBudget;
+    this.maxFixRounds = opts.maxFixRounds ?? MAX_FIX_ROUNDS;
     this.router = new Router([], DEFAULT_RULES, this.makeLlmRouter());
     this.logger.info('Orchestrator initialized', {
       agentsDir: opts.agentsDir,
@@ -151,32 +164,155 @@ export class Orchestrator {
     return generateTaskGraph(request, this.pool, this.router);
   }
 
-  async createTask(description: string, workspace: string, projectId?: string): Promise<{ taskId: string; graph: PlannedGraph }> {
+  /** Plan with grading level, pinned main model and clarified context (improvements 5/7/11). */
+  private async planFor(request: string, opts: { level?: TaskLevel; mainModelId?: string; projectId?: string }): Promise<PlannedGraph> {
+    return generateTaskGraph(request, this.pool, this.router, {
+      level: opts.level,
+      pinnedModel: opts.mainModelId,
+      projectId: opts.projectId,
+    });
+  }
+
+  async createTask(
+    description: string,
+    workspace: string,
+    projectId?: string,
+    opts?: { mainModelId?: string; level?: string }
+  ): Promise<{ taskId: string; graph: PlannedGraph; needsClarification?: boolean; questions?: string[]; summary?: string; level?: TaskLevel }> {
     this.logger.info('Creating task', { description, workspace, projectId });
-    
+
+    // improvement 7: task grading (explicit user level wins, otherwise auto-graded)
+    const level: TaskLevel = normalizeLevel(opts?.level) ?? gradeTask(description);
+
+    // improvement 11: main-agent model pinned at creation (manual selection, validated)
+    let mainModelId = opts?.mainModelId?.trim() || undefined;
+    if (mainModelId && this.pool && !this.pool.getModel(mainModelId)) {
+      throw new Error(`model not in pool: ${mainModelId}`);
+    }
+
+    // improvement 5: requirement clarification loop — ambiguous requirements must be
+    // resolved with the human before any planning/execution happens
+    const assessment = await assessRequirement(description, this.pool);
+    const taskId = Math.random().toString(36).slice(2, 10);
+
+    if (!assessment.clear) {
+      this.logger.info('Requirement unclear, entering clarification loop', { taskId, missing: assessment.missing });
+      await saveTaskGraph(taskId, [], [], {
+        description,
+        workspace,
+        status: 'clarifying',
+        project_id: projectId,
+      });
+      await busSet(`task:clarify:${taskId}`, {
+        rounds: 1,
+        questions: assessment.questions,
+        answers: [] as ClarifyAnswer[],
+        assessment,
+        level,
+        main_model_id: mainModelId,
+      });
+      const graph = { nodes: [], edges: [], summary: assessment.summary || '' } as PlannedGraph;
+      await emitProgress('task_needs_clarification', { task_id: taskId, questions: assessment.questions, missing: assessment.missing });
+      notify('task_needs_clarification', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 需求不清晰，请回答澄清问题`);
+      return { taskId, graph, needsClarification: true, questions: assessment.questions, summary: assessment.summary, level };
+    }
+
+    const planned = await this.planAndSave(taskId, description, workspace, projectId, { level, mainModelId });
+    return { taskId, graph: planned.graph, level: planned.level };
+  }
+
+  /** Generate + persist the plan for a (possibly clarified) requirement. */
+  private async planAndSave(
+    taskId: string,
+    description: string,
+    workspace: string,
+    projectId: string | undefined,
+    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string }
+  ): Promise<{ graph: PlannedGraph; level: TaskLevel }> {
     // project mode: agents get up to speed from the project's accumulated memory
     let requestWithContext = description;
     if (projectId) {
       const pm = await getProjectMemory(projectId, 10);
       if (pm.length) requestWithContext += '\n\n[本项目开发背景与规范]\n' + pm.map((m) => '- ' + m.text).join('\n');
     }
-    
+    if (opts.clarifyContext) {
+      requestWithContext += `\n\n[需求澄清问答（人类已确认）]\n${opts.clarifyContext}`;
+    }
+
     this.logger.debug('Generating task graph', { description: requestWithContext.slice(0, 100) });
-    const planned = appendMergeNode(stripMergeNodes(await this.plan(requestWithContext)));
-    
-    const taskId = Math.random().toString(36).slice(2, 10);
+    const planned = appendMergeNode(stripMergeNodes(await this.planFor(requestWithContext, { level: opts.level, mainModelId: opts.mainModelId, projectId })));
+
     const nodes = planned.nodes.map((n) => newNode(n, taskId));
-    
-    this.logger.info('Task created', { 
-      taskId, 
-      nodesCount: nodes.length, 
+
+    this.logger.info('Task created', {
+      taskId,
+      nodesCount: nodes.length,
       edgesCount: planned.edges.length,
-      agents: [...new Set(nodes.map(n => n.agent))]
+      agents: [...new Set(nodes.map((n) => n.agent))],
+      level: opts.level,
+      mainModelId: opts.mainModelId,
     });
-    
+
     // plans wait for user review: status stays "planned" until explicitly executed
-    await saveTaskGraph(taskId, nodes, planned.edges, { description, workspace, status: 'planned', project_id: projectId });
-    return { taskId, graph: planned };
+    await saveTaskGraph(taskId, nodes, planned.edges, {
+      description,
+      workspace,
+      status: 'planned',
+      project_id: projectId,
+      level: opts.level,
+      main_model_id: opts.mainModelId,
+    });
+    return { graph: planned, level: opts.level };
+  }
+
+  /**
+   * Clarification loop step (improvement 5): record human answers, re-assess, and only
+   * proceed to planning on explicit confirmation, a clear re-assessment, or round limit.
+   */
+  async clarify(taskId: string, input: { answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }): Promise<{ status: string; questions?: string[]; graph?: PlannedGraph; summary?: string }> {
+    const graph = await loadGraph(taskId);
+    if (!graph) throw new Error('Task graph not found');
+    if (graph.status !== 'clarifying') return { status: graph.status };
+
+    const state = (await busGet<{ rounds: number; questions: string[]; answers: ClarifyAnswer[]; level: TaskLevel; main_model_id?: string }>(`task:clarify:${taskId}`)) || {
+      rounds: 1,
+      questions: [],
+      answers: [],
+      level: 'standard' as TaskLevel,
+    };
+
+    for (const a of input.answers || []) {
+      if (a.answer?.trim()) state.answers.push({ question: a.question || '', answer: a.answer.trim() });
+    }
+    if (input.text?.trim()) {
+      state.answers.push({ question: '(补充说明)', answer: input.text.trim() });
+    }
+
+    const clarifiedContext = state.answers.map((a, i) => `${i + 1}. ${a.question} → ${a.answer}`).join('\n');
+    const explicitConfirm = input.confirm === true || state.answers.some((a) => isConfirmation(a.answer));
+
+    if (!explicitConfirm && state.rounds < MAX_CLARIFY_ROUNDS) {
+      // re-assess with the accumulated answers
+      const assessment = await assessRequirement(graph.description, this.pool, state.answers);
+      if (!assessment.clear) {
+        state.rounds += 1;
+        state.questions = assessment.questions;
+        await busSet(`task:clarify:${taskId}`, state);
+        await emitProgress('task_needs_clarification', { task_id: taskId, round: state.rounds, questions: assessment.questions });
+        return { status: 'clarifying', questions: assessment.questions, summary: assessment.summary };
+      }
+    }
+
+    // confirmed / clear / max rounds reached → proceed to planning
+    const planned = await this.planAndSave(taskId, graph.description, graph.workspace, graph.project_id, {
+      level: state.level,
+      mainModelId: state.main_model_id,
+      clarifyContext: clarifiedContext || undefined,
+    });
+    await busSet(`task:clarify:${taskId}`, { ...state, done: true, confirmed_at: new Date().toISOString() });
+    await emitProgress('task_clarified', { task_id: taskId, rounds: state.rounds, answers: state.answers.length });
+    this.logger.info('Requirement confirmed, plan generated', { taskId, rounds: state.rounds });
+    return { status: 'planned', graph: planned.graph };
   }
 
   /** Re-generate the plan for a task from user feedback (multi-round refinement). */
@@ -197,7 +333,17 @@ export class Orchestrator {
       summary: graph.description,
     };
 
-    const planned = appendMergeNode(stripMergeNodes(await generateTaskGraph(graph.description, this.pool, this.router, { previousPlan, feedbacks })));
+    const planned = appendMergeNode(
+      stripMergeNodes(
+        await generateTaskGraph(graph.description, this.pool, this.router, {
+          previousPlan,
+          feedbacks,
+          level: graph.level,
+          pinnedModel: graph.main_model_id,
+          projectId: graph.project_id,
+        })
+      )
+    );
     const nodes = planned.nodes.map((n) => {
       const existing = graph.nodes.find((old) => old.id === String(n.id) && old.status === 'completed');
       return existing ? existing : newNode(n, taskId);
@@ -207,7 +353,55 @@ export class Orchestrator {
     graph.status = 'planned';
     await persistGraph(graph);
     await emitProgress('task_replanned', { task_id: taskId, feedback, summary: planned.summary });
+    // improvement 10: a replan is a key decision point — snapshot the state before re-execution
+    await createSnapshot(taskId, { tag: 'decision', note: `replan: ${feedback.slice(0, 80)}` }).catch(() => {});
     return planned;
+  }
+
+  /** Mid-task main-agent model change (improvement 11) — user-initiated only, always audited. */
+  async setMainModel(taskId: string, modelId: string): Promise<{ ok: boolean; model: string }> {
+    const graph = await loadGraph(taskId);
+    if (!graph) throw new Error('Task graph not found');
+    if (!this.pool || !this.pool.getModel(modelId)) throw new Error(`model not in pool: ${modelId}`);
+    const previous = graph.main_model_id || '(auto)';
+    graph.main_model_id = modelId;
+    await persistGraph(graph);
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master',
+      kind: 'brief',
+      text: `主 Agent 模型已由「${previous}」切换为「${modelId}」（用户手动修改）`,
+      ts: new Date().toISOString(),
+      node_id: 'model-change',
+      node_name: '主 Agent 模型变更',
+    });
+    await emitProgress('task_model_changed', { task_id: taskId, previous, model: modelId });
+    notify('task_model_changed', { task_id: taskId, model: modelId }, `[Co-Team] 任务 ${taskId} 主 Agent 模型切换为 ${modelId}`);
+    return { ok: true, model: modelId };
+  }
+
+  /** Global goal management (improvement 9): update goal + invalidate agent sessions. */
+  async updateGoal(taskId: string, content: string): Promise<{ ok: boolean }> {
+    const graph = await loadGraph(taskId);
+    if (!graph) throw new Error('Task graph not found');
+    if (!content.trim()) throw new Error('goal content is required');
+    await busSet(`task:goal:${taskId}`, { content: content.trim(), updated_at: new Date().toISOString(), updated_by: 'user' });
+    // sessions carry stale context — force agents to re-read the goal on their next call
+    const sessionKeys = await busKeys(`task:${taskId}:agent:*:session`);
+    for (const key of sessionKeys) await busDel(key);
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master',
+      kind: 'brief',
+      text: `全局目标已更新：${content.trim().slice(0, 200)}`,
+      ts: new Date().toISOString(),
+      node_id: 'goal-update',
+      node_name: '全局目标变更',
+    });
+    await emitProgress('goal_updated', { task_id: taskId });
+    return { ok: true };
+  }
+
+  async getGoal(taskId: string): Promise<{ content: string; updated_at?: string; updated_by?: string }> {
+    return (await busGet(`task:goal:${taskId}`)) || { content: '' };
   }
 
   async execute(taskId: string, workspace: string): Promise<Record<string, any>> {
@@ -217,6 +411,11 @@ export class Orchestrator {
     if (!graph) {
       this.logger.error('Task graph not found', { taskId });
       return { status: 'error', message: 'Task graph not found' };
+    }
+    // a task without a plan (clarification pending / shell) must not execute
+    if (graph.status === 'clarifying' || graph.nodes.length === 0) {
+      this.logger.warn('Execution blocked: task has no plan yet', { taskId, status: graph.status });
+      return { status: 'error', message: 'Task has no plan yet (clarification or plan review pending)' };
     }
 
     this.logger.info('Task execution started', { 
@@ -228,6 +427,7 @@ export class Orchestrator {
 
     // a fresh run clears any previous cancel flag so the task can execute again
     await clearCancelled(taskId);
+    clearProgressThrottle(taskId);
 
     // reset non-completed nodes so re-runs (after approval) resume cleanly
     for (const node of graph.nodes) {
@@ -261,7 +461,38 @@ export class Orchestrator {
       // baseline snapshot: all agent branches start from here
       await gitTool.ensureBase(sandbox).catch(() => {});
     }
-    
+
+    // improvement 9: global goal — one shared target every agent must serve
+    const clarifyState = await busGet<{ answers?: ClarifyAnswer[] }>(`task:clarify:${taskId}`);
+    const goalContent = [graph.description, ...(clarifyState?.answers || []).map((a) => `- ${a.question} → ${a.answer}`)].join('\n');
+    await busSet(`task:goal:${taskId}`, { content: goalContent, updated_at: new Date().toISOString(), updated_by: 'system' });
+    const goalDir = this.sandboxEnabled && sandbox !== workspace ? sandbox : null;
+    if (goalDir) {
+      try { fs.writeFileSync(path.join(sandbox, 'GLOBAL_GOAL.md'), `# GLOBAL_GOAL\n\n${goalContent}\n`, 'utf-8'); } catch { /* best effort */ }
+    }
+
+    // improvement 4: SSOT documents — the single source of truth for agent collaboration
+    const docTarget = this.sandboxEnabled && sandbox !== workspace ? sandbox : undefined;
+    const levelLabel = LEVEL_PROFILES[graph.level ?? 'standard'].label;
+    try {
+      await writeDoc(taskId, 'TASK_SPEC', buildTaskSpec(
+        graph.description,
+        `${levelLabel} (${graph.level ?? 'standard'})`,
+        graph.nodes.filter((n) => n.agent !== 'orchestrator').map((n) => ({ id: n.id, name: n.name, agent: n.agent })),
+        goalContent
+      ), 'orchestrator', docTarget);
+      if (/api|接口|endpoint/i.test(graph.description)) {
+        await writeDoc(taskId, 'API_CONTRACT', buildApiContract(graph.description), 'orchestrator', docTarget);
+      }
+      await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, [], [], graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name)), 'orchestrator', docTarget);
+    } catch (e) {
+      this.logger.warn('SSOT doc initialization failed (non-fatal)', { taskId, error: String(e) });
+    }
+
+    // improvement 10: task-start snapshot (git ref + collaboration state)
+    await createSnapshot(taskId, { tag: 'task-start', workspace, sandbox }).catch((e) => this.logger.warn('task-start snapshot failed', { taskId, error: String(e) }));
+    await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
+
     let result: Record<string, any> = { status: 'failed', error: 'execution did not run' };
     try {
       result = await this.runGraph(taskId, graph, sandbox);
@@ -331,6 +562,32 @@ export class Orchestrator {
       notify('task_failed', { task_id: taskId, error: result.error }, `[Co-Team] 任务 ${taskId} 失败：${result.error}`);
       await addMemory(`任务「${description}」失败于节点：${result.error}。后续类似任务注意规避。`);
     }
+
+    // improvement 10: task-end snapshot for post-hoc rollback / audit
+    await createSnapshot(taskId, { tag: 'task-end', workspace, note: `status=${status}` }).catch(() => {});
+    clearProgressThrottle(taskId);
+
+    // improvement 3: post-task review deposits a structured lesson into the knowledge base
+    try {
+      const changes = (result.changes || []) as string[];
+      if (changes.length > 0 || status === 'failed') {
+        await writeKnowledge({
+          title: `任务复盘 ${taskId}：${description.slice(0, 40)}`,
+          content: [
+            `状态: ${status}`,
+            changes.length ? `产出变更:\n${changes.slice(0, 10).map((c) => '- ' + c).join('\n')}` : '产出变更: 无',
+            result.error ? `失败原因: ${String(result.error).slice(0, 300)}` : '',
+            graph.project_id ? `项目: ${graph.project_id}` : '',
+          ].filter(Boolean).join('\n\n'),
+          category: graph.project_id ? 'project' : 'general-tech',
+          project_id: graph.project_id,
+          tags: ['任务复盘', status],
+          source: `task:${taskId}`,
+        });
+      }
+    } catch (e) {
+      this.logger.warn('Knowledge review deposit failed (non-fatal)', { taskId, error: String(e) });
+    }
     return result;
   }
 
@@ -360,7 +617,34 @@ export class Orchestrator {
       }
       if (runnable.length === 0) return { status: 'waiting_approval', changes: [] };
 
+      // improvement 4: document check before execution — agents must read the latest SSOT
+      if (this.sandboxEnabled && sandbox !== graph.workspace) {
+        const check = await checkDocs(taskId, sandbox).catch(() => null);
+        if (check && !check.ok) {
+          this.logger.warn('SSOT doc check restored inconsistent documents', { taskId, restored: check.restored });
+          await appendJournal(taskId, 'orchestrator', {
+            role: 'master',
+            kind: 'brief',
+            text: `文档检查发现不一致并已恢复: ${check.issues.join('; ')}`,
+            ts: new Date().toISOString(),
+            node_id: runnable[0].id,
+            node_name: runnable[0].name,
+          });
+        }
+      }
+
       await Promise.all(runnable.map((node) => this.executeNode(taskId, graph, node, sandbox, maxWorkers)));
+
+      // improvement 4: keep STATUS_REPORT in sync after every execution wave
+      // improvement 6: node transitions are milestones — broadcast progress (throttled)
+      try {
+        const done = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').map((n) => n.name);
+        const runningNow = graph.nodes.filter((n) => n.status === 'running' || n.status === 'retrying').map((n) => n.name);
+        const pendingNow = graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name);
+        const docTarget = this.sandboxEnabled && sandbox !== graph.workspace ? sandbox : undefined;
+        await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, done, runningNow, pendingNow), 'orchestrator', docTarget);
+      } catch { /* best effort */ }
+      await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
 
       const failed = runnable.find((n) => n.status === 'failed');
       if (failed) {
@@ -480,7 +764,10 @@ export class Orchestrator {
     }
 
     let error = '';
-    for (let attempt = 0; attempt < Math.max(1, this.maxRetries); attempt++) {
+    let fixRound = 0;
+    // regular attempts are bounded by maxRetries; test-fix rounds extend the budget
+    // separately (improvement 8) so a broken commit is never accepted
+    for (let attempt = 0; attempt < Math.max(1, this.maxRetries) + fixRound; attempt++) {
       // Check for cancellation before each retry attempt
       if (await isCancelled(taskId)) {
         node.status = 'cancelled';
@@ -496,8 +783,48 @@ export class Orchestrator {
         await persistGraph(graph);
         await emitProgress('node_retry', { task_id: taskId, node_id: node.id, attempt: attempt + 1 });
       }
-      const result = await this.dispatch(taskId, node, plugin, sandbox, false, '', `第 ${attempt + 1} 次尝试`);
+      const result = await this.dispatch(taskId, node, plugin, sandbox, false, error, `第 ${attempt + 1} 次尝试`);
       if (result.status === 'success') {
+        // improvement 8: test-fix loop — a failing test command blocks the commit and
+        // triggers a targeted repair round instead of accepting broken code
+        const testFail = findTestFailure(result.command_results);
+        if (testFail && fixRound < this.maxFixRounds) {
+          fixRound += 1;
+          const parsed = parseTestOutput(testFail.output);
+          error = buildFixPrompt(parsed, testFail.command, fixRound, this.maxFixRounds);
+          node.status = 'retrying';
+          node.retry_count = attempt + 1;
+          await persistGraph(graph);
+          await appendJournal(taskId, plugin.name, {
+            role: 'master',
+            kind: 'error',
+            text: `测试修复循环 第 ${fixRound}/${this.maxFixRounds} 轮：${parsed.summary}。失败用例: ${parsed.failures.map((f) => f.name).slice(0, 5).join(', ') || '（未解析出具体用例）'}`,
+            ts: new Date().toISOString(),
+            node_id: node.id,
+            node_name: node.name,
+            meta: { command: testFail.command, failures: parsed.failures },
+          });
+          await emitProgress('test_fix_round', { task_id: taskId, node_id: node.id, round: fixRound, max: this.maxFixRounds, failures: parsed.failures.length, summary: parsed.summary });
+          continue;
+        }
+        if (testFail) {
+          // max fix rounds reached: produce a clear report and escalate to the main agent
+          const parsed = parseTestOutput(testFail.output);
+          result.status = 'failed';
+          result.error = `测试修复循环达上限（${this.maxFixRounds} 轮）仍未通过: ${parsed.summary}`;
+          result.errors = [...(result.errors || []), ...parsed.failures.map((f) => `${f.name}: ${f.message}`)];
+          error = result.error;
+          await appendJournal(taskId, plugin.name, {
+            role: 'master',
+            kind: 'error',
+            text: result.error,
+            ts: new Date().toISOString(),
+            node_id: node.id,
+            node_name: node.name,
+            meta: { failures: parsed.failures },
+          });
+          break;
+        }
         this.logger.nodeComplete(taskId, node.id, node.agent);
         
         node.status = 'completed';
@@ -731,6 +1058,10 @@ export class Orchestrator {
       ? `\n\n## 重要：主 Agent 接管\n该任务之前已尝试 ${this.maxRetries} 次均失败，最近一次错误：${lastError}\n请调整策略：换一种实现思路，或把任务范围缩小到可完成的最小闭环，确保本次成功。`
       : '';
 
+    // improvement 8: non-escalated retries carry the previous failure / fix prompt so
+    // the agent repairs the actual problem instead of repeating the same attempt
+    const fixContextBlock = !escalate && lastError ? `\n\n## 上一次尝试的问题（请针对性修复）\n${lastError.slice(0, 1800)}` : '';
+
     // per-agent life: cross-task lessons ride along in the system prompt
     const memories = await getAgentMemory(plugin.name, 5);
     // project mode: the project's own rules & lessons make agents productive immediately
@@ -740,9 +1071,27 @@ export class Orchestrator {
       ? '\n\n## 本项目开发规范与经验\n' + projectMemory.map((m) => '- ' + m.text).join('\n')
       : '';
 
+    // improvement 9: the global goal rides along with every agent call
+    const goal = await busGet<{ content: string }>(`task:goal:${taskId}`);
+    const goalBlock = goal?.content
+      ? `\n\n## 全局目标（所有工作必须服务于此目标）\n${goal.content}\n在 summary 的开头用一句话说明本次工作对全局目标的贡献。`
+      : '';
+
+    // improvement 4: SSOT documents available in docs/
+    const docsBlock = await docsSection(taskId);
+
+    // improvement 3: relevant knowledge base entries are injected for immediate reuse
+    const knowledgeHits = relevantKnowledge(`${node.name} ${context}`, { project_id: projectId, limit: 3 });
+    const knowledgeBlock = knowledgeHits.length
+      ? '\n\n## 相关知识库条目\n' + knowledgeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')
+      : '';
+
     const systemMsg = [
       plugin.prompt || '你是开发 Agent。',
       projectBlock,
+      goalBlock,
+      docsBlock,
+      knowledgeBlock,
       memories.length ? '\n\n## 你过往的经验记忆\n' + memories.map((m) => '- ' + m).join('\n') : '',
       '\n你可以请求读取工具（返回 JSON 时附带 tool_calls 字段）:',
       ' {"tool_calls":[{"tool":"list_files"}]}',
@@ -751,6 +1100,8 @@ export class Orchestrator {
       ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
       ' {"tool_calls":[{"tool":"git_log"}]}',
       ' {"tool_calls":[{"tool":"git_diff"}]}',
+      '\n沉淀经验（推荐）：执行中遇到通用经验（API 用法、最佳实践、踩坑记录）或项目特定经验时，主动调用知识写入工具:',
+      ' {"tool_calls":[{"tool":"write_knowledge","category":"general-tech|project","title":"条目标题","tags":["标签"],"content":"经验内容（Markdown）"}]}',
       '\n最终输出必须是 JSON（不要 markdown 代码块）：',
       '{"status":"success|failed","changes":["file: desc"],"summary":"摘要","errors":[],',
       '"files":[{"path":"相对路径","content":"完整文件内容"}],"commands":["要执行的命令"]}',
@@ -762,10 +1113,12 @@ export class Orchestrator {
       `工作目录: ${workspace}`,
       `现有文件: ${workspaceFiles}`,
       `任务: ${node.name}`,
+      node.goal_link ? `对全局目标的贡献: ${node.goal_link}` : '',
       `节点复杂度: ${node.complexity}`,
       context ? `前置节点成果:\n${context}\n` : '',
       escalationBlock,
-    ].join('\n');
+      fixContextBlock,
+    ].filter(Boolean).join('\n');
 
     const record: AgentConversation = {
       label: attemptLabel || (escalate ? '主 Agent 接管' : '尝试'),
@@ -878,7 +1231,25 @@ export class Orchestrator {
           text: '请求读取工具: ' + toolCalls.map((t: any) => t.tool + (t.path ? ':' + t.path : '')).join(', '),
           model: entry.name,
         });
-        const results = applyToolCalls(workspace, toolCalls);
+        const knowledgeCtx: KnowledgeToolContext = { agent: plugin.name, task_id: taskId, project_id: projectId || undefined };
+        const results = applyToolCalls(workspace, toolCalls, knowledgeCtx);
+        // improvement 3: agent-driven knowledge deposits are audited in the war room
+        for (const r of results as Record<string, any>[]) {
+          if (r?.tool === 'write_knowledge' && r.ok) {
+            const call = toolCalls.find((t: any) => t.tool === 'write_knowledge');
+            await appendJournal(taskId, plugin.name, {
+              role: 'agent',
+              kind: 'round',
+              text: `沉淀知识: ${call?.title || r.id}（${r.category}${r.updated ? '，更新已有条目' : ''}）`,
+              ts: new Date().toISOString(),
+              node_id: node.id,
+              node_name: node.name,
+              model: entry.name,
+              meta: { knowledge_id: r.id },
+            });
+            await emitProgress('knowledge_deposited', { task_id: taskId, node_id: node.id, agent: plugin.name, id: r.id, updated: r.updated });
+          }
+        }
         roundEntry.tool_results = results;
         record.rounds.push(roundEntry);
         await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, tool_calls: toolCalls });

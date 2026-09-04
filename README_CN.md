@@ -191,16 +191,25 @@ model_pool:
 - **命令白名单**：仅允许执行预定义的安全命令
 - **审批机制**：敏感操作（如部署）需要人工审批
 
+> ⚠️ **实验特性说明**：当前沙箱为进程级隔离（任务级目录副本 + 路径逃逸防护 + 命令白名单），尚未提供 CPU/内存/网络等系统资源级的强隔离（如 Docker/gVisor 容器沙箱）。请勿在宿主机敏感环境中运行不可信的生成代码，强隔离沙箱将在后续版本提供。
+
 ## 📊 API 接口
 
 - `GET /api/status` - 服务状态
 - `GET /api/agents` - Agent 列表
 - `GET /api/tasks` - 任务列表
 - `GET /api/metrics` - 性能指标
-- `POST /api/tasks` - 创建任务
+- `POST /api/tasks` - 创建任务（支持 `main_model_id` 主Agent模型锁定、`level` 任务分级）
+- `POST /api/tasks/{id}/clarify` - 需求澄清循环（答复/确认）
+- `GET /api/tasks/{id}/progress` - 实时进度查询（百分比/ETA）
+- `PUT /api/tasks/{id}/model` - 中途更换主 Agent 模型（留痕）
+- `GET/PUT /api/tasks/{id}/goal` - 全局目标查看/更新
 - `POST /api/tasks/{id}/execute` - 执行任务
 - `POST /api/tasks/{id}/cancel` - 取消任务
 - `POST /api/tasks/{id}/approve/{node}` - 审批节点
+- `POST /api/projects` - 创建项目（`scaffold: true` 生成标准脚手架 + git init）
+- `GET/POST /api/knowledge`、`GET/PUT/DELETE /api/knowledge/{id}` - 知识库（增删改查/搜索，通用经验与项目经验双分类）
+- `GET/POST /api/snapshots`、`POST /api/snapshots/{id}/rollback` - 快照与回滚（需确认）
 - `WS /ws` - 实时事件推送
 
 完整 API 文档：启动服务后访问 http://localhost:8855/docs

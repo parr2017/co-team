@@ -1,6 +1,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { canExecute, executeCommand, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
+import { writeKnowledge } from './knowledge';
+
+export interface KnowledgeToolContext {
+  agent: string;
+  task_id?: string;
+  project_id?: string;
+}
 
 const MAX_FILE_BYTES = 64 * 1024;
 const IGNORED_DIRS = new Set(['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']);
@@ -102,8 +109,8 @@ export function gitDiff(workspace: string): { ok: boolean; diff?: string; error?
   }
 }
 
-/** Read-only tools the agent may request mid-conversation. */
-export function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string }[] | undefined): unknown[] {
+/** Read-only tools the agent may request mid-conversation, plus write_knowledge for experience deposit. */
+export function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): unknown[] {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -119,6 +126,25 @@ export function applyToolCalls(workspace: string, toolCalls: { tool: string; pat
       results.push({ tool: 'git_log', ...gitLog(workspace) });
     } else if (name === 'git_diff') {
       results.push({ tool: 'git_diff', ...gitDiff(workspace) });
+    } else if (name === 'write_knowledge') {
+      if (!knowledgeCtx) {
+        results.push({ tool: 'write_knowledge', ok: false, error: 'knowledge deposit not available in this context' });
+        continue;
+      }
+      try {
+        const category = call.category === 'project' ? 'project' : 'general-tech';
+        const written = writeKnowledge({
+          title: String(call.title || ''),
+          content: String(call.content || ''),
+          category,
+          project_id: knowledgeCtx.project_id,
+          tags: call.tags,
+          source: knowledgeCtx.task_id ? `agent:${knowledgeCtx.agent} task:${knowledgeCtx.task_id}` : `agent:${knowledgeCtx.agent}`,
+        });
+        results.push({ tool: 'write_knowledge', ok: true, id: written.id, updated: written.updated, category });
+      } catch (e: any) {
+        results.push({ tool: 'write_knowledge', ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
     } else {
       results.push({ tool: name, ok: false, error: `tool '${name}' not allowed mid-run` });
     }
@@ -134,7 +160,7 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
   const declared: string[] = output.changes || [];
   const merged = [...new Set([...written, ...declared.map((c: unknown) => String(c))])];
   output.changes = merged;
-  output.command_results = commandResults.map((c: CommandResult) => ({ command: c.command, returncode: c.returncode, stderr: c.stderr.slice(-500) }));
+  output.command_results = commandResults.map((c: CommandResult) => ({ command: c.command, returncode: c.returncode, stderr: c.stderr.slice(-500), stdout: c.stdout.slice(-4000) }));
 
   const failed = commandResults.filter((c: CommandResult) => c.returncode !== 0);
   if (failed.length) {

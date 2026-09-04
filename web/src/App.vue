@@ -22,7 +22,7 @@
 
       <div class="layout" v-if="page === 'workbench'">
         <main class="main">
-          <TaskForm @planned="openReview" />
+          <TaskForm @planned="openReview" @needs-clarify="(tid: string) => openClarify(tid)" />
           <AgentCards :agents="agents" @show-detail="detailAgent = $event" />
           <TaskList
             :tasks="tasks"
@@ -36,22 +36,24 @@
             @show-dag="dagTaskId = $event"
             @show-detail="detailTaskId = $event"
             @review="openReview"
+            @clarify="openClarify"
             @page-change="onTaskPageChange"
-          />
+ />
           <EventLog :events="events" @clear="clearEvents" />
         </main>
         <aside class="side">
           <ModelPoolPanel :status="status" @refresh="refreshStatus" />
           <MetricsPanel ref="metricsRef" />
-          <div class="section">
-            <div class="section-title">操作</div>
-            <div class="ops">
-              <el-button size="small" style="width: 100%" @click="roadmapVisible = true">项目路线图</el-button>
-              <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="settingsVisible = true">设置</el-button>
-              <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="refreshStatus(); metricsRef?.refresh()">刷新状态</el-button>
-              <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="onReloadAgents">重载 Agent</el-button>
+            <div class="section">
+              <div class="section-title">操作</div>
+              <div class="ops">
+                <el-button size="small" style="width: 100%" @click="roadmapVisible = true">项目路线图</el-button>
+                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="knowledgeVisible = true">知识库</el-button>
+                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="settingsVisible = true">设置</el-button>
+                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="refreshStatus(); metricsRef?.refresh()">刷新状态</el-button>
+                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="onReloadAgents">重载 Agent</el-button>
+              </div>
             </div>
-          </div>
         </aside>
       </div>
 
@@ -66,6 +68,8 @@
       <TaskDagDialog :model-value="dagTaskId !== null" :task="dagTaskId ? tasks[dagTaskId] : null" @close="dagTaskId = null" />
       <SettingsDialog v-model="settingsVisible" @changed="refreshStatus" />
       <PlanReviewDialog :model-value="reviewTaskId !== null" :task-id="reviewTaskId || ''" @close="reviewTaskId = null" @started="onPlanStarted" @cancelled="loadTasks" @changed="loadTasks" />
+      <ClarifyDialog :model-value="clarifyTaskId !== null" :task-id="clarifyTaskId || ''" @close="clarifyTaskId = null" @planned="onClarifyPlanned" @cancelled="loadTasks" @changed="loadTasks" />
+      <KnowledgeDialog v-model="knowledgeVisible" />
       <TaskDetailDialog :model-value="detailTaskId !== null" :task-id="detailTaskId || ''" :live-agents="agents" @close="detailTaskId = null" />
       <RoadmapDialog v-model="roadmapVisible" />
     </div>
@@ -89,6 +93,8 @@ import ChatReplay from './components/ChatReplay.vue';
 import TaskDagDialog from './components/TaskDagDialog.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import PlanReviewDialog from './components/PlanReviewDialog.vue';
+import ClarifyDialog from './components/ClarifyDialog.vue';
+import KnowledgeDialog from './components/KnowledgeDialog.vue';
 import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
 import ProjectView from './components/ProjectView.vue';
@@ -102,10 +108,21 @@ const page = ref<'workbench' | 'project'>('workbench');
 const roadmapVisible = ref(false);
 const reviewTaskId = ref<string | null>(null);
 const detailTaskId = ref<string | null>(null);
+const clarifyTaskId = ref<string | null>(null);
+const knowledgeVisible = ref(false);
 
 function openReview(taskId: string) {
   reviewTaskId.value = taskId;
   void loadTasks(taskPage.value, taskPageSize.value);
+}
+function openClarify(taskId: string) {
+  clarifyTaskId.value = taskId;
+  void loadTasks(taskPage.value, taskPageSize.value);
+}
+function onClarifyPlanned(taskId: string) {
+  clarifyTaskId.value = null;
+  void loadTasks(taskPage.value, taskPageSize.value);
+  openReview(taskId);
 }
 function onPlanStarted() {
   reviewTaskId.value = null;
