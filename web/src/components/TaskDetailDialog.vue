@@ -31,7 +31,10 @@
                 <span v-if="selectedLive?.currentAction" class="live-action">{{ selectedLive.currentAction }}</span>
               </div>
               <div class="live-chat">
-                <ConversationView :journal="selectedJournal" :sub-agent="selectedAgent || 'agent'" :typing="agentTyping" />
+                <ChatStream
+                  :task-id="taskId"
+                  :filter-agent="selectedAgent || undefined"
+                />
               </div>
             </div>
           </div>
@@ -69,8 +72,11 @@
                     {{ e.type }}<span v-if="e.payload.error" class="tl-err"> — {{ e.payload.error }}</span>
                   </el-timeline-item>
                 </el-timeline>
-                <div class="sub-title mono">conversation ({{ selectedJournal.length }})</div>
-                <ConversationView :journal="selectedJournal" :sub-agent="selected.agent" :filter-node-id="selected.id" />
+                <div class="sub-title mono">conversation</div>
+                <ChatStream
+                  :task-id="taskId"
+                  :filter-node-id="selected.id"
+                />
               </template>
               <div v-else class="empty mono">← 在轨道图上选择一个节点</div>
             </div>
@@ -96,18 +102,16 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
-import { api, type AgentConversation, type JournalEntry, type TaskEvent, type TaskGraph, type TaskNode } from '../api';
+import { api, type TaskEvent, type TaskGraph, type TaskNode } from '../api';
 import PipelineTrack from './PipelineTrack.vue';
 import CollabGraph from './CollabGraph.vue';
-import ConversationView from './ConversationView.vue';
+import ChatStream from './ChatStream.vue';
 
 const props = defineProps<{ modelValue: boolean; taskId: string; liveAgents?: Record<string, { model?: string; currentAction?: string }> }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const task = ref<TaskGraph | null>(null);
 const events = ref<TaskEvent[]>([]);
-const journals = ref<Record<string, JournalEntry[]>>({});
-const logs = ref<Record<string, AgentConversation[]>>({});
 const selectedNodeId = ref('');
 const selectedAgent = ref('');
 const tab = ref('warroom');
@@ -117,20 +121,12 @@ const selected = computed(() => task.value?.nodes.find((n) => n.id === selectedN
 const completedCount = computed(() => task.value?.nodes.filter((n) => n.status === 'completed').length || 0);
 const progressPct = computed(() => (task.value?.nodes.length ? Math.round((completedCount.value / task.value.nodes.length) * 100) : 0));
 const nodeEvents = computed(() => events.value.filter((e) => e.payload?.node_id === selectedNodeId.value));
-const selectedJournal = computed(() => (selectedAgent.value ? journals.value[selectedAgent.value] || [] : []));
 const selectedLive = computed(() => (selectedAgent.value ? props.liveAgents?.[selectedAgent.value] || null : null));
-const agentTyping = computed(() => {
-  if (!task.value || task.value.status !== 'running') return false;
-  const node = task.value.nodes.find((n) => n.agent === selectedAgent.value && (n.status === 'running' || n.status === 'retrying'));
-  return !!node;
-});
 const branches = ref<{ name: string; commit: string }[]>([]);
 
 const agentsInTask = computed(() => [...new Set((task.value?.nodes || []).map((n) => n.agent).filter((a) => a !== 'orchestrator'))]);
 
-function selectAgent(agent: string) {
-  selectedAgent.value = agent;
-}
+function selectAgent(agent: string) { selectedAgent.value = agent; }
 function selectNodeId(id: string) {
   selectedNodeId.value = id;
   const n = task.value?.nodes.find((x) => x.id === id);
@@ -141,16 +137,13 @@ function dur(n: TaskNode): string {
   const end = n.finished_at ? new Date(n.finished_at).getTime() : Date.now();
   return ' ' + Math.max(0, Math.round((end - new Date(n.started_at).getTime()) / 100) / 10) + 's';
 }
-function fmt(ts: string): string {
-  return new Date(ts).toLocaleTimeString();
-}
+function fmt(ts: string): string { return new Date(ts).toLocaleTimeString(); }
 function tlType(t: string) {
   return t.includes('error') ? 'danger' : t.includes('complete') ? 'success' : t.includes('start') ? 'warning' : t.includes('approval') ? 'primary' : 'info';
 }
 
 function pickDefaultAgent() {
   if (!agentsInTask.value.length) return;
-  // prefer an agent currently working, else first
   const working = task.value?.nodes.find((n) => n.status === 'running' || n.status === 'retrying');
   selectedAgent.value = working?.agent || agentsInTask.value[0];
 }
@@ -159,9 +152,8 @@ async function refresh() {
   if (!props.modelValue) return;
   const d = await api.getTask(props.taskId);
   task.value = d;
-  const [ev, jn] = await Promise.all([api.taskEvents(props.taskId), api.taskJournals(props.taskId)]);
+  const ev = await api.taskEvents(props.taskId);
   events.value = ev.events;
-  journals.value = jn.journals;
 }
 
 async function onOpen() {
@@ -169,23 +161,17 @@ async function onOpen() {
   selectedNodeId.value = '';
   await refresh();
   const lg = await api.taskLogs(props.taskId);
-  logs.value = lg.logs;
   branches.value = (task.value?.nodes || [])
     .filter((n) => n.branch)
     .map((n) => ({ name: n.branch as string, commit: (n.result as any)?.git_commit?.commit?.slice(0, 8) || '' }));
   pickDefaultAgent();
-  // live polling while the dialog is open and the task is running
   window.clearInterval(pollTimer);
   pollTimer = window.setInterval(() => {
     if (task.value && ['running', 'pending', 'planned'].includes(task.value.status)) void refresh();
   }, 3000);
 }
 
-function onClose() {
-  window.clearInterval(pollTimer);
-  emit('close');
-}
-
+function onClose() { window.clearInterval(pollTimer); emit('close'); }
 onUnmounted(() => window.clearInterval(pollTimer));
 </script>
 
@@ -206,7 +192,7 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .live-agent { font-weight: 700; color: var(--ct-text); }
 .live-model { color: var(--ct-accent); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 6px; }
 .live-action { color: var(--ct-yellow); }
-.live-chat { max-height: calc(88vh - 290px); overflow-y: auto; }
+.live-chat { max-height: calc(88vh - 290px); overflow-y: auto; display: flex; flex-direction: column; }
 .body-grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
 .left { border-right: 1px solid var(--ct-border); padding-right: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
 .right { min-width: 0; max-height: calc(88vh - 200px); overflow-y: auto; }

@@ -18,7 +18,7 @@
     <div v-if="!sorted.length" class="empty">暂无任务</div>
     <div v-for="t in sorted" :key="t.task_id" class="task-item">
       <div class="task-header">
-        <span class="task-id">{{ t.task_id }} · {{ t.workspace }}</span>
+        <span class="task-id">{{ t.task_id }}<el-tag v-if="t.project_id" size="small" type="info" class="task-proj-tag">项目</el-tag></span>
         <span class="task-actions">
           <el-tag :type="statusType(t.status)" size="small">{{ statusLabel(t.status) }}</el-tag>
           <el-button v-if="t.status === 'planned'" size="small" type="primary" @click="$emit('review', t.task_id)">审核计划</el-button>
@@ -91,7 +91,8 @@ function statusType(s: string) {
 .empty { text-align: center; padding: 40px; color: var(--ct-text3); }
 .task-item { background: var(--el-bg-color); border: 1px solid var(--el-border-color); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
 .task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.task-id { font-size: 11px; color: var(--ct-text3); font-family: monospace; }
+.task-id { font-size: 11px; color: var(--ct-text3); font-family: monospace; display: flex; align-items: center; gap: 6px; }
+.task-proj-tag { transform: scale(0.85); }
 .task-actions { display: flex; gap: 6px; align-items: center; }
 .task-desc { font-size: 13px; color: var(--ct-text2); margin-bottom: 10px; }
 .task-time { font-size: 11px; color: var(--ct-text3); margin-bottom: 8px; display: flex; gap: 16px; }

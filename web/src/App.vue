@@ -62,7 +62,7 @@
       </div>
 
       <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid: string) => { detailAgent = null; detailTaskId = tid; }" />
-      <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :journal="chatJournal" :task="chatTask" />
+      <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :task="chatTask" />
       <TaskDagDialog :model-value="dagTaskId !== null" :task="dagTaskId ? tasks[dagTaskId] : null" @close="dagTaskId = null" />
       <SettingsDialog v-model="settingsVisible" @changed="refreshStatus" />
       <PlanReviewDialog :model-value="reviewTaskId !== null" :task-id="reviewTaskId || ''" @close="reviewTaskId = null" @started="onPlanStarted" @cancelled="loadTasks" @changed="loadTasks" />
@@ -75,7 +75,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, onUnmounted } from 'vue';
 import { ElMessage } from 'element-plus';
-import { api, type JournalEntry, type StatusResponse } from './api';
+import { api, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
 import { useTheme } from './composables/useTheme';
 import TaskForm from './components/TaskForm.vue';
@@ -93,7 +93,7 @@ import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
 import ProjectView from './components/ProjectView.vue';
 
-const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadJournals, loadAgents, loadTasks, clearEvents } = useDashboard();
+const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, clearEvents } = useDashboard();
 const { theme, toggle } = useTheme();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
@@ -116,7 +116,6 @@ const detailAgent = ref<AgentLiveState | null>(null);
 const chatVisible = ref(false);
 const chatTaskId = ref('');
 const chatNodeId = ref('');
-const chatJournal = ref<JournalEntry[]>([]);
 const chatTask = computed(() => tasks[chatTaskId.value] ?? null);
 const dagTaskId = ref<string | null>(null);
 
@@ -132,8 +131,6 @@ async function openChat(taskId: string, nodeId: string) {
   chatTaskId.value = taskId;
   chatNodeId.value = nodeId;
   chatVisible.value = true;
-  const journals = await loadJournals(taskId);
-  chatJournal.value = journals[chatTask.value?.nodes.find((n) => n.id === nodeId)?.agent || ''] || [];
 }
 
 async function onApprove(taskId: string, nodeId: string) {
