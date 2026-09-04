@@ -44,6 +44,7 @@ export interface TaskGraph {
   description: string;
   workspace: string;
   status: string;
+  project_id?: string | null;
   created_at: string;
   updated_at: string;
   git_commit?: { branch: string; commit: string | null };
@@ -213,10 +214,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description, workspace, auto_run: autoRun, project_id: projectId }),
     }),
-  listTasks: (page = 1, pageSize = 20) =>
-    request<{ tasks: TaskGraph[]; total: number; page: number; pageSize: number }>(
-      `/api/tasks?page=${page}&pageSize=${pageSize}`
-    ),
+  listTasks: (page = 1, pageSize = 20, filter?: { scope?: 'external'; projectId?: string }) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (filter?.scope) params.set('scope', filter.scope);
+    if (filter?.projectId) params.set('project_id', filter.projectId);
+    return request<{ tasks: TaskGraph[]; total: number; page: number; pageSize: number }>(`/api/tasks?${params}`);
+  },
   getTask: (id: string) => request<TaskGraph>(`/api/tasks/${id}`),
   deleteTask: (id: string) => request(`/api/tasks/${id}`, { method: 'DELETE' }),
   cancelTask: (id: string) => request(`/api/tasks/${id}/cancel`, { method: 'POST' }),
