@@ -8,7 +8,7 @@ vi.mock('../src/llm', async (importOriginal) => {
   return {
     ...actual,
     chat: async () => ({
-      content: JSON.stringify({ status: 'success', summary: 'done', changes: ['x.txt: ok'], errors: [] }),
+      content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['x.txt: ok'], errors: [] }),
       promptTokens: 3,
       completionTokens: 4,
     }),

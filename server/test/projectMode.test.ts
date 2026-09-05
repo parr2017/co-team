@@ -15,7 +15,7 @@ vi.mock('../src/llm', async (importOriginal) => {
       (globalThis as any).__lastSystem = sys;
       (globalThis as any).__planUser = calls === 1 ? messages.find((m) => m.role === 'user')?.content : (globalThis as any).__planUser;
       return {
-        content: JSON.stringify({ status: 'success', summary: 'done', changes: ['out.txt: ok'], errors: [] }),
+        content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['out.txt: ok'], errors: [] }),
         promptTokens: 3,
         completionTokens: 4,
       };

@@ -49,6 +49,15 @@ const members = computed(() => {
 
 const RUNNING_STATES = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'];
 const isRunning = computed(() => RUNNING_STATES.includes(task.value?.status || ''));
+const canRestart = computed(() => ['failed', 'completed', 'success', 'cancelled'].includes(task.value?.status || ''));
+
+function restart() {
+  showDialog({ title: '重启任务', message: '任务将重新进入执行队列（已完成节点会重新执行），确定重启？', showCancelButton: true })
+    .then(() => api.executeTask(taskId.value)
+      .then(() => { showToast('已重新加入执行队列'); void refresh(); })
+      .catch((e) => showToast(e.message)))
+    .catch(() => { /* dismissed */ });
+}
 
 /** agents currently working (little busy dot on the member strip) */
 const busyAgents = computed(() => {
@@ -123,6 +132,42 @@ function approve(nodeId: string) {
     .catch((e) => showToast(e.message));
 }
 
+// ---------- agent reassignment (node-level routing override) ----------
+
+const agentOptions = ref<string[]>([]);
+const swapVisible = ref(false);
+const swapNode = ref<{ id: string; agent: string; name: string } | null>(null);
+const swapActions = computed(() => {
+  if (!swapNode.value) return [];
+  return agentOptions.value
+    .filter((a) => a !== 'orchestrator' && a !== swapNode.value!.agent)
+    .map((a) => ({ name: a }));
+});
+
+function openAgentSwap(n: { id: string; agent: string; name: string }) {
+  if (agentOptions.value.filter((a) => a !== 'orchestrator' && a !== n.agent).length === 0) {
+    showToast('没有可更换的 Agent');
+    return;
+  }
+  swapNode.value = n;
+  swapVisible.value = true;
+}
+
+async function onSwapSelect(action: { name: string }) {
+  if (!swapNode.value) return;
+  const n = swapNode.value;
+  swapVisible.value = false;
+  try {
+    await api.updateNode(taskId.value, n.id, { agent: action.name });
+    showToast(`节点已交给 ${action.name}，后续执行生效`);
+    void refresh();
+  } catch (e: any) {
+    showToast(e.message || '更换失败');
+  }
+}
+
+void api.listAgents().then((names) => { agentOptions.value = names; }).catch(() => { /* non-fatal */ });
+
 function cancel() {
   showDialog({ title: '取消任务', message: '确定取消该任务？', showCancelButton: true })
     .then(() => api.cancelTask(taskId.value).then(() => showToast('取消信号已发送')).catch((e) => showToast(e.message)))
@@ -138,7 +183,7 @@ function nodeIcon(status: string): string {
 }
 
 const STATUS_TEXT: Record<string, string> = {
-  running: '执行中', pending: '待执行', planned: '待确认', retrying: '重试中',
+  running: '执行中', pending: '待执行', queued: '排队中', planned: '待确认', retrying: '重试中',
   waiting_approval: '待审批', success: '已完成', completed: '已完成', failed: '失败', cancelled: '已取消', clarifying: '澄清中',
 };
 function statusText(s?: string): string {
@@ -151,7 +196,10 @@ function statusText(s?: string): string {
     <van-nav-bar :title="title" left-arrow fixed placeholder @click-left="router.back()">
       <template #right>
         <span v-if="isRunning" class="nav-status running" @click="cancel">取消</span>
-        <span v-else class="nav-status">{{ statusText(task?.status) }} {{ progressPct }}%</span>
+        <template v-else>
+          <span v-if="canRestart" class="nav-status running" @click="restart">重启</span>
+          <span class="nav-status">{{ statusText(task?.status) }} {{ progressPct }}%</span>
+        </template>
       </template>
     </van-nav-bar>
 
@@ -236,8 +284,13 @@ function statusText(s?: string): string {
                 <van-icon v-else name="arrow" size="14" color="#b2b2b2" />
 
                 <div v-if="selectedNodeId === n.id" class="n-detail">
+                  <div v-if="n.status !== 'completed' && agentOptions.length" class="n-swap" @click.stop="openAgentSwap(n)">
+                    <span class="n-swap-label">当前 Agent: <b class="mono">{{ n.agent }}</b></span>
+                    <van-button size="mini" plain type="primary">更换 Agent</van-button>
+                  </div>
                   <div v-if="n.error" class="n-error">✗ {{ n.error }}</div>
                   <div v-if="n.result?.summary" class="n-summary">{{ n.result.summary }}</div>
+                <div v-if="n.result?.verification" class="n-verify">🛡 {{ n.result.verification }}</div>
                   <div v-if="(n.result?.changes || []).length" class="n-changes">
                     <div v-for="c in n.result!.changes!.slice(0, 8)" :key="c" class="change">✓ {{ c }}</div>
                   </div>
@@ -290,6 +343,23 @@ function statusText(s?: string): string {
       <button class="wx-btn err-btn" @click="loadFailed = false; void refresh()">重新加载</button>
     </div>
     <van-loading v-else class="loading" vertical>加载中…</van-loading>
+
+    <!-- 换 Agent：节点转交其他成员 -->
+    <van-action-sheet
+      v-model:show="swapVisible"
+      :actions="swapActions"
+      cancel-text="取消"
+      title="交给哪位成员"
+      @select="onSwapSelect"
+    />
+    <!-- 更换 Agent 选择器 -->
+    <van-action-sheet
+      v-model:show="swapVisible"
+      :actions="swapActions"
+      cancel-text="取消"
+      close-on-click-action
+      description="选择接手该节点的 Agent"
+    />
   </div>
 </template>
 
@@ -381,6 +451,8 @@ function statusText(s?: string): string {
 .n-retry { color: var(--wx-orange); }
 
 .n-detail { flex-basis: 100%; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 12px; animation: wx-pop-in 0.2s ease; }
+.n-swap { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.n-swap-label { font-size: 12px; color: var(--text-2); }
 .n-error { color: var(--red); font-size: 14px; margin-bottom: 8px; white-space: pre-wrap; line-height: 1.5; }
 .n-summary { font-size: 14px; color: var(--text-2); margin-bottom: 8px; white-space: pre-wrap; line-height: 1.55; }
 .change { font-size: 13px; color: var(--green); margin-bottom: 3px; }

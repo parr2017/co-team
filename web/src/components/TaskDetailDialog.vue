@@ -60,10 +60,21 @@
                   <span class="stamp" :class="selected.status">{{ selected.status }}</span>
                   <span class="n-name">{{ selected.name }}</span>
                   <span class="n-meta">[{{ selected.agent }}]{{ selected.branch ? ' ⎇' + selected.branch : '' }}{{ dur(selected) }}</span>
+                  <el-select
+                    v-if="selected.status !== 'completed'"
+                    size="small"
+                    :model-value="selected.agent"
+                    class="agent-swap mono"
+                    title="更换该节点的执行 Agent"
+                    @change="(v: string) => selected && changeAgent(selected, v)"
+                  >
+                    <el-option v-for="a in agentOptions" :key="a" :label="a" :value="a" />
+                  </el-select>
                 </div>
                 <div v-if="selected.reason" class="reason">💡 {{ selected.reason }}</div>
                 <div v-if="selected.error" class="error mono">✗ {{ selected.error }}</div>
                 <div v-if="selected.result?.summary" class="summary">{{ selected.result.summary }}</div>
+                <div v-if="(selected.result as any)?.verification" class="verification">🛡 验证：{{ (selected.result as any).verification }}</div>
                 <div v-if="selected.result?.report" class="report-card mono">
                   <div class="r-title">TEST REPORT · {{ selected.result.report.framework || 'tests' }} · {{ selected.result.report.attempts }} 轮</div>
                   <div class="r-line">{{ selected.result.report.summary }}</div>
@@ -208,6 +219,29 @@ const snapshots = ref<SnapshotMeta[]>([]);
 const creatingSnap = ref(false);
 
 const selected = computed(() => task.value?.nodes.find((n) => n.id === selectedNodeId.value) || null);
+
+// ---------- agent reassignment (node-level routing override) ----------
+
+const agentOptions = ref<string[]>([]);
+
+async function loadAgentOptions() {
+  try {
+    const d = await api.listAgents();
+    agentOptions.value = (d.agents || []).map((a) => a.name);
+  } catch { /* non-fatal — picker stays empty */ }
+}
+
+async function changeAgent(n: TaskNode, agent: string) {
+  if (agent === n.agent) return;
+  try {
+    await api.updateNode(props.taskId, n.id, { agent });
+    ElMessage.success(`节点「${n.name}」已交给 ${agent}，后续执行生效`);
+    void refresh();
+  } catch (e: any) {
+    ElMessage.error(`更换 Agent 失败: ${e.message || e}`);
+    void refresh();
+  }
+}
 const completedCount = computed(() => task.value?.nodes.filter((n) => n.status === 'completed').length || 0);
 const progressPct = computed(() => (task.value?.nodes.length ? Math.round((completedCount.value / task.value.nodes.length) * 100) : 0));
 const nodeEvents = computed(() => events.value.filter((e) => e.payload?.node_id === selectedNodeId.value));
@@ -345,6 +379,7 @@ async function onOpen() {
   await refresh();
   await refreshManage();
   void loadModels();
+  void loadAgentOptions();
   const lg = await api.taskLogs(props.taskId);
   branches.value = (task.value?.nodes || [])
     .filter((n) => n.branch)
@@ -386,6 +421,7 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .branch-row { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; color: var(--ct-text2); }
 .b-commit { color: var(--ct-text3); }
 .node-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.agent-swap { width: 110px; margin-left: auto; }
 .stamp { font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 1px 5px; border: 1px solid currentColor; border-radius: 2px; transform: rotate(-3deg); }
 .stamp.completed { color: var(--ct-green); }
 .stamp.failed { color: var(--ct-red); }
@@ -396,6 +432,7 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .reason { font-size: 12px; color: var(--ct-text2); font-style: italic; margin-bottom: 6px; }
 .error { color: var(--ct-red); font-size: 12px; margin-bottom: 6px; }
 .summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 8px; white-space: pre-wrap; }
+.verification { font-size: 12px; color: var(--ct-green); background: var(--ct-panel2); border-left: 3px solid var(--ct-green); border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; }
 .report-card { border: 1px solid var(--ct-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--ct-panel2); }
 .r-title { font-size: 10px; color: var(--ct-text3); letter-spacing: 1px; margin-bottom: 6px; }
 .r-line { font-size: 12px; color: var(--ct-text2); margin-bottom: 4px; }

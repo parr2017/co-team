@@ -9,7 +9,7 @@ type Entry = JournalEntry & { agent: string };
 type RenderItem =
   | { t: 'time'; label: string }
   | { t: 'node'; name: string }
-  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene'; entry: Entry; agent: string };
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 
@@ -51,6 +51,22 @@ const renderItems = computed<RenderItem[]>(() => {
 });
 
 const nodeNames = ref<Record<string, string>>({});
+
+const deliverableView = ref<{ title: string; markdown: string } | null>(null);
+const deliverableOpen = computed({
+  get: () => deliverableView.value !== null,
+  set: (v: boolean) => { if (!v) deliverableView.value = null; },
+});
+function openDeliverable(entry: JournalEntry) {
+  const md = entry.meta?.markdown;
+  if (md) {
+    deliverableView.value = { title: entry.node_name || entry.node_id, markdown: md };
+  } else {
+    void api.getDeliverable(props.taskId, entry.node_id).then((d) => {
+      deliverableView.value = { title: d.node_name || entry.node_id, markdown: d.markdown };
+    }).catch(() => {});
+  }
+}
 function nodeNameOf(nodeId: string): string {
   return nodeNames.value[nodeId] || nodeId;
 }
@@ -215,6 +231,22 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         </div>
       </div>
 
+      <!-- 交付成果卡片：点击弹出统一模板阅读器 -->
+      <div v-else-if="item.t === 'deliverable'" class="row them">
+        <AgentAvatar :name="item.agent" :size="36" />
+        <div class="them-col">
+          <div class="who-name">{{ item.agent }} · 交付成果</div>
+          <button class="deliv-card" @click="openDeliverable(item.entry)">
+            <span class="dc-ico">📄</span>
+            <span class="dc-body">
+              <span class="dc-title">{{ item.entry.node_name }}</span>
+              <span class="dc-sub">交付报告 · 统一模板 · 点击阅读</span>
+            </span>
+            <span class="dc-arrow">›</span>
+          </button>
+        </div>
+      </div>
+
       <!-- 子 Agent 错误 -->
       <div v-else-if="item.t === 'error'" class="row them">
         <AgentAvatar :name="item.agent" :size="36" />
@@ -242,6 +274,16 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         </div>
       </div>
     </div>
+    <!-- 交付成果阅读器：统一模板固定展现 -->
+    <van-popup v-model:show="deliverableOpen" position="bottom" :style="{ height: '82%' }" round>
+      <div class="dl-viewer">
+        <div class="dl-head">
+          <span class="dl-title">交付成果 · {{ deliverableView?.title }}</span>
+          <van-icon name="cross" size="18" @click="deliverableOpen = false" />
+        </div>
+        <div class="dl-body md" v-html="md(deliverableView?.markdown || '')"></div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -314,4 +356,30 @@ details summary { font-size: 12px; color: var(--text-3); }
 .dot-t:nth-child(3) { animation-delay: 0.3s; }
 @keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
 .typing-label { font-size: 11px; color: var(--text-3); margin-left: 4px; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 交付成果卡片 */
+.deliv-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; text-align: left;
+  background: var(--panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px; cursor: pointer; width: 100%;
+  transition: transform 0.1s ease;
+}
+.deliv-card:active { transform: scale(0.98); background: var(--panel-2); }
+.dc-ico { font-size: 20px; }
+.dc-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dc-title { font-size: 14px; color: var(--text); font-weight: 600; }
+.dc-sub { font-size: 11px; color: var(--text-3); }
+.dc-arrow { margin-left: auto; color: var(--text-3); font-size: 18px; }
+
+.dl-viewer { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
+.dl-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.dl-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.dl-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px; font-size: 15px; line-height: 1.6; }
+.dl-body :deep(h1) { font-size: 18px; margin: 4px 0 12px; }
+.dl-body :deep(h2) { font-size: 15px; margin: 16px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.dl-body :deep(table) { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.dl-body :deep(th), .dl-body :deep(td) { border: 1px solid var(--border); padding: 5px 10px; font-size: 13px; }
+.dl-body :deep(code) { font-family: Consolas, monospace; font-size: 13px; background: var(--panel-2); border-radius: 3px; padding: 0 4px; }
 </style>

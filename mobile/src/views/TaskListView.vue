@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showToast } from 'vant';
 import { api, statusLabel } from '../api';
-import type { TaskGraph } from '../api';
+import type { TaskGraph, QueueSnapshot } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import AgentAvatar from '../components/AgentAvatar.vue';
 
@@ -66,6 +66,7 @@ function badgeCount(t: TaskGraph): number {
 /** one-line digest under the title, like the last message preview */
 function digest(t: TaskGraph): string {
   if (t.status === 'clarifying') return '[需求澄清] 等待你回复澄清问题';
+  if (t.status === 'queued') return '[排队中] 等待前面的任务执行完成';
   const n = t.nodes.length;
   const done = t.nodes.filter((x) => x.status === 'completed').length;
   const running = t.nodes.find((x) => ['running', 'retrying'].includes(x.status));
@@ -127,6 +128,38 @@ function openTask(t: TaskGraph) {
   if (t.status === 'planned') { router.push(`/plan/${t.task_id}`); return; }
   router.push(`/task/${t.task_id}`);
 }
+
+// ---------- execution queues (project lanes) ----------
+
+const queues = ref<QueueSnapshot[]>([]);
+let queueTimer: number | null = null;
+const visibleQueues = computed(() => queues.value.filter((q) => q.running_task_id || q.pending.length || q.blocked));
+
+async function refreshQueues() {
+  try {
+    queues.value = await api.queues();
+  } catch { /* server unreachable — keep last snapshot */ }
+}
+
+async function onResume(key: string) {
+  await api.resumeQueue(key);
+  showToast('队列已恢复');
+  await refreshQueues();
+}
+
+async function onClear(key: string) {
+  await api.clearQueue(key);
+  showToast('已清空排队任务');
+  await refreshQueues();
+}
+
+onMounted(() => {
+  refreshQueues();
+  queueTimer = window.setInterval(refreshQueues, 5000);
+});
+onUnmounted(() => {
+  if (queueTimer !== null) window.clearInterval(queueTimer);
+});
 </script>
 
 <template>
@@ -144,6 +177,19 @@ function openTask(t: TaskGraph) {
       background="transparent"
       @search="onSearch"
     />
+
+    <!-- execution queues: one lane per project, blocked lanes wait for the user -->
+    <div v-for="q in visibleQueues" :key="q.key" class="queue-strip" :class="{ 'queue-blocked': q.blocked }">
+      <div class="q-head">
+        <span class="q-tag" :class="{ bad: q.blocked }">{{ q.project_id ? '项目队列' : '默认队列' }}</span>
+        <span class="q-info mono">
+          {{ q.running_task_id ? `执行中: ${q.running_task_id}` : '空闲' }}<template v-if="q.pending.length"> · 排队 {{ q.pending.length }}</template>
+        </span>
+        <van-button v-if="q.blocked" size="mini" type="primary" @click="onResume(q.key)">恢复</van-button>
+        <van-button v-if="q.pending.length" size="mini" plain @click="onClear(q.key)">清空</van-button>
+      </div>
+      <div v-if="q.blocked" class="q-reason">{{ q.blocked_reason }}</div>
+    </div>
 
     <!-- pull-refresh must NOT be the scroll container itself (Vant swallows
          touch scrolling when overflow:auto sits on the same node) -->
@@ -182,6 +228,7 @@ function openTask(t: TaskGraph) {
                     v-if="t.status === 'running' || t.status === 'retrying'"
                     class="s-pill run wx-pulse"
                   >执行中</span>
+                  <span v-else-if="t.status === 'queued'" class="s-pill queue">排队中</span>
                   <span v-else-if="t.status === 'waiting_approval' || t.status === 'clarifying' || t.status === 'planned'" class="s-pill wait">待处理</span>
                   <span v-else-if="t.status === 'failed'" class="s-pill bad">失败</span>
                   <span v-else-if="t.status === 'success'" class="s-pill ok">完成</span>
@@ -259,6 +306,7 @@ function openTask(t: TaskGraph) {
   font-size: 11px; font-weight: 500; border-radius: 5px; padding: 2px 7px; line-height: 1.4;
 }
 .s-pill.run { color: var(--yellow); background: rgba(255, 180, 84, 0.1); border: 1px solid rgba(255, 180, 84, 0.3); }
+.s-pill.queue { color: var(--text-3); background: rgba(148, 163, 184, 0.1); border: 1px solid rgba(148, 163, 184, 0.3); }
 .s-pill.wait { color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(34, 211, 238, 0.3); }
 .s-pill.bad { color: var(--red); background: rgba(255, 93, 110, 0.1); border: 1px solid rgba(255, 93, 110, 0.3); }
 .s-pill.ok { color: var(--green); background: rgba(52, 245, 197, 0.08); border: 1px solid rgba(52, 245, 197, 0.28); }
@@ -269,4 +317,23 @@ function openTask(t: TaskGraph) {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .s-chevron { flex-shrink: 0; opacity: 0.55; }
+
+/* queue strips between search and the session list */
+.queue-strip {
+  margin: 0 12px 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(17, 26, 40, 0.6);
+}
+.queue-strip.queue-blocked { border-color: var(--red); }
+.q-head { display: flex; align-items: center; gap: 8px; }
+.q-tag {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 5px;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid rgba(34, 211, 238, 0.3);
+}
+.q-tag.bad { color: var(--red); background: rgba(255, 93, 110, 0.1); border-color: rgba(255, 93, 110, 0.3); }
+.q-info { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-reason { margin-top: 6px; font-size: 12px; color: var(--red); line-height: 1.4; }
 </style>

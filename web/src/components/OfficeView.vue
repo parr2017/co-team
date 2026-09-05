@@ -9,6 +9,7 @@
       </div>
       <div class="oh-bar"><div class="oh-fill" :style="{ width: totalCount ? Math.round(doneCount / totalCount * 100) + '%' : '0%' }"></div></div>
       <el-button size="small" type="primary" @click="newTaskVisible = true">发起新任务</el-button>
+      <el-button size="small" @click="openCostReport">进度成本表</el-button>
     </div>
 
     <!-- 进行中工单 -->
@@ -115,7 +116,60 @@
       <template #footer>
         <el-button size="small" @click="newTaskVisible = false">取消</el-button>
         <el-button size="small" type="primary" :loading="creatingTask" @click="createTask">生成计划（进入评审）</el-button>
-      </template>
+          <!-- 进度成本表 -->
+    <el-dialog v-model="costVisible" title="项目进度成果表" width="94%" top="4vh">
+      <div v-if="costReport" class="cost-report">
+        <div class="cost-totals mono">
+          <span>任务 {{ costReport.totals.tasks }}</span>
+          <span>✅ {{ costReport.totals.tasks_success }}</span>
+          <span>🔄 {{ costReport.totals.tasks_running }}</span>
+          <span>❌ {{ costReport.totals.tasks_failed }}</span>
+          <span>节点 {{ costReport.totals.nodes }}（完成 {{ costReport.totals.nodes_completed }} / 失败 {{ costReport.totals.nodes_failed }}）</span>
+          <span>重试 {{ costReport.totals.retries }}</span>
+          <span>Token {{ costReport.totals.tokens.toLocaleString() }}</span>
+          <span>交付成果 {{ costReport.totals.deliverables }}</span>
+          <span>总时长 {{ Math.round(costReport.totals.duration_sec / 60) }} 分钟</span>
+        </div>
+        <el-table :data="costReport.tasks" size="small" border>
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <el-table :data="row.nodes" size="small" border>
+                <el-table-column prop="name" label="节点" min-width="200" show-overflow-tooltip />
+                <el-table-column prop="agent" label="Agent" width="90" />
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row: n }"><el-tag size="small" :type="n.status === 'completed' ? 'success' : n.status === 'failed' ? 'danger' : 'warning'">{{ n.status }}</el-tag></template>
+                </el-table-column>
+                <el-table-column label="重试" width="60"><template #default="{ row: n }">{{ n.retry_count || 0 }}</template></el-table-column>
+                <el-table-column prop="model" label="模型" width="140" show-overflow-tooltip />
+                <el-table-column label="Token" width="90"><template #default="{ row: n }">{{ n.tokens.toLocaleString() }}</template></el-table-column>
+                <el-table-column label="时长" width="80"><template #default="{ row: n }">{{ n.duration_sec }}s</template></el-table-column>
+                <el-table-column label="交付成果" width="110">
+                  <template #default="{ row: n }">
+                    <el-button v-if="n.deliverable" size="small" link type="primary" @click.stop="viewDeliverable(n)">阅读报告</el-button>
+                    <span v-else class="mono">—</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+          </el-table-column>
+          <el-table-column prop="description" label="任务" min-width="220" show-overflow-tooltip />
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }"><el-tag size="small" :type="row.status === 'success' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'">{{ row.status }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="level" label="级别" width="80" />
+          <el-table-column label="Token" width="100"><template #default="{ row }">{{ row.tokens.toLocaleString() }}</template></el-table-column>
+          <el-table-column label="时长" width="90"><template #default="{ row }">{{ Math.round(row.duration_sec / 60) }}m</template></el-table-column>
+          <el-table-column label="成果" width="70"><template #default="{ row }">{{ row.nodes.filter((n: any) => n.deliverable).length }}/{{ row.nodes.length }}</template></el-table-column>
+        </el-table>
+      </div>
+      <div v-else class="mono">加载中…</div>
+    </el-dialog>
+
+    <!-- 交付成果阅读器：统一模板固定展现 -->
+    <el-dialog v-model="delivViewOpen" :title="'交付成果 · ' + (delivView?.node_name || '')" width="720px" top="5vh" append-to-body>
+      <div class="deliverable-md md" v-html="renderMd(delivView?.markdown || '')"></div>
+    </el-dialog>
+</template>
     </el-dialog>
   </div>
 </template>
@@ -123,7 +177,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, type AgentInfo, type ProjectDetail, type TaskGraph, type TaskNode } from '../api';
+import { marked } from 'marked';
+import { api, type AgentInfo, type ProjectProgressReport, type ProjectDetail, type TaskGraph, type TaskNode } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
 interface Seat {
@@ -148,6 +203,23 @@ const { agents } = useDashboard();
 const detail = ref<ProjectDetail | null>(null);
 const agentDefs = ref<AgentInfo[]>([]);
 const newTaskVisible = ref(false);
+const costVisible = ref(false);
+const costReport = ref<ProjectProgressReport | null>(null);
+async function openCostReport() {
+  costVisible.value = true;
+  try { costReport.value = await api.projectReport(props.projectId); } catch { costReport.value = null; }
+}
+const delivViewOpen = ref(false);
+const delivView = ref<{ node_name: string; markdown: string } | null>(null);
+function viewDeliverable(n: { deliverable: { node_name: string; markdown: string } | null }) {
+  if (n.deliverable) {
+    delivView.value = n.deliverable;
+    delivViewOpen.value = true;
+  }
+}
+function renderMd(text: string): string {
+  return String(marked.parse(text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { async: false, breaks: true }));
+}
 const creatingTask = ref(false);
 const taskDesc = ref('');
 const newMemory = ref('');
@@ -433,4 +505,11 @@ defineExpose({ refreshDetail, loadAgents });
 .empty { color: var(--ct-text3); text-align: center; padding: 30px; font-size: 12px; }
 .muted { color: var(--ct-text3); text-transform: none; font-weight: 400; }
 @keyframes blink { 50% { opacity: 0.4; } }
+.cost-totals { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ct-text2); margin-bottom: 12px; }
+.cost-totals span { background: var(--ct-panel2); border-radius: 4px; padding: 3px 10px; }
+.deliverable-md { max-height: 62vh; overflow-y: auto; }
+.deliverable-md :deep(h1) { font-size: 17px; margin: 4px 0 10px; }
+.deliverable-md :deep(h2) { font-size: 14px; margin: 14px 0 6px; border-bottom: 1px solid var(--ct-border); padding-bottom: 4px; }
+.deliverable-md :deep(table) { border-collapse: collapse; margin: 8px 0; }
+.deliverable-md :deep(th), .deliverable-md :deep(td) { border: 1px solid var(--ct-border); padding: 4px 10px; font-size: 12px; }
 </style>

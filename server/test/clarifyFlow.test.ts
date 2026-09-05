@@ -19,19 +19,19 @@ vi.mock('../src/llm', async (importOriginal) => {
         const prior = user.includes('此前已进行的澄清问答');
         const vague = user.includes('做点什么吧');
         if (vague && !prior) {
-          return { content: JSON.stringify({ clear: false, missing: ['目标'], questions: ['具体要做什么？'], summary: '模糊需求' }), promptTokens: 2, completionTokens: 3 };
+          return { content: JSON.stringify({ clear: false, missing: ['目标'], questions: ['具体要做什么？'], summary: '模糊需求', verification: '已逐项核对产出与任务要求' }), promptTokens: 2, completionTokens: 3 };
         }
-        return { content: JSON.stringify({ clear: true, missing: [], questions: [], summary: '清楚了' }), promptTokens: 2, completionTokens: 3 };
+        return { content: JSON.stringify({ clear: true, missing: [], questions: [], summary: '清楚了', verification: '已逐项核对产出与任务要求' }), promptTokens: 2, completionTokens: 3 };
       }
       if (sys.includes('task planner')) {
         (globalThis as any).__lastPlanModel = entry.name;
         return {
-          content: JSON.stringify({ nodes: [{ id: '1', name: '实现 X', agent: 'dev', complexity: 'normal', goal_link: '服务于目标' }], edges: [], summary: 'plan' }),
+          content: JSON.stringify({ nodes: [{ id: '1', name: '实现 X', agent: 'dev', complexity: 'normal', goal_link: '服务于目标' }], edges: [], summary: 'plan', verification: '已逐项核对产出与任务要求' }),
           promptTokens: 2, completionTokens: 3,
         };
       }
       (globalThis as any).__lastSystem = sys;
-      return { content: JSON.stringify({ status: 'success', summary: 'done', changes: [], errors: [] }), promptTokens: 3, completionTokens: 4 };
+      return { content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: [], errors: [] }), promptTokens: 3, completionTokens: 4 };
     },
   };
 });

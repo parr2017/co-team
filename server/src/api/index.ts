@@ -6,6 +6,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import type { Server } from 'node:http';
 import { Orchestrator } from '../orchestrator/orchestrator';
 import { ModelPool } from '../scheduler';
+import type { TaskQueueManager, QueueSnapshot } from '../taskQueue';
 import { busGet, busKeys, busSet, busDel, getBus } from '../bus';
 import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask } from '../store';
 import { getTaskConversations } from '../transcript';
@@ -18,6 +19,7 @@ export interface ApiContext {
   config: AppConfig;
   orchestrator: Orchestrator;
   modelPool: ModelPool;
+  taskQueue: TaskQueueManager;
 }
 
 function validateWorkspace(workspace: string): string {
@@ -37,28 +39,8 @@ export function createApi(ctx: ApiContext): Hono {
   const app = new Hono();
   const logger = getLogger();
 
-  const runInBackground = (taskId: string, workspace: string): void => {
-    logger.info('Starting background task execution', { taskId, workspace });
-    void (async () => {
-      try {
-        await ctx.orchestrator.execute(taskId, workspace);
-        logger.info('Background task execution completed', { taskId });
-      } catch (e: any) {
-        const error = String(e).slice(0, 500);
-        logger.error('Background task execution failed', { taskId, error });
-        // surface the failure on the graph itself — a task must never be left 'running' or vanish from the list
-        try {
-          const { getTaskGraph, persistGraph } = await import('../store');
-          const graph = await getTaskGraph(taskId);
-          if (graph) {
-            graph.status = 'failed';
-            await persistGraph(graph);
-          }
-        } catch { /* best effort */ }
-        await busSet(`task:graph:${taskId}:bg_error`, { error }).catch(() => {});
-      }
-    })();
-  };
+  // all task executions go through the project queue: same project runs one task at
+  // a time, different projects run concurrently, failures block the lane until resumed
 
   app.onError((err, c) => {
     const status = err instanceof HttpError ? err.status : 500;
@@ -186,8 +168,9 @@ export function createApi(ctx: ApiContext): Hono {
 
     // tasks land in "planned" state waiting for user review in the plan review panel;
     // auto_run is opt-in for script/API callers
-    if (body.auto_run === true) runInBackground(taskId, workspace);
-    return c.json({ status: 'created', task_id: taskId, graph, auto_run: body.auto_run === true, level });
+    let queue: QueueSnapshot | null = null;
+    if (body.auto_run === true) queue = await ctx.taskQueue.enqueue(taskId, body.project_id ?? null, workspace);
+    return c.json({ status: 'created', task_id: taskId, graph, auto_run: body.auto_run === true, level, queue });
   });
 
   // improvement 5: clarification loop — human answers, then explicit confirmation
@@ -251,9 +234,9 @@ export function createApi(ctx: ApiContext): Hono {
     const ws = validateWorkspace(c.req.query('workspace') || graph.workspace || '.');
     
     logger.info('Executing task', { taskId, workspace: ws });
-    runInBackground(taskId, ws);
-    
-    return c.json({ status: 'started', task_id: taskId, workspace: ws });
+    const queue = await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, ws);
+
+    return c.json({ status: 'started', task_id: taskId, workspace: ws, queue });
   });
 
   app.post('/api/tasks/:taskId/cancel', async (c) => {
@@ -261,7 +244,28 @@ export function createApi(ctx: ApiContext): Hono {
     const graph = await getTaskGraph(taskId);
     if (!graph) throw new HttpError(404, 'task not found');
     await busSet(`task:cancel:${taskId}`, true);
+    // a cancelled task must not stay in the queue — drop it from the pending tail
+    await ctx.taskQueue.removePending(taskId);
     return c.json({ status: 'cancelling', task_id: taskId });
+  });
+
+  // ---------- task queues (project-scoped execution lanes) ----------
+
+  app.get('/api/queues', async (c) => {
+    return c.json({ queues: ctx.taskQueue.snapshots() });
+  });
+
+  app.post('/api/queues/:key/resume', async (c) => {
+    const key = c.req.param('key');
+    logger.info('Resuming task queue', { key });
+    return c.json({ status: 'resumed', queue: ctx.taskQueue.resume(key) });
+  });
+
+  app.post('/api/queues/:key/clear', async (c) => {
+    const key = c.req.param('key');
+    logger.info('Clearing task queue', { key });
+    const queue = await ctx.taskQueue.clear(key);
+    return c.json({ status: 'cleared', queue });
   });
 
   // improvement 6 (R1): message-style intervention — queue a user message for the
@@ -303,7 +307,7 @@ export function createApi(ctx: ApiContext): Hono {
     if (!approvals.includes(nodeId)) approvals.push(nodeId);
     await busSet(`task:approvals:${taskId}`, approvals);
     const ws = graph.workspace || '.';
-    runInBackground(taskId, ws);
+    await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, ws);
     return c.json({ status: 'approved', task_id: taskId, node_id: nodeId });
   });
 
@@ -370,6 +374,22 @@ export function createApi(ctx: ApiContext): Hono {
     const { getTaskJournals } = await import('../store');
     const taskId = c.req.param('taskId');
     return c.json({ task_id: taskId, journals: await getTaskJournals(taskId) });
+  });
+
+  // ---------- node deliverables (统一模板交付成果) ----------
+
+  app.get('/api/tasks/:taskId/deliverables', async (c) => {
+    const { listDeliverables } = await import('../deliverable');
+    const taskId = c.req.param('taskId');
+    return c.json({ task_id: taskId, deliverables: await listDeliverables(taskId) });
+  });
+
+  app.get('/api/tasks/:taskId/deliverables/:nodeId', async (c) => {
+    const { getDeliverable } = await import('../deliverable');
+    const taskId = c.req.param('taskId');
+    const d = await getDeliverable(taskId, c.req.param('nodeId'));
+    if (!d) throw new HttpError(404, 'deliverable not found');
+    return c.json({ task_id: taskId, ...d });
   });
 
   app.get('/api/agents/profiles', async (c) => {
@@ -638,6 +658,136 @@ export function createApi(ctx: ApiContext): Hono {
         latency_ms: Date.now() - start,
       }, 400);
     }
+  });
+
+  // ---------- project progress & cost report (进度成本表) ----------
+
+  app.get('/api/projects/:id/report', async (c) => {
+    const { getProject, listProjectTasks } = await import('../store');
+    const { listDeliverables } = await import('../deliverable');
+    const id = c.req.param('id');
+    const project = await getProject(id);
+    if (!project) throw new HttpError(404, 'project not found');
+
+    const tasks = await listProjectTasks(id);
+    const taskRows = [];
+    for (const t of tasks) {
+      // node deliverables (统一模板交付成果) keyed by node for the report table
+      const delivs = await listDeliverables(t.task_id);
+      const delivByNode = new Map(delivs.map((d) => [d.node_id, d]));
+      const nodes = t.nodes.map((n) => {
+        const tokens = n.result?.tokens || 0;
+        const model = n.result?.model || null;
+        const durationSec = n.started_at
+          ? Math.max(0, Math.round(((n.finished_at ? new Date(n.finished_at).getTime() : Date.now()) - new Date(n.started_at).getTime()) / 1000))
+          : 0;
+        const deliv = delivByNode.get(n.id);
+        return {
+          node_id: n.id,
+          name: n.name,
+          agent: n.agent,
+          status: n.status,
+          retry_count: n.retry_count || 0,
+          model,
+          tokens,
+          duration_sec: durationSec,
+          started_at: n.started_at || null,
+          finished_at: n.finished_at || null,
+          deliverable: deliv ? { node_name: deliv.node_name, markdown: deliv.markdown, ts: deliv.ts } : null,
+        };
+      });
+      taskRows.push({
+        task_id: t.task_id,
+        description: t.description,
+        status: t.status,
+        level: t.level ?? null,
+        created_at: t.created_at,
+        updated_at: t.updated_at,
+        tokens: nodes.reduce((s, n) => s + n.tokens, 0),
+        duration_sec: nodes.reduce((s, n) => s + n.duration_sec, 0),
+        nodes,
+      });
+    }
+
+    const allNodes = taskRows.flatMap((t) => t.nodes);
+    const totals = {
+      tasks: taskRows.length,
+      tasks_success: taskRows.filter((t) => t.status === 'success').length,
+      tasks_failed: taskRows.filter((t) => t.status === 'failed').length,
+      tasks_running: taskRows.filter((t) => ['running', 'retrying', 'pending', 'waiting_approval'].includes(t.status)).length,
+      nodes: allNodes.length,
+      nodes_completed: allNodes.filter((n) => n.status === 'completed').length,
+      nodes_failed: allNodes.filter((n) => n.status === 'failed').length,
+      retries: allNodes.reduce((s, n) => s + n.retry_count, 0),
+      tokens: allNodes.reduce((s, n) => s + n.tokens, 0),
+      duration_sec: allNodes.reduce((s, n) => s + n.duration_sec, 0),
+      deliverables: allNodes.filter((n) => n.deliverable).length,
+    };
+    taskRows.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+    return c.json({ project: { id: project.id, name: project.name, workspace: project.workspace }, totals, tasks: taskRows });
+  });
+
+  // ---------- agent skills (SKILL.md convention) ----------
+
+  app.get('/api/skills', async (c) => {
+    const { getSkills, reloadSkills } = await import('../skills');
+    const { PROJECT_ROOT } = await import('../config');
+    const globalDir = path.join(PROJECT_ROOT, 'skills');
+    reloadSkills(ctx.config.agents_dir, globalDir);
+    const skills = getSkills();
+    const bindings: Record<string, string[]> = {};
+    for (const p of ctx.orchestrator.plugins.values()) bindings[p.name] = p.skills || [];
+    return c.json({ skills, bindings });
+  });
+
+  app.post('/api/skills', async (c) => {
+    const { writeSkill, reloadSkills, getSkills } = await import('../skills');
+    const { PROJECT_ROOT } = await import('../config');
+    const globalDir = path.join(PROJECT_ROOT, 'skills');
+    const body = await c.req.json<{ name?: string; description?: string; tags?: string[]; content?: string }>();
+    if (!body.name?.trim()) throw new HttpError(400, 'name is required');
+    try {
+      writeSkill(globalDir, { name: body.name, description: body.description, tags: body.tags, content: body.content });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+    reloadSkills(ctx.config.agents_dir, globalDir);
+    return c.json({ status: 'created', total: getSkills().length });
+  });
+
+  app.put('/api/skills/:name', async (c) => {
+    const { writeSkill, reloadSkills, getSkills } = await import('../skills');
+    const { PROJECT_ROOT } = await import('../config');
+    const globalDir = path.join(PROJECT_ROOT, 'skills');
+    const name = c.req.param('name');
+    const existing = getSkills().find((s) => s.name === name);
+    if (!existing) throw new HttpError(404, 'skill not found');
+    const body = await c.req.json<{ description?: string; tags?: string[]; content?: string; name?: string }>();
+    writeSkill(globalDir, {
+      name: body.name || name,
+      description: body.description ?? existing.description,
+      tags: body.tags ?? existing.tags,
+      content: body.content ?? existing.body,
+      originalName: name,
+    });
+    reloadSkills(ctx.config.agents_dir, globalDir);
+    return c.json({ status: 'updated' });
+  });
+
+  app.delete('/api/skills/:name', async (c) => {
+    const { deleteSkill, reloadSkills } = await import('../skills');
+    const { PROJECT_ROOT } = await import('../config');
+    const globalDir = path.join(PROJECT_ROOT, 'skills');
+    if (!deleteSkill(globalDir, c.req.param('name'))) throw new HttpError(404, 'skill not found in global library');
+    reloadSkills(ctx.config.agents_dir, globalDir);
+    return c.json({ status: 'deleted' });
+  });
+
+  app.post('/api/skills/reload', async (c) => {
+    const { reloadSkills, getSkills } = await import('../skills');
+    const { PROJECT_ROOT } = await import('../config');
+    const skills = reloadSkills(ctx.config.agents_dir, path.join(PROJECT_ROOT, 'skills'));
+    return c.json({ status: 'reloaded', total: skills.length, skills: skills.map((s) => ({ name: s.name, source: s.source })) });
   });
 
   // ---------- status / metrics / fs ----------

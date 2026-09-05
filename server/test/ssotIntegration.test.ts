@@ -14,7 +14,7 @@ vi.mock('../src/llm', async (importOriginal) => {
       const sys = [...messages].reverse().find((m) => m.role === 'system')?.content || '';
       seenSystems.push(sys);
       return {
-        content: JSON.stringify({ status: 'success', summary: 'done', changes: ['a.txt: ok'], errors: [] }),
+        content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['a.txt: ok'], errors: [] }),
         promptTokens: 3,
         completionTokens: 4,
       };

@@ -8,6 +8,7 @@
         </div>
         <nav class="nav mono">
           <button class="nav-tab" :class="{ active: page === 'workbench' }" @click="page = 'workbench'">工作台</button>
+          <button class="nav-tab" :class="{ active: page === 'tasks' }" @click="page = 'tasks'">任务中心</button>
           <button class="nav-tab" :class="{ active: page === 'project' }" @click="page = 'project'">项目开发</button>
         </nav>
         <div class="header-right">
@@ -58,7 +59,31 @@
         </aside>
       </div>
 
-      <div class="layout" v-if="page === 'project'">
+      <div class="layout" v-else-if="page === 'tasks'">
+        <main class="main">
+          <TaskCenterView
+            :tasks="tasks"
+            :total="taskTotal"
+            :current-page="taskPage"
+            :page-size="taskPageSize"
+            @approve="onApprove"
+            @cancel="onCancel"
+            @delete="onDeleteTask"
+            @show-logs="openChat"
+            @show-dag="dagTaskId = $event"
+            @show-detail="detailTaskId = $event"
+            @review="openReview"
+            @clarify="openClarify"
+            @page-change="onTaskPageChange"
+            @search="onTaskSearch"
+          />
+        </main>
+        <aside class="side">
+          <ModelPoolPanel :status="status" @refresh="refreshStatus" />
+        </aside>
+      </div>
+
+      <div class="layout" v-else-if="page === 'project'">
         <main class="main">
           <ProjectView @open-detail="detailTaskId = $event" @review="openReview" />
         </main>
@@ -86,6 +111,7 @@ import { useTheme } from './composables/useTheme';
 import TaskForm from './components/TaskForm.vue';
 import AgentCards from './components/AgentCards.vue';
 import TaskList from './components/TaskList.vue';
+import TaskCenterView from './components/TaskCenterView.vue';
 import EventLog from './components/EventLog.vue';
 import ModelPoolPanel from './components/ModelPoolPanel.vue';
 import MetricsPanel from './components/MetricsPanel.vue';
@@ -105,7 +131,7 @@ const { theme, toggle } = useTheme();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
 const settingsVisible = ref(false);
-const page = ref<'workbench' | 'project'>('workbench');
+const page = ref<'workbench' | 'tasks' | 'project'>('workbench');
 const roadmapVisible = ref(false);
 const reviewTaskId = ref<string | null>(null);
 const detailTaskId = ref<string | null>(null);

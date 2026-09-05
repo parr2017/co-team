@@ -13,7 +13,7 @@ vi.mock('../src/llm', async (importOriginal) => {
     chat: async (_entry: any, messages: { role: string; content: string }[]) => {
       seenMessages.push(messages.map((m) => ({ ...m })));
       return {
-        content: JSON.stringify({ status: 'success', summary: 'done', changes: ['x.txt: ok'], errors: [] }),
+        content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['x.txt: ok'], errors: [] }),
         promptTokens: 3,
         completionTokens: 4,
       };
@@ -25,6 +25,7 @@ import { initBus, closeBus, getBus } from '../src/bus';
 import { ModelPool } from '../src/scheduler';
 import { Orchestrator } from '../src/orchestrator/orchestrator';
 import { createApi } from '../src/api';
+import { TaskQueueManager } from '../src/taskQueue';
 import type { AppConfig } from '../src/config';
 import {
   saveTaskGraph,
@@ -167,7 +168,7 @@ describe('intervention API (POST /api/tasks/:taskId/intervene)', () => {
       knowledge: { dir: path.join(tmp, 'kb') },
     };
     const pool = new ModelPool(config.model_pool);
-    return createApi({ config, orchestrator, modelPool: pool });
+    return createApi({ config, orchestrator, modelPool: pool, taskQueue: new TaskQueueManager(orchestrator, pool) });
   }
 
   it('queues the message, writes a journal intervene entry and broadcasts user_intervened', async () => {

@@ -72,6 +72,22 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <AgentAvatar :name="item.agent" :size="36" class="av" />
       </div>
 
+      <!-- 交付成果卡片：点击弹出统一模板阅读器 -->
+      <div v-else-if="item.t === 'deliverable'" class="row them">
+        <div class="them-col">
+          <div class="who-name mono">{{ item.agent }} · 交付成果</div>
+          <button class="deliv-card mono" @click="openDeliverable(item.entry)">
+            <span class="dc-ico">📄</span>
+            <span class="dc-body">
+              <span class="dc-title">{{ item.entry.node_name }}</span>
+              <span class="dc-sub">交付报告 · 统一模板 · 点击阅读</span>
+            </span>
+            <span class="dc-arrow">›</span>
+          </button>
+        </div>
+        <AgentAvatar :name="item.agent" :size="36" class="av" />
+      </div>
+
       <!-- 子 Agent：错误（左侧红色边气泡） -->
       <div v-else-if="item.t === 'error'" class="row them">
         <div class="them-col">
@@ -99,6 +115,19 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
       </div>
       <AgentAvatar :name="typingAgent" :size="36" class="av" />
     </div>
+    <!-- 交付成果阅读器：统一模板固定展现 -->
+    <el-dialog
+      v-model="deliverableOpen"
+      :title="'交付成果 · ' + (deliverableView?.title || '')"
+      width="720px"
+      top="6vh"
+      append-to-body
+    >
+      <div class="deliverable-md md" v-html="md(deliverableView?.markdown || '')"></div>
+      <template #footer>
+        <el-button size="small" @click="copyDeliverable">复制 Markdown</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -113,7 +142,7 @@ type Entry = JournalEntry & { agent: string };
 type RenderItem =
   | { t: 'time'; label: string }
   | { t: 'node'; name: string; models: string[] }
-  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene'; entry: Entry; agent: string };
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 
@@ -156,6 +185,26 @@ const renderItems = computed<RenderItem[]>(() => {
   if (lastNode) out.push({ t: 'node', name: nodeNameOf(lastNode), models });
   return out;
 });
+
+const deliverableView = ref<{ title: string; markdown: string } | null>(null);
+const deliverableOpen = computed({
+  get: () => deliverableView.value !== null,
+  set: (v: boolean) => { if (!v) deliverableView.value = null; },
+});
+function copyDeliverable() {
+  if (deliverableView.value) void navigator.clipboard?.writeText(deliverableView.value.markdown);
+}
+function openDeliverable(entry: JournalEntry) {
+  const md = entry.meta?.markdown;
+  if (md) {
+    deliverableView.value = { title: entry.node_name || entry.node_id, markdown: md };
+  } else {
+    // journal cap may have evicted the body — fetch on demand
+    void api.getDeliverable(props.taskId, entry.node_id).then((d) => {
+      deliverableView.value = { title: d.node_name || entry.node_id, markdown: d.markdown };
+    }).catch(() => {});
+  }
+}
 
 const nodeNames = ref<Record<string, string>>({});
 function nodeNameOf(nodeId: string): string {
@@ -322,6 +371,31 @@ html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575;
 .attach { margin-top: 6px; }
 .attach summary { cursor: pointer; font-size: 10px; color: var(--ct-text3); }
 .attach .pre { max-height: 180px; overflow: auto; background: var(--ct-bg); border-radius: 4px; padding: 6px; margin-top: 4px; font-size: 10px; white-space: pre-wrap; }
+
+/* 交付成果卡片 */
+.deliv-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--ct-panel);
+  border: 1px solid var(--ct-border2);
+  border-left: 3px solid var(--ct-accent);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s ease, transform 0.1s ease;
+}
+.deliv-card:hover { border-color: var(--ct-accent); }
+.deliv-card:active { transform: scale(0.98); }
+.dc-ico { font-size: 20px; }
+.dc-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dc-title { font-size: 13px; color: var(--ct-text); font-weight: 600; }
+.dc-sub { font-size: 11px; color: var(--ct-text3); }
+.dc-arrow { margin-left: auto; color: var(--ct-text3); font-size: 18px; }
+.deliverable-md { max-height: 62vh; overflow-y: auto; }
+.deliverable-md :deep(h1) { font-size: 17px; margin: 4px 0 10px; }
+.deliverable-md :deep(h2) { font-size: 14px; margin: 14px 0 6px; border-bottom: 1px solid var(--ct-border); padding-bottom: 4px; }
+.deliverable-md :deep(table) { border-collapse: collapse; margin: 8px 0; }
+.deliverable-md :deep(th), .deliverable-md :deep(td) { border: 1px solid var(--ct-border); padding: 4px 10px; font-size: 12px; }
 
 /* 居中灰色系统消息（工具动作行） */
 .sys-row { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 2px 0; }

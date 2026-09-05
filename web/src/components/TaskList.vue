@@ -26,6 +26,7 @@
         @clear="doSearch"
       />
     </div>
+    <QueuePanel />
     <div v-if="!sorted.length" class="empty">暂无任务</div>
     <div v-for="t in sorted" :key="t.task_id" class="task-item">
       <div class="task-header">
@@ -37,7 +38,7 @@
           <el-button v-if="t.status === 'clarifying'" size="small" type="warning" @click="$emit('clarify', t.task_id)">回复澄清</el-button>
           <el-button v-if="t.status !== 'planned' && t.status !== 'clarifying'" size="small" link type="primary" @click="$emit('show-detail', t.task_id)">详情</el-button>
           <el-button v-if="t.status !== 'planned' && t.status !== 'clarifying'" size="small" link type="primary" @click="$emit('show-dag', t.task_id)">拓扑图</el-button>
-          <el-button v-if="t.status === 'running' || t.status === 'pending'" size="small" link type="danger" @click="$emit('cancel', t.task_id)">取消</el-button>
+          <el-button v-if="t.status === 'running' || t.status === 'pending' || t.status === 'queued'" size="small" link type="danger" @click="$emit('cancel', t.task_id)">取消</el-button>
           <el-button size="small" link type="danger" @click="$emit('delete', t.task_id)">删除</el-button>
         </span>
       </div>
@@ -62,8 +63,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import type { TaskGraph } from '../api';
+import QueuePanel from './QueuePanel.vue';
 
-const props = defineProps<{ tasks: Record<string, TaskGraph>; total?: number; currentPage?: number; pageSize?: number }>();
+const props = defineProps<{ tasks: Record<string, TaskGraph>; total?: number; currentPage?: number; pageSize?: number; filterStatus?: string }>();
 const emit = defineEmits<{ (e: 'approve', taskId: string, nodeId: string): void; (e: 'cancel', taskId: string): void; (e: 'delete', taskId: string): void; (e: 'show-logs', taskId: string, nodeId: string): void; (e: 'show-dag', taskId: string): void; (e: 'show-detail', taskId: string): void; (e: 'review', taskId: string): void; (e: 'clarify', taskId: string): void; (e: 'page-change', page: number): void; (e: 'search', keyword: string): void }>();
 
 const keyword = ref('');
@@ -87,7 +89,15 @@ function progress(t: TaskGraph): number {
   return Math.round((done / total) * 100);
 }
 
-const sorted = computed(() => Object.values(props.tasks).sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')));
+const sorted = computed(() =>
+  Object.values(props.tasks)
+    .filter((t) => {
+      if (!props.filterStatus) return true;
+      // comma-separated status list, e.g. "running,retrying"
+      return props.filterStatus.split(',').includes(t.status);
+    })
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+);
 
 function fmtTime(ts: string): string {
   if (!ts) return '';
@@ -99,10 +109,10 @@ function fmtTime(ts: string): string {
 }
 
 function statusLabel(s: string) {
-  return ({ planned: '待确认计划', clarifying: '需求需澄清', pending: '待执行', running: '执行中', completed: '已完成', success: '已完成', failed: '失败', waiting_approval: '待审批', retrying: '重试中', cancelled: '已取消' } as Record<string, string>)[s] || s;
+  return ({ planned: '待确认计划', clarifying: '需求需澄清', pending: '待执行', queued: '排队中', running: '执行中', completed: '已完成', success: '已完成', failed: '失败', waiting_approval: '待审批', retrying: '重试中', cancelled: '已取消' } as Record<string, string>)[s] || s;
 }
 function statusType(s: string) {
-  return ({ success: 'success', completed: 'success', failed: 'danger', running: 'warning', retrying: 'warning', waiting_approval: 'primary', planned: 'primary', clarifying: 'warning' } as Record<string, any>)[s] || 'info';
+  return ({ success: 'success', completed: 'success', failed: 'danger', running: 'warning', retrying: 'warning', waiting_approval: 'primary', planned: 'primary', clarifying: 'warning', queued: 'info' } as Record<string, any>)[s] || 'info';
 }
 function levelLabel(l: string) {
   return ({ light: '轻量', standard: '标准', heavy: '重量' } as Record<string, string>)[l] || l;

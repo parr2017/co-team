@@ -11,7 +11,7 @@ import * as gitTool from '../git';
 import { simpleGit } from 'simple-git';
 import { saveConversation } from '../transcript';
 import { notify } from '../notify';
-import { chat, extractJson, stripCodeFence } from '../llm';
+import { chat, extractJson, salvageToolCalls, stripCodeFence } from '../llm';
 import { busGet, busSet, busKeys, busDel } from '../bus';
 import {
   addAgentMemory,
@@ -42,6 +42,10 @@ import { writeKnowledge, relevantKnowledge } from '../knowledge';
 import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract, docsSection, getDocRegistry } from '../ssot';
 import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, MAX_FIX_ROUNDS } from '../testloop';
 import { createSnapshot } from '../snapshot';
+import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
+import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
+import { saveDeliverable } from '../deliverable';
+import { PROJECT_ROOT } from '../config';
 
 export interface OrchestratorOptions {
   agentsDir: string;
@@ -53,6 +57,8 @@ export interface OrchestratorOptions {
   branchWorkflow?: boolean;
   tokenBudget?: number;
   maxFixRounds?: number;
+  /** global SKILL.md library dir (defaults to PROJECT_ROOT/skills) */
+  skillsGlobalDir?: string;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -112,6 +118,7 @@ export class Orchestrator {
   private tokenBudget?: number;
   private maxFixRounds: number;
   private agentsDir: string;
+  private skillsGlobalDir: string;
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
@@ -119,6 +126,7 @@ export class Orchestrator {
   constructor(opts: OrchestratorOptions) {
     this.plugins = new Map();
     this.agentsDir = opts.agentsDir;
+    this.skillsGlobalDir = opts.skillsGlobalDir || path.join(PROJECT_ROOT, 'skills');
     this.pool = opts.modelPool;
     this.policy = opts.policy;
     this.maxRetries = opts.maxRetries;
@@ -141,6 +149,8 @@ export class Orchestrator {
     const plugins = await discoverAgents(this.agentsDir);
     this.plugins = new Map(plugins.map((p) => [p.name, p]));
     this.router = new Router([...this.plugins.values()], DEFAULT_RULES, this.makeLlmRouter());
+    // skill system: rescan global library + every agent's private skills dir
+    reloadSkills(this.agentsDir, this.skillsGlobalDir);
   }
 
   async reloadAgents(): Promise<string[]> {
@@ -852,6 +862,7 @@ export class Orchestrator {
         node.finished_at = new Date().toISOString();
         node.result = result;
         node.error = '';
+        await saveDeliverable(taskId, node).catch(() => {});
         // improvement 8 (R9): a test-fix loop that ends green reports its rounds + zero failures
         if (fixRound > 0) {
           result.report = {
@@ -882,6 +893,7 @@ export class Orchestrator {
       node.finished_at = new Date().toISOString();
       node.result = { ...result, escalated: true };
       node.error = '';
+      await saveDeliverable(taskId, node).catch(() => {});
       if (useBranch && node.branch) {
         const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name} (escalated)`, result.changes || []).catch(() => null);
         if (commit) (node.result as any).git_commit = { branch: node.branch, commit };
@@ -897,6 +909,7 @@ export class Orchestrator {
     node.error = result.error || error;
     node.result = fixReport ? { ...result, report: fixReport } : result;
     node.needs_human = true;
+    await saveDeliverable(taskId, node).catch(() => {});
     
     this.logger.nodeFailed(taskId, node.id, node.agent, node.error);
     
@@ -1116,28 +1129,30 @@ export class Orchestrator {
       ? '\n\n## 相关知识库条目\n' + knowledgeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')
       : '';
 
-    const systemMsg = [
-      plugin.prompt || '你是开发 Agent。',
+    // harness (执行骨架): layered system prompt replacing the flat block concatenation —
+    // identity / non-negotiable rules / context / workflow / tool policy / output contract / escalation
+    // skill system: bound + auto-matched skills ride inside the harness context block
+    const picks = pickSkillsForNode(getSkills(), plugin as any, node.name);
+    const skillsBlock = formatSkillsBlock(picks);
+    if (picks.length) {
+      this.logger.info('Skills loaded for node', { taskId, nodeId: node.id, agent: plugin.name, skills: picks.map((p) => `${p.skill.name}(${p.reason})`) });
+    }
+    const systemMsg = buildAgentHarness({
+      name: plugin.name,
+      role: plugin.role,
+      description: plugin.description,
+      prompt: plugin.prompt || '你是开发 Agent。',
       projectBlock,
-      goalBlock,
-      docsBlock,
-      knowledgeBlock,
-      memories.length ? '\n\n## 你过往的经验记忆\n' + memories.map((m) => '- ' + m).join('\n') : '',
-      '\n你可以请求读取工具（返回 JSON 时附带 tool_calls 字段）:',
-      ' {"tool_calls":[{"tool":"list_files"}]}',
-      ' {"tool_calls":[{"tool":"read_file","path":"src/main.py"}]}',
-      ' {"tool_calls":[{"tool":"grep","pattern":"正则表达式","path":"src/"}]}',
-      ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
-      ' {"tool_calls":[{"tool":"git_log"}]}',
-      ' {"tool_calls":[{"tool":"git_diff"}]}',
-      '\n沉淀经验（推荐）：执行中遇到通用经验（API 用法、最佳实践、踩坑记录）或项目特定经验时，主动调用知识写入工具:',
-      ' {"tool_calls":[{"tool":"write_knowledge","category":"general-tech|project","title":"条目标题","tags":["标签"],"content":"经验内容（Markdown）"}]}',
-      '\n最终输出必须是 JSON（不要 markdown 代码块）：',
-      '{"status":"success|failed","changes":["file: desc"],"summary":"摘要","errors":[],',
-      '"files":[{"path":"相对路径","content":"完整文件内容"}],"commands":["要执行的命令"]}',
-      '\n如果任务是分析/调查类（不需要写代码），可在 summary 中写详细分析结果，files 和 commands 留空即可。',
-      '\nfiles 中给出需要创建或修改的文件的完整内容；commands 会在沙箱中执行（仅限白名单命令）。',
-    ].join('\n');
+      goalBlock: goalBlock ? goalBlock.replace(/^\n\n/, '') : '',
+      docsBlock: docsBlock ? docsBlock.replace(/^\n\n/, '') : '',
+      knowledgeBlock: knowledgeBlock ? knowledgeBlock.replace(/^\n\n## 相关知识库条目\n/, '') : '',
+      memories,
+      skillsBlock,
+      round: 0,
+      maxRounds: 3,
+      escalate,
+      lastError,
+    });
 
     // improvement 6 (R1): message-style intervention — pending user messages are
     // consumed right before the userMsg is built and injected as a must-respond block
@@ -1205,6 +1220,7 @@ export class Orchestrator {
     try {
       let parsed: Record<string, any> | null = null;
       let content = '';
+      let parseErrorLogged = false;
       for (let round = 0; round < 3; round++) {
         // Check for cancellation before each LLM call
         if (await isCancelled(taskId)) {
@@ -1220,6 +1236,15 @@ export class Orchestrator {
         record.tokens += resp.promptTokens + resp.completionTokens;
         content = stripCodeFence(resp.content);
         parsed = extractJson(content);
+        // malformed tool-call JSON (nested/unclosed tool_calls) is recoverable:
+        // pull out the individual {"tool":...} fragments and run them as a normal tool round
+        if (!parsed) {
+          const salvaged = salvageToolCalls(content);
+          if (salvaged.length > 0) {
+            parsed = { tool_calls: salvaged };
+            this.logger.info('Salvaged tool calls from malformed output', { taskId, nodeId: node.id, agent: plugin.name, model: entry.name, count: salvaged.length });
+          }
+        }
         const roundEntry: Record<string, any> = { assistant: content, tool_results: null, parse_error: null };
         if (!parsed) {
           // If this is the last round and the model returned substantial text,
@@ -1237,7 +1262,13 @@ export class Orchestrator {
           } else {
             roundEntry.parse_error = 'output was not valid JSON';
             record.rounds.push(roundEntry);
-            await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: '输出无法解析为 JSON', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens, meta: { raw: content.slice(0, 1500) } });
+            // war room chat gets one concise line per attempt (not one blob per round);
+            // the raw output is kept as a short single-line excerpt for debugging
+            if (!parseErrorLogged) {
+              parseErrorLogged = true;
+              const excerpt = content.replace(/\s+/g, ' ').trim().slice(0, 200);
+              await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: `第 ${round + 1} 轮输出不是有效 JSON，已要求按格式重新输出`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens, meta: { raw: excerpt } });
+            }
             await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
             // If this was the last round, return failure
             if (round >= 2) {
@@ -1252,6 +1283,25 @@ export class Orchestrator {
         }
         const toolCalls = parsed.tool_calls || [];
         if (toolCalls.length === 0) {
+          // harness schema gate: the final JSON must satisfy the output contract;
+          // violations feed a surgical repair round instead of vague retries
+          const check = validateAgentResult(parsed);
+          if (!check.ok) {
+            roundEntry.parse_error = 'schema violations: ' + check.violations.join('; ');
+            record.rounds.push(roundEntry);
+            if (!parseErrorLogged) {
+              parseErrorLogged = true;
+              await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: `第 ${round + 1} 轮输出违反契约：${check.violations.slice(0, 3).join('；')}，已要求修正`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
+            }
+            await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
+            if (round >= 2) {
+              record.error = 'result schema violations: ' + check.violations.join('; ');
+              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+            }
+            messages.push({ role: 'assistant', content });
+            messages.push({ role: 'user', content: buildRepairMessage(check.violations) });
+            continue;
+          }
           record.rounds.push(roundEntry);
           await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens });
           break;
@@ -1268,6 +1318,13 @@ export class Orchestrator {
           content = stripCodeFence(finalResp.content);
           parsed = extractJson(content);
           if (parsed && !parsed.tool_calls) {
+            // last-resort output still goes through the schema gate; with no repair
+            // rounds left, violations become a precise failure instead of a fake success
+            const check = validateAgentResult(parsed);
+            if (!check.ok) {
+              record.error = 'result schema violations: ' + check.violations.join('; ');
+              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+            }
             roundEntry.assistant = content;
             record.rounds.push(roundEntry);
             await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: finalResp.completionTokens });
@@ -1306,7 +1363,7 @@ export class Orchestrator {
         await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, tool_calls: toolCalls });
         await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'round', text: `请求读取工具: ${toolCalls.map((t: any) => t.tool + (t.path ? ':' + t.path : '')).join(', ')}`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
         messages.push({ role: 'assistant', content });
-        messages.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results).slice(0, 8000)}\n\n请基于以上信息给出最终 JSON 结果。` });
+        messages.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results).slice(0, 8000)}\n\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/3 轮完成，剩余 ${2 - round} 轮——规划好是否还需要侦查）` });
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
         await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
       }
@@ -1334,7 +1391,7 @@ export class Orchestrator {
         text: result.summary || '完成',
         ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
         model: entry.name, tokens: record.tokens,
-        meta: { changes: result.changes || [], errors: result.errors || [], files: (result.files || []).map((f) => f.path), commands: result.commands || [] },
+        meta: { changes: result.changes || [], errors: result.errors || [], files: (result.files || []).map((f) => f.path), commands: result.commands || [], verification: (result as any).verification || '' },
       });
       await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: true, summary: result.summary || '', changes: result.changes || [] });
       if ((result.files || []).length) {

@@ -22,6 +22,8 @@ export interface AgentPlugin extends AgentInfo {
   handler: AgentHandler;
   dir: string;
   version: string;
+  /** explicitly bound skills from agent.yaml (`skills: [name, ...]`) — always injected */
+  skills: string[];
 }
 
 export async function discoverAgents(agentsDir: string): Promise<AgentPlugin[]> {
@@ -62,6 +64,7 @@ export async function discoverAgents(agentsDir: string): Promise<AgentPlugin[]> 
       handler,
       dir: agentDir,
       version: cfg.version || '0.0.0',
+      skills: Array.isArray(cfg.skills) ? cfg.skills.map(String) : [],
     });
   }
   return plugins;

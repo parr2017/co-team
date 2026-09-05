@@ -24,7 +24,7 @@ function post<T>(url: string, payload?: unknown): Promise<T> {
 // ---------- types (mobile subset) ----------
 
 export type TaskStatus =
-  | 'pending' | 'planned' | 'clarifying' | 'running' | 'completed' | 'success'
+  | 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'success'
   | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
 
 export interface TaskNode {
@@ -36,7 +36,7 @@ export interface TaskNode {
   reason?: string;
   retry_count?: number;
   requires_approval?: boolean;
-  result?: { summary?: string; changes?: string[]; report?: TestReport } | null;
+  result?: { summary?: string; changes?: string[]; verification?: string; report?: TestReport } | null;
   started_at?: string;
   finished_at?: string;
   branch?: string;
@@ -139,6 +139,37 @@ export interface ProjectDetail extends ProjectSummary {
   memory: { text: string; ts: string; kind: string }[];
 }
 
+export interface DeliverableDoc {
+  node_id: string;
+  node_name: string;
+  agent: string;
+  status: string;
+  markdown: string;
+  ts: string;
+}
+
+export interface ProjectProgressReport {
+  project: { id: string; name: string; workspace: string };
+  totals: {
+    tasks: number; tasks_success: number; tasks_failed: number; tasks_running: number;
+    nodes: number; nodes_completed: number; nodes_failed: number; retries: number;
+    tokens: number; duration_sec: number; deliverables: number;
+  };
+  tasks: {
+    task_id: string;
+    description: string;
+    status: string;
+    level: string | null;
+    tokens: number;
+    duration_sec: number;
+    nodes: {
+      node_id: string; name: string; agent: string; status: string; retry_count: number;
+      model: string | null; tokens: number; duration_sec: number;
+      deliverable: { node_name: string; markdown: string; ts: string } | null;
+    }[];
+  }[];
+}
+
 // ---------- api ----------
 
 /** normalize the list-item shape: the list endpoint returns `id`, the detail endpoint `task_id` */
@@ -146,7 +177,29 @@ function normalizeTask(raw: Record<string, any>): TaskGraph {
   return { ...raw, task_id: String(raw.task_id || raw.id || '') } as TaskGraph;
 }
 
+export interface QueueEntry {
+  task_id: string;
+  workspace: string;
+  enqueued_at: string;
+}
+
+export interface QueueSnapshot {
+  key: string;
+  project_id: string | null;
+  running_task_id: string | null;
+  pending: QueueEntry[];
+  blocked: boolean;
+  blocked_reason: string;
+  blocked_by: string | null;
+}
+
 export const api = {
+  queues: async (): Promise<QueueSnapshot[]> => {
+    const d = await request<{ queues: QueueSnapshot[] }>('/api/queues');
+    return d.queues;
+  },
+  resumeQueue: (key: string) => post<{ status: string; queue: QueueSnapshot }>(`/api/queues/${encodeURIComponent(key)}/resume`),
+  clearQueue: (key: string) => post<{ status: string; queue: QueueSnapshot }>(`/api/queues/${encodeURIComponent(key)}/clear`),
   listTasks: async (page = 1, pageSize = 20, q?: string): Promise<{ tasks: TaskGraph[]; total: number; page: number; pageSize: number }> => {
     const sp = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q?.trim()) sp.set('q', q.trim());
@@ -159,6 +212,20 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   approveNode: (taskId: string, nodeId: string) => post(`/api/tasks/${taskId}/approve/${nodeId}`),
   cancelTask: (id: string) => post(`/api/tasks/${id}/cancel`),
+  updateNode: async (id: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }): Promise<{ status: string }> => {
+    const res = await fetch(`${BASE}/api/tasks/${id}/nodes/${nodeId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as any).detail || res.statusText);
+    return body as { status: string };
+  },
+  listAgents: async (): Promise<string[]> => {
+    const d = await request<{ agents: { name: string }[] }>('/api/agents');
+    return (d.agents || []).map((a) => a.name);
+  },
   executeTask: (id: string) => post(`/api/tasks/${id}/execute`),
   replan: (id: string, feedback: string) => post(`/api/tasks/${id}/replan`, { feedback }),
   interveneTask: (id: string, message: string) =>
@@ -170,6 +237,9 @@ export const api = {
   agentProfiles: () => request<{ agents: Record<string, AgentProfileSummary> }>('/api/agents/profiles'),
   getModelPool: () => request<{ model_pool: ModelPoolItem[] }>('/api/config/model-pool'),
   fsList: (p: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(p)}`),
+  listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),
+  getDeliverable: (taskId: string, nodeId: string) => request<DeliverableDoc & { task_id: string }>(`/api/tasks/${taskId}/deliverables/${nodeId}`),
+  projectReport: (id: string) => request<ProjectProgressReport>(`/api/projects/${id}/report`),
   // ---------- projects ----------
   listProjects: () => request<{ projects: ProjectSummary[] }>('/api/projects'),
   getProject: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
@@ -182,7 +252,7 @@ export const api = {
 
 export function statusLabel(s: string): string {
   return ({
-    planned: '待确认计划', clarifying: '需求需澄清', pending: '待执行', running: '执行中',
+    planned: '待确认计划', clarifying: '需求需澄清', pending: '待执行', queued: '排队中', running: '执行中',
     completed: '已完成', success: '已完成', failed: '失败', waiting_approval: '待审批',
     retrying: '重试中', cancelled: '已取消',
   } as Record<string, string>)[s] || s;

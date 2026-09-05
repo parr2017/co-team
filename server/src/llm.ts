@@ -90,3 +90,23 @@ export function extractJson(content: string): Record<string, any> | null {
     return null;
   }
 }
+
+/**
+ * Recover tool-call intents from malformed output. Weak models sometimes emit
+ * nested/unclosed tool_calls JSON (a new `{"tool_calls":[` started inside the
+ * array instead of a plain `{"tool":...}` item), which no JSON parser accepts.
+ * This pulls out every flat `{"tool":"..."}` fragment so the orchestrator can
+ * still execute the intended calls instead of failing the round.
+ */
+export function salvageToolCalls(content: string): Record<string, any>[] {
+  const calls: Record<string, any>[] = [];
+  for (const m of content.matchAll(/\{[^{}]*"tool"\s*:\s*"[^"]+"[^{}]*\}/g)) {
+    try {
+      const obj = JSON.parse(m[0]);
+      if (typeof obj.tool === 'string' && obj.tool) calls.push(obj);
+    } catch {
+      // fragment malformed beyond repair, skip it
+    }
+  }
+  return calls;
+}

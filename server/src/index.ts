@@ -8,6 +8,7 @@ import { initBus, closeBus } from './bus';
 import { loadConfig, PROJECT_ROOT } from './config';
 import { Orchestrator } from './orchestrator/orchestrator';
 import { ModelPool } from './scheduler';
+import { TaskQueueManager } from './taskQueue';
 import { policyFromConfig } from './sandbox';
 import { emitProgress } from './store';
 import { startClarifyTimeoutScanner } from './clarifyTimeout';
@@ -121,11 +122,16 @@ async function main(): Promise<void> {
 
   orchestrator.onProgress = (type, payload) => void emitProgress(type, payload);
 
+  // project-scoped execution lanes: same project serial, cross-project parallel,
+  // failures block the lane until the user resumes it
+  const taskQueue = new TaskQueueManager(orchestrator, modelPool);
+  logger.info('Task queue initialized (one running task per project)');
+
   // improvement 5 (R5): periodic scan nudges tasks stuck in 'clarifying' (once per task)
   startClarifyTimeoutScanner({ timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
   logger.info('Clarify timeout scanner started', { timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
 
-  const ctx: ApiContext = { config, orchestrator, modelPool };
+  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue };
   const app = createApi(ctx);
 
   // static hosting of the built frontends (SPA fallback to index.html):

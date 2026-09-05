@@ -140,6 +140,11 @@ export class ModelPool {
     return this.models.reduce((s, m) => s + this.availableSlots(m), 0);
   }
 
+  /** Free slots on healthy models only — the capacity a new task can actually use. */
+  usableCapacity(): number {
+    return this.models.filter((m) => this.isHealthy(m)).reduce((s, m) => s + this.availableSlots(m), 0);
+  }
+
   getUsage(): Record<string, UsageEntry> {
     return Object.fromEntries(this.usage);
   }

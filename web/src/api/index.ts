@@ -1,8 +1,24 @@
 // Shared API client + types mirroring the server contract.
 
-export type TaskStatus = 'pending' | 'planned' | 'clarifying' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
+export type TaskStatus = 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
 
 export type TaskLevel = 'light' | 'standard' | 'heavy';
+
+export interface QueueEntry {
+  task_id: string;
+  workspace: string;
+  enqueued_at: string;
+}
+
+export interface QueueSnapshot {
+  key: string;
+  project_id: string | null;
+  running_task_id: string | null;
+  pending: QueueEntry[];
+  blocked: boolean;
+  blocked_reason: string;
+  blocked_by: string | null;
+}
 
 export interface ProgressInfo {
   task_id: string;
@@ -45,6 +61,53 @@ export interface SnapshotMeta {
   kv_keys: string[];
   created_at: string;
   note?: string;
+}
+
+export interface NodeDeliverableRef {
+  node_name: string;
+  markdown: string;
+  ts: string;
+}
+
+export interface NodeRecordRow {
+  node_id: string;
+  name: string;
+  agent: string;
+  status: string;
+  retry_count: number;
+  model: string | null;
+  tokens: number;
+  duration_sec: number;
+  deliverable: NodeDeliverableRef | null;
+}
+
+export interface TaskRecordRow {
+  task_id: string;
+  description: string;
+  status: string;
+  level: string | null;
+  tokens: number;
+  duration_sec: number;
+  nodes: NodeRecordRow[];
+}
+
+export interface ProjectProgressReport {
+  project: { id: string; name: string; workspace: string };
+  totals: {
+    tasks: number; tasks_success: number; tasks_failed: number; tasks_running: number;
+    nodes: number; nodes_completed: number; nodes_failed: number; retries: number;
+    tokens: number; duration_sec: number; deliverables: number;
+  };
+  tasks: TaskRecordRow[];
+}
+
+export interface DeliverableDoc {
+  node_id: string;
+  node_name: string;
+  agent: string;
+  status: string;
+  markdown: string;
+  ts: string;
 }
 
 export interface TestFixReport {
@@ -186,6 +249,7 @@ export interface AgentDefinition {
   timeout: number;
   version: string;
   prompt: string;
+  skills?: string[];
 }
 
 export interface ProjectMemoryItem {
@@ -197,7 +261,7 @@ export interface ProjectMemoryItem {
 
 export interface JournalEntry {
   role: 'master' | 'agent';
-  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable';
   text: string;
   ts: string;
   node_id: string;
@@ -262,6 +326,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export interface SkillMeta {
+  name: string;
+  description: string;
+  tags: string[];
+  source: string;
+  body?: string;
+}
+
 export const api = {
   createTask: (description: string, workspace: string, autoRun = true, projectId?: string, opts?: { mainModelId?: string; level?: string }) =>
     request<{ task_id: string; status?: string; questions?: string[]; summary?: string; level?: string; graph?: TaskGraph }>('/api/tasks', {
@@ -311,6 +383,11 @@ export const api = {
   deleteTask: (id: string) => request(`/api/tasks/${id}`, { method: 'DELETE' }),
   cancelTask: (id: string) => request(`/api/tasks/${id}/cancel`, { method: 'POST' }),
   executeTask: (id: string) => request(`/api/tasks/${id}/execute`, { method: 'POST' }),
+  queues: () => request<{ queues: QueueSnapshot[] }>('/api/queues'),
+  resumeQueue: (key: string) =>
+    request<{ status: string; queue: QueueSnapshot }>(`/api/queues/${encodeURIComponent(key)}/resume`, { method: 'POST' }),
+  clearQueue: (key: string) =>
+    request<{ status: string; queue: QueueSnapshot }>(`/api/queues/${encodeURIComponent(key)}/clear`, { method: 'POST' }),
   taskEvents: (id: string) => request<{ task_id: string; events: TaskEvent[] }>(`/api/tasks/${id}/events`),
   replan: (id: string, feedback: string) =>
     request<{ summary: string }>(`/api/tasks/${id}/replan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }) }),
@@ -326,6 +403,16 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
+  listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),
+  getDeliverable: (taskId: string, nodeId: string) => request<DeliverableDoc & { task_id: string }>(`/api/tasks/${taskId}/deliverables/${nodeId}`),
+  projectReport: (id: string) => request<ProjectProgressReport>(`/api/projects/${id}/report`),
+  listSkills: () => request<{ skills: SkillMeta[]; bindings: Record<string, string[]> }>('/api/skills'),
+  createSkill: (payload: { name: string; description?: string; tags?: string[]; content?: string }) =>
+    request<{ status: string; total: number }>('/api/skills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  updateSkill: (name: string, payload: { name?: string; description?: string; tags?: string[]; content?: string }) =>
+    request<{ status: string }>(`/api/skills/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  deleteSkill: (name: string) => request(`/api/skills/${name}`, { method: 'DELETE' }),
+  reloadSkills: () => request<{ status: string; total: number }>('/api/skills/reload', { method: 'POST' }),
   interveneTask: (taskId: string, message: string) =>
     request<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${taskId}/intervene`, {
       method: 'POST',

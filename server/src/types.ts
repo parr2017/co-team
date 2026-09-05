@@ -1,5 +1,6 @@
 export type TaskStatus =
   | 'pending'
+  | 'queued'
   | 'planned'
   | 'clarifying'
   | 'running'
@@ -62,6 +63,8 @@ export interface AgentResult {
   git_commit?: { branch: string; commit: string | null };
   command_results?: { command: string; returncode: number; stderr: string; stdout?: string }[];
   raw_output?: string;
+  /** harness self-check: what was verified and how (output-contract requirement) */
+  verification?: string;
   /** structured test-fix report (improvement 8 / R9) */
   report?: TestFixReport;
 }

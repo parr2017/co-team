@@ -79,6 +79,41 @@
           <el-button size="small" @click="loadAgents">刷新</el-button>
         </div>
       </el-tab-pane>
+
+      <!-- 技能库 -->
+      <el-tab-pane label="技能库" name="skills">
+        <el-table :data="skills" size="small">
+          <el-table-column prop="name" label="技能名" width="170" />
+          <el-table-column prop="description" label="描述" min-width="220" show-overflow-tooltip />
+          <el-table-column label="适用标签" width="140">
+            <template #default="{ row }"><span class="mono">{{ (row.tags || []).join(', ') || '全体' }}</span></template>
+          </el-table-column>
+          <el-table-column label="来源" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.source === 'global' ? 'info' : 'primary'">{{ row.source === 'global' ? '全局库' : row.source + ' 专属' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="绑定 Agent" width="150">
+            <template #default="{ row }">
+              <span class="mono">{{ skillBindingsOf(row.name) || '自动匹配' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="" width="130" align="center">
+            <template #default="{ row }">
+              <el-button size="small" link type="primary" @click="editSkill(row)" :disabled="row.source !== 'global'">编辑</el-button>
+              <el-button size="small" link type="danger" @click="removeSkill(row)" :disabled="row.source !== 'global'">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="toolbar">
+          <el-button size="small" @click="editSkill(null)">+ 注入技能</el-button>
+          <div class="spacer" />
+          <el-button size="small" :loading="reloadingSkills" @click="doReloadSkills">重扫磁盘</el-button>
+        </div>
+        <div class="note" style="margin-top: 8px">
+          技能 = skills/&lt;名称&gt;/SKILL.md（frontmatter: name/description/tags + 正文指令）。绑定 Agent 后每次执行全量注入；未绑定的按标签/关键词自动匹配。也可直接把文件夹丢进 skills/ 目录后点「重扫磁盘」。
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- Agent 编辑弹窗 -->
@@ -90,6 +125,11 @@
         <el-form-item label="角色"><el-input v-model="editing.role" placeholder="如 运维" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="editing.description" /></el-form-item>
         <el-form-item label="标签"><el-input v-model="editing.tagsText" placeholder="deploy,ops（逗号分隔，用于路由匹配）" /></el-form-item>
+        <el-form-item label="绑定技能">
+          <el-select v-model="editing.skills" multiple clearable placeholder="未绑定则按标签/关键词自动匹配" style="width: 100%">
+            <el-option v-for="sk in skills" :key="sk.name" :label="sk.name" :value="sk.name" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="模型覆盖"><el-input v-model="editing.model_override" placeholder="留空使用模型池调度" /></el-form-item>
         <el-form-item label="超时(秒)"><el-input-number v-model="editing.timeout" :min="30" :max="3600" controls-position="right" /></el-form-item>
         <el-form-item label="Max Tokens"><el-input-number v-model="editing.max_tokens" :min="1024" :max="65536" :step="1024" controls-position="right" /></el-form-item>
@@ -102,13 +142,35 @@
         <el-button size="small" type="primary" :loading="savingAgent" @click="saveAgent">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 技能编辑弹窗 -->
+    <el-dialog v-model="skillEditorVisible" :title="editingSkillOriginal ? `编辑技能：${editingSkillOriginal}` : '注入新技能'" width="680px" append-to-body>
+      <el-form label-width="90px" size="small">
+        <el-form-item label="技能名">
+          <el-input v-model="editingSkill.name" placeholder="小写字母/数字/-，如 feishu-integration" :disabled="!!editingSkillOriginal" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="editingSkill.description" placeholder="一句话说明何时使用（Agent 据此匹配）" />
+        </el-form-item>
+        <el-form-item label="适用标签">
+          <el-input v-model="editingSkill.tagsText" placeholder="review,docs（逗号分隔；留空=全体可用）" />
+        </el-form-item>
+        <el-form-item label="技能正文">
+          <el-input v-model="editingSkill.content" type="textarea" :rows="14" class="mono-input" placeholder="操作步骤/规范/示例（Markdown）——Agent 装载后照此执行" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="skillEditorVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="savingSkill" @click="saveSkill">保存并生效</el-button>
+      </template>
+    </el-dialog>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, type AgentDefinition, type ModelConfig } from '../api';
+import { api, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
 
 defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>();
@@ -116,15 +178,96 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>();
 const tab = ref('models');
 const pool = ref<(ModelConfig & { tagsText?: string })[]>([]);
 const agents = ref<AgentDefinition[]>([]);
+const skills = ref<SkillMeta[]>([]);
+const skillBindings = ref<Record<string, string[]>>({});
+const savingSkill = ref(false);
+const reloadingSkills = ref(false);
+const skillEditorVisible = ref(false);
+const editingSkillOriginal = ref<string | null>(null);
+const editingSkill = ref<{ name: string; description: string; tagsText: string; content: string }>({ name: '', description: '', tagsText: '', content: '' });
+
+function skillBindingsOf(name: string): string {
+  return Object.entries(skillBindings.value).filter(([, list]) => list.includes(name)).map(([agent]) => agent).join(', ');
+}
 const savingModels = ref(false);
 const savingAgent = ref(false);
 const testingModel = ref(false);
 const agentEditorVisible = ref(false);
 const editingOriginal = ref<string | null>(null);
-const editing = ref<Partial<AgentDefinition> & { tagsText?: string }>({});
+const editing = ref<Partial<AgentDefinition> & { tagsText?: string; skills?: string[] }>({});
 
 async function loadAll() {
-  await Promise.all([loadModels(), loadAgents()]);
+  await Promise.all([loadModels(), loadAgents(), loadSkills()]);
+}
+
+async function loadSkills() {
+  try {
+    const d = await api.listSkills();
+    skills.value = d.skills;
+    skillBindings.value = d.bindings;
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
+function editSkill(row: SkillMeta | null) {
+  editingSkillOriginal.value = row && row.source === 'global' ? row.name : null;
+  editingSkill.value = row
+    ? { name: row.name, description: row.description, tagsText: (row.tags || []).join(','), content: row.body || '' }
+    : { name: '', description: '', tagsText: '', content: '' };
+  skillEditorVisible.value = true;
+}
+
+async function saveSkill() {
+  if (!editingSkill.value.name.trim()) {
+    ElMessage.error('请填写技能名');
+    return;
+  }
+  savingSkill.value = true;
+  try {
+    const payload = {
+      description: editingSkill.value.description,
+      tags: (editingSkill.value.tagsText || '').split(',').map((t) => t.trim()).filter(Boolean),
+      content: editingSkill.value.content,
+    };
+    if (editingSkillOriginal.value) await api.updateSkill(editingSkillOriginal.value, { ...payload, name: editingSkill.value.name });
+    else await api.createSkill({ name: editingSkill.value.name, ...payload });
+    ElMessage.success('技能已保存并热生效');
+    skillEditorVisible.value = false;
+    await loadSkills();
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    savingSkill.value = false;
+  }
+}
+
+async function removeSkill(row: SkillMeta) {
+  try {
+    await ElMessageBox.confirm(`确定删除技能「${row.name}」？`, '删除确认', { type: 'warning' });
+  } catch {
+    return;
+  }
+  try {
+    await api.deleteSkill(row.name);
+    ElMessage.success('技能已删除');
+    await loadSkills();
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
+async function doReloadSkills() {
+  reloadingSkills.value = true;
+  try {
+    const d = await api.reloadSkills();
+    ElMessage.success(`已重扫磁盘：${d.total} 个技能`);
+    await loadSkills();
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    reloadingSkills.value = false;
+  }
 }
 
 async function loadModels() {
@@ -217,8 +360,8 @@ async function testModelPool() {
 function editAgent(row: AgentDefinition | null) {
   editingOriginal.value = row ? row.dir : null;
   editing.value = row
-    ? { ...row, tagsText: row.tags.join(',') }
-    : { name: '', role: '', description: '', tagsText: '', model_override: '', max_tokens: 8192, timeout: 300, prompt: '' };
+    ? { ...row, tagsText: row.tags.join(','), skills: row.skills || [] }
+    : { name: '', role: '', description: '', tagsText: '', model_override: '', max_tokens: 8192, timeout: 300, prompt: '', skills: [] };
   agentEditorVisible.value = true;
 }
 
