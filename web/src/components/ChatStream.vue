@@ -3,78 +3,101 @@
     <div v-if="!entries.length && !typingAgent" class="empty mono">暂无对话记录</div>
 
     <template v-for="(item, i) in renderItems" :key="i">
-      <!-- 节点分组头 -->
-      <div v-if="item.t === 'node'" class="node-divider">
-        <span class="nd-line"></span>
+      <!-- 微信式居中时间条：仅与上一条间隔 >5 分钟时显示 -->
+      <div v-if="item.t === 'time'" class="time-divider mono">{{ item.label }}</div>
+
+      <!-- 节点分组头：微信时间条样式（保留模型徽标） -->
+      <div v-else-if="item.t === 'node'" class="node-divider">
         <span class="nd-label mono">{{ item.name }}</span>
         <span v-for="m in item.models" :key="m" class="nd-model mono">{{ m }}</span>
-        <span class="nd-line"></span>
       </div>
 
-      <!-- 主 Agent：任务简报 -->
-      <div v-else-if="item.t === 'brief'" class="row master">
-        <div class="avatar master-av mono" title="主 Agent">主</div>
-        <div class="bubble master-b">
-          <div class="b-head mono"><span class="who">主 Agent</span><span class="b-model mono">{{ item.entry.model || '' }}</span><span class="when">{{ fmt(item.entry.ts) }}</span></div>
-          <div class="b-text md" v-html="md(item.entry.text)"></div>
-        </div>
-      </div>
-
-      <!-- 主 Agent：工具数据附件 -->
-      <div v-else-if="item.t === 'tool_results'" class="row master">
-        <div class="avatar master-av mono">主</div>
-        <div class="bubble master-b slim">
-          <div class="b-head mono"><span class="who">主 Agent</span><span class="when">{{ fmt(item.entry.ts) }}</span></div>
-          <details class="attach">
-            <summary class="mono">📎 交付工具数据 · {{ (item.entry.meta?.results || []).length }} 项</summary>
-            <pre class="pre mono">{{ dump(item.entry.meta?.results) }}</pre>
-          </details>
-        </div>
-      </div>
-
-      <!-- 子 Agent：动作行 -->
-      <div v-else-if="item.t === 'round'" class="row action">
-        <span class="action-line mono">⚙ {{ item.entry.text }}</span>
-        <span class="when mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></span>
-      </div>
-
-      <!-- 子 Agent：最终汇报 -->
-      <div v-else-if="item.t === 'final'" class="row sub">
-        <div class="bubble sub-b">
-          <div class="b-head mono"><span class="when">{{ fmt(item.entry.ts) }}</span><span class="b-model mono">{{ item.entry.model || '' }}</span><span class="who">{{ item.agent }}</span></div>
-          <div class="b-text md" v-html="md(item.entry.text)"></div>
-          <div v-if="(item.entry.meta?.changes || []).length" class="chips mono">
-            <span v-for="c in (item.entry.meta?.changes || []).slice(0, 6)" :key="c" class="chip">✓ {{ c }}</span>
+      <!-- 用户介入：右侧绿色气泡（微信群聊"我"的心智） -->
+      <div v-else-if="item.t === 'intervene'" class="row me">
+        <div class="me-col">
+          <div class="bubble me-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
-          <details v-if="(item.entry.meta?.files || []).length || (item.entry.meta?.commands || []).length" class="attach">
-            <summary class="mono">📎 附件 · {{ (item.entry.meta?.files || []).length }} 文件 / {{ (item.entry.meta?.commands || []).length }} 命令</summary>
-            <pre class="pre mono">files: {{ (item.entry.meta?.files || []).join(', ') }}
-commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
-          </details>
         </div>
-        <div class="avatar sub-av mono" :title="item.agent">{{ avatarOf(item.agent) }}</div>
+        <AgentAvatar name="master" :size="36" title="我" class="me-av" />
       </div>
 
-      <!-- 子 Agent：错误 -->
-      <div v-else-if="item.t === 'error'" class="row sub">
-        <div class="bubble sub-b fatal">
-          <div class="b-head mono"><span class="when">{{ fmt(item.entry.ts) }}</span><span class="who">{{ item.agent }}</span></div>
-          <div class="b-error mono">✗ {{ item.entry.text }}</div>
-          <details v-if="item.entry.meta?.raw" class="attach">
-            <summary class="mono">📎 原始输出</summary>
-            <pre class="pre mono">{{ item.entry.meta.raw }}</pre>
-          </details>
+      <!-- 主 Agent：任务简报（左侧，圆角方头像 + 昵称灰字在气泡上方） -->
+      <div v-else-if="item.t === 'brief'" class="row them">
+        <div class="them-col">
+          <div class="who-name mono">主 Agent</div>
+          <div class="bubble them-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
+          </div>
         </div>
-        <div class="avatar sub-av mono err" :title="item.agent">{{ avatarOf(item.agent) }}</div>
+        <AgentAvatar name="orchestrator" :size="36" class="av" />
+      </div>
+
+      <!-- 主 Agent：工具数据附件（文件消息卡片） -->
+      <div v-else-if="item.t === 'tool_results'" class="row them">
+        <div class="them-col">
+          <div class="who-name mono">主 Agent</div>
+          <div class="file-card">
+            <details class="attach">
+              <summary class="mono"><span class="file-ico">📄</span> 交付工具数据 · {{ (item.entry.meta?.results || []).length }} 项</summary>
+              <pre class="pre mono">{{ dump(item.entry.meta?.results) }}</pre>
+            </details>
+          </div>
+        </div>
+        <AgentAvatar name="orchestrator" :size="36" class="av" />
+      </div>
+
+      <!-- 工具动作行：居中灰色系统消息 -->
+      <div v-else-if="item.t === 'round'" class="sys-row">
+        <span class="sys-text mono">{{ item.entry.text }}</span>
+        <span class="sys-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></span>
+      </div>
+
+      <!-- 子 Agent：最终汇报（左侧气泡 + 昵称） -->
+      <div v-else-if="item.t === 'final'" class="row them">
+        <div class="them-col">
+          <div class="who-name mono">{{ item.agent }}</div>
+          <div class="bubble them-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
+            <div v-if="(item.entry.meta?.changes || []).length" class="chips mono">
+              <span v-for="c in (item.entry.meta?.changes || []).slice(0, 6)" :key="c" class="chip">✓ {{ c }}</span>
+            </div>
+            <details v-if="(item.entry.meta?.files || []).length || (item.entry.meta?.commands || []).length" class="attach">
+              <summary class="mono"><span class="file-ico">📄</span> 附件 · {{ (item.entry.meta?.files || []).length }} 文件 / {{ (item.entry.meta?.commands || []).length }} 命令</summary>
+              <pre class="pre mono">files: {{ (item.entry.meta?.files || []).join(', ') }}
+commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
+            </details>
+          </div>
+        </div>
+        <AgentAvatar :name="item.agent" :size="36" class="av" />
+      </div>
+
+      <!-- 子 Agent：错误（左侧红色边气泡） -->
+      <div v-else-if="item.t === 'error'" class="row them">
+        <div class="them-col">
+          <div class="who-name mono">{{ item.agent }}</div>
+          <div class="bubble them-b fatal">
+            <div class="b-error mono">✗ {{ item.entry.text }}</div>
+            <details v-if="item.entry.meta?.raw" class="attach">
+              <summary class="mono"><span class="file-ico">📄</span> 原始输出</summary>
+              <pre class="pre mono">{{ item.entry.meta.raw }}</pre>
+            </details>
+          </div>
+        </div>
+        <AgentAvatar :name="item.agent" :size="36" class="av err" />
       </div>
     </template>
 
-    <!-- 打字指示器：由 WS agent_activity 实时驱动 -->
-    <div v-if="typingAgent" class="row sub">
-      <div class="bubble sub-b typing-b">
-        <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span>
-        <span class="typing-label mono">{{ typingAgent }} 工作中{{ typingText ? ` · ${typingText}` : '…' }}</span>
+    <!-- 打字指示器：左头像 + 灰气泡三点动画 -->
+    <div v-if="typingAgent" class="row them">
+      <div class="them-col">
+        <div class="who-name mono">{{ typingAgent }}</div>
+        <div class="bubble them-b typing-b">
+          <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span>
+          <span class="typing-label mono">{{ typingText || '工作中…' }}</span>
+        </div>
       </div>
+      <AgentAvatar :name="typingAgent" :size="36" class="av" />
     </div>
   </div>
 </template>
@@ -84,9 +107,13 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { marked } from 'marked';
 import { api, type JournalEntry } from '../api';
 import { onEvent } from '../composables/useDashboard';
+import AgentAvatar from './AgentAvatar.vue';
 
 type Entry = JournalEntry & { agent: string };
-type RenderItem = { t: 'node'; name: string; models: string[] } | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error'; entry: Entry; agent: string };
+type RenderItem =
+  | { t: 'time'; label: string }
+  | { t: 'node'; name: string; models: string[] }
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 
@@ -105,12 +132,19 @@ const filtered = computed(() =>
   })
 );
 
+/** 微信式时间省略：仅与上一条消息间隔超过 5 分钟时插入居中时间条 */
+const TIME_GAP_MS = 5 * 60 * 1000;
+
 /** entries grouped by node with sticky headers carrying every model used in the node */
 const renderItems = computed<RenderItem[]>(() => {
   const out: RenderItem[] = [];
   let lastNode = '';
   let models: string[] = [];
+  let lastTs = 0;
   for (const e of filtered.value) {
+    const ts = e.ts ? new Date(e.ts).getTime() : 0;
+    if (ts - lastTs > TIME_GAP_MS) out.push({ t: 'time', label: fmtFull(e.ts) });
+    lastTs = ts || lastTs;
     if (e.node_id !== lastNode) {
       if (lastNode) out.push({ t: 'node', name: nodeNameOf(lastNode), models });
       lastNode = e.node_id;
@@ -207,12 +241,14 @@ function scrollToBottom(force = false) {
   el.scrollTop = el.scrollHeight;
 }
 
-function avatarOf(agent: string): string {
-  return (agent || '??').replace(/[^a-z]/gi, '').slice(0, 2).toUpperCase() || '??';
-}
-
-function fmt(ts: string): string {
-  return ts ? new Date(ts).toLocaleTimeString() : '';
+function fmtFull(ts: string): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (sameDay) return hm;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
 function dump(v: unknown): string {
@@ -230,28 +266,45 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
 </script>
 
 <style scoped>
-.chat-stream { display: flex; flex-direction: column; gap: 8px; padding: 2px; overflow-y: auto; }
+.chat-stream { display: flex; flex-direction: column; gap: 10px; padding: 6px 2px; overflow-y: auto; background: var(--ct-bg); }
 .empty { color: var(--ct-text3); text-align: center; padding: 24px; font-size: 12px; }
-.node-divider { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; }
-.nd-line { flex: 1; height: 1px; background: var(--ct-border); }
-.nd-label { font-size: 10px; color: var(--ct-text3); letter-spacing: 0.5px; }
-.nd-model { font-size: 9px; color: var(--ct-accent); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 4px; }
-.row { display: flex; }
-.row.master { justify-content: flex-start; }
-.row.sub { justify-content: flex-end; }
-.row.action { justify-content: center; align-items: center; }
-.avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; align-self: flex-end; margin-bottom: 10px; }
-.master-av { background: var(--ct-accent); color: #fff; align-self: flex-start; }
-.sub-av { background: var(--ct-panel2); border: 2px solid var(--ct-green); color: var(--ct-text); }
-.sub-av.err { border-color: var(--ct-red); }
-.bubble { max-width: 86%; padding: 10px 12px; border-radius: 10px; font-size: 13px; }
-.master-b { background: var(--ct-panel2); border-left: 3px solid var(--ct-accent); border-radius: 2px 10px 10px 10px; }
-.sub-b { background: var(--ct-panel); border: 1px solid var(--ct-border); border-right: 3px solid var(--ct-green); border-radius: 10px 2px 10px 10px; }
-.sub-b.fatal { border-right-color: var(--ct-red); }
-.b-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 10px; color: var(--ct-text3); margin-bottom: 4px; }
-.who { color: var(--ct-text2); font-weight: 700; }
-.b-model { color: var(--ct-accent); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 4px; font-size: 9px; }
-.when { font-size: 10px; color: var(--ct-text3); }
+
+/* 微信式居中时间条 */
+.time-divider { text-align: center; font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 4px; padding: 3px 10px; align-self: center; margin: 6px 0 2px; }
+
+/* 节点分组头：居中标签样式 */
+.node-divider { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 10px 0 2px; }
+.nd-label { font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 10px; padding: 2px 12px; }
+.nd-model { font-size: 9px; color: var(--ct-accent); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 4px; background: var(--ct-panel); }
+
+/* 消息行：Agent 左 / 用户右 */
+.row { display: flex; gap: 10px; }
+.row.them { justify-content: flex-start; }
+.row.me { justify-content: flex-end; }
+.them-col { display: flex; flex-direction: column; align-items: flex-start; max-width: 75%; min-width: 0; }
+.me-col { display: flex; flex-direction: column; align-items: flex-end; max-width: 75%; min-width: 0; }
+.who-name { font-size: 10px; color: var(--ct-text3); margin: 0 2px 3px; }
+
+/* 气泡 */
+.bubble { padding: 9px 12px; border-radius: 10px; font-size: 13px; background: var(--ct-panel); border: 1px solid var(--ct-border); position: relative; }
+/* Agent 气泡：左上三角指向头像 */
+.them-b { border-top-left-radius: 2px; }
+.them-b::before {
+  content: ''; position: absolute; top: 0; left: -7px;
+  border: 4px solid transparent; border-top-color: var(--ct-border); border-right-color: var(--ct-border);
+}
+/* 用户"我"绿气泡：右上三角指向头像 */
+.me-b { background: #95ec69; border: none; border-top-right-radius: 2px; color: #0b2e13; }
+html.dark .me-b { background: #3eb575; color: #eafff1; }
+.me-b::before {
+  content: ''; position: absolute; top: 0; right: -7px;
+  border: 4px solid transparent; border-top-color: #95ec69; border-left-color: #95ec69;
+}
+html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575; }
+
+.them-b.fatal { border-color: var(--ct-red); }
+.them-b.fatal::before { border-top-color: var(--ct-red); border-right-color: var(--ct-red); }
+
 .b-text { word-break: break-word; color: var(--ct-text); line-height: 1.65; }
 .b-text :deep(p) { margin: 0 0 6px; }
 .b-text :deep(p:last-child) { margin-bottom: 0; }
@@ -260,12 +313,22 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
 .b-text :deep(ul), .b-text :deep(ol) { margin: 4px 0; padding-left: 18px; }
 .b-text :deep(h1), .b-text :deep(h2), .b-text :deep(h3) { font-size: 13px; margin: 6px 0 4px; }
 .b-error { color: var(--ct-red); white-space: pre-wrap; font-size: 12px; }
+
+/* 文件消息卡片 */
+.file-card { background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 8px; padding: 6px 10px; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .chip { font-size: 10px; color: var(--ct-green); border: 1px solid var(--ct-border); border-radius: 3px; padding: 1px 5px; background: var(--ct-bg); }
 .attach { margin-top: 6px; }
 .attach summary { cursor: pointer; font-size: 10px; color: var(--ct-text3); }
 .attach .pre { max-height: 180px; overflow: auto; background: var(--ct-bg); border-radius: 4px; padding: 6px; margin-top: 4px; font-size: 10px; white-space: pre-wrap; }
-.action-line { font-size: 11px; color: var(--ct-yellow); background: var(--ct-panel2); border: 1px dashed var(--ct-border2); border-radius: 4px; padding: 2px 10px; }
+
+/* 居中灰色系统消息（工具动作行） */
+.sys-row { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 2px 0; }
+.sys-text { font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 4px; padding: 2px 12px; max-width: 80%; text-align: center; }
+.sys-meta { font-size: 9px; color: var(--ct-text3); }
+
+/* typing */
 .typing-b { display: flex; align-items: center; gap: 4px; }
 .dot-t { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-text3); animation: bob 1.2s infinite; }
 .dot-t:nth-child(2) { animation-delay: 0.15s; }

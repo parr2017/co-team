@@ -11,6 +11,8 @@ export interface OrchestrationConfig {
   branch_workflow: boolean;
   token_budget?: number;
   max_fix_rounds?: number;
+  /** improvement 5 (R5): hours before a 'clarifying' task gets a timeout reminder */
+  clarify_timeout_hours?: number;
 }
 
 export interface AppConfig {
@@ -21,6 +23,8 @@ export interface AppConfig {
   permissions: { level?: string; whitelist_commands?: string[]; max_time_sec?: number };
   redis: { host: string; port: number; db: number };
   knowledge: { dir: string };
+  /** custom grading keywords (improvement 7 / R6), appended to built-in rules */
+  grading?: { heavy?: string[]; light?: string[] };
 }
 
 export const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -44,9 +48,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       branch_workflow: raw.orchestrator?.branch_workflow ?? true,
       token_budget: raw.orchestrator?.token_budget,
       max_fix_rounds: raw.orchestrator?.max_fix_rounds,
+      // improvement 5 (R5): tasks stuck in 'clarifying' longer than this get a one-shot reminder
+      clarify_timeout_hours: raw.orchestrator?.clarify_timeout_hours ?? 24,
     },
     permissions: raw.permissions || {},
     redis: raw.redis || { host: '127.0.0.1', port: 6379, db: 0 },
     knowledge: { dir: path.isAbsolute(raw.knowledge?.dir || '') ? raw.knowledge.dir : path.join(root, raw.knowledge?.dir || 'data/knowledge') },
+    grading: raw.grading || undefined,
   };
 }

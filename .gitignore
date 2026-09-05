@@ -13,6 +13,10 @@ tmp-*/
 # runtime state
 *.state.json
 .coteam/
+data/
+
+# test artifacts
+gui-test-screenshots/
 
 # python legacy artifacts
 __pycache__/

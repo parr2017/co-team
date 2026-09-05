@@ -22,5 +22,5 @@ const nodeStatus = computed(() => props.task?.nodes.find((n) => n.id === props.n
 
 <style scoped>
 .chat-sub { font-size: 11px; color: var(--ct-text3); margin-bottom: 10px; }
-.chat-wrap { max-height: 520px; overflow-y: auto; display: flex; flex-direction: column; }
+.chat-wrap { max-height: 520px; overflow-y: auto; display: flex; flex-direction: column; background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 4px; }
 </style>

@@ -18,6 +18,7 @@ import {
   addMemory,
   appendJournal,
   clearCancelled,
+  consumeInterventions,
   emitProgress,
   getAgentMemory,
   getApprovals,
@@ -471,22 +472,27 @@ export class Orchestrator {
       try { fs.writeFileSync(path.join(sandbox, 'GLOBAL_GOAL.md'), `# GLOBAL_GOAL\n\n${goalContent}\n`, 'utf-8'); } catch { /* best effort */ }
     }
 
-    // improvement 4: SSOT documents — the single source of truth for agent collaboration
+    // improvement 4: SSOT documents — the single source of truth for agent collaboration.
+    // improvement 7: light-level tasks skip the doc pipeline entirely (LEVEL_PROFILES.docs)
+    const levelProfile = LEVEL_PROFILES[graph.level ?? 'standard'];
     const docTarget = this.sandboxEnabled && sandbox !== workspace ? sandbox : undefined;
-    const levelLabel = LEVEL_PROFILES[graph.level ?? 'standard'].label;
-    try {
-      await writeDoc(taskId, 'TASK_SPEC', buildTaskSpec(
-        graph.description,
-        `${levelLabel} (${graph.level ?? 'standard'})`,
-        graph.nodes.filter((n) => n.agent !== 'orchestrator').map((n) => ({ id: n.id, name: n.name, agent: n.agent })),
-        goalContent
-      ), 'orchestrator', docTarget);
-      if (/api|接口|endpoint/i.test(graph.description)) {
-        await writeDoc(taskId, 'API_CONTRACT', buildApiContract(graph.description), 'orchestrator', docTarget);
+    if (levelProfile.docs) {
+      try {
+        await writeDoc(taskId, 'TASK_SPEC', buildTaskSpec(
+          graph.description,
+          `${levelProfile.label} (${graph.level ?? 'standard'})`,
+          graph.nodes.filter((n) => n.agent !== 'orchestrator').map((n) => ({ id: n.id, name: n.name, agent: n.agent })),
+          goalContent
+        ), 'orchestrator', docTarget);
+        if (/api|接口|endpoint/i.test(graph.description)) {
+          await writeDoc(taskId, 'API_CONTRACT', buildApiContract(graph.description), 'orchestrator', docTarget);
+        }
+        await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, [], [], graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name)), 'orchestrator', docTarget);
+      } catch (e) {
+        this.logger.warn('SSOT doc initialization failed (non-fatal)', { taskId, error: String(e) });
       }
-      await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, [], [], graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name)), 'orchestrator', docTarget);
-    } catch (e) {
-      this.logger.warn('SSOT doc initialization failed (non-fatal)', { taskId, error: String(e) });
+    } else {
+      this.logger.info('Light-level task: SSOT doc pipeline skipped', { taskId, level: graph.level });
     }
 
     // improvement 10: task-start snapshot (git ref + collaboration state)
@@ -617,8 +623,9 @@ export class Orchestrator {
       }
       if (runnable.length === 0) return { status: 'waiting_approval', changes: [] };
 
-      // improvement 4: document check before execution — agents must read the latest SSOT
-      if (this.sandboxEnabled && sandbox !== graph.workspace) {
+      // improvement 4: document check before execution — agents must read the latest SSOT.
+      // improvement 7: light-level tasks run without the doc pipeline, so no doc check either.
+      if (LEVEL_PROFILES[graph.level ?? 'standard'].docs && this.sandboxEnabled && sandbox !== graph.workspace) {
         const check = await checkDocs(taskId, sandbox).catch(() => null);
         if (check && !check.ok) {
           this.logger.warn('SSOT doc check restored inconsistent documents', { taskId, restored: check.restored });
@@ -637,13 +644,16 @@ export class Orchestrator {
 
       // improvement 4: keep STATUS_REPORT in sync after every execution wave
       // improvement 6: node transitions are milestones — broadcast progress (throttled)
-      try {
-        const done = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').map((n) => n.name);
-        const runningNow = graph.nodes.filter((n) => n.status === 'running' || n.status === 'retrying').map((n) => n.name);
-        const pendingNow = graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name);
-        const docTarget = this.sandboxEnabled && sandbox !== graph.workspace ? sandbox : undefined;
-        await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, done, runningNow, pendingNow), 'orchestrator', docTarget);
-      } catch { /* best effort */ }
+      // improvement 7: light-level tasks skip the doc pipeline
+      if (LEVEL_PROFILES[graph.level ?? 'standard'].docs) {
+        try {
+          const done = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').map((n) => n.name);
+          const runningNow = graph.nodes.filter((n) => n.status === 'running' || n.status === 'retrying').map((n) => n.name);
+          const pendingNow = graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name);
+          const docTarget = this.sandboxEnabled && sandbox !== graph.workspace ? sandbox : undefined;
+          await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, done, runningNow, pendingNow), 'orchestrator', docTarget);
+        } catch { /* best effort */ }
+      }
       await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
 
       const failed = runnable.find((n) => n.status === 'failed');
@@ -765,6 +775,9 @@ export class Orchestrator {
 
     let error = '';
     let fixRound = 0;
+    // R9: survives past the loop so the terminal node.result carries the fix-loop report
+    // even after the escalation attempt overwrites the intermediate result
+    let fixReport: AgentResult['report'] = undefined;
     // regular attempts are bounded by maxRetries; test-fix rounds extend the budget
     // separately (improvement 8) so a broken commit is never accepted
     for (let attempt = 0; attempt < Math.max(1, this.maxRetries) + fixRound; attempt++) {
@@ -813,6 +826,14 @@ export class Orchestrator {
           result.status = 'failed';
           result.error = `测试修复循环达上限（${this.maxFixRounds} 轮）仍未通过: ${parsed.summary}`;
           result.errors = [...(result.errors || []), ...parsed.failures.map((f) => `${f.name}: ${f.message}`)];
+          // improvement 8 (R9): structured report with the full failure detail
+          result.report = {
+            framework: testFail.command,
+            attempts: this.maxFixRounds,
+            failures: parsed.failures.map((f) => ({ name: f.name, message: f.message })),
+            summary: `修复 ${this.maxFixRounds} 轮后仍有 ${parsed.failures.length} 个用例失败：${parsed.summary}`,
+          };
+          fixReport = result.report;
           error = result.error;
           await appendJournal(taskId, plugin.name, {
             role: 'master',
@@ -821,16 +842,25 @@ export class Orchestrator {
             ts: new Date().toISOString(),
             node_id: node.id,
             node_name: node.name,
-            meta: { failures: parsed.failures },
+            meta: { failures: parsed.failures, report: result.report },
           });
           break;
         }
         this.logger.nodeComplete(taskId, node.id, node.agent);
-        
+
         node.status = 'completed';
         node.finished_at = new Date().toISOString();
         node.result = result;
         node.error = '';
+        // improvement 8 (R9): a test-fix loop that ends green reports its rounds + zero failures
+        if (fixRound > 0) {
+          result.report = {
+            framework: '',
+            attempts: fixRound,
+            failures: [],
+            summary: `测试修复循环 ${fixRound} 轮后全部通过`,
+          };
+        }
         if (useBranch && node.branch) {
           const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name}`, result.changes || []).catch(() => null);
           if (commit && node.result) (node.result as AgentResult).git_commit = { branch: node.branch, commit };
@@ -865,7 +895,7 @@ export class Orchestrator {
     node.status = 'failed';
     node.finished_at = new Date().toISOString();
     node.error = result.error || error;
-    node.result = result;
+    node.result = fixReport ? { ...result, report: fixReport } : result;
     node.needs_human = true;
     
     this.logger.nodeFailed(taskId, node.id, node.agent, node.error);
@@ -1109,6 +1139,13 @@ export class Orchestrator {
       '\nfiles 中给出需要创建或修改的文件的完整内容；commands 会在沙箱中执行（仅限白名单命令）。',
     ].join('\n');
 
+    // improvement 6 (R1): message-style intervention — pending user messages are
+    // consumed right before the userMsg is built and injected as a must-respond block
+    const interventions = await consumeInterventions(taskId);
+    const interveneBlock = interventions.length
+      ? `\n\n## 用户介入指示（必须响应，并在汇报中说明如何落实）\n${interventions.map((m, i) => `${i + 1}. ${m.message}`).join('\n')}`
+      : '';
+
     const userMsg = [
       `工作目录: ${workspace}`,
       `现有文件: ${workspaceFiles}`,
@@ -1118,6 +1155,7 @@ export class Orchestrator {
       context ? `前置节点成果:\n${context}\n` : '',
       escalationBlock,
       fixContextBlock,
+      interveneBlock,
     ].filter(Boolean).join('\n');
 
     const record: AgentConversation = {
@@ -1149,6 +1187,19 @@ export class Orchestrator {
     await appendJournal(taskId, plugin.name, {
       role: 'master', kind: 'brief', text: userMsg, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name,
     });
+    // war-room journal: trace which interventions were injected into this node
+    if (interventions.length) {
+      await appendJournal(taskId, plugin.name, {
+        role: 'master',
+        kind: 'intervene',
+        text: `介入消息已注入节点 ${node.name}（${interventions.length} 条，Agent 将在本轮响应）`,
+        ts: new Date().toISOString(),
+        node_id: node.id,
+        node_name: node.name,
+        meta: { interventions: interventions.map((m) => m.message) },
+      });
+      this.logger.info('User interventions injected into agent round', { taskId, nodeId: node.id, agent: plugin.name, count: interventions.length });
+    }
     await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: '接收任务简报', model: entry.name });
 
     try {

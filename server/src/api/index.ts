@@ -264,6 +264,36 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'cancelling', task_id: taskId });
   });
 
+  // improvement 6 (R1): message-style intervention — queue a user message for the
+  // agent's next conversation round; surfaces in the war room as a green bubble
+  app.post('/api/tasks/:taskId/intervene', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await c.req.json<{ message?: string }>();
+    const message = (body.message || '').trim();
+    if (!message) throw new HttpError(400, 'message is required');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    if (!['running', 'pending', 'planned', 'retrying', 'waiting_approval'].includes(graph.status)) {
+      throw new HttpError(400, `task is not running (status: ${graph.status}), intervention will never be consumed`);
+    }
+    const { pushIntervention, appendJournal, emitProgress } = await import('../store');
+    const item = await pushIntervention(taskId, message);
+    // war-room journal: the user's message appears immediately as a master-side bubble
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master',
+      kind: 'intervene',
+      text: message,
+      ts: item.ts,
+      node_id: 'intervene',
+      node_name: '用户介入',
+      meta: { intervention_id: item.id },
+    });
+    await emitProgress('user_intervened', { task_id: taskId, message: message.slice(0, 500), intervention_id: item.id });
+    const { notify } = await import('../notify');
+    notify('user_intervened', { task_id: taskId }, `[Co-Team] 用户向任务 ${taskId} 发送介入指示：${message.slice(0, 80)}`);
+    return c.json({ status: 'queued', task_id: taskId, intervention_id: item.id, note: '将在 Agent 下一轮对话注入' });
+  });
+
   app.post('/api/tasks/:taskId/approve/:nodeId', async (c) => {
     const taskId = c.req.param('taskId');
     const nodeId = c.req.param('nodeId');
@@ -297,14 +327,16 @@ export function createApi(ctx: ApiContext): Hono {
   app.get('/api/tasks', async (c) => {
     const page = parseInt(c.req.query('page') || '1');
     const pageSize = parseInt(c.req.query('pageSize') || '20');
-    
+
     const scope = c.req.query('scope');
     const projectId = c.req.query('project_id');
+    const q = c.req.query('q') || undefined;
     // scope=external → only tasks without a project (workbench ad-hoc tasks)
-    const filter = scope === 'external' ? { project_id: null } : projectId ? { project_id: projectId } : undefined;
+    const filter = scope === 'external' ? { project_id: null, q } : projectId ? { project_id: projectId, q } : q ? { q } : undefined;
     const paged = await listTaskGraphsPaged(page, pageSize, filter);
     return c.json({
       tasks: paged.items.map((g: TaskGraph) => ({
+        task_id: g.task_id,
         id: g.task_id,
         description: g.description,
         workspace: g.workspace,

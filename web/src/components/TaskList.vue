@@ -15,6 +15,17 @@
         />
       </div>
     </div>
+    <div class="search-row">
+      <el-input
+        v-model="keyword"
+        size="small"
+        clearable
+        placeholder="按任务 ID / 描述关键词搜索，回车确认"
+        class="search-input"
+        @keyup.enter="doSearch"
+        @clear="doSearch"
+      />
+    </div>
     <div v-if="!sorted.length" class="empty">暂无任务</div>
     <div v-for="t in sorted" :key="t.task_id" class="task-item">
       <div class="task-header">
@@ -49,11 +60,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { TaskGraph } from '../api';
 
 const props = defineProps<{ tasks: Record<string, TaskGraph>; total?: number; currentPage?: number; pageSize?: number }>();
-const emit = defineEmits<{ (e: 'approve', taskId: string, nodeId: string): void; (e: 'cancel', taskId: string): void; (e: 'delete', taskId: string): void; (e: 'show-logs', taskId: string, nodeId: string): void; (e: 'show-dag', taskId: string): void; (e: 'show-detail', taskId: string): void; (e: 'review', taskId: string): void; (e: 'clarify', taskId: string): void; (e: 'page-change', page: number): void }>();
+const emit = defineEmits<{ (e: 'approve', taskId: string, nodeId: string): void; (e: 'cancel', taskId: string): void; (e: 'delete', taskId: string): void; (e: 'show-logs', taskId: string, nodeId: string): void; (e: 'show-dag', taskId: string): void; (e: 'show-detail', taskId: string): void; (e: 'review', taskId: string): void; (e: 'clarify', taskId: string): void; (e: 'page-change', page: number): void; (e: 'search', keyword: string): void }>();
+
+const keyword = ref('');
+
+function doSearch() {
+  emit('search', keyword.value.trim());
+}
 
 const total = computed(() => props.total ?? Object.keys(props.tasks).length);
 const currentPage = computed(() => props.currentPage ?? 1);
@@ -113,4 +130,6 @@ function levelType(l: string) {
 .approve-btn { height: 22px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .section-actions { display: flex; align-items: center; gap: 12px; }
+.search-row { margin-bottom: 12px; }
+.search-input { max-width: 320px; }
 </style>

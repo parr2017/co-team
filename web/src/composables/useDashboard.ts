@@ -23,6 +23,8 @@ export interface EventItem {
 export interface TaskListFilter {
   scope?: 'external';
   projectId?: string;
+  /** keyword search over task_id / description (improvement 6 / R4) */
+  q?: string;
 }
 
 // ---------- module-level singleton store (one WS connection for the whole app) ----------

@@ -1,0 +1,222 @@
+/* Co-Team mobile — TECH OPS-CONSOLE skin.
+   Deep-space canvas, neon-cyan single accent, glass panels, glow states.
+   Dark-only by design: a mission-control surface you watch for hours. */
+
+:root {
+  /* canvas & surfaces */
+  --bg: #0a0f16;
+  --panel: #111a28;
+  --panel-2: #16202e;
+  --panel-3: #1b2736;
+  --border: rgba(148, 163, 184, 0.14);
+  --border-strong: rgba(148, 163, 184, 0.25);
+
+  /* text */
+  --text: #e6edf5;
+  --text-2: #8b9bb0;
+  --text-3: #5a6b82;
+
+  /* THE accent: neon cyan */
+  --accent: #22d3ee;
+  --accent-press: #0fb5d6;
+  --accent-soft: rgba(34, 211, 238, 0.12);
+  --accent-ink: #05141f;
+
+  /* status neons */
+  --green: #34f5c5;
+  --yellow: #ffb454;
+  --wx-orange: #ffb454;
+  --red: #ff5d6e;
+  --wx-red: #ff5d6e;
+  --wx-blue: #4cc2ff;
+
+  /* chat */
+  --me-bubble: #0ea5e9;
+  --me-text: #ffffff;
+
+  /* glows & shadows */
+  --glow-accent: 0 0 14px rgba(34, 211, 238, 0.35);
+  --glow-green: 0 0 10px rgba(52, 245, 197, 0.35);
+  --glow-orange: 0 0 10px rgba(255, 180, 84, 0.35);
+  --glow-red: 0 0 10px rgba(255, 93, 110, 0.4);
+  --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --shadow-2: 0 8px 26px rgba(0, 0, 0, 0.5);
+  --shadow-bubble: 0 2px 10px rgba(0, 0, 0, 0.3);
+
+  --nav-bg: #0d141f;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* ---- Vant theme overrides → tech ---- */
+  --van-primary-color: #22d3ee;
+  --van-success-color: #34f5c5;
+  --van-danger-color: #ff5d6e;
+  --van-warning-color: #ffb454;
+  --van-text-color: #e6edf5;
+  --van-text-color-2: #8b9bb0;
+  --van-text-color-3: #5a6b82;
+  --van-border-color: rgba(148, 163, 184, 0.14);
+  --van-background: #0a0f16;
+  --van-background-2: #111a28;
+  --van-cell-background: #111a28;
+  --van-cell-text-color: #e6edf5;
+  --van-cell-value-color: #8b9bb0;
+  --van-nav-bar-background: #0d141f;
+  --van-nav-bar-title-text-color: #e6edf5;
+  --van-nav-bar-title-font-size: 17px;
+  --van-nav-bar-title-font-weight: 600;
+  --van-nav-bar-arrow-size: 20px;
+  --van-nav-bar-icon-color: #22d3ee;
+  --van-nav-bar-height: 46px;
+  --van-tabbar-background: #0d141f;
+  --van-tabbar-item-active-color: #22d3ee;
+  --van-tabbar-item-text-color: #5a6b82;
+  --van-tabbar-item-icon-size: 23px;
+  --van-tabbar-height: 52px;
+  --van-button-primary-background: #22d3ee;
+  --van-button-primary-border-color: #22d3ee;
+  --van-button-border-radius: 10px;
+  --van-search-background: #0a0f16;
+  --van-search-input-background: #111a28;
+  --van-tabs-bottom-bar-color: #22d3ee;
+  --van-tabs-default-color: #8b9bb0;
+  --van-tabs-active-color: #22d3ee;
+  --van-dialog-background: #111a28;
+  --van-dialog-header-font-size: 17px;
+  --van-dialog-confirm-button-text-color: #22d3ee;
+  --van-cell-font-size: 16px;
+  --van-picker-background: #111a28;
+  --van-popup-background: #111a28;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* tech grid canvas: faint blueprint lines + top aurora */
+body {
+  background-image:
+    radial-gradient(900px 420px at 50% -8%, rgba(34, 211, 238, 0.07), transparent 62%),
+    linear-gradient(rgba(56, 189, 248, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.035) 1px, transparent 1px);
+  background-size: auto, 100% 28px, 28px 100%;
+  background-attachment: fixed;
+}
+
+#app { height: 100dvh; display: flex; flex-direction: column; }
+
+input, textarea, select { font-size: 16px; }
+
+.mono { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
+
+::-webkit-scrollbar { width: 0; height: 0; }
+
+/* ================= tech primitives ================= */
+
+/* glass panel with cyan hairline */
+.wx-group {
+  background: linear-gradient(180deg, rgba(22, 32, 48, 0.85), rgba(15, 23, 36, 0.9));
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  border-radius: 12px;
+  margin: 8px 16px;
+  overflow: hidden;
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.wx-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  position: relative;
+  font-size: 16px;
+  min-height: 52px;
+}
+.wx-cell + .wx-cell::before {
+  content: '';
+  position: absolute;
+  left: 16px; right: 0; top: 0;
+  height: 1px;
+  background: var(--border);
+  transform: scaleY(0.5);
+}
+.wx-cell.link { cursor: pointer; transition: background 0.12s ease; }
+.wx-cell.link:active { background: rgba(34, 211, 238, 0.06); }
+
+/* neon capsule primary button */
+.wx-btn {
+  display: block;
+  width: 100%;
+  height: 48px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #26e0fb, #0ea5e9);
+  color: var(--accent-ink);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  box-shadow: var(--glow-accent);
+  transition: transform 0.1s ease, box-shadow 0.15s ease, opacity 0.12s ease;
+}
+.wx-btn:active { transform: scale(0.98); box-shadow: 0 0 8px rgba(34, 211, 238, 0.3); }
+.wx-btn:disabled { opacity: 0.35; box-shadow: none; }
+.wx-btn-plain { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); box-shadow: none; }
+.wx-btn-danger { background: linear-gradient(135deg, #ff7080, #f43f52); color: #1c060a; box-shadow: var(--glow-red); }
+
+.wx-dot {
+  position: absolute;
+  top: -4px; right: -8px;
+  min-width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: var(--glow-red);
+}
+
+/* uppercase tracked caption — ops-console flavor */
+.wx-caption {
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 14px 20px 6px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* ============ motion primitives ============ */
+
+@keyframes wx-pop-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.wx-pop-in { animation: wx-pop-in 0.22s cubic-bezier(0.22, 0.8, 0.36, 1); }
+
+@keyframes wx-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.wx-float { animation: wx-float 3s ease-in-out infinite; }
+
+/* status breathing with glow */
+@keyframes wx-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.wx-pulse { animation: wx-pulse 1.6s ease-in-out infinite; }
+
+/* scanline shimmer for progress fills */
+@keyframes wx-scan {
+  0% { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
+}

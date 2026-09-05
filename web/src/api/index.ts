@@ -47,6 +47,13 @@ export interface SnapshotMeta {
   note?: string;
 }
 
+export interface TestFixReport {
+  framework?: string;
+  attempts: number;
+  failures: { name: string; message?: string }[];
+  summary: string;
+}
+
 export interface AgentResult {
   status?: 'success' | 'failed';
   error?: string;
@@ -54,6 +61,7 @@ export interface AgentResult {
   summary?: string;
   errors?: string[];
   escalated?: boolean;
+  report?: TestFixReport;
 }
 
 export interface TaskNode {
@@ -189,7 +197,7 @@ export interface ProjectMemoryItem {
 
 export interface JournalEntry {
   role: 'master' | 'agent';
-  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene';
   text: string;
   ts: string;
   node_id: string;
@@ -292,10 +300,11 @@ export const api = {
     request<{ status: string; snapshot: SnapshotMeta }>('/api/snapshots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: taskId, tag, note }) }),
   rollbackSnapshot: (id: string) =>
     request<{ ok: boolean; git_action: string; kv_restored: number; details: string[] }>(`/api/snapshots/${id}/rollback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) }),
-  listTasks: (page = 1, pageSize = 20, filter?: { scope?: 'external'; projectId?: string }) => {
+  listTasks: (page = 1, pageSize = 20, filter?: { scope?: 'external'; projectId?: string; q?: string }) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (filter?.scope) params.set('scope', filter.scope);
     if (filter?.projectId) params.set('project_id', filter.projectId);
+    if (filter?.q) params.set('q', filter.q);
     return request<{ tasks: TaskGraph[]; total: number; page: number; pageSize: number }>(`/api/tasks?${params}`);
   },
   getTask: (id: string) => request<TaskGraph>(`/api/tasks/${id}`),
@@ -317,6 +326,12 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
+  interveneTask: (taskId: string, message: string) =>
+    request<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${taskId}/intervene`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    }),
   taskLogs: (id: string) => request<{ task_id: string; logs: Record<string, AgentConversation[]> }>(`/api/tasks/${id}/logs`),
   listAgents: () => request<{ agents: AgentInfo[] }>('/api/agents'),
   agentDefinitions: () => request<{ agents: AgentDefinition[] }>('/api/agents/definitions'),

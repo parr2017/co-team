@@ -70,7 +70,36 @@ npm run dev:web
 
 访问 http://localhost:8855 即可使用 Dashboard。
 
-> **Dev mode**: `npm run dev:server` starts the backend on port 8855, `npm run dev:web` starts the frontend dev server on port **8856** (with hot reload, proxying `/api` and `/ws` to 8855). Visit http://localhost:8856 during development.
+> **Dev mode**: `npm run dev:server` starts the backend on port 8855, `npm run dev:web` starts the frontend dev server on port **8856** (with hot reload, proxying `/api` and `/ws` to 8855). Visit http://localhost:8856 during development. `npm run dev:mobile` starts the mobile dev server on port **8857**.
+
+### 📱 手机访问（移动端）
+
+`npm run build` 后，服务端会将**独立移动端前端**（与桌面端完全解耦的 Vue3 + Vant 工程）挂载到 `/m/` 路径。手机与电脑连同一 WiFi，访问：
+
+```
+http://<电脑局域网IP>:8855/m/
+```
+
+- 覆盖场景：任务列表/搜索/进度、作战室微信式聊天（成员头像条 + 绿色气泡 + 底部介入输入条）、审批/取消、澄清问答、计划确认、发起任务（含目录级联选择）、Agent 状态总览
+- 首次访问如失败，请放行 Windows 防火墙的 8855 入站端口
+- 可"添加到主屏幕"（manifest 已配置）；深色模式跟随系统
+- WS 断线自动指数退避重连，切后台回前台立即恢复并补拉数据
+
+### 🖥️ CLI 内置命令
+
+```bash
+# 初始化一个标准项目脚手架（目录结构 + 三文档 + git 仓库）
+npx coteam-cli init ./my-project --name "My Project" --description "项目描述"
+```
+
+### 🧪 端到端演示（真实 LLM）
+
+```bash
+# 前置：npm start 且 config/config.yaml 配置了真实 API key
+bash scripts/e2e-demo.sh [http://localhost:8855] [模型名]
+```
+
+完整走通：脚手架建项目 → 建任务（锁定主模型）→ 轮询至完成 → 输出快照/知识库复盘/作战室摘要。
 
 ## 🏗️ 项目结构
 
@@ -93,9 +122,14 @@ co-team/
 │       ├── git.ts             # Git 集成
 │       ├── tools/             # 工具系统
 │       └── notify/            # 通知模块
-├── web/                       # 前端界面（Vue3 + Element Plus）
+├── web/                       # 桌面前端界面（Vue3 + Element Plus）
 │   └── src/
+├── mobile/                    # 独立移动端前端（Vue3 + Vant，挂载于 /m/）
+│   └── src/
+│       ├── views/             # 任务列表/详情作战室/发起/澄清/计划/Agent总览
+│       └── composables/       # 单例 store + WS（指数退避+回前台补拉）
 ├── config/                    # 配置文件
+├── scripts/                   # e2e-demo.sh 等运维脚本
 ├── legacy-python/             # Python 遗留代码（存档）
 └── package.json
 ```

@@ -38,7 +38,8 @@
             @review="openReview"
             @clarify="openClarify"
             @page-change="onTaskPageChange"
- />
+            @search="onTaskSearch"
+          />
           <EventLog :events="events" @clear="clearEvents" />
         </main>
         <aside class="side">
@@ -180,6 +181,11 @@ async function onDeleteTask(taskId: string) {
 
 function onTaskPageChange(page: number) {
   void loadTasks(page, taskPageSize.value);
+}
+
+function onTaskSearch(keyword: string) {
+  // R4: keyword search rides along with the workbench's external-task scope
+  void loadTasks(1, taskPageSize.value, { scope: 'external', q: keyword || undefined });
 }
 
 async function onReloadAgents() {

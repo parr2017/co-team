@@ -10,6 +10,8 @@ import { Orchestrator } from './orchestrator/orchestrator';
 import { ModelPool } from './scheduler';
 import { policyFromConfig } from './sandbox';
 import { emitProgress } from './store';
+import { startClarifyTimeoutScanner } from './clarifyTimeout';
+import { configureGrader } from './grader';
 import { initLogger, getLogger } from './logger';
 
 const MIME: Record<string, string> = {
@@ -23,17 +25,26 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-function staticMiddleware(webDist: string) {
+/** Serve a built SPA. `prefix` ('' for web root, '/m' for mobile) maps URL paths into `dist`. */
+function staticMiddleware(dist: string, prefix = '') {
   return async (c: Context, next: Next) => {
     const urlPath = decodeURIComponent(new URL(c.req.url).pathname);
     if (urlPath.startsWith('/api/') || urlPath === '/ws/events') return next();
-    const hasExtension = path.extname(urlPath) !== '';
-    let filePath = path.join(webDist, urlPath === '/' ? 'index.html' : urlPath);
-    if (!filePath.startsWith(webDist)) return next();
+    if (prefix) {
+      if (urlPath === prefix) {
+        // "/m" → redirect to "/m/" so relative assets resolve under the base
+        return c.redirect(`${prefix}/`, 302);
+      }
+      if (urlPath !== `${prefix}/` && !urlPath.startsWith(`${prefix}/`)) return next();
+    }
+    const relative = prefix ? urlPath.slice(prefix.length) : urlPath;
+    const hasExtension = path.extname(relative) !== '';
+    let filePath = path.join(dist, relative === '/' || relative === '' ? 'index.html' : relative);
+    if (!filePath.startsWith(dist)) return next();
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       // SPA fallback only for navigations; never serve index.html as a fake asset
       if (hasExtension) return c.body('not found', 404);
-      filePath = path.join(webDist, 'index.html');
+      filePath = path.join(dist, 'index.html');
     }
     if (!fs.existsSync(filePath)) return next();
     const isIndex = filePath.endsWith('index.html');
@@ -95,16 +106,35 @@ async function main(): Promise<void> {
   });
 
   await orchestrator.loadAgents();
-  logger.info('Agents loaded', { 
-    agents: [...orchestrator.plugins.keys()] 
+  logger.info('Agents loaded', {
+    agents: [...orchestrator.plugins.keys()]
   });
 
+  // improvement 7 (R6): project-specific grading keywords from config.yaml
+  if (config.grading) {
+    configureGrader(config.grading);
+    logger.info('Custom grading keywords loaded', {
+      heavy: config.grading.heavy?.length || 0,
+      light: config.grading.light?.length || 0,
+    });
+  }
+
   orchestrator.onProgress = (type, payload) => void emitProgress(type, payload);
+
+  // improvement 5 (R5): periodic scan nudges tasks stuck in 'clarifying' (once per task)
+  startClarifyTimeoutScanner({ timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
+  logger.info('Clarify timeout scanner started', { timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
 
   const ctx: ApiContext = { config, orchestrator, modelPool };
   const app = createApi(ctx);
 
-  // static hosting of the built web dashboard (SPA fallback to index.html)
+  // static hosting of the built frontends (SPA fallback to index.html):
+  // mobile under /m/, desktop at the root — both same-origin, zero CORS
+  const mobileDist = process.env.COTEAM_MOBILE_DIST || path.resolve(PROJECT_ROOT, 'mobile', 'dist');
+  if (fs.existsSync(mobileDist)) {
+    app.use('*', staticMiddleware(mobileDist, '/m'));
+    logger.info('Mobile app loaded from', { path: mobileDist });
+  }
   const webDist = process.env.COTEAM_WEB_DIST || path.resolve(PROJECT_ROOT, 'web', 'dist');
   if (fs.existsSync(webDist)) {
     app.use('*', staticMiddleware(webDist));

@@ -209,7 +209,74 @@ export interface SearchHit extends KnowledgeEntry {
   score: number;
 }
 
-/** Keyword search: title match ×3, tag match ×2, body match ×1. */
+/**
+ * Lightweight semantic expansion (improvement 3 / R3): synonym pairs expand each
+ * search term so "javascript" hits "js" entries and vice versa. True embedding
+ * retrieval is a future item — this keeps the API signature unchanged.
+ */
+const SYNONYM_GROUPS: string[][] = [
+  ['js', 'javascript'],
+  ['ts', 'typescript'],
+  ['py', 'python'],
+  ['重试', 'retry', 'backoff'],
+  ['缓存', 'cache', 'redis'],
+  ['登录', 'login', 'auth', '鉴权'],
+  ['部署', 'deploy', '发布'],
+  ['测试', 'test'],
+  ['文档', 'docs', 'documentation'],
+  ['数据库', 'database', 'db', 'sql'],
+  ['接口', 'api', 'endpoint'],
+  ['配置', 'config', 'configuration'],
+  ['队列', 'queue', '消息队列'],
+  ['日志', 'log', 'logging'],
+];
+
+/** Expand a term with its synonyms (returns the term itself when no group matches). */
+function expandTerm(term: string): string[] {
+  const out = new Set<string>([term]);
+  for (const group of SYNONYM_GROUPS) {
+    if (group.includes(term)) group.forEach((g) => out.add(g));
+  }
+  return [...out];
+}
+
+/**
+ * Chinese fuzzy matching (R3): a query like "登陆" should still hit "登录".
+ * Pure 2-gram overlap misses single-character typos ("登陆" vs "登录" share no bigram),
+ * so combine bigram overlap with a character-set Jaccard ratio.
+ */
+function bigrams(s: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < s.length - 1; i++) out.push(s.slice(i, i + 2));
+  return out;
+}
+
+function chars(s: string): string[] {
+  return [...s].filter((c) => /[\u4e00-\u9fff]/.test(c));
+}
+
+/** fuzzy when bigram overlap ≥ 40% OR CJK char-set Jaccard ≥ 50%. */
+function fuzzyCjkMatch(queryTerm: string, target: string): boolean {
+  if (!/[\u4e00-\u9fff]/.test(queryTerm)) return false;
+  const qb = new Set(bigrams(queryTerm));
+  if (qb.size === 0) {
+    // single CJK char term: direct containment is the only signal
+    return target.includes(queryTerm);
+  }
+  for (const g of bigrams(target)) {
+    if (qb.has(g)) return true; // any shared bigram on short terms is strong evidence
+  }
+  const qc = new Set(chars(queryTerm));
+  const tc = new Set(chars(target));
+  if (qc.size === 0) return false;
+  let shared = 0;
+  for (const c of tc) {
+    if (qc.has(c)) shared += 1;
+  }
+  return shared / qc.size >= 0.5;
+}
+
+/** Keyword search: title match ×3, tag match ×2, body match ×1; synonyms + CJK fuzzy (R3). */
 export function searchKnowledge(keyword: string, query: KnowledgeQuery = {}, root?: string): SearchHit[] {
   const terms = (keyword || '')
     .toLowerCase()
@@ -226,9 +293,21 @@ export function searchKnowledge(keyword: string, query: KnowledgeQuery = {}, roo
     const body = entry.content.toLowerCase();
     let score = 0;
     for (const term of terms) {
-      if (title.includes(term)) score += 3;
-      if (tags.includes(term)) score += 2;
-      if (body.includes(term)) score += 1;
+      if (title.includes(term)) { score += 3; continue; }
+      if (tags.includes(term)) { score += 2; continue; }
+      if (body.includes(term)) { score += 1; continue; }
+      // R3: synonym expansion — "javascript" should hit a "js" entry
+      let synonymHit = false;
+      for (const syn of expandTerm(term)) {
+        if (syn === term) continue;
+        if (title.includes(syn)) { score += 2; synonymHit = true; break; }
+        if (tags.includes(syn)) { score += 2; synonymHit = true; break; }
+        if (body.includes(syn)) { score += 1; synonymHit = true; break; }
+      }
+      // R3: CJK 2-gram fuzzy match ("登陆" ≈ "登录") as the last resort
+      if (!synonymHit && (fuzzyCjkMatch(term, title) || fuzzyCjkMatch(term, body))) {
+        score += 1;
+      }
     }
     if (score > 0) hits.push({ ...entry, score });
   }

@@ -58,11 +58,16 @@ export interface PagedResult<T> {
 export async function listTaskGraphsPaged(
   page = 1,
   pageSize = 20,
-  filter?: { project_id?: string | null }
+  filter?: { project_id?: string | null; q?: string }
 ): Promise<PagedResult<TaskGraph>> {
   let allGraphs = await listTaskGraphs();
   if (filter && 'project_id' in filter) {
     allGraphs = allGraphs.filter((g) => (g.project_id ?? null) === (filter.project_id ?? null));
+  }
+  // improvement 6 (R4): keyword search over task_id / description, case-insensitive
+  const q = filter?.q?.trim().toLowerCase();
+  if (q) {
+    allGraphs = allGraphs.filter((g) => g.task_id.toLowerCase().includes(q) || (g.description || '').toLowerCase().includes(q));
   }
   const total = allGraphs.length;
   const start = (page - 1) * pageSize;
@@ -123,6 +128,34 @@ export async function getApprovals(taskId: string): Promise<string[]> {
   return (await busGet<string[]>(`task:approvals:${taskId}`)) || [];
 }
 
+// ---------- user interventions (improvement 6: message-style feedback channel) ----------
+
+export interface InterventionMessage {
+  id: string;
+  message: string;
+  ts: string;
+}
+
+const MAX_PENDING_INTERVENTIONS = 50;
+
+/** Queue a user message for injection into the agent's next conversation round. */
+export async function pushIntervention(taskId: string, message: string): Promise<InterventionMessage> {
+  const item: InterventionMessage = { id: Math.random().toString(36).slice(2, 10), message, ts: new Date().toISOString() };
+  const key = `task:intervene:${taskId}`;
+  const queue = (await busGet<InterventionMessage[]>(key)) || [];
+  queue.push(item);
+  await busSet(key, queue.slice(-MAX_PENDING_INTERVENTIONS));
+  return item;
+}
+
+/** Read and clear the pending intervention queue (consumed right before building the next userMsg). */
+export async function consumeInterventions(taskId: string): Promise<InterventionMessage[]> {
+  const key = `task:intervene:${taskId}`;
+  const queue = (await busGet<InterventionMessage[]>(key)) || [];
+  if (queue.length) await busDel(key);
+  return queue;
+}
+
 // ---------- project mode ----------
 
 export interface ProjectRecord {
@@ -145,9 +178,11 @@ export async function listProjects(): Promise<ProjectRecord[]> {
   const keys = await busKeys('project:*');
   const out: ProjectRecord[] = [];
   for (const key of keys) {
-    if (key.endsWith(':deleted')) continue;
+    // `project:<id>:memory` and `project:<id>:deleted` must never surface as projects;
+    // validate the record shape too so corrupted KV entries can't break the list
+    if (key.endsWith(':deleted') || key.endsWith(':memory')) continue;
     const p = await busGet<ProjectRecord>(key);
-    if (p) out.push(p);
+    if (p && typeof p === 'object' && typeof p.id === 'string' && typeof p.name === 'string') out.push(p);
   }
   return out;
 }
@@ -174,7 +209,7 @@ export async function listProjectTasks(projectId: string): Promise<TaskGraph[]> 
 
 export interface JournalEntry {
   role: 'master' | 'agent';
-  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene';
   text: string;
   ts: string;
   node_id: string;
@@ -271,6 +306,7 @@ export async function deleteTask(taskId: string): Promise<void> {
   await busDel(`task:cancel:${taskId}`);
   await busDel(`task:approvals:${taskId}`);
   await busDel(`task:feedbacks:${taskId}`);
+  await busDel(`task:intervene:${taskId}`);
   
   const journalKeys = await busKeys(`task:${taskId}:agent:*:journal`);
   for (const key of journalKeys) {

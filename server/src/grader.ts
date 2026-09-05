@@ -39,14 +39,44 @@ const HEAVY_PATTERNS = /(重构|架构|迁移|重新设计|整体升级|微服�
 const LIGHT_PATTERNS = /(typo|错别字|改文案|文案修改|调整样式|改颜色|颜色|单个文件|单文件|一行|小改动|微调|重命名变量|rename variable)/i;
 
 /**
+ * Custom grading keywords injected from config.yaml (improvement 7 / R6).
+ * They are APPENDED to the built-in patterns so behavior never changes
+ * unless configureGrader is explicitly called at startup.
+ */
+const customHeavy: string[] = [];
+const customLight: string[] = [];
+
+export interface GraderConfig {
+  /** extra keywords that classify a task as heavy (appended to built-ins) */
+  heavy?: string[];
+  /** extra keywords that classify a task as light (appended to built-ins) */
+  light?: string[];
+}
+
+export function configureGrader(config: GraderConfig): void {
+  customHeavy.length = 0;
+  customLight.length = 0;
+  if (config.heavy?.length) customHeavy.push(...config.heavy.map((k) => String(k)).filter(Boolean));
+  if (config.light?.length) customLight.push(...config.light.map((k) => String(k)).filter(Boolean));
+}
+
+function matchesAny(text: string, builtin: RegExp, keywords: string[]): boolean {
+  if (builtin.test(text)) return true;
+  for (const k of keywords) {
+    if (text.includes(k)) return true;
+  }
+  return false;
+}
+
+/**
  * Task complexity grading (improvement 7). Rule-based; explicit user override wins.
  * light = trivial tweaks (typo/文案/样式); heavy = architecture-level work or
  * multi-feature descriptions; everything else = standard.
  */
 export function gradeTask(description: string): TaskLevel {
   const text = (description || '').trim();
-  if (HEAVY_PATTERNS.test(text)) return 'heavy';
-  if (LIGHT_PATTERNS.test(text)) return 'light';
+  if (matchesAny(text, HEAVY_PATTERNS, customHeavy)) return 'heavy';
+  if (matchesAny(text, LIGHT_PATTERNS, customLight)) return 'light';
   // long, multi-feature descriptions with explicit module boundaries lean heavy
   const featureMarkers = (text.match(/(模块|接口|页面|服务|功能点|并且|同时|以及|此外|第[一二三四五1-5][、，,])/g) || []).length;
   if (featureMarkers >= 4 || text.length > 600) return 'heavy';

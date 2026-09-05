@@ -111,5 +111,12 @@ describe('test-fix loop (improvement 8, orchestrator integration)', () => {
     expect(graph!.nodes[0].needs_human).toBe(true);
     expect(JSON.stringify(await getTaskJournals('t-fixmax'))).toContain(`测试修复循环达上限`);
     expect(MAX_FIX_ROUNDS).toBeGreaterThanOrEqual(1);
+    // R9: the terminal state carries a structured report with the failure detail
+    const report = graph!.nodes[0].result?.report;
+    expect(report).toBeTruthy();
+    expect(report!.attempts).toBe(MAX_FIX_ROUNDS);
+    expect(report!.failures.length).toBeGreaterThan(0);
+    expect(report!.failures[0].name).toContain('adds numbers');
+    expect(report!.summary).toContain('修复 3 轮后仍有');
   });
 });

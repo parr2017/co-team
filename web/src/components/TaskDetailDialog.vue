@@ -36,6 +36,7 @@
                   :filter-agent="selectedAgent || undefined"
                 />
               </div>
+              <InterventionBar :task-id="taskId" :task-status="task.status" />
             </div>
           </div>
         </el-tab-pane>
@@ -63,6 +64,11 @@
                 <div v-if="selected.reason" class="reason">💡 {{ selected.reason }}</div>
                 <div v-if="selected.error" class="error mono">✗ {{ selected.error }}</div>
                 <div v-if="selected.result?.summary" class="summary">{{ selected.result.summary }}</div>
+                <div v-if="selected.result?.report" class="report-card mono">
+                  <div class="r-title">TEST REPORT · {{ selected.result.report.framework || 'tests' }} · {{ selected.result.report.attempts }} 轮</div>
+                  <div class="r-line">{{ selected.result.report.summary }}</div>
+                  <div v-for="(f, i) in (selected.result.report.failures || []).slice(0, 6)" :key="i" class="r-fail">✗ {{ f.name }}<template v-if="f.message">: {{ f.message.slice(0, 120) }}</template></div>
+                </div>
                 <div v-if="selected.result?.changes?.length" class="changes mono">
                   <div v-for="c in selected.result.changes" :key="c" class="change">✓ {{ c }}</div>
                 </div>
@@ -177,6 +183,7 @@ import { api, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, 
 import PipelineTrack from './PipelineTrack.vue';
 import CollabGraph from './CollabGraph.vue';
 import ChatStream from './ChatStream.vue';
+import InterventionBar from './InterventionBar.vue';
 
 const props = defineProps<{ modelValue: boolean; taskId: string; liveAgents?: Record<string, { model?: string; currentAction?: string }> }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -370,7 +377,7 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .live-agent { font-weight: 700; color: var(--ct-text); }
 .live-model { color: var(--ct-accent); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 6px; }
 .live-action { color: var(--ct-yellow); }
-.live-chat { max-height: calc(88vh - 290px); overflow-y: auto; display: flex; flex-direction: column; }
+.live-chat { max-height: calc(88vh - 340px); overflow-y: auto; display: flex; flex-direction: column; }
 .body-grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
 .left { border-right: 1px solid var(--ct-border); padding-right: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
 .right { min-width: 0; max-height: calc(88vh - 200px); overflow-y: auto; }
@@ -389,6 +396,10 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .reason { font-size: 12px; color: var(--ct-text2); font-style: italic; margin-bottom: 6px; }
 .error { color: var(--ct-red); font-size: 12px; margin-bottom: 6px; }
 .summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 8px; white-space: pre-wrap; }
+.report-card { border: 1px solid var(--ct-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--ct-panel2); }
+.r-title { font-size: 10px; color: var(--ct-text3); letter-spacing: 1px; margin-bottom: 6px; }
+.r-line { font-size: 12px; color: var(--ct-text2); margin-bottom: 4px; }
+.r-fail { font-size: 11px; color: var(--ct-red); }
 .changes .change { font-size: 11px; color: var(--ct-text2); padding: 1px 0; }
 .tl-err { color: var(--ct-red); font-size: 11px; }
 .tl-type { color: var(--ct-text2); font-size: 11px; }

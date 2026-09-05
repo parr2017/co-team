@@ -2,9 +2,13 @@
   "name": "co-team-server",
   "version": "0.2.0",
   "main": "dist/index.js",
+  "bin": {
+    "coteam-cli": "dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
+    "cli": "tsx src/cli.ts",
     "test": "vitest run"
   },
   "dependencies": {

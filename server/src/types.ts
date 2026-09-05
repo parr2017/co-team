@@ -38,6 +38,13 @@ export interface ToolCall {
   path?: string;
 }
 
+export interface TestFixReport {
+  framework?: string;
+  attempts: number;
+  failures: { name: string; message?: string }[];
+  summary: string;
+}
+
 export interface AgentResult {
   status: 'success' | 'failed';
   error?: string;
@@ -55,6 +62,8 @@ export interface AgentResult {
   git_commit?: { branch: string; commit: string | null };
   command_results?: { command: string; returncode: number; stderr: string; stdout?: string }[];
   raw_output?: string;
+  /** structured test-fix report (improvement 8 / R9) */
+  report?: TestFixReport;
 }
 
 export interface TaskNode {
