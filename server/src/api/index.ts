@@ -164,6 +164,7 @@ export function createApi(ctx: ApiContext): Hono {
     const body = await readJsonAuto<{
       description?: string; request?: string; workspace?: string; auto_run?: boolean; project_id?: string;
       main_model_id?: string; level?: string; skip_clarification?: boolean;
+      fix_for?: { task_id?: string; node_id?: string };
     }>(c);
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
@@ -172,12 +173,22 @@ export function createApi(ctx: ApiContext): Hono {
     logger.info('Creating task', {
       description: description.slice(0, 100), workspace, auto_run: body.auto_run,
       main_model_id: body.main_model_id, level: body.level,
+      fix_for: body.fix_for?.task_id,
     });
 
     const { taskId, graph, needsClarification, questions, summary, level } = await ctx.orchestrator.createTask(description, workspace, body.project_id, {
       mainModelId: body.main_model_id,
       level: body.level,
     });
+
+    // P0-2: defect-fix backlink — a task created to fix a defect links to its source node
+    if (body.fix_for?.task_id) {
+      const fresh = await getTaskGraph(taskId);
+      if (fresh) {
+        fresh.fix_for = { task_id: body.fix_for.task_id, node_id: body.fix_for.node_id || '' };
+        await persistGraph(fresh);
+      }
+    }
 
     logger.info('Task created', {
       taskId,
@@ -336,6 +347,65 @@ export function createApi(ctx: ApiContext): Hono {
     const ws = graph.workspace || '.';
     await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, ws);
     return c.json({ status: 'approved', task_id: taskId, node_id: nodeId });
+  });
+
+  // P0-2: convert a structured defect from a node's result into a fix task with a backlink
+  app.post('/api/tasks/:taskId/defects/convert', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await c.req.json<{ node_id?: string; defect_index?: number; auto_run?: boolean }>();
+    if (!body.node_id) throw new HttpError(400, 'node_id is required');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const node = graph.nodes.find((n) => n.id === body.node_id);
+    if (!node) throw new HttpError(404, 'node not found');
+    const defectIndex = body.defect_index ?? 0;
+    const defect = node.result?.defects?.[defectIndex];
+    if (!defect) throw new HttpError(400, `defect not found at index ${defectIndex} on node ${body.node_id}`);
+
+    const description = [
+      `[缺陷修复] 来源任务 ${taskId} 节点「${node.name}」发现的缺陷：${defect.title}`,
+      '',
+      `缺陷描述：${defect.detail}`,
+      defect.severity ? `严重程度：${defect.severity}` : '',
+      '',
+      '请先定位根因，再做最小修复，并运行相关测试验证修复有效。',
+    ].filter(Boolean).join('\n');
+
+    logger.info('Converting defect to fix task', { taskId, node_id: body.node_id, defect_index: defectIndex, title: defect.title });
+    const { taskId: fixTaskId, needsClarification, questions } = await ctx.orchestrator.createTask(description, graph.workspace, graph.project_id, {
+      mainModelId: graph.main_model_id,
+      level: 'standard',
+    });
+
+    let queue: QueueSnapshot | null = null;
+    if (!needsClarification) {
+      const fresh = await getTaskGraph(fixTaskId);
+      if (fresh) {
+        fresh.fix_for = { task_id: taskId, node_id: body.node_id };
+        await persistGraph(fresh);
+      }
+      if (body.auto_run === true) {
+        queue = await ctx.taskQueue.enqueue(fixTaskId, graph.project_id ?? null, graph.workspace);
+      }
+    }
+    const { appendJournal, emitProgress } = await import('../store');
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master',
+      kind: 'brief',
+      text: `缺陷「${defect.title}」已转化为修复任务 ${fixTaskId}${needsClarification ? '（等待需求澄清）' : ''}`,
+      ts: new Date().toISOString(),
+      node_id: body.node_id,
+      node_name: node.name,
+      meta: { fix_task_id: fixTaskId },
+    });
+    await emitProgress('defect_converted', { task_id: taskId, node_id: body.node_id, fix_task_id: fixTaskId, defect: defect.title });
+    return c.json({
+      status: needsClarification ? 'needs_clarification' : 'created',
+      fix_task_id: fixTaskId,
+      fix_for: { task_id: taskId, node_id: body.node_id },
+      questions: questions || [],
+      queue,
+    });
   });
 
   app.get('/api/tasks/:taskId', async (c) => {
@@ -892,7 +962,8 @@ export function createApi(ctx: ApiContext): Hono {
     const agentStats: Record<string, { tasks: number; completed: number; failed: number; retries: number; tokens: number }> = {};
     let tasksTotal = 0;
     let tasksSuccess = 0;
-    for (const graph of await listTaskGraphs()) {
+    const graphs = await listTaskGraphs();
+    for (const graph of graphs) {
       tasksTotal += 1;
       if (graph.status === 'success') tasksSuccess += 1;
       for (const node of graph.nodes) {
@@ -905,6 +976,7 @@ export function createApi(ctx: ApiContext): Hono {
         stat.tokens += 0; // per-node token usage lives in conversations
       }
     }
+    const { summarizeQuality } = await import('../metrics');
     return c.json({
       tasks: {
         total: tasksTotal,
@@ -912,11 +984,20 @@ export function createApi(ctx: ApiContext): Hono {
         success_rate: tasksTotal ? Math.round((tasksSuccess / tasksTotal) * 1000) / 1000 : 0,
       },
       agents: agentStats,
+      // P0-1/P0-2 quality loop: fix rounds, test outcomes, defect closure, delivery consistency
+      quality: summarizeQuality(graphs),
       model_pool: ctx.modelPool.getStatus(),
       token_usage: ctx.modelPool.getUsage(),
       tokens_total: ctx.modelPool.totalTokens(),
       cost_total: ctx.modelPool.totalCost(),
     });
+  });
+
+  // P0-1/P0-2: daily quality trend from the per-run samples written by execute()
+  app.get('/api/metrics/trend', async (c) => {
+    const days = Math.max(1, Math.min(90, parseInt(c.req.query('days') || '14', 10) || 14));
+    const { getTrend } = await import('../metrics');
+    return c.json({ days, trend: await getTrend(days) });
   });
 
   app.get('/api/fs', async (c) => {

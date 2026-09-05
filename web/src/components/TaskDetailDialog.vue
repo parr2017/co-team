@@ -75,6 +75,20 @@
                 <div v-if="selected.error" class="error mono">✗ {{ selected.error }}</div>
                 <div v-if="selected.result?.summary" class="summary">{{ selected.result.summary }}</div>
                 <div v-if="(selected.result as any)?.verification" class="verification">🛡 验证：{{ (selected.result as any).verification }}</div>
+                <div v-if="(selected.result as any)?.gate_test" class="gate-line mono" :class="(selected.result as any).gate_test.passed ? 'gate-ok' : 'gate-bad'">
+                  {{ (selected.result as any).gate_test.passed ? '✓' : '✗' }} 自修改门禁 · {{ (selected.result as any).gate_test.command }}<template v-if="(selected.result as any).gate_test.summary"> · {{ (selected.result as any).gate_test.summary }}</template>
+                </div>
+                <div v-if="selected.result?.defects?.length" class="report-card defects-card">
+                  <div class="r-title">DEFECTS · 发现未修复的缺陷（{{ selected.result.defects.length }}）</div>
+                  <div v-for="(d, i) in selected.result.defects" :key="i" class="defect-row">
+                    <div class="d-head">
+                      <el-tag size="small" :type="d.severity === 'high' ? 'danger' : d.severity === 'medium' ? 'warning' : 'info'" class="mono">{{ d.severity || 'low' }}</el-tag>
+                      <span class="d-title">{{ d.title }}</span>
+                      <el-button size="small" link type="primary" :loading="converting === selected.id + ':' + i" @click="convertDefect(selected, i)">转修复任务</el-button>
+                    </div>
+                    <div class="d-detail">{{ d.detail }}</div>
+                  </div>
+                </div>
                 <div v-if="selected.result?.report" class="report-card mono">
                   <div class="r-title">TEST REPORT · {{ selected.result.report.framework || 'tests' }} · {{ selected.result.report.attempts }} 轮</div>
                   <div class="r-line">{{ selected.result.report.summary }}</div>
@@ -240,6 +254,24 @@ async function changeAgent(n: TaskNode, agent: string) {
   } catch (e: any) {
     ElMessage.error(`更换 Agent 失败: ${e.message || e}`);
     void refresh();
+  }
+}
+
+// P0-2: convert a structured defect into a fix task with a backlink
+const converting = ref('');
+async function convertDefect(n: TaskNode, defectIndex: number) {
+  converting.value = n.id + ':' + defectIndex;
+  try {
+    const r = await api.convertDefect(props.taskId, n.id, defectIndex, false);
+    if (r.status === 'needs_clarification') {
+      ElMessage.warning(`修复任务 ${r.fix_task_id} 已创建，等待需求澄清后执行`);
+    } else {
+      ElMessage.success(`修复任务 ${r.fix_task_id} 已创建（可在任务中心查看，回链至本节点）`);
+    }
+  } catch (e: any) {
+    ElMessage.error(`转化失败: ${e.message || e}`);
+  } finally {
+    converting.value = '';
   }
 }
 const completedCount = computed(() => task.value?.nodes.filter((n) => n.status === 'completed').length || 0);
@@ -433,6 +465,13 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .error { color: var(--ct-red); font-size: 12px; margin-bottom: 6px; }
 .summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 8px; white-space: pre-wrap; }
 .verification { font-size: 12px; color: var(--ct-green); background: var(--ct-panel2); border-left: 3px solid var(--ct-green); border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; }
+.gate-line { font-size: 11px; border-radius: 4px; padding: 5px 10px; margin-bottom: 8px; }
+.gate-ok { color: var(--ct-green); background: var(--ct-panel2); border-left: 3px solid var(--ct-green); }
+.gate-bad { color: var(--ct-red); background: var(--ct-panel2); border-left: 3px solid var(--ct-red); }
+.defects-card .d-head { display: flex; align-items: center; gap: 8px; }
+.defects-card .d-title { font-size: 12px; color: var(--ct-text); font-weight: 600; }
+.defects-card .d-head .el-button { margin-left: auto; }
+.defects-card .d-detail { font-size: 11px; color: var(--ct-text2); margin: 4px 0 8px; white-space: pre-wrap; }
 .report-card { border: 1px solid var(--ct-border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--ct-panel2); }
 .r-title { font-size: 10px; color: var(--ct-text3); letter-spacing: 1px; margin-bottom: 6px; }
 .r-line { font-size: 12px; color: var(--ct-text2); margin-bottom: 4px; }

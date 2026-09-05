@@ -36,10 +36,16 @@ export interface TaskNode {
   reason?: string;
   retry_count?: number;
   requires_approval?: boolean;
-  result?: { summary?: string; changes?: string[]; verification?: string; report?: TestReport } | null;
+  result?: { summary?: string; changes?: string[]; verification?: string; report?: TestReport; defects?: DefectReport[] } | null;
   started_at?: string;
   finished_at?: string;
   branch?: string;
+}
+
+export interface DefectReport {
+  title: string;
+  detail: string;
+  severity?: 'low' | 'medium' | 'high';
 }
 
 export interface TestReport {
@@ -211,6 +217,8 @@ export const api = {
   taskEvents: (id: string) => request<{ task_id: string; events: EventEnvelope[] }>(`/api/tasks/${id}/events`),
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   approveNode: (taskId: string, nodeId: string) => post(`/api/tasks/${taskId}/approve/${nodeId}`),
+  convertDefect: (taskId: string, nodeId: string, defectIndex: number, autoRun = false) =>
+    post<{ status: string; fix_task_id: string; questions?: string[] }>(`/api/tasks/${taskId}/defects/convert`, { node_id: nodeId, defect_index: defectIndex, auto_run: autoRun }),
   cancelTask: (id: string) => post(`/api/tasks/${id}/cancel`),
   updateNode: async (id: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }): Promise<{ status: string }> => {
     const res = await fetch(`${BASE}/api/tasks/${id}/nodes/${nodeId}`, {

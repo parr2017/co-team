@@ -4,7 +4,7 @@ import { generateTaskGraph, PlannedGraph } from './planner';
 import type { ModelPool, ModelEntry } from '../scheduler';
 import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
-import { createSandbox, cleanupSandbox, mergeChanges, PermissionPolicy } from '../sandbox';
+import { createSandbox, cleanupSandbox, mergeChanges, executeCommandAsync, PermissionPolicy } from '../sandbox';
 import { applyFinalOutput, applyToolCalls, listFiles } from '../tools';
 import type { KnowledgeToolContext } from '../tools';
 import * as gitTool from '../git';
@@ -40,12 +40,13 @@ import { gradeTask, normalizeLevel, LEVEL_PROFILES } from '../grader';
 import { computeProgress, shouldBroadcast, clearProgressThrottle } from '../progress';
 import { writeKnowledge, relevantKnowledge } from '../knowledge';
 import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract, docsSection, getDocRegistry } from '../ssot';
-import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, MAX_FIX_ROUNDS } from '../testloop';
+import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, MAX_FIX_ROUNDS, type ParsedTestOutput } from '../testloop';
 import { createSnapshot } from '../snapshot';
 import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
-import { PROJECT_ROOT } from '../config';
+import { PROJECT_ROOT, DEFAULT_META_PATHS, type SelfModGateConfig } from '../config';
+import { sampleTaskRun } from '../metrics';
 
 export interface OrchestratorOptions {
   agentsDir: string;
@@ -59,6 +60,8 @@ export interface OrchestratorOptions {
   maxFixRounds?: number;
   /** global SKILL.md library dir (defaults to PROJECT_ROOT/skills) */
   skillsGlobalDir?: string;
+  /** P0-1 self-modification gate config (defaults to enabled with DEFAULT_META_PATHS) */
+  selfModGate?: SelfModGateConfig;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -119,6 +122,7 @@ export class Orchestrator {
   private maxFixRounds: number;
   private agentsDir: string;
   private skillsGlobalDir: string;
+  private selfModGate: SelfModGateConfig;
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
@@ -135,6 +139,12 @@ export class Orchestrator {
     this.branchWorkflow = opts.branchWorkflow ?? true;
     this.tokenBudget = opts.tokenBudget;
     this.maxFixRounds = opts.maxFixRounds ?? MAX_FIX_ROUNDS;
+    this.selfModGate = opts.selfModGate || {
+      enabled: true,
+      test_command: 'npm test',
+      meta_paths: DEFAULT_META_PATHS,
+      timeout_sec: 600,
+    };
     this.router = new Router([], DEFAULT_RULES, this.makeLlmRouter());
     this.logger.info('Orchestrator initialized', {
       agentsDir: opts.agentsDir,
@@ -561,6 +571,10 @@ export class Orchestrator {
 
     graph.status = status === 'success' ? 'success' : status;
     await persistGraph(graph);
+
+    // P0-1/P0-2 measurement: append a daily sample for /api/metrics/trend
+    await sampleTaskRun(graph, status).catch((e) => this.logger.warn('metrics sample failed', { taskId, error: String(e) }));
+
     await emitProgress(status === 'success' ? 'execute_complete' : `execute_${status}`, {
       task_id: taskId,
       completed: graph.nodes.filter((n) => n.status === 'completed').length,
@@ -722,6 +736,210 @@ export class Orchestrator {
     return [...new Set(all)];
   }
 
+  // ---------- P0-1 self-modification gate & delivery consistency ----------
+
+  /** Is this task pointing at the co-team codebase itself? */
+  private isSelfRef(graph: TaskGraph): boolean {
+    try {
+      const ws = path.resolve(graph.workspace || '');
+      return ws.toLowerCase() === PROJECT_ROOT.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+
+  /** Normalize a reported change entry ("path: desc" / "path") into a repo-relative path. */
+  private normalizeReportedPath(entry: string): string {
+    return (entry || '').split(':')[0].trim().replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  }
+
+  /** Repo-relative paths the agent claims to have touched (files[] + changes[]). */
+  private reportedPaths(result: AgentResult): string[] {
+    return [
+      ...(result.files || []).map((f) => f.path),
+      ...(result.changes || []),
+    ].filter(Boolean);
+  }
+
+  /** First reported path that touches a meta facility, if any. */
+  private metaHit(paths: string[], metaPaths: string[]): string | null {
+    for (const raw of paths) {
+      const rel = this.normalizeReportedPath(raw);
+      if (!rel) continue;
+      for (const mp of metaPaths) {
+        const norm = mp.replace(/\\/g, '/').toLowerCase();
+        if (rel === norm || rel.startsWith(norm) || rel.endsWith(norm)) return rel;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The sandbox copy skips node_modules — a self-test inside it would fail on
+   * missing deps. Link the workspace's node_modules in (junction: no admin rights).
+   */
+  private ensureDepsLink(workspace: string, sandbox: string): void {
+    try {
+      const wsNm = path.join(workspace, 'node_modules');
+      const sbNm = path.join(sandbox, 'node_modules');
+      if (!fs.existsSync(sbNm) && fs.existsSync(wsNm)) fs.symlinkSync(wsNm, sbNm, 'junction');
+    } catch { /* best effort */ }
+  }
+
+  /** Run the configured self-test command in the sandbox; parse + journal the result. */
+  private async runGateTest(taskId: string, node: TaskNode, graph: TaskGraph, sandbox: string): Promise<{ passed: boolean; returncode: number; parsed: ParsedTestOutput } | null> {
+    const gate = this.selfModGate;
+    this.ensureDepsLink(graph.workspace, sandbox);
+    const res = await executeCommandAsync(gate.test_command, sandbox, this.policy, gate.timeout_sec ?? 600);
+    const output = `${res.stderr || ''}\n${res.stdout || ''}`.trim();
+    const parsed = parseTestOutput(output);
+    const passed = res.returncode === 0;
+    this.logger.info('Self-modification gate test', { taskId, nodeId: node.id, command: gate.test_command, returncode: res.returncode, passed });
+    await appendJournal(taskId, node.agent, {
+      role: 'master',
+      kind: passed ? 'round' : 'error',
+      text: `自修改门禁：${gate.test_command} ${passed ? '通过' : `失败（returncode=${res.returncode}）`}${parsed.summary ? ' · ' + parsed.summary : ''}`,
+      ts: new Date().toISOString(),
+      node_id: node.id,
+      node_name: node.name,
+      meta: { command: gate.test_command, failures: parsed.failures },
+    });
+    await emitProgress('gate_test', { task_id: taskId, node_id: node.id, passed, command: gate.test_command, summary: parsed.summary, failures: parsed.failures.length });
+    return { passed, returncode: res.returncode, parsed };
+  }
+
+  /**
+   * P0-1 self-modification gate applied to a successful node result:
+   *  (a) the repo's own test suite must pass — failure loops into the fix cycle
+   *      ('retry') or fails the node ('fail') instead of accepting a broken system;
+   *  (b) meta-facility edits are held for human approval ('waiting') unless the
+   *      node has already been approved for this task.
+   * Mutates `result` / `node` and returns the action the caller must take.
+   */
+  private async enforceSelfModGate(
+    taskId: string,
+    graph: TaskGraph,
+    node: TaskNode,
+    plugin: AgentPlugin,
+    sandbox: string,
+    result: AgentResult,
+    fixRound: number,
+    allowFix: boolean
+  ): Promise<{ action: 'pass' | 'retry' | 'fail' | 'waiting'; fixPrompt?: string }> {
+    if (!this.selfModGate.enabled || !this.isSelfRef(graph)) return { action: 'pass' };
+
+    const gateTest = await this.runGateTest(taskId, node, graph, sandbox);
+    if (gateTest) {
+      result.gate_test = {
+        command: this.selfModGate.test_command,
+        returncode: gateTest.returncode,
+        passed: gateTest.passed,
+        summary: gateTest.parsed.summary || undefined,
+      };
+      if (!gateTest.passed) {
+        if (allowFix && fixRound < this.maxFixRounds) {
+          await appendJournal(taskId, plugin.name, {
+            role: 'master',
+            kind: 'error',
+            text: `自修改门禁未通过，进入测试修复循环（第 ${fixRound + 1}/${this.maxFixRounds} 轮）：${gateTest.parsed.summary}`,
+            ts: new Date().toISOString(),
+            node_id: node.id,
+            node_name: node.name,
+            meta: { failures: gateTest.parsed.failures },
+          });
+          return { action: 'retry', fixPrompt: buildFixPrompt(gateTest.parsed, this.selfModGate.test_command, fixRound + 1, this.maxFixRounds) };
+        }
+        result.status = 'failed';
+        result.error = `自修改门禁：${this.selfModGate.test_command} ${fixRound} 轮修复后仍未通过: ${gateTest.parsed.summary}`;
+        result.report = {
+          framework: this.selfModGate.test_command,
+          attempts: Math.max(1, fixRound),
+          failures: gateTest.parsed.failures.map((f) => ({ name: f.name, message: f.message })),
+          summary: `自修改门禁 ${Math.max(1, fixRound)} 轮后仍有 ${gateTest.parsed.failures.length} 个用例失败：${gateTest.parsed.summary}`,
+        };
+        await appendJournal(taskId, plugin.name, {
+          role: 'master',
+          kind: 'error',
+          text: result.error,
+          ts: new Date().toISOString(),
+          node_id: node.id,
+          node_name: node.name,
+          meta: { failures: gateTest.parsed.failures },
+        });
+        return { action: 'fail' };
+      }
+    }
+
+    const touched = this.metaHit(this.reportedPaths(result), this.selfModGate.meta_paths);
+    if (!touched) return { action: 'pass' };
+
+    const approvals = await getApprovals(taskId);
+    if (approvals.includes(node.id)) return { action: 'pass' };
+
+    node.requires_approval = true;
+    node.status = 'waiting_approval';
+    node.updated_at = new Date().toISOString();
+    node.result = result;
+    await persistGraph(graph);
+    await appendJournal(taskId, plugin.name, {
+      role: 'master',
+      kind: 'brief',
+      text: `自修改门禁：节点改动触及元设施「${touched}」，已挂起等待人工审批`,
+      ts: new Date().toISOString(),
+      node_id: node.id,
+      node_name: node.name,
+      meta: { meta_path: touched },
+    });
+    await emitProgress('node_waiting_approval', { task_id: taskId, node_id: node.id, name: node.name, reason: 'meta-facility change', meta_path: touched });
+    notify('approval_required', { task_id: taskId, node_id: node.id, reason: 'meta-facility change' }, `[Co-Team] 自修改门禁：节点「${node.name}」改动触及元设施（${touched}），等待人工审批`);
+    return { action: 'waiting' };
+  }
+
+  /**
+   * Quality metric: compare the agent's reported change paths against the actual
+   * git working-tree diff in the sandbox. Flags both unreported real changes and
+   * phantom claims (reported files that do not exist) — the "fake completion" detector.
+   */
+  private async recordDeliveryCheck(graph: TaskGraph, node: TaskNode, sandbox: string, result: AgentResult): Promise<void> {
+    try {
+      if (!this.gitEnabled || !this.sandboxEnabled || sandbox === graph.workspace) return;
+      const looksLikePath = (p: string) => /[/\\]/.test(p) || /\.[a-z0-9]{1,6}$/i.test(p);
+      const reported = this.reportedPaths(result).map((p) => this.normalizeReportedPath(p)).filter(Boolean);
+      const repSet = new Set(reported);
+
+      const status = await simpleGit({ baseDir: sandbox }).status();
+      const actual = [...status.modified, ...status.created, ...status.not_added, ...status.renamed.map((r) => r.to), ...status.deleted]
+        .map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase())
+        .filter(Boolean);
+
+      const covered = (actualPath: string) => [...repSet].some((r) => r === actualPath || actualPath.endsWith('/' + r) || r.endsWith('/' + actualPath));
+      const unreported = actual.filter((a) => !covered(a));
+
+      const phantom: string[] = [];
+      for (const rep of new Set(reported)) {
+        if (!looksLikePath(rep)) continue;
+        if (![...actual].some((a) => a === rep || rep.endsWith('/' + a) || a.endsWith('/' + rep)) && !fs.existsSync(path.join(sandbox, rep))) {
+          phantom.push(rep);
+        }
+      }
+
+      result.delivery_check = {
+        consistent: unreported.length === 0 && phantom.length === 0,
+        reported_count: repSet.size,
+        actual_count: actual.length,
+        unreported: unreported.slice(0, 10),
+        phantom: phantom.slice(0, 10),
+      };
+      if (!result.delivery_check.consistent) {
+        this.logger.warn('Delivery consistency check flagged mismatches', {
+          taskId: graph.task_id, nodeId: node.id, unreported: unreported.length, phantom: phantom.length,
+        });
+      }
+    } catch (e) {
+      this.logger.debug?.('delivery check skipped', { taskId: graph.task_id, nodeId: node.id, error: String(e) });
+    }
+  }
+
   // ---------- single node ----------
 
   /** Safety wrapper: a node must ALWAYS land on a terminal status, even if the inner pipeline throws. */
@@ -788,6 +1006,8 @@ export class Orchestrator {
     // R9: survives past the loop so the terminal node.result carries the fix-loop report
     // even after the escalation attempt overwrites the intermediate result
     let fixReport: AgentResult['report'] = undefined;
+    // gate evidence from the last gated attempt survives the escalation dispatch
+    let lastGateTest: AgentResult['gate_test'] = undefined;
     // regular attempts are bounded by maxRetries; test-fix rounds extend the budget
     // separately (improvement 8) so a broken commit is never accepted
     for (let attempt = 0; attempt < Math.max(1, this.maxRetries) + fixRound; attempt++) {
@@ -856,6 +1076,29 @@ export class Orchestrator {
           });
           break;
         }
+        // P0-1 self-modification gate: mandatory self-test + meta-facility approval
+        // (only active when the task's workspace IS the co-team codebase)
+        const gate = await this.enforceSelfModGate(taskId, graph, node, plugin, sandbox, result, fixRound, true);
+        if (gate.action === 'waiting') return;
+        if (gate.action === 'retry') {
+          fixRound += 1;
+          error = gate.fixPrompt || '';
+          node.status = 'retrying';
+          node.retry_count = attempt + 1;
+          await persistGraph(graph);
+          await emitProgress('test_fix_round', { task_id: taskId, node_id: node.id, round: fixRound, max: this.maxFixRounds, summary: '自修改门禁测试未通过，进入修复循环' });
+          continue;
+        }
+        if (gate.action === 'fail') {
+          fixReport = result.report;
+          lastGateTest = result.gate_test;
+          error = result.error || '';
+          break;
+        }
+
+        // quality metric: reported changes vs the actual working tree (before the commit)
+        await this.recordDeliveryCheck(graph, node, sandbox, result);
+
         this.logger.nodeComplete(taskId, node.id, node.agent);
 
         node.status = 'completed';
@@ -889,25 +1132,41 @@ export class Orchestrator {
     await emitProgress('node_escalate', { task_id: taskId, node_id: node.id, name: node.name, error });
     const result = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 接管');
     if (result.status === 'success') {
-      node.status = 'completed';
-      node.finished_at = new Date().toISOString();
-      node.result = { ...result, escalated: true };
-      node.error = '';
-      await saveDeliverable(taskId, node).catch(() => {});
-      if (useBranch && node.branch) {
-        const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name} (escalated)`, result.changes || []).catch(() => null);
-        if (commit) (node.result as any).git_commit = { branch: node.branch, commit };
+      // P0-1: the takeover result faces the same gate (no fix rounds left at this point)
+      const gate = await this.enforceSelfModGate(taskId, graph, node, plugin, sandbox, result, this.maxFixRounds, false);
+      if (gate.action === 'waiting') return;
+      if (gate.action === 'fail') {
+        fixReport = result.report || fixReport;
+        lastGateTest = result.gate_test || lastGateTest;
+        error = result.error || error;
       }
-      await persistGraph(graph);
-      await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
-      await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: (result.summary || '') + '（主 Agent 接管后完成）' });
-      return;
+      if (result.status === 'success') {
+        await this.recordDeliveryCheck(graph, node, sandbox, result);
+        node.status = 'completed';
+        node.finished_at = new Date().toISOString();
+        node.result = { ...result, escalated: true };
+        node.error = '';
+        await saveDeliverable(taskId, node).catch(() => {});
+        if (useBranch && node.branch) {
+          const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name} (escalated)`, result.changes || []).catch(() => null);
+          if (commit) (node.result as any).git_commit = { branch: node.branch, commit };
+        }
+        await persistGraph(graph);
+        await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
+        await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: (result.summary || '') + '（主 Agent 接管后完成）' });
+        return;
+      }
+      // gate failed the takeover result — fall through to the failure handling below
     }
 
     node.status = 'failed';
     node.finished_at = new Date().toISOString();
     node.error = result.error || error;
-    node.result = fixReport ? { ...result, report: fixReport } : result;
+    node.result = {
+      ...result,
+      ...(lastGateTest ? { gate_test: lastGateTest } : {}),
+      ...(fixReport ? { report: fixReport } : {}),
+    };
     node.needs_human = true;
     await saveDeliverable(taskId, node).catch(() => {});
     

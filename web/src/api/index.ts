@@ -110,6 +110,7 @@ export interface DeliverableDoc {
   agent: string;
   status: string;
   markdown: string;
+  defects?: DefectReport[];
   ts: string;
 }
 
@@ -120,6 +121,12 @@ export interface TestFixReport {
   summary: string;
 }
 
+export interface DefectReport {
+  title: string;
+  detail: string;
+  severity?: 'low' | 'medium' | 'high';
+}
+
 export interface AgentResult {
   status?: 'success' | 'failed';
   error?: string;
@@ -128,6 +135,9 @@ export interface AgentResult {
   errors?: string[];
   escalated?: boolean;
   report?: TestFixReport;
+  defects?: DefectReport[];
+  gate_test?: { command: string; returncode: number; passed: boolean; summary?: string };
+  delivery_check?: { consistent: boolean; reported_count: number; actual_count: number; unreported: string[]; phantom: string[] };
 }
 
 export interface TaskNode {
@@ -170,6 +180,30 @@ export interface TaskGraph {
   updated_at: string;
   git_commit?: { branch: string; commit: string | null };
   merged_branches?: string[];
+  fix_for?: { task_id: string; node_id: string };
+}
+
+export interface QualitySummary {
+  fix_loop_nodes: number;
+  fix_rounds_avg: number;
+  fix_rounds_max: number;
+  test_reported_nodes: number;
+  test_pass_rate: number;
+  defects_total: number;
+  defects_converted: number;
+  defects_closed: number;
+  defect_close_rate: number;
+  delivery_checked_nodes: number;
+  delivery_consistent_rate: number;
+}
+
+export interface TrendPoint {
+  date: string;
+  tasks: number;
+  success_rate: number;
+  fix_rounds_total: number;
+  defects_total: number;
+  defects_fixed: number;
 }
 
 export interface AgentInfo {
@@ -224,6 +258,7 @@ export interface StatusResponse {
 export interface MetricsResponse {
   tasks: { total: number; success: number; success_rate: number };
   agents: Record<string, { tasks: number; completed: number; failed: number; retries: number; tokens: number }>;
+  quality?: QualitySummary;
   token_usage: Record<string, { prompt_tokens: number; completion_tokens: number; calls: number; cost: number }>;
   tokens_total: number;
   cost_total: number;
@@ -406,6 +441,13 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
+  convertDefect: (taskId: string, nodeId: string, defectIndex: number, autoRun = false) =>
+    request<{ status: string; fix_task_id: string; fix_for: { task_id: string; node_id: string }; questions: string[] }>(`/api/tasks/${taskId}/defects/convert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node_id: nodeId, defect_index: defectIndex, auto_run: autoRun }),
+    }),
+  metricsTrend: (days = 14) => request<{ days: number; trend: TrendPoint[] }>(`/api/metrics/trend?days=${days}`),
   listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),
   getDeliverable: (taskId: string, nodeId: string) => request<DeliverableDoc & { task_id: string }>(`/api/tasks/${taskId}/deliverables/${nodeId}`),
   projectReport: (id: string) => request<ProjectProgressReport>(`/api/projects/${id}/report`),

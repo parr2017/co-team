@@ -112,6 +112,7 @@ async function main(): Promise<void> {
     branchWorkflow: config.orchestrator.branch_workflow,
     tokenBudget: config.orchestrator.token_budget,
     maxFixRounds: config.orchestrator.max_fix_rounds,
+    selfModGate: config.orchestrator.self_mod_gate,
   });
 
   await orchestrator.loadAgents();

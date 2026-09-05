@@ -132,6 +132,19 @@ function approve(nodeId: string) {
     .catch((e) => showToast(e.message));
 }
 
+// P0-2: convert a structured defect into a fix task with a backlink
+const converting = ref('');
+function convertDefect(nodeId: string, defectIndex: number) {
+  converting.value = nodeId + ':' + defectIndex;
+  api.convertDefect(taskId.value, nodeId, defectIndex, false)
+    .then((r) => {
+      showToast(r.status === 'needs_clarification' ? `修复任务 ${r.fix_task_id} 已创建，待澄清后执行` : `修复任务 ${r.fix_task_id} 已创建`);
+      void refresh();
+    })
+    .catch((e) => showToast(e.message || '转化失败'))
+    .finally(() => { converting.value = ''; });
+}
+
 // ---------- agent reassignment (node-level routing override) ----------
 
 const agentOptions = ref<string[]>([]);
@@ -308,6 +321,17 @@ function statusText(s?: string): string {
                     <div class="r-line">{{ n.result.report.summary || '' }}</div>
                     <div v-for="(f, i) in (n.result.report.failures || []).slice(0, 5)" :key="i" class="r-fail">✗ {{ f.name }}: {{ (f.message || '').slice(0, 100) }}</div>
                   </div>
+                  <div v-if="(n.result?.defects || []).length" class="n-defects">
+                    <div class="d-card-title">发现未修复的缺陷（{{ n.result!.defects!.length }}）</div>
+                    <div v-for="(d, i) in n.result!.defects" :key="i" class="d-item">
+                      <div class="d-head">
+                        <span class="d-sev" :class="d.severity || 'low'">{{ d.severity || 'low' }}</span>
+                        <span class="d-title">{{ d.title }}</span>
+                      </div>
+                      <div class="d-detail">{{ d.detail }}</div>
+                      <van-button size="mini" plain type="primary" :loading="converting === n.id + ':' + i" @click.stop="convertDefect(n.id, i)">转修复任务</van-button>
+                    </div>
+                  </div>
                   <ChatStream :task-id="taskId" :filter-node-id="n.id" class="node-chat" />
                 </div>
               </div>
@@ -469,6 +493,17 @@ function statusText(s?: string): string {
 .r-title { font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }
 .r-line { font-size: 12.5px; color: var(--text-3); margin-bottom: 5px; line-height: 1.5; }
 .r-fail { font-size: 12.5px; color: var(--red); margin-bottom: 3px; line-height: 1.45; }
+.n-defects { background: var(--panel-2); border-radius: 9px; padding: 11px 12px; margin-bottom: 10px; }
+.d-card-title { font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.d-item { padding: 6px 0; border-bottom: 1px dotted var(--border); }
+.d-item:last-child { border-bottom: none; }
+.d-head { display: flex; align-items: center; gap: 6px; }
+.d-sev { font-size: 10px; border: 1px solid currentColor; border-radius: 3px; padding: 0 5px; flex-shrink: 0; }
+.d-sev.high { color: var(--red); }
+.d-sev.medium { color: var(--wx-orange); }
+.d-sev.low { color: var(--text-3); }
+.d-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.d-detail { font-size: 12px; color: var(--text-2); margin: 4px 0 6px; line-height: 1.5; white-space: pre-wrap; }
 .node-chat {
   height: 320px; background: var(--bg); border-radius: 10px;
   margin-top: 8px; overflow: hidden; display: flex; flex-direction: column;

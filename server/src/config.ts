@@ -13,7 +13,27 @@ export interface OrchestrationConfig {
   max_fix_rounds?: number;
   /** improvement 5 (R5): hours before a 'clarifying' task gets a timeout reminder */
   clarify_timeout_hours?: number;
+  /** P0-1 self-modification gate: self-referential tasks (workspace = co-team itself)
+   *  must pass the repo's own test suite, and meta-facility edits need human approval */
+  self_mod_gate?: SelfModGateConfig;
 }
+
+export interface SelfModGateConfig {
+  enabled: boolean;
+  test_command: string;
+  /** path prefixes (repo-relative, /-separated) whose modification counts as meta-facility change */
+  meta_paths: string[];
+  timeout_sec?: number;
+}
+
+export const DEFAULT_META_PATHS = [
+  'server/src/harness.ts',
+  'server/src/skills.ts',
+  'server/src/deliverable.ts',
+  'server/src/orchestrator/',
+  'skills/',
+  'agents/',
+];
 
 export interface AppConfig {
   agents_dir: string;
@@ -67,6 +87,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       max_fix_rounds: raw.orchestrator?.max_fix_rounds,
       // improvement 5 (R5): tasks stuck in 'clarifying' longer than this get a one-shot reminder
       clarify_timeout_hours: raw.orchestrator?.clarify_timeout_hours ?? 24,
+      self_mod_gate: {
+        enabled: raw.orchestrator?.self_mod_gate?.enabled ?? true,
+        test_command: raw.orchestrator?.self_mod_gate?.test_command || 'npm test',
+        meta_paths: raw.orchestrator?.self_mod_gate?.meta_paths || DEFAULT_META_PATHS,
+        timeout_sec: raw.orchestrator?.self_mod_gate?.timeout_sec ?? 600,
+      },
     },
     permissions: raw.permissions || {},
     redis: raw.redis || { host: '127.0.0.1', port: 6379, db: 0 },

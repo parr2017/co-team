@@ -48,6 +48,14 @@ export function buildDeliverableReport(taskId: string, node: TaskNode): string {
     '## 遇到的问题',
     errors.length ? errors.map((e) => '- ' + e).join('\n') : '无',
     '',
+    '## 缺陷清单（发现但未修复，可转修复任务）',
+    (result.defects || []).length
+      ? (result.defects || []).map((d: any, i: number) => {
+          const sev = d.severity ? `（severity: ${d.severity}）` : '';
+          return `${i + 1}. **${d.title}**${sev}\n   ${d.detail}`;
+        }).join('\n')
+      : '无',
+    '',
     '---',
     '*由 Co_team 交付成果系统按统一模板自动生成 · 模板 v1*',
   ].join('\n');
@@ -56,12 +64,14 @@ export function buildDeliverableReport(taskId: string, node: TaskNode): string {
 /** Persist the deliverable + drop a clickable card into the war-room journal. */
 export async function saveDeliverable(taskId: string, node: TaskNode): Promise<void> {
   const markdown = buildDeliverableReport(taskId, node);
+  const defects = (node.result as Record<string, any>)?.defects || [];
   await busSet(`task:${taskId}:deliverable:${node.id}`, {
     node_id: node.id,
     node_name: node.name,
     agent: node.agent,
     status: node.status,
     markdown,
+    defects,
     ts: new Date().toISOString(),
   });
   await appendJournal(taskId, node.agent, {
@@ -71,19 +81,19 @@ export async function saveDeliverable(taskId: string, node: TaskNode): Promise<v
     ts: new Date().toISOString(),
     node_id: node.id,
     node_name: node.name,
-    meta: { markdown, deliverable: true },
+    meta: { markdown, deliverable: true, defects },
   });
 }
 
-export async function getDeliverable(taskId: string, nodeId: string): Promise<{ markdown: string; node_name: string; agent: string; status: string; ts: string } | null> {
+export async function getDeliverable(taskId: string, nodeId: string): Promise<{ markdown: string; node_name: string; agent: string; status: string; defects: Record<string, unknown>[]; ts: string } | null> {
   return busGet(`task:${taskId}:deliverable:${nodeId}`);
 }
 
-export async function listDeliverables(taskId: string): Promise<{ node_id: string; node_name: string; agent: string; status: string; markdown: string; ts: string }[]> {
+export async function listDeliverables(taskId: string): Promise<{ node_id: string; node_name: string; agent: string; status: string; markdown: string; defects: Record<string, unknown>[]; ts: string }[]> {
   const keys = await busKeys(`task:${taskId}:deliverable:*`);
-  const out: { node_id: string; node_name: string; agent: string; status: string; markdown: string; ts: string }[] = [];
+  const out: { node_id: string; node_name: string; agent: string; status: string; markdown: string; defects: Record<string, unknown>[]; ts: string }[] = [];
   for (const key of keys.sort()) {
-    const d = await busGet<{ node_id: string; node_name: string; agent: string; status: string; markdown: string; ts: string }>(key);
+    const d = await busGet<{ node_id: string; node_name: string; agent: string; status: string; markdown: string; defects: Record<string, unknown>[]; ts: string }>(key);
     if (d) out.push(d);
   }
   return out;

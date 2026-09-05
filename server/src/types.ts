@@ -46,6 +46,13 @@ export interface TestFixReport {
   summary: string;
 }
 
+/** P0-2: a problem the agent found but did not (or could not) fix in this node. */
+export interface DefectReport {
+  title: string;
+  detail: string;
+  severity?: 'low' | 'medium' | 'high';
+}
+
 export interface AgentResult {
   status: 'success' | 'failed';
   error?: string;
@@ -67,6 +74,12 @@ export interface AgentResult {
   verification?: string;
   /** structured test-fix report (improvement 8 / R9) */
   report?: TestFixReport;
+  /** P0-2: problems discovered but not fixed in this node — convertible to fix tasks */
+  defects?: DefectReport[];
+  /** P0-1 self-modification gate: the mandatory self-test run on self-referential tasks */
+  gate_test?: { command: string; returncode: number; passed: boolean; summary?: string };
+  /** quality metric: reported changes vs actual git working-tree changes */
+  delivery_check?: { consistent: boolean; reported_count: number; actual_count: number; unreported: string[]; phantom: string[] };
 }
 
 export interface TaskNode {
@@ -120,6 +133,8 @@ export interface TaskGraph {
   main_model_id?: string;
   /** task grading level (improvement 7) */
   level?: TaskLevel;
+  /** P0-2 backlink: this task was created to fix a defect found in task_id/node_id */
+  fix_for?: { task_id: string; node_id: string };
 }
 
 export interface EventEnvelope {
