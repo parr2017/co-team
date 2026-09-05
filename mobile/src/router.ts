@@ -16,3 +16,17 @@ export const router = createRouter({
     { path: '/:pathMatch(.*)*', redirect: '/tasks' },
   ],
 });
+
+// stale-shell self-heal: when a lazy route chunk fails to load (rebuild happened
+// under a cached index.html), do ONE full page reload to fetch fresh assets.
+// The per-path guard prevents reload loops; each successful navigation clears it.
+const RELOAD_FLAG = 'ct-route-reload';
+router.onError((error, to) => {
+  const msg = String((error as any)?.message || error);
+  if (!/import|module|chunk|fetch|load/i.test(msg)) return;
+  const to_ = to.fullPath || '/';
+  if (sessionStorage.getItem(RELOAD_FLAG) === to_) return;
+  sessionStorage.setItem(RELOAD_FLAG, to_);
+  window.location.replace(router.resolve(to).href);
+});
+router.afterEach(() => sessionStorage.removeItem(RELOAD_FLAG));
