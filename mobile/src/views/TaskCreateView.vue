@@ -26,17 +26,25 @@ if (route.query.project_id) {
   projectName.value = String(route.query.project_name || '');
 }
 
-void api.listProjects().then((d) => {
-  projects.value = d.projects || [];
-  // resolve the name + workspace once projects load if a preset exists
-  if (projectId.value) {
-    const p = projects.value.find(x => x.id === projectId.value);
-    if (p) {
-      projectName.value = p.name;
-      if (p.workspace && !workspace.value) workspace.value = p.workspace;
+const projectsReady = ref(false);
+async function loadProjects() {
+  try {
+    const d = await api.listProjects();
+    projects.value = d.projects || [];
+    projectsReady.value = true;
+    if (projectId.value) {
+      const p = projects.value.find(x => x.id === projectId.value);
+      if (p) {
+        projectName.value = p.name;
+        if (p.workspace && !workspace.value) workspace.value = p.workspace;
+      }
     }
+  } catch {
+    // slow mobile network: retry once so selectors are never silently empty
+    setTimeout(() => { void loadProjects(); }, 2000);
   }
-}).catch(() => { /* ignore */ });
+}
+void loadProjects();
 
 /** choosing a project fills the workspace automatically (its workspace dir) */
 function onProjectChosen(id: string) {
@@ -65,9 +73,17 @@ const projectColumns = computed(() => [
   { values: ['不关联项目', ...projects.value.map(p => p.name)] },
 ]);
 
-void api.getModelPool().then((d) => {
-  models.value = d.model_pool || [];
-}).catch(() => { /* ignore */ });
+const modelsReady = ref(false);
+async function loadModels() {
+  try {
+    const d = await api.getModelPool();
+    models.value = d.model_pool || [];
+    modelsReady.value = true;
+  } catch {
+    setTimeout(() => { void loadModels(); }, 2000);
+  }
+}
+void loadModels();
 
 async function openPicker() {
   showPicker.value = true;
@@ -164,11 +180,12 @@ async function submit() {
       <!-- 项目/目录/模型：微信设置 cell -->
       <div class="wx-caption">任务归属</div>
       <div class="wx-group">
-        <div class="wx-cell link" @click="showProjectPicker = true">
+        <div class="wx-cell link" @click="projectsReady && (showProjectPicker = true)">
           <van-icon name="apps-o" size="20" color="#07c160" />
           <span class="cell-label">所属项目</span>
-          <span class="cell-value">{{ projectName || '不关联项目' }}</span>
-          <van-icon name="arrow" size="14" color="#b2b2b2" />
+          <span class="cell-value">{{ projectsReady ? (projectName || '不关联项目') : '加载中…' }}</span>
+          <van-icon v-if="projectsReady" name="arrow" size="14" color="#b2b2b2" />
+          <van-loading v-else size="14" />
         </div>
         <div class="wx-cell link" @click="openPicker">
           <van-icon name="folder-o" size="20" color="#07c160" />
@@ -176,11 +193,12 @@ async function submit() {
           <span class="cell-value">{{ workspace || (projectId ? '跟随项目' : '点击选择') }}</span>
           <van-icon name="arrow" size="14" color="#b2b2b2" />
         </div>
-        <div class="wx-cell link" @click="showModelPicker = true">
+        <div class="wx-cell link" @click="modelsReady && (showModelPicker = true)">
           <van-icon name="medal-o" size="20" color="#10aeff" />
           <span class="cell-label">主 Agent 模型</span>
-          <span class="cell-value">{{ mainModel || '自动选择' }}</span>
-          <van-icon name="arrow" size="14" color="#b2b2b2" />
+          <span class="cell-value">{{ modelsReady ? (mainModel || '自动选择') : '加载中…' }}</span>
+          <van-icon v-if="modelsReady" name="arrow" size="14" color="#b2b2b2" />
+          <van-loading v-else size="14" />
         </div>
       </div>
 

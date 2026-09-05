@@ -166,7 +166,16 @@ async function onSwapSelect(action: { name: string }) {
   }
 }
 
-void api.listAgents().then((names) => { agentOptions.value = names; }).catch(() => { /* non-fatal */ });
+let agentRetry = 0;
+async function loadAgentOptions() {
+  try {
+    const names = await api.listAgents();
+    agentOptions.value = names;
+  } catch {
+    if (agentRetry < 3) { agentRetry += 1; setTimeout(() => { void loadAgentOptions(); }, 1500 * agentRetry); }
+  }
+}
+void loadAgentOptions();
 
 function cancel() {
   showDialog({ title: '取消任务', message: '确定取消该任务？', showCancelButton: true })
