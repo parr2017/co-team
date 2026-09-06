@@ -23,12 +23,21 @@ export function canExecute(policy: PermissionPolicy, command: string): boolean {
   return policy.whitelistCommands.includes(bin);
 }
 
-const IGNORE = new Set(['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']);
+const IGNORE = new Set(['.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', 'venv', '.idea', '.vscode']);
+/** Runtime artifacts, never deliverables: caches and databases carry execution state
+ *  that breaks repeat runs when committed (tests then hit their own leftover rows). */
+const IGNORE_EXT = new Set(['.pyc', '.pyo', '.db', '.sqlite', '.sqlite3']);
+
+export function isIgnoredRelPath(rel: string): boolean {
+  const norm = rel.replace(/\\/g, '/');
+  if (norm.split('/').some((p) => IGNORE.has(p))) return true;
+  return IGNORE_EXT.has(path.extname(norm).toLowerCase());
+}
 
 export function createSandbox(workspace: string): string {
   if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coteam-sbx-'));
-  fs.cpSync(workspace, sandboxDir, { recursive: true, force: true, filter: (src) => !IGNORE.has(path.basename(src)) });
+  fs.cpSync(workspace, sandboxDir, { recursive: true, force: true, filter: (src) => !isIgnoredRelPath(path.relative(workspace, src)) });
   return sandboxDir;
 }
 
@@ -38,10 +47,11 @@ export function mergeChanges(sandbox: string, target: string): string[] {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const srcPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        walk(srcPath);
+        if (!IGNORE.has(entry.name)) walk(srcPath);
         continue;
       }
       const rel = path.relative(sandbox, srcPath);
+      if (isIgnoredRelPath(rel)) continue;
       const dstPath = path.join(target, rel);
       fs.mkdirSync(path.dirname(dstPath), { recursive: true });
       if (!fs.existsSync(dstPath) || fs.statSync(srcPath).mtimeMs > fs.statSync(dstPath).mtimeMs) {

@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { simpleGit, SimpleGit } from 'simple-git';
+import { isIgnoredRelPath } from './sandbox';
 
 function git(workspace: string): SimpleGit {
   return simpleGit({ baseDir: workspace, timeout: { block: 60_000 } });
@@ -149,7 +150,8 @@ export async function syncToWorkspace(sandbox: string, workspace: string, branch
       force: true,
       filter: (src) => {
         const rel = path.relative(sandbox, src);
-        return rel !== '.git' && !rel.startsWith('.git' + path.sep);
+        if (rel === '.git' || rel.startsWith('.git' + path.sep) || rel.startsWith('.git/')) return false;
+        return !isIgnoredRelPath(rel);
       },
     });
     void branch;

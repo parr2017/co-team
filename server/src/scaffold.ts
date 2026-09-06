@@ -38,10 +38,26 @@ export async function scaffoldProject(workspace: string, options: ScaffoldOption
   }
 
   const date = new Date().toISOString().slice(0, 10);
+  const gitignore = [
+    '# runtime artifacts (databases/caches) must never be committed — tests then hit their own leftover rows',
+    '__pycache__/',
+    '.pytest_cache/',
+    '*.pyc',
+    '*.db',
+    '*.sqlite',
+    '*.sqlite3',
+    'node_modules/',
+    '.venv/',
+    'venv/',
+    'dist/',
+    '.env',
+    '',
+  ].join('\n');
   const files: Record<string, string> = {
     'README.md': readmeTemplate(options.name, options.description || ''),
     'CONTRIBUTING.md': contributingTemplate(options.name),
     'ARCHITECTURE.md': architectureTemplate(options.name, options.description || '').replace('{{DATE}}', date),
+    '.gitignore': gitignore,
   };
   for (const [name, content] of Object.entries(files)) {
     const target = path.join(base, name);
