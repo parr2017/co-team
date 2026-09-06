@@ -9,11 +9,16 @@ export interface LlmResponse {
 
 const clientCache = new Map<string, OpenAI>();
 
+/** Per-request LLM timeout. Override with COTEAM_LLM_TIMEOUT_MS (agent.yaml `timeout` is not wired to this). */
+export const DEFAULT_LLM_TIMEOUT_MS = Number(process.env.COTEAM_LLM_TIMEOUT_MS || 0) || 600_000;
+
 function getClient(entry: ModelEntry): OpenAI {
   const key = `${entry.base_url}|${entry.api_key}`;
   let client = clientCache.get(key);
   if (!client) {
-    client = new OpenAI({ apiKey: entry.api_key, baseURL: entry.base_url.replace(/\/+$/, '') });
+    // maxRetries: 0 — the SDK's built-in retries (2×10min) stack with our own model
+    // failover and turn one 504 into a ~30min stall; orchestration retries instead.
+    client = new OpenAI({ apiKey: entry.api_key, baseURL: entry.base_url.replace(/\/+$/, ''), timeout: DEFAULT_LLM_TIMEOUT_MS, maxRetries: 0 });
     clientCache.set(key, client);
   }
   return client;
@@ -28,7 +33,7 @@ export async function chat(entry: ModelEntry, messages: { role: string; content:
       max_tokens: maxTokens,
       temperature,
     },
-    { signal }
+    { signal, timeout: DEFAULT_LLM_TIMEOUT_MS }
   );
   const content = completion.choices[0]?.message?.content || '';
   const usage = completion.usage;
