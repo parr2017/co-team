@@ -44,6 +44,12 @@ orchestrator:
   max_fix_rounds: 3
 knowledge:
   dir: ./data/knowledge
+  # RAG 语义检索：指向模型池中支持 /v1/embeddings 的条目；未启用时回退关键词检索
+  # embedding:
+  #   enabled: true
+  #   model: text-embedding-model   # 模型池条目名，该条目 roles 建议标注 ['embedding']
+  # 治理：GET /api/knowledge?stale=1 列出超过该天数未更新的过期候选
+  stale_days: 90
 permissions:
   level: normal
   whitelist_commands:

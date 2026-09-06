@@ -22,7 +22,13 @@ export interface AppConfig {
   orchestrator: OrchestrationConfig;
   permissions: { level?: string; whitelist_commands?: string[]; max_time_sec?: number };
   redis: { host: string; port: number; db: number };
-  knowledge: { dir: string };
+  knowledge: {
+    dir: string;
+    /** RAG upgrade: model_pool entry name used for /v1/embeddings; unset/missing → keyword search only */
+    embedding?: { enabled?: boolean; model?: string };
+    /** governance: entries not updated for this many days are stale candidates */
+    stale_days?: number;
+  };
   /** custom grading keywords (improvement 7 / R6), appended to built-in rules */
   grading?: { heavy?: string[]; light?: string[] };
 }
@@ -53,7 +59,13 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
     },
     permissions: raw.permissions || {},
     redis: raw.redis || { host: '127.0.0.1', port: 6379, db: 0 },
-    knowledge: { dir: path.isAbsolute(raw.knowledge?.dir || '') ? raw.knowledge.dir : path.join(root, raw.knowledge?.dir || 'data/knowledge') },
+    knowledge: {
+      dir: path.isAbsolute(raw.knowledge?.dir || '') ? raw.knowledge.dir : path.join(root, raw.knowledge?.dir || 'data/knowledge'),
+      embedding: raw.knowledge?.embedding
+        ? { enabled: raw.knowledge.embedding.enabled ?? false, model: raw.knowledge.embedding.model }
+        : undefined,
+      stale_days: raw.knowledge?.stale_days ?? 90,
+    },
     grading: raw.grading || undefined,
   };
 }

@@ -90,9 +90,17 @@ async function main(): Promise<void> {
   logger.info('Message bus initialized');
 
   const modelPool = new ModelPool(config.model_pool);
-  logger.info('Model pool initialized', { 
-    models: config.model_pool.map(m => m.name) 
+  logger.info('Model pool initialized', {
+    models: config.model_pool.map(m => m.name)
   });
+
+  // knowledge RAG: point the embedding helper at the configured model_pool entry
+  // (disabled / missing model → keyword search stays active everywhere)
+  if (config.knowledge.embedding?.enabled && config.knowledge.embedding.model) {
+    const { setEmbeddingConfig } = await import('./embeddings');
+    setEmbeddingConfig({ pool: modelPool, model: config.knowledge.embedding.model });
+    logger.info('Knowledge embedding enabled', { model: config.knowledge.embedding.model });
+  }
 
   const orchestrator = new Orchestrator({
     agentsDir: config.agents_dir,

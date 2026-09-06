@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PROJECT_ROOT } from './config';
+import { cosine, embeddingEnabled, ensureEntryVectors, embedQuery } from './embeddings';
 
 export type KnowledgeCategory = 'general-tech' | 'project';
 
@@ -36,11 +37,11 @@ function defaultRoot(): string {
   return process.env.COTEAM_KNOWLEDGE_DIR || path.join(PROJECT_ROOT, 'data', 'knowledge');
 }
 
-function rootDir(root?: string): string {
+export function rootDir(root?: string): string {
   return path.resolve(root || defaultRoot());
 }
 
-function categoryDir(category: KnowledgeCategory, projectId: string | undefined, root?: string): string {
+export function categoryDir(category: KnowledgeCategory, projectId: string | undefined, root?: string): string {
   const base = rootDir(root);
   return category === 'project' && projectId
     ? path.join(base, 'projects', projectId)
@@ -342,8 +343,55 @@ export function deleteKnowledge(id: string, root?: string): boolean {
 }
 
 /** Retrieve knowledge relevant to a free-text query, for prompt injection. */
-export function relevantKnowledge(query: string, opts: { project_id?: string; limit?: number } = {}, root?: string): KnowledgeEntry[] {
-  const hits = searchKnowledge(query, { project_id: opts.project_id, limit: opts.limit ?? 3 }, root);
+export async function relevantKnowledge(query: string, opts: { project_id?: string; limit?: number } = {}, root?: string): Promise<KnowledgeEntry[]> {
+  const hits = await searchKnowledgeHybrid(query, { project_id: opts.project_id, limit: opts.limit ?? 3 }, root);
   // general knowledge is always eligible; project knowledge only when the project matches
   return hits.filter((h) => h.category === 'general-tech' || (h.project_id && h.project_id === opts.project_id));
+}
+
+/**
+ * Hybrid search (RAG upgrade): keyword score (synonyms + CJK fuzzy) combined with
+ * embedding cosine similarity. Entries the keyword pass misses can still surface
+ * on semantic similarity alone (cosine ≥ 0.5). Fully degrades to searchKnowledge
+ * when no embedding model is configured or the embedding call fails.
+ */
+export async function searchKnowledgeHybrid(keyword: string, query: KnowledgeQuery = {}, root?: string): Promise<SearchHit[]> {
+  const base = searchKnowledge(keyword, query, root);
+  if (!embeddingEnabled()) return base;
+  try {
+    const all = readAll(root).filter((e) => matchQuery(e, query));
+    const baseRoot = rootDir(root);
+    const dirOf = (e: KnowledgeEntry) => categoryDir(e.category, e.project_id, root);
+    const vectors = await ensureEntryVectors(all, dirOf);
+    const qv = await embedQuery(keyword);
+    if (!qv) return base;
+
+    const hits = new Map<string, SearchHit>();
+    for (const h of base) hits.set(h.id, { ...h });
+    for (const entry of all) {
+      const v = vectors.get(entry.id);
+      if (!v) continue;
+      const sim = cosine(qv, v);
+      const semanticScore = Math.round(sim * 4 * 100) / 100;
+      const existing = hits.get(entry.id);
+      if (existing) {
+        existing.score += semanticScore;
+      } else if (sim >= 0.5) {
+        hits.set(entry.id, { ...entry, score: semanticScore });
+      }
+    }
+    return [...hits.values()]
+      .sort((a, b) => b.score - a.score || b.updated_at.localeCompare(a.updated_at))
+      .slice(0, query.limit ?? 10);
+  } catch {
+    return base;
+  }
+}
+
+/** Entries older than `days` (knowledge governance: stale-candidate listing). */
+export function listStaleKnowledge(days: number, query: KnowledgeQuery = {}, root?: string): (KnowledgeEntry & { age_days: number })[] {
+  const cutoff = Date.now() - days * 24 * 3600 * 1000;
+  return listKnowledge(query, root)
+    .filter((e) => new Date(e.updated_at).getTime() < cutoff)
+    .map((e) => ({ ...e, age_days: Math.floor((Date.now() - new Date(e.updated_at).getTime()) / (24 * 3600 * 1000)) }));
 }

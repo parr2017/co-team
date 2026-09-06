@@ -138,6 +138,8 @@ export interface ModelConfig {
   priority?: number;
   tags?: string[];
   cost_per_1k?: number;
+  /** optional capability roles: 'chat' (default) and/or 'embedding' (knowledge RAG) */
+  roles?: string[];
 }
 
 export interface AgentConversationRound {

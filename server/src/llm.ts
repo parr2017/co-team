@@ -40,6 +40,16 @@ export async function chat(entry: ModelEntry, messages: { role: string; content:
   return { content, promptTokens, completionTokens };
 }
 
+/** Embed texts via the OpenAI-compatible /v1/embeddings endpoint (knowledge RAG). */
+export async function embed(entry: ModelEntry, input: string[]): Promise<number[][]> {
+  const client = getClient(entry);
+  const res = await client.embeddings.create({ model: entry.name, input });
+  return res.data
+    .slice()
+    .sort((a, b) => a.index - b.index)
+    .map((d) => d.embedding as number[]);
+}
+
 /** Extract a JSON object from an LLM reply, tolerating markdown code fences. */
 export function stripCodeFence(content: string): string {
   const trimmed = content.trim();

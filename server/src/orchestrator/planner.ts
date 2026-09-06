@@ -198,7 +198,7 @@ async function llmPlan(request: string, pool: ModelPool, router: Router, model: 
   const agentDesc =
     [...router.getAvailable().values()].map((p) => `- ${p.name}: ${p.role || p.description} (tags: ${p.tags.join(',')})`).join('\n') || '- dev: 开发实现';
   const memory = (await getMemory()).map((m) => `- ${m}`).join('\n') || '（暂无历史经验）';
-  const knowledge = relevantKnowledge(request, { project_id: projectId, limit: 4 }).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
+  const knowledge = (await relevantKnowledge(request, { project_id: projectId, limit: 4 })).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
   // skill map (R2): normalizePlan needs the agents' tags to enforce required_skills
   const skillMap = new Map<string, AgentSkillInfo>(
     [...router.getAvailable().values()].map((p) => [p.name, { name: p.name, tags: p.tags as string[] }])

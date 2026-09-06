@@ -49,6 +49,9 @@ export interface KnowledgeEntry {
   updated_at: string;
   updated_by?: string;
   content: string;
+  /** hybrid search relevance (keyword + embedding cosine), present on q= results */
+  score?: number;
+  age_days?: number;
 }
 
 export interface SnapshotMeta {

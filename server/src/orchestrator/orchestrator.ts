@@ -1124,7 +1124,7 @@ export class Orchestrator {
     const docsBlock = await docsSection(taskId);
 
     // improvement 3: relevant knowledge base entries are injected for immediate reuse
-    const knowledgeHits = relevantKnowledge(`${node.name} ${context}`, { project_id: projectId, limit: 3 });
+    const knowledgeHits = await relevantKnowledge(`${node.name} ${context}`, { project_id: projectId, limit: 3 });
     const knowledgeBlock = knowledgeHits.length
       ? '\n\n## 相关知识库条目\n' + knowledgeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')
       : '';

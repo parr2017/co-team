@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { Server } from 'node:http';
 import { Orchestrator } from '../orchestrator/orchestrator';
@@ -32,6 +33,31 @@ function validateWorkspace(workspace: string): string {
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
     super(message);
+  }
+}
+
+// GBK-tolerant JSON intake: clients in a GBK Windows console (e.g. curl from cmd)
+// send Chinese as GBK bytes, which silently turn into mojibake when decoded as
+// UTF-8 (lossy — the bytes are gone afterwards). Try strict UTF-8 first and fall
+// back to GBK so task descriptions / knowledge titles stay readable.
+const utf8Strict = new TextDecoder('utf-8', { fatal: true });
+const gbkDecoder: TextDecoder | null = (() => {
+  try { return new TextDecoder('gbk'); } catch { return null; }
+})();
+
+async function readJsonAuto<T>(c: Context): Promise<T> {
+  const buf = await c.req.arrayBuffer();
+  if (!buf.byteLength) return c.req.json<T>();
+  let text: string;
+  try {
+    text = utf8Strict.decode(buf);
+  } catch {
+    text = gbkDecoder ? gbkDecoder.decode(buf) : new TextDecoder().decode(buf);
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return c.req.json<T>();
   }
 }
 
@@ -69,7 +95,7 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- projects ----------
 
   app.post('/api/projects', async (c) => {
-    const body = await c.req.json<{ name?: string; workspace?: string; description?: string; scaffold?: boolean }>();
+    const body = await readJsonAuto<{ name?: string; workspace?: string; description?: string; scaffold?: boolean }>(c);
     if (!body.name || !body.workspace) throw new HttpError(400, 'name and workspace are required');
     const workspace = validateWorkspace(body.workspace);
     const id = Math.random().toString(36).slice(2, 10);
@@ -134,10 +160,10 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- tasks ----------
 
   app.post('/api/tasks', async (c) => {
-    const body = await c.req.json<{
+    const body = await readJsonAuto<{
       description?: string; request?: string; workspace?: string; auto_run?: boolean; project_id?: string;
       main_model_id?: string; level?: string; skip_clarification?: boolean;
-    }>();
+    }>(c);
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
     const workspace = validateWorkspace(body.workspace || '');
@@ -474,22 +500,56 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- knowledge base (improvement 3) ----------
 
   app.get('/api/knowledge', async (c) => {
-    const { listKnowledge, searchKnowledge } = await import('../knowledge');
+    const { listKnowledge, searchKnowledgeHybrid, listStaleKnowledge } = await import('../knowledge');
     const category = c.req.query('category') as 'general-tech' | 'project' | undefined;
     const projectId = c.req.query('project_id') || undefined;
     const q = c.req.query('q') || '';
     const limit = parseInt(c.req.query('limit') || '50');
-    if (q) {
-      return c.json({ entries: searchKnowledge(q, { category, project_id: projectId, limit }) });
+    const query = { category, project_id: projectId, limit };
+    // governance: stale-candidate listing (updated_at older than stale_days)
+    if (c.req.query('stale') === '1') {
+      const days = parseInt(c.req.query('days') || String(ctx.config.knowledge?.stale_days ?? 90), 10) || 90;
+      return c.json({ stale_days: days, entries: listStaleKnowledge(days, query) });
     }
-    return c.json({ entries: listKnowledge({ category, project_id: projectId, limit }) });
+    if (q) {
+      // hybrid: keyword score + embedding cosine (degrades to keyword-only without a model)
+      return c.json({ entries: await searchKnowledgeHybrid(q, query) });
+    }
+    return c.json({ entries: listKnowledge(query) });
   });
 
   app.post('/api/knowledge', async (c) => {
-    const { writeKnowledge } = await import('../knowledge');
-    const body = await c.req.json<{ title?: string; content?: string; category?: string; project_id?: string; tags?: string[] }>();
+    const { writeKnowledge, listKnowledge, categoryDir } = await import('../knowledge');
+    const body = await readJsonAuto<{ title?: string; content?: string; category?: string; project_id?: string; tags?: string[] }>(c);
     if (!body.title || !body.content) throw new HttpError(400, 'title and content are required');
     try {
+      // governance: semantic near-duplicate — when the embedding model is configured,
+      // a ≥0.95 cosine match updates the existing entry instead of creating a copy
+      if ((await import('../embeddings')).embeddingEnabled()) {
+        const embeddings = await import('../embeddings');
+        const category = body.category === 'project' ? 'project' as const : 'general-tech' as const;
+        const candidates = listKnowledge({ category, project_id: body.project_id });
+        const vectors = await embeddings.ensureEntryVectors(candidates, (e) => categoryDir(e.category, e.project_id));
+        const qv = await embeddings.embedQuery(`${body.title}\n${body.content}`);
+        let best: { id: string; sim: number } | null = null;
+        for (const e of candidates) {
+          const v = vectors.get(e.id);
+          if (!v || !qv) continue;
+          const sim = embeddings.cosine(qv, v);
+          if (!best || sim > best.sim) best = { id: e.id, sim };
+        }
+        if (best && best.sim >= 0.95) {
+          const result = writeKnowledge({
+            title: candidates.find((e) => e.id === best!.id)!.title,
+            content: body.content,
+            category,
+            project_id: body.project_id,
+            tags: body.tags,
+            source: 'user',
+          });
+          return c.json({ status: 'updated', id: result.id, duplicate: true, similarity: Math.round(best.sim * 1000) / 1000 });
+        }
+      }
       const result = writeKnowledge({
         title: body.title,
         content: body.content,

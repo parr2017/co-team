@@ -7,7 +7,7 @@
           <el-radio-button value="general-tech">通用经验</el-radio-button>
           <el-radio-button value="project">项目经验</el-radio-button>
         </el-radio-group>
-        <el-input v-model="keyword" size="small" placeholder="搜索关键词..." style="width: 220px" clearable @keydown.enter="load" @clear="load" />
+        <el-input v-model="keyword" size="small" placeholder="语义搜索（关键词 + 相似度）..." style="width: 260px" clearable @keydown.enter="load" @clear="load" />
         <el-button size="small" @click="load">搜索</el-button>
         <el-button size="small" type="primary" @click="openCreate">+ 新增条目</el-button>
       </div>
@@ -20,6 +20,7 @@
               {{ e.title }}
               <el-tag size="small" :type="e.category === 'project' ? 'warning' : 'success'">{{ e.category === 'project' ? '项目' : '通用' }}</el-tag>
               <el-tag v-if="e.updated_by === 'user'" size="small" type="info">已人工编辑</el-tag>
+              <el-tag v-if="typeof e.score === 'number'" size="small" type="primary" effect="dark" class="mono">相关度 {{ e.score.toFixed(2) }}</el-tag>
             </div>
             <div class="kb-meta mono">
               <span v-if="e.project_id">项目 {{ e.project_id }} ·</span>
