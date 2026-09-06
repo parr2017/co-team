@@ -142,6 +142,9 @@ async function main(): Promise<void> {
   const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue };
   const app = createApi(ctx);
 
+  // browsers always probe /favicon.ico — answer 204 so it stops spamming the API log
+  app.get('/favicon.ico', (c) => c.body(null, 204));
+
   // static hosting of the built frontends (SPA fallback to index.html):
   // mobile under /m/, desktop at the root — both same-origin, zero CORS
   const mobileDist = process.env.COTEAM_MOBILE_DIST || path.resolve(PROJECT_ROOT, 'mobile', 'dist');

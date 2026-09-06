@@ -157,6 +157,9 @@ export class TaskQueueManager {
 
   /** Unblock a lane and start the next pending task (user-initiated resume). */
   resume(key: string): QueueSnapshot {
+    // resume/clear on an unknown key is a caller mistake — refuse instead of
+    // fabricating an empty lane that then lingers in snapshots()
+    if (!this.lanes.has(key)) throw new Error(`queue not found: ${key}`);
     const lane = this.lane(key);
     lane.blocked = false;
     lane.blockedReason = '';
@@ -168,6 +171,7 @@ export class TaskQueueManager {
 
   /** Drop all pending tasks of a lane; they return to plain 'pending' status. */
   async clear(key: string): Promise<QueueSnapshot> {
+    if (!this.lanes.has(key)) throw new Error(`queue not found: ${key}`);
     const lane = this.lane(key);
     const dropped = lane.pending.splice(0);
     for (const entry of dropped) {

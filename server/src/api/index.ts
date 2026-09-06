@@ -168,6 +168,11 @@ export function createApi(ctx: ApiContext): Hono {
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
     const workspace = validateWorkspace(body.workspace || '');
+    // a task pointing at a nonexistent project would silently vanish from every project view
+    if (body.project_id) {
+      const { getProject } = await import('../store');
+      if (!(await getProject(body.project_id))) throw new HttpError(404, `project not found: ${body.project_id}`);
+    }
 
     logger.info('Creating task', {
       description: description.slice(0, 100), workspace, auto_run: body.auto_run,
@@ -284,15 +289,23 @@ export function createApi(ctx: ApiContext): Hono {
 
   app.post('/api/queues/:key/resume', async (c) => {
     const key = c.req.param('key');
-    logger.info('Resuming task queue', { key });
-    return c.json({ status: 'resumed', queue: ctx.taskQueue.resume(key) });
+    try {
+      logger.info('Resuming task queue', { key });
+      return c.json({ status: 'resumed', queue: ctx.taskQueue.resume(key) });
+    } catch (e: any) {
+      throw new HttpError(404, String(e?.message || e));
+    }
   });
 
   app.post('/api/queues/:key/clear', async (c) => {
     const key = c.req.param('key');
-    logger.info('Clearing task queue', { key });
-    const queue = await ctx.taskQueue.clear(key);
-    return c.json({ status: 'cleared', queue });
+    try {
+      logger.info('Clearing task queue', { key });
+      const queue = await ctx.taskQueue.clear(key);
+      return c.json({ status: 'cleared', queue });
+    } catch (e: any) {
+      throw new HttpError(404, String(e?.message || e));
+    }
   });
 
   // improvement 6 (R1): message-style intervention — queue a user message for the
@@ -692,15 +705,23 @@ export function createApi(ctx: ApiContext): Hono {
     const { chat } = await import('../llm');
     const { makeEntry } = await import('../scheduler');
     const body = await c.req.json<{ name?: string; api_key?: string; base_url?: string }>();
-    
-    if (!body.name || !body.api_key || !body.base_url) {
-      throw new HttpError(400, 'name, api_key and base_url are required');
+
+    if (!body.name) throw new HttpError(400, 'name is required');
+
+    // name-only form: test an already-configured pool entry without re-entering its key
+    let apiKey = body.api_key;
+    let baseUrl = body.base_url;
+    if (!apiKey || !baseUrl) {
+      const existing = ctx.modelPool.getModel(body.name);
+      if (!existing) throw new HttpError(404, `model not in pool: ${body.name} (api_key/base_url required for unknown models)`);
+      apiKey = apiKey || existing.api_key;
+      baseUrl = baseUrl || existing.base_url;
     }
 
     const entry = makeEntry({
       name: body.name,
-      api_key: body.api_key,
-      base_url: body.base_url,
+      api_key: apiKey,
+      base_url: baseUrl,
     });
 
     const start = Date.now();
