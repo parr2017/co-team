@@ -68,7 +68,8 @@ function renderCharts() {
     const names = Object.keys(m.agents);
     agentChart.setOption({
       title: { text: 'Agent 负载', textStyle: { color: c.text2, fontSize: 12 } },
-      grid: { left: 60, right: 16, top: 30, bottom: 24 },
+      // 左侧留足类别标签宽度（"orchestrator" 12 字符），避免截断成 "herator"
+      grid: { left: 92, right: 16, top: 30, bottom: 24 },
       xAxis: { type: 'value', axisLabel: { color: c.text3 }, splitLine: { lineStyle: { color: c.border } } },
       yAxis: { type: 'category', data: names, axisLabel: { color: c.text2 } },
       series: [
@@ -90,6 +91,10 @@ function renderCharts() {
         { type: 'bar', data: entries.map(([, u]) => u.prompt_tokens + u.completion_tokens), itemStyle: { color: c.accent } },
       ],
       tooltip: { trigger: 'axis' },
+      // 空数据空态：一条孤线看起来像渲染故障
+      graphic: entries.length
+        ? []
+        : [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无 Token 消耗记录', fill: c.text3, fontSize: 12 } }],
     });
   }
   if (trendChartEl.value) {
@@ -122,6 +127,11 @@ watch(theme, () => nextTick(renderCharts));
 onUnmounted(() => {
   window.clearInterval(timer);
   window.removeEventListener('resize', onResize);
+  // echarts 实例随组件销毁，避免 tab 反复切换累积实例
+  agentChart?.dispose();
+  costChart?.dispose();
+  agentChart = null;
+  costChart = null;
 });
 function onResize() {
   agentChart?.resize();

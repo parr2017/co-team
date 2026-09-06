@@ -150,6 +150,11 @@ function dump(v: unknown): string {
   return JSON.stringify(v, null, 1);
 }
 
+/** 弱模型偶发把 tool_calls JSON 当最终消息输出——折叠为可展开卡片而非大段裸 JSON。 */
+function isRawToolJson(text: string): boolean {
+  return /"tool_calls"\s*:/.test(text || '') && /^\s*\{/.test(text || '');
+}
+
 function md(text: string): string {
   if (!text) return '';
   const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -217,7 +222,13 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
         <AgentAvatar :name="item.agent" :size="36" />
         <div class="them-col">
           <div class="who-name">{{ item.agent }}</div>
-          <div class="bubble them-b">
+          <div v-if="isRawToolJson(item.entry.text)" class="file-card">
+            <details>
+              <summary>🔧 工具调用消息（原始输出已折叠）</summary>
+              <pre class="pre">{{ item.entry.text.slice(0, 2000) }}</pre>
+            </details>
+          </div>
+          <div v-else class="bubble them-b">
             <div class="b-text md" v-html="md(item.entry.text)"></div>
             <div v-if="(item.entry.meta?.changes || []).length" class="chips">
               <span v-for="c in (item.entry.meta?.changes || []).slice(0, 4)" :key="c" class="chip">✓ {{ c }}</span>

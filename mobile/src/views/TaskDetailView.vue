@@ -218,10 +218,8 @@ function statusText(s?: string): string {
     <van-nav-bar :title="title" left-arrow fixed placeholder @click-left="router.back()">
       <template #right>
         <span v-if="isRunning" class="nav-status running" @click="cancel">取消</span>
-        <template v-else>
-          <span v-if="canRestart" class="nav-status running" @click="restart">重启</span>
-          <span class="nav-status">{{ statusText(task?.status) }} {{ progressPct }}%</span>
-        </template>
+        <span v-else-if="canRestart" class="nav-status running" @click="restart">重启</span>
+        <!-- 状态与进度不在 nav 右侧展示：长文本会与居中标题重叠，完整信息见"执行详情"tab -->
       </template>
     </van-nav-bar>
 

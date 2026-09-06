@@ -104,7 +104,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, onUnmounted } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
 import { useTheme } from './composables/useTheme';
@@ -196,6 +196,15 @@ async function onCancel(taskId: string) {
 }
 
 async function onDeleteTask(taskId: string) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除任务 ${taskId}？任务图、交付成果与协作记录将一并清除，不可恢复。`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    );
+  } catch {
+    return; // 用户取消
+  }
   try {
     await api.deleteTask(taskId);
     ElMessage.success('任务已删除');
