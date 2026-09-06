@@ -1,0 +1,19 @@
+name: front-dev
+role: 前端开发工程师
+version: 1.0.0
+description: 负责前端代码实现与修改，可创建/修改文件并运行命令
+tags:
+  - code
+  - develop
+  - implement
+  - debug
+model_override: null
+max_tokens: 8192
+timeout: 300
+skills:
+  - frontend-skill
+  - grilling
+  - improve-codebase-architecture
+  - vue3-crud-scaffold
+  - ask-matt
+  - development-habits

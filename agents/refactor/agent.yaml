@@ -2,11 +2,21 @@ name: refactor
 role: 重构
 version: 1.0.0
 description: 优化代码结构与性能，保持行为不变
-tags: [refactor, optimize, cleanup, performance]
+tags:
+  - refactor
+  - optimize
+  - cleanup
+  - performance
 model_override: null
 max_tokens: 8192
 timeout: 300
-permissions:
-  - read_code
-  - write_code
-  - run_tests
+skills:
+  - ask-matt
+  - code-review-checklist
+  - code-review
+  - codebase-design
+  - development-habits
+  - grilling
+  - improve-codebase-architecture
+  - web-scraper
+  - resolving-merge-conflicts

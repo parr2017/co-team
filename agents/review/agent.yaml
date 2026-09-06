@@ -2,9 +2,18 @@ name: review
 role: 审查
 version: 1.0.0
 description: 检查代码质量、安全性与最佳实践，输出问题清单与改进建议
-tags: [review, audit, quality, security]
+tags:
+  - review
+  - audit
+  - quality
+  - security
 model_override: null
 max_tokens: 8192
 timeout: 300
-permissions:
-  - read_code
+skills:
+  - code-review
+  - code-review-checklist
+  - pdf
+  - pptx
+  - xlsx
+  - web-scraper
