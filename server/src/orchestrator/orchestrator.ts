@@ -203,6 +203,9 @@ export class Orchestrator {
 
     // improvement 5: requirement clarification loop — ambiguous requirements must be
     // resolved with the human before any planning/execution happens
+    // staged feedback: the API request is synchronous and can take minutes on a slow
+    // upstream — emit the current stage so the UI can show progress instead of a spinner
+    await emitProgress('task_creating', { stage: 'assessing', description: description.slice(0, 80) });
     const assessment = await assessRequirement(description, this.pool);
     const taskId = Math.random().toString(36).slice(2, 10);
 
@@ -228,6 +231,7 @@ export class Orchestrator {
       return { taskId, graph, needsClarification: true, questions: assessment.questions, summary: assessment.summary, level };
     }
 
+    await emitProgress('task_creating', { stage: 'planning', task_id: taskId, description: description.slice(0, 80) });
     const planned = await this.planAndSave(taskId, description, workspace, projectId, { level, mainModelId });
     return { taskId, graph: planned.graph, level: planned.level };
   }
@@ -535,13 +539,54 @@ export class Orchestrator {
               changes: result.changes || [],
             };
           }
-        }
-        try {
-          cleanupSandbox(sandbox);
-          this.logger.debug('Sandbox cleaned up', { taskId });
-        } catch (cleanupError) {
-          // cleanup failures (e.g. fs.rmSync EBUSY on Windows) must not swallow the final status write
-          this.logger.warn('Sandbox cleanup failed (non-fatal)', { taskId, error: String(cleanupError) });
+        } else {
+          // failure/cancel recovery: the completed nodes' work still lives only in the
+          // sandbox — salvage it into the workspace instead of silently deleting it
+          const completedNodes = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').length;
+          let recovered = false;
+          if (completedNodes > 0) {
+            try {
+              let changes: string[] = [];
+              if (this.branchWorkflow && this.gitEnabled && await gitTool.isGitRepo(sandbox)) {
+                // drop the failed node's uncommitted partial edits (node branches chain their
+                // ancestors, so nothing completed is lost), then merge every completed node
+                // branch — parallel siblings are not reachable from HEAD alone
+                await simpleGit({ baseDir: sandbox }).reset(['--hard', 'HEAD']).catch(() => {});
+                const branches = graph.nodes
+                  .filter((n) => n.agent !== 'orchestrator' && n.branch && n.status === 'completed')
+                  .map((n) => n.branch as string);
+                if (branches.length > 0) await gitTool.mergeAllNodes(sandbox, branches).catch(() => null);
+                // syncToWorkspace (not mergeChanges): the sandbox here has its own .git,
+                // which must never leak into the workspace repo
+                await gitTool.syncToWorkspace(sandbox, workspace, 'coteam/base');
+                const dirty = await simpleGit({ baseDir: workspace }).status();
+                changes = dirty.files.map((f) => f.path);
+              } else {
+                changes = mergeChanges(sandbox, workspace);
+              }
+              if (changes.length > 0) {
+                const commit = this.gitEnabled
+                  ? await this.gitCommit(taskId, workspace, changes, `coteam: task ${taskId} partial recovery (${completedNodes} nodes, failed: ${String(result?.error || 'unknown').slice(0, 60)})`)
+                  : null;
+                result.merged_files = changes;
+                result.recovered_partial = { nodes: completedNodes, files: changes.length, commit: commit?.commit ?? null };
+                this.logger.warn('Recovered completed-node changes from non-success task', { taskId, status: result?.status, nodes: completedNodes, files: changes.length, commit: commit?.commit });
+              }
+              recovered = true;
+            } catch (recoverError) {
+              this.logger.error('Partial recovery failed — sandbox PRESERVED for manual recovery', { taskId, sandbox, error: String(recoverError) });
+              result.sandbox_preserved = sandbox;
+            }
+          }
+          if (recovered || completedNodes === 0) {
+            try {
+              cleanupSandbox(sandbox);
+              this.logger.debug('Sandbox cleaned up', { taskId });
+            } catch (cleanupError) {
+              // cleanup failures (e.g. fs.rmSync EBUSY on Windows) must not swallow the final status write
+              this.logger.warn('Sandbox cleanup failed (non-fatal)', { taskId, error: String(cleanupError) });
+            }
+          }
         }
       }
     }
@@ -575,8 +620,9 @@ export class Orchestrator {
       notify('task_success', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 完成，${(result.changes || []).length} 个文件变更`);
       await addMemory(`任务「${description}」成功完成，产出了 ${(result.changes || []).length} 个文件变更。`);
     } else if (status === 'failed') {
-      notify('task_failed', { task_id: taskId, error: result.error }, `[Co-Team] 任务 ${taskId} 失败：${result.error}`);
-      await addMemory(`任务「${description}」失败于节点：${result.error}。后续类似任务注意规避。`);
+      const recoveredInfo = result.recovered_partial ? `（已完成 ${result.recovered_partial.nodes} 个节点的成果已回写工作区：${result.recovered_partial.files} 个文件）` : (result.sandbox_preserved ? `（沙箱已保留供人工恢复：${result.sandbox_preserved}）` : '');
+      notify('task_failed', { task_id: taskId, error: result.error, recovered: result.recovered_partial || null }, `[Co-Team] 任务 ${taskId} 失败：${result.error}${recoveredInfo}`);
+      await addMemory(`任务「${description}」失败于节点：${result.error}${recoveredInfo}。后续类似任务注意规避。`);
     }
 
     // improvement 10: task-end snapshot for post-hoc rollback / audit
@@ -1022,7 +1068,12 @@ export class Orchestrator {
     const chain = this.pool.fallbackChain(primary, plugin.tags);
     let lastErr = '';
     let triedCount = 0;
-    for (const entry of chain) {
+    // content failures (parse/schema/refusal) are usually not model-specific: retry the
+    // SAME model once with the failure text as feedback before burning the fallback chain
+    const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
+    const sameModelRetries = new Map<string, number>();
+    for (let ci = 0; ci < chain.length; ci++) {
+      const entry = chain[ci];
       // Check for cancellation before trying each model in fallback chain
       if (await isCancelled(taskId)) {
         return { status: 'failed', error: 'task cancelled' };
@@ -1034,30 +1085,37 @@ export class Orchestrator {
       }
       triedCount++;
       try {
-        const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastError, attemptLabel);
+        const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastErr || lastError, attemptLabel);
         if (result.status === 'success') {
           this.pool.markSuccess(entry);
           this.logger.agentResponse(taskId, node.id, plugin.name, result.tokens || 0);
           if (triedCount > 1) this.logger.info('Model degraded successfully', { taskId, nodeId: node.id, agent: plugin.name, tried: triedCount, finalModel: entry.name });
           return result;
         }
-        // Failed result — try next model in chain
+        // Failed result (content-level: parse/schema/refusal) — do NOT poison model health;
+        // retry the same model once with feedback, then move down the chain
         lastErr = result.error || 'agent reported failure';
         this.logger.warn('Model returned failure, trying next', { taskId, nodeId: node.id, agent: plugin.name, model: entry.name, error: lastErr });
-        this.pool.markFailure(entry);
+        const retried = sameModelRetries.get(entry.name) ?? 0;
+        if (CONTENT_FAIL_RE.test(lastErr) && retried < 1) {
+          sameModelRetries.set(entry.name, retried + 1);
+          ci--;
+          continue;
+        }
       } catch (e: any) {
         if (String(e?.message).includes('token budget')) {
           this.logger.error('Token budget exceeded', { taskId, nodeId: node.id });
           return { status: 'failed', error: 'token budget exceeded for this task' };
         }
         lastErr = String(e).slice(0, 500);
-        this.logger.error('Agent dispatch failed', { 
-          taskId, 
-          nodeId: node.id, 
-          agent: plugin.name, 
-          model: entry.name, 
-          error: lastErr 
+        this.logger.error('Agent dispatch failed', {
+          taskId,
+          nodeId: node.id,
+          agent: plugin.name,
+          model: entry.name,
+          error: lastErr
         });
+        // infra-level failure (network/5xx/crash) — count against model health
         this.pool.markFailure(entry);
       } finally {
         this.pool.release(entry);
@@ -1427,7 +1485,7 @@ export class Orchestrator {
     return lines.join('\n');
   }
 
-  private async gitCommit(taskId: string, workspace: string, changes: string[]): Promise<{ branch: string; commit: string | null } | null> {
+  private async gitCommit(taskId: string, workspace: string, changes: string[], message?: string): Promise<{ branch: string; commit: string | null } | null> {
     if (!(await gitTool.isGitRepo(workspace))) return null;
     const branch = `coteam/task-${taskId}`;
     const branches = await simpleGit({ baseDir: workspace }).branchLocal().catch(() => null);
@@ -1437,7 +1495,7 @@ export class Orchestrator {
     } else {
       try { await simpleGit({ baseDir: workspace }).checkout(branch); } catch { return null; }
     }
-    const commit = await gitTool.commitOnBranch(workspace, `coteam: task ${taskId} auto-commit`, changes);
+    const commit = await gitTool.commitOnBranch(workspace, message || `coteam: task ${taskId} auto-commit`, changes);
     return { branch, commit };
   }
 
