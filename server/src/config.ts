@@ -31,6 +31,17 @@ export interface AppConfig {
   };
   /** custom grading keywords (improvement 7 / R6), appended to built-in rules */
   grading?: { heavy?: string[]; light?: string[] };
+  /** feishu bot (event subscription mode); secrets come from COTEAM_FEISHU_* env vars */
+  feishu?: FeishuConfig;
+}
+
+export interface FeishuConfig {
+  app_id?: string;
+  app_secret?: string;
+  verification_token?: string;
+  encrypt_key?: string;
+  /** open platform base url (override for tests) */
+  api_base?: string;
 }
 
 export const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -67,5 +78,16 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       stale_days: raw.knowledge?.stale_days ?? 90,
     },
     grading: raw.grading || undefined,
+    // secrets never live in config.yaml — environment variables win
+    feishu: raw.feishu
+      ? {
+          ...raw.feishu,
+          ...(process.env.COTEAM_FEISHU_APP_ID ? { app_id: process.env.COTEAM_FEISHU_APP_ID } : {}),
+          ...(process.env.COTEAM_FEISHU_APP_SECRET ? { app_secret: process.env.COTEAM_FEISHU_APP_SECRET } : {}),
+          ...(process.env.COTEAM_FEISHU_VERIFICATION_TOKEN ? { verification_token: process.env.COTEAM_FEISHU_VERIFICATION_TOKEN } : {}),
+          ...(process.env.COTEAM_FEISHU_ENCRYPT_KEY ? { encrypt_key: process.env.COTEAM_FEISHU_ENCRYPT_KEY } : {}),
+          ...(process.env.COTEAM_FEISHU_API_BASE ? { api_base: process.env.COTEAM_FEISHU_API_BASE } : {}),
+        }
+      : undefined,
   };
 }

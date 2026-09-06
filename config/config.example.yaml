@@ -50,6 +50,16 @@ knowledge:
   #   model: text-embedding-model   # 模型池条目名，该条目 roles 建议标注 ['embedding']
   # 治理：GET /api/knowledge?stale=1 列出超过该天数未更新的过期候选
   stale_days: 90
+# 飞书 bot（事件订阅模式）：在飞书开放平台创建自建应用后启用。
+# 密钥只走环境变量，禁止写入本文件：
+#   COTEAM_FEISHU_APP_ID / COTEAM_FEISHU_APP_SECRET
+#   COTEAM_FEISHU_VERIFICATION_TOKEN / COTEAM_FEISHU_ENCRYPT_KEY
+# 回调地址: http://<host>:8855/api/feishu/webhook （需局域网/公网可达）
+# feishu:
+#   app_id: cli_xxx        # 也可由环境变量提供
+#   app_secret: ""
+#   verification_token: ""
+#   encrypt_key: ""
 permissions:
   level: normal
   whitelist_commands:

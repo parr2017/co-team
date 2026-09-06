@@ -9,11 +9,12 @@ import { Orchestrator } from '../orchestrator/orchestrator';
 import { ModelPool } from '../scheduler';
 import type { TaskQueueManager, QueueSnapshot } from '../taskQueue';
 import { busGet, busKeys, busSet, busDel, getBus } from '../bus';
-import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask } from '../store';
+import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask, listProjects } from '../store';
 import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
 import type { AppConfig, OrchestrationConfig } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
+import type { FeishuHandler } from '../feishu/webhook';
 import { getLogger } from '../logger';
 
 export interface ApiContext {
@@ -849,6 +850,30 @@ export function createApi(ctx: ApiContext): Hono {
     const skills = reloadSkills(ctx.config.agents_dir, path.join(PROJECT_ROOT, 'skills'));
     return c.json({ status: 'reloaded', total: skills.length, skills: skills.map((s) => ({ name: s.name, source: s.source })) });
   });
+
+  // ---------- feishu bot (event subscription mode) ----------
+
+  if (ctx.config.feishu?.app_id && ctx.config.feishu.app_secret) {
+    let handlerP: Promise<FeishuHandler> | null = null;
+    const getHandler = () => {
+      handlerP ||= import('../feishu/webhook').then((m) =>
+        m.createFeishuHandler(ctx.config.feishu!, {
+          createTask: (description, workspace, projectId, opts) =>
+            ctx.orchestrator.createTask(description, workspace, projectId, { level: opts?.level }).then((r) => ({
+              taskId: r.taskId,
+              needsClarification: r.needsClarification,
+              questions: r.questions,
+            })),
+          enqueue: (taskId, projectId, workspace) => ctx.taskQueue.enqueue(taskId, projectId, workspace),
+          listProjects: async () => (await listProjects()).map((p) => ({ id: p.id, name: p.name, workspace: p.workspace })),
+          listAgentNames: () => [...ctx.orchestrator.plugins.keys()],
+        })
+      );
+      return handlerP;
+    };
+    app.post('/api/feishu/webhook', async (c) => (await getHandler()).handle(c));
+    logger.info('Feishu bot webhook mounted at /api/feishu/webhook', { app_id: ctx.config.feishu.app_id });
+  }
 
   // ---------- status / metrics / fs ----------
 
