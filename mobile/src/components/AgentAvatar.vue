@@ -28,10 +28,13 @@ const FALLBACK_GRADIENTS = [
 
 const isMaster = computed(() => props.name === 'orchestrator' || props.name === 'master' || props.name === '主 Agent');
 
+// same letter codes as web — dev/deploy both start with "de" and would collide
+const AVATAR_CODES: Record<string, string> = { orchestrator: '主', dev: 'dv', deploy: 'dp', docs: 'do', refactor: 'rf', review: 'rv', test: 'te' };
+
 const label = computed(() => {
   if (isMaster.value) return '主';
   const n = props.name || '??';
-  return n.length >= 2 ? n.slice(0, 2) : n;
+  return AVATAR_CODES[n] || (n.length >= 2 ? n.slice(0, 2) : n);
 });
 
 const background = computed(() => {

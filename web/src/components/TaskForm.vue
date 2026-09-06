@@ -59,9 +59,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { api, type FsListing } from '../api';
+import { useDashboard } from '../composables/useDashboard';
 
 const description = ref('');
 const workspace = ref('');
@@ -71,6 +72,15 @@ const pickerVisible = ref(false);
 const emit = defineEmits<{ (e: 'planned', taskId: string): void; (e: 'needs-clarify', taskId: string, questions: string[], summary?: string): void }>();
 const listing = ref<FsListing | null>(null);
 const fsInput = ref('');
+
+// live stage feedback while the (synchronous) create request is in flight
+const { createStage } = useDashboard();
+watch(createStage, (stage) => {
+  if (!submitting.value) return;
+  if (stage === 'assessing') hint.value = '正在评估需求清晰度...';
+  else if (stage === 'planning') hint.value = '正在生成任务计划（可能需要 1-3 分钟）...';
+});
+watch(submitting, (on) => { if (!on && createStage.value) createStage.value = ''; });
 
 // improvement 7: task grading; improvement 11: main-agent model pinning
 const level = ref('auto');

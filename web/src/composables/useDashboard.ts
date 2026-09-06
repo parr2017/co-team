@@ -35,6 +35,8 @@ const connected = ref(false);
 const taskTotal = ref(0);
 const taskPage = ref(1);
 const taskPageSize = ref(20);
+/** current task-creation stage (assessing/planning) for submit-button feedback (#P1-3) */
+const createStage = ref('');
 const eventListeners = new Set<(msg: EventEnvelope) => void>();
 let ws: WebSocket | null = null;
 let started = false;
@@ -59,7 +61,10 @@ function handleEvent(msg: EventEnvelope) {
   events.value.unshift({ ts: msg.ts || new Date().toISOString(), type: ev, data: p });
   if (events.value.length > 200) events.value.pop();
 
-  if (p.task_id && !tasks[p.task_id]) void fetchSingleTask(String(p.task_id));
+  if (ev === 'task_creating') createStage.value = String(p.stage || '');
+  else if (['task_needs_clarification', 'execute_start'].includes(ev)) createStage.value = '';
+
+  if (ev !== 'task_creating' && p.task_id && !tasks[p.task_id]) void fetchSingleTask(String(p.task_id));
 
   const task = p.task_id ? tasks[p.task_id] : null;
   if (task) {
@@ -214,5 +219,5 @@ function ensureStarted() {
 /** Shared dashboard store — safe to call from any component; opens the WS only once. */
 export function useDashboard() {
   ensureStarted();
-  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadTasks, loadAgents, loadJournals, onEvent, clearEvents: () => { events.value = []; } };
+  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, createStage, loadTasks, loadAgents, loadJournals, onEvent, clearEvents: () => { events.value = []; } };
 }

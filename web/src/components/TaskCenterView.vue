@@ -81,14 +81,16 @@ const emit = defineEmits<{
   (e: 'search', keyword: string): void;
 }>();
 
-// ---------- status overview (counts across ALL tasks, own lightweight poll) ----------
+// ---------- status overview (counts matching the table's external scope, own lightweight poll) ----------
 
 const stats = ref({ total: 0, running: 0, queued: 0, waiting: 0, pending: 0, done: 0, failed: 0 });
 let statTimer: number | null = null;
 
 async function refreshStats() {
   try {
-    const d = await api.listTasks(1, 200);
+    // same scope as the table below (external ad-hoc tasks): the chips must describe
+    // the list the user is looking at, not a hidden superset that includes project tasks
+    const d = await api.listTasks(1, 200, { scope: 'external' });
     const all = d.tasks || [];
     stats.value = {
       total: d.total,

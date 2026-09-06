@@ -322,8 +322,12 @@ function statusText(s: Seat['status']): string {
   return ({ working: '工作中', waiting: '等待审批', error: '出错', idle: '空闲' })[s] || s;
 }
 
+// same letter codes as BranchGraph/PipelineTrack — dev/deploy both start with "de",
+// so raw initials collide (dev showed "DE" like deploy)
+const AVATAR_CODES: Record<string, string> = { orchestrator: 'OR', dev: 'DV', deploy: 'DP', docs: 'DO', refactor: 'RF', review: 'RV', test: 'TE' };
+
 function avatarOf(name: string): string {
-  return (name || '??').replace(/[^a-z]/gi, '').slice(0, 2).toUpperCase() || '??';
+  return AVATAR_CODES[name] || (name || '??').replace(/[^a-z]/gi, '').slice(0, 2).toUpperCase() || '??';
 }
 
 function fmt(ts: string): string {
