@@ -158,3 +158,20 @@ describe('skill injection into the agent prompt (real callAgent via runGraph)', 
     expect(seenSystems[0]).toContain('BOUND_SKILL_BODY_X');
   });
 });
+
+describe('keyword auto-match threshold (>=2 token overlaps)', () => {
+  const lib = [
+    { name: 'vue3-crud-scaffold', description: 'Vue3 CRUD 页面开发规范：目录结构与代码约定', tags: [], source: 'global', dir: '', body: 'VUE_BODY' },
+  ];
+
+  it('a single CJK-bigram overlap no longer injects the skill', () => {
+    // 节点名只与技能描述共享「结构」一个词元
+    const picks = pickSkillsForNode(lib, { name: 'docs', tags: [], skills: [] }, '分析项目结构');
+    expect(picks).toHaveLength(0);
+  });
+
+  it('two or more overlapping tokens still inject the skill', () => {
+    const picks = pickSkillsForNode(lib, { name: 'dev', tags: [], skills: [] }, '实现页面目录结构与 CRUD 代码');
+    expect(picks.map((p) => p.skill.name)).toContain('vue3-crud-scaffold');
+  });
+});

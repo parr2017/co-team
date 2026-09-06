@@ -176,7 +176,10 @@ export function pickSkillsForNode(
     if (taken.has(s.name) || autoCount >= MAX_AUTO_SKILLS) break;
     if (s.source !== 'global' && s.source !== plugin.name) continue;
     const byTags = s.tags.length > 0 && s.tags.some((t) => plugin.tags.includes(t));
-    const byKeyword = tokenize(`${s.name} ${s.description}`).some((t) => nodeTokens.has(t));
+    // keyword channel needs >=2 distinct token overlaps: CJK bigrams make a single
+    // hit far too weak (e.g. "结构" alone pulled a Vue scaffold skill into a docs task)
+    const overlap = tokenize(`${s.name} ${s.description}`).filter((t) => nodeTokens.has(t)).length;
+    const byKeyword = overlap >= 2;
     if (byTags || byKeyword) {
       picks.push({ skill: s, body: s.body.slice(0, MAX_AUTO_BODY), reason: byTags ? 'tags' : 'keyword' });
       taken.add(s.name);
