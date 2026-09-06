@@ -36,10 +36,28 @@ export interface TaskNode {
   reason?: string;
   retry_count?: number;
   requires_approval?: boolean;
-  result?: { summary?: string; changes?: string[]; verification?: string; report?: TestReport } | null;
+  result?: { summary?: string; changes?: string[]; verification?: string; report?: TestReport; model?: string; tokens?: number } | null;
   started_at?: string;
   finished_at?: string;
   branch?: string;
+  /** 该节点分支的切出父分支——节点 diff 的计算基准 */
+  branch_base?: string;
+}
+
+export interface NodeDiffResponse {
+  node_id: string;
+  branch: string;
+  available: boolean;
+  reason?: string;
+  patch: string;
+  files: { path: string; insertions: number; deletions: number }[];
+}
+
+export interface SkillMeta {
+  name: string;
+  description: string;
+  tags: string[];
+  source: string;
 }
 
 export interface TestReport {
@@ -235,6 +253,8 @@ export const api = {
   clarifyTask: (id: string, payload: { answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }) =>
     post<{ status: string; questions?: string[]; graph?: TaskGraph }>(`/api/tasks/${id}/clarify`, payload),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileSummary> }>('/api/agents/profiles'),
+  listSkills: () => request<{ skills: SkillMeta[]; bindings: Record<string, string[]> }>('/api/skills'),
+  nodeDiff: (taskId: string, nodeId: string) => request<NodeDiffResponse>(`/api/tasks/${taskId}/nodes/${nodeId}/diff`),
   getModelPool: () => request<{ model_pool: ModelPoolItem[] }>('/api/config/model-pool'),
   fsList: (p: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(p)}`),
   listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),

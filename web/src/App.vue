@@ -21,42 +21,24 @@
         </div>
       </header>
 
-      <div class="layout" v-if="page === 'workbench'">
+      <div class="layout single" v-if="page === 'workbench'">
         <main class="main">
+          <div class="page-toolbar">
+            <div class="page-title">工作台</div>
+            <div class="page-ops">
+              <el-button size="small" @click="roadmapVisible = true">项目路线图</el-button>
+              <el-button size="small" @click="knowledgeVisible = true">知识库</el-button>
+              <el-button size="small" @click="settingsVisible = true">设置</el-button>
+              <el-button size="small" @click="refreshStatus(); metricsRef?.refresh()">刷新状态</el-button>
+              <el-button size="small" @click="onReloadAgents">重载 Agent</el-button>
+            </div>
+          </div>
           <TaskForm @planned="openReview" @needs-clarify="(tid: string) => openClarify(tid)" />
           <AgentCards :agents="agents" @show-detail="detailAgent = $event" />
-          <TaskList
-            :tasks="tasks"
-            :total="taskTotal"
-            :current-page="taskPage"
-            :page-size="taskPageSize"
-            @approve="onApprove"
-            @cancel="onCancel"
-            @delete="onDeleteTask"
-            @show-logs="openChat"
-            @show-dag="dagTaskId = $event"
-            @show-detail="detailTaskId = $event"
-            @review="openReview"
-            @clarify="openClarify"
-            @page-change="onTaskPageChange"
-            @search="onTaskSearch"
-          />
-          <EventLog :events="events" @clear="clearEvents" />
-        </main>
-        <aside class="side">
           <ModelPoolPanel :status="status" @refresh="refreshStatus" />
           <MetricsPanel ref="metricsRef" />
-            <div class="section">
-              <div class="section-title">操作</div>
-              <div class="ops">
-                <el-button size="small" style="width: 100%" @click="roadmapVisible = true">项目路线图</el-button>
-                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="knowledgeVisible = true">知识库</el-button>
-                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="settingsVisible = true">设置</el-button>
-                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="refreshStatus(); metricsRef?.refresh()">刷新状态</el-button>
-                <el-button size="small" style="width: 100%; margin: 8px 0 0" @click="onReloadAgents">重载 Agent</el-button>
-              </div>
-            </div>
-        </aside>
+          <EventLog :events="events" @clear="clearEvents" />
+        </main>
       </div>
 
       <div class="layout" v-else-if="page === 'tasks'">
@@ -92,7 +74,7 @@
       <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid: string) => { detailAgent = null; detailTaskId = tid; }" />
       <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :task="chatTask" />
       <TaskDagDialog :model-value="dagTaskId !== null" :task="dagTaskId ? tasks[dagTaskId] : null" @close="dagTaskId = null" />
-      <SettingsDialog v-model="settingsVisible" @changed="refreshStatus" />
+      <SettingsDialog v-model="settingsVisible" :notify-enabled="notifyEnabled" @notify-toggle="onNotifyToggle" @changed="refreshStatus" />
       <PlanReviewDialog :model-value="reviewTaskId !== null" :task-id="reviewTaskId || ''" @close="reviewTaskId = null" @started="onPlanStarted" @cancelled="loadTasks" @changed="loadTasks" />
       <ClarifyDialog :model-value="clarifyTaskId !== null" :task-id="clarifyTaskId || ''" @close="clarifyTaskId = null" @planned="onClarifyPlanned" @cancelled="loadTasks" @changed="loadTasks" />
       <KnowledgeDialog v-model="knowledgeVisible" />
@@ -108,9 +90,9 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
 import { useTheme } from './composables/useTheme';
+import { useNotifier } from './composables/useNotifier';
 import TaskForm from './components/TaskForm.vue';
 import AgentCards from './components/AgentCards.vue';
-import TaskList from './components/TaskList.vue';
 import TaskCenterView from './components/TaskCenterView.vue';
 import EventLog from './components/EventLog.vue';
 import ModelPoolPanel from './components/ModelPoolPanel.vue';
@@ -128,6 +110,7 @@ import ProjectView from './components/ProjectView.vue';
 
 const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, clearEvents } = useDashboard();
 const { theme, toggle } = useTheme();
+const { enabled: notifyEnabled, setEnabled: setNotifyEnabled } = useNotifier();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
 const settingsVisible = ref(false);
@@ -233,6 +216,11 @@ async function onReloadAgents() {
   }
 }
 
+async function onNotifyToggle(v: boolean) {
+  const ok = await setNotifyEnabled(v);
+  if (ok) ElMessage.success(v ? '桌面通知已开启' : '桌面通知已关闭');
+}
+
 let timer: number | undefined;
 onMounted(() => {
   refreshStatus();
@@ -319,8 +307,13 @@ body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: 
 .theme-toggle { font-family: var(--ct-mono); font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
 .theme-toggle:hover { color: var(--ct-text); border-color: var(--ct-border2); }
 .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
+.layout.single { grid-template-columns: 1fr; }
+.layout.single .main { max-width: 1180px; margin: 0 auto; width: 100%; border-right: none; }
 .main { overflow-y: auto; padding: 20px 24px; border-right: 1px solid var(--ct-border); }
 .side { overflow-y: auto; padding: 16px; }
+.page-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.page-title { font-size: 15px; font-weight: 600; color: var(--ct-text); }
+.page-ops { margin-left: auto; display: flex; gap: 4px; }
 .el-dialog__body { max-height: calc(88vh - 110px); overflow-y: auto; }
 .section { margin-bottom: 24px; }
 .section-title { font-family: var(--ct-mono); font-size: 11px; font-weight: 500; color: var(--ct-text3); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px; }

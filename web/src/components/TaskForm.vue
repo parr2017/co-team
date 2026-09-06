@@ -45,9 +45,9 @@
       <div class="fs-list">
         <div v-if="!listing" class="fs-empty">加载中...</div>
         <template v-else>
-          <div v-for="s in listing.shortcuts" :key="s.path" class="fs-row" @click="loadFs(s.path)">🏠 {{ s.name }} <span class="fs-sub">{{ s.path }}</span></div>
+          <div v-for="s in listing.shortcuts" :key="s.path" class="fs-row shortcut" @click="loadFs(s.path)"><span class="fs-ico">⌂</span> {{ s.name }} <span class="fs-sub">{{ s.path }}</span></div>
           <div v-if="!listing.dirs.length && !listing.shortcuts.length" class="fs-empty">空目录</div>
-          <div v-for="d in listing.dirs" :key="d.path" class="fs-row" @click="loadFs(d.path)">📁 {{ d.name }}</div>
+          <div v-for="d in listing.dirs" :key="d.path" class="fs-row" @click="loadFs(d.path)"><span class="fs-ico">▸</span> {{ d.name }}</div>
         </template>
       </div>
       <template #footer>
@@ -192,6 +192,9 @@ async function submit() {
 .fs-list { max-height: 320px; overflow-y: auto; background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 8px; }
 .fs-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--el-border-color); cursor: pointer; font-size: 13px; }
 .fs-row:hover { background: var(--ct-panel2); }
+.fs-row.shortcut { color: var(--ct-text2); }
+.fs-ico { color: var(--ct-text3); flex-shrink: 0; }
+.fs-row .fs-sub { margin-left: 0; }
 .fs-sub { color: var(--ct-text3); font-size: 11px; }
 .fs-empty { padding: 24px; text-align: center; color: var(--ct-text3); font-size: 12px; }
 </style>

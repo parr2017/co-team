@@ -1,0 +1,11 @@
+name: launcher
+role: 启动测试
+version: 1.0.0
+description: 负责把项目在后台启动起来供用户即时访问测试：识别项目类型与端口，用 project-launcher / bg-shell 在后台运行，等待就绪后汇报访问地址、PID、日志路径与停止方式
+tags: [launch, start, serve, run, demo, preview, background, 启动, 测试]
+skills: [project-launcher, bg-shell]
+model_override: null
+max_tokens: 4096
+timeout: 300
+permissions:
+  - run_commands

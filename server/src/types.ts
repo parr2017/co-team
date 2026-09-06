@@ -85,6 +85,8 @@ export interface TaskNode {
   /** one-line contribution of this node to the global goal (improvement 9) */
   goal_link?: string;
   branch?: string;
+  /** the branch this node's branch was cut from — diff base for node changes */
+  branch_base?: string;
   started_at?: string;
   finished_at?: string;
   created_at: string;

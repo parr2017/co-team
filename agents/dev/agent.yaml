@@ -3,6 +3,7 @@ role: 开发
 version: 1.1.0
 description: 负责代码实现与修改，可创建/修改文件并运行命令
 tags: [code, develop, implement, debug]
+skills: [vue3-crud-scaffold]
 model_override: null
 max_tokens: 8192
 timeout: 300

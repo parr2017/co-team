@@ -194,6 +194,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
           <div class="bubble them-b">
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
+          <div v-if="item.entry.model" class="b-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></div>
         </div>
       </div>
 
@@ -230,6 +231,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
           </div>
           <div v-else class="bubble them-b">
             <div class="b-text md" v-html="md(item.entry.text)"></div>
+            <div v-if="item.entry.meta?.verification" class="b-verify mono">验证 · {{ item.entry.meta.verification }}</div>
             <div v-if="(item.entry.meta?.changes || []).length" class="chips">
               <span v-for="c in (item.entry.meta?.changes || []).slice(0, 4)" :key="c" class="chip">✓ {{ c }}</span>
             </div>
@@ -239,6 +241,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
 commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
             </details>
           </div>
+          <div v-if="item.entry.model" class="b-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></div>
         </div>
       </div>
 
@@ -270,6 +273,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
               <pre class="pre">{{ item.entry.meta.raw }}</pre>
             </details>
           </div>
+          <div v-if="item.entry.model" class="b-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></div>
         </div>
       </div>
     </template>
@@ -345,6 +349,10 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
 .b-text :deep(pre) { background: var(--panel-2); border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 12px; }
 .b-text :deep(ul), .b-text :deep(ol) { margin: 4px 0; padding-left: 18px; }
 .b-error { color: var(--red); white-space: pre-wrap; font-size: 14px; }
+/* 消息级模型与消耗标注 */
+.b-meta { font-size: 10px; color: var(--text-3); margin: 2px 2px 0; font-family: Consolas, monospace; }
+/* 汇报内的验证行 */
+.b-verify { margin-top: 6px; font-size: 12px; color: var(--green); background: rgba(7, 193, 96, 0.08); border-left: 3px solid var(--green); border-radius: 4px; padding: 4px 8px; font-family: Consolas, monospace; }
 
 .file-card { background: rgba(22, 32, 48, 0.85); border: 1px solid rgba(56, 189, 248, 0.14); border-radius: 9px; padding: 7px 10px; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }

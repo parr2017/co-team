@@ -33,12 +33,22 @@
             <span v-else-if="!n._editing" class="branch mono">{{ branchOf(n) }}</span>
             <span class="ops">
               <el-button size="small" link @click="toggleEdit(n)">{{ n._editing ? '完成' : '改' }}</el-button>
+              <el-button size="small" link @click="openInsert(n)">插</el-button>
               <el-button size="small" link type="danger" @click="removeNode(n)">删</el-button>
             </span>
           </div>
           <div v-if="n.reason" class="margin-note">
             <span class="note-line"></span>
             <span class="note-text">{{ n.reason }}</span>
+          </div>
+          <!-- 在该节点后插入新节点 -->
+          <div v-if="insertAfter === n.id" class="insert-row">
+            <el-input v-model="insertName" size="small" placeholder="新节点名称，如：补充接口测试" class="insert-name" @keydown.enter="confirmInsert" />
+            <el-select v-model="insertAgent" size="small" style="width: 110px">
+              <el-option v-for="a in agentOptions.filter((x) => x !== 'orchestrator')" :key="a" :label="a" :value="a" />
+            </el-select>
+            <el-button size="small" type="primary" :loading="inserting" @click="confirmInsert">插入</el-button>
+            <el-button size="small" @click="insertAfter = ''">取消</el-button>
           </div>
         </div>
       </div>
@@ -148,6 +158,39 @@ async function removeNode(n: EditableNode) {
   }
 }
 
+// ---------- 人工补差：在锚点节点后插入新节点 ----------
+
+const insertAfter = ref('');
+const insertName = ref('');
+const insertAgent = ref('dev');
+const inserting = ref(false);
+
+function openInsert(n: EditableNode) {
+  insertAfter.value = n.id;
+  insertName.value = '';
+  if (!insertAgent.value) insertAgent.value = 'dev';
+}
+
+async function confirmInsert() {
+  if (!insertName.value.trim()) {
+    ElMessage.warning('请填写新节点名称');
+    return;
+  }
+  inserting.value = true;
+  try {
+    await api.addNode(props.taskId, { name: insertName.value.trim(), agent: insertAgent.value, after_node_id: insertAfter.value });
+    ElMessage.success('节点已插入');
+    insertAfter.value = '';
+    insertName.value = '';
+    await reload();
+    emit('changed');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    inserting.value = false;
+  }
+}
+
 async function doReplan() {
   if (!feedback.value.trim()) {
     ElMessage.warning('先写下调整意见');
@@ -215,6 +258,8 @@ async function cancelTask() {
 .margin-note { display: flex; gap: 8px; align-items: center; padding: 2px 0 2px 28px; }
 .note-line { width: 24px; height: 1px; background: var(--ct-border2); transform: rotate(-2deg); }
 .note-text { font-size: 11px; color: var(--ct-text3); font-style: italic; }
+.insert-row { display: flex; gap: 8px; align-items: center; padding: 8px 10px; margin: 6px 0 4px 28px; border: 1px dashed var(--ct-border2); border-radius: 6px; background: var(--ct-panel2); }
+.insert-name { flex: 1; }
 .sign-area { border-top: 2px solid var(--ct-border2); margin-top: 14px; padding-top: 12px; }
 .feedback { display: flex; gap: 8px; align-items: center; }
 .feedback-label { color: var(--ct-accent); font-size: 11px; font-weight: 600; }

@@ -48,6 +48,25 @@ function success(changes: string[] = []): AgentResult {
 }
 
 describe('Orchestrator', () => {
+  it('addNode inserts after the anchor and reroutes its outgoing edges', async () => {
+    const nodes = [makeNode('a', 'dev'), makeNode('b', 'test')];
+    // a → b, b → merge-auto（appendMergeNode 语义）
+    await saveTaskGraph('t-add', nodes, [['a', 'b'], ['b', 'merge-auto']], { description: 'add-node', workspace: tmp, status: 'planned' });
+
+    const node = await orchestrator.addNode('t-add', { name: '补一轮审查', agent: 'dev', afterNodeId: 'a' });
+    expect(node.id).toBeTruthy();
+    const graph = (await getTaskGraph('t-add'))!;
+    expect(graph.nodes.map((n) => n.id)).toContain(node.id);
+    // a 的出边全部改接到新节点：a→new、new→b，原 a→b 消失
+    expect(graph.edges).toContainEqual(['a', node.id]);
+    expect(graph.edges).toContainEqual([node.id, 'b']);
+    expect(graph.edges).not.toContainEqual(['a', 'b']);
+    // 非法 agent 与运行中状态被拒
+    await expect(orchestrator.addNode('t-add', { name: 'x', agent: 'ghost', afterNodeId: 'a' })).rejects.toThrow(/不存在/);
+    await saveTaskGraph('t-add', graph.nodes, graph.edges, { status: 'running' });
+    await expect(orchestrator.addNode('t-add', { name: 'x', agent: 'dev', afterNodeId: 'a' })).rejects.toThrow(/仅在/);
+  });
+
   it('executes parallel DAG via waves (fallback graph uses specialized agents)', async () => {
     const nodes = [makeNode('root', 'orchestrator'), makeNode('left', 'orchestrator'), makeNode('right', 'orchestrator'), makeNode('join', 'orchestrator')];
     const edges: [string, string][] = [['root', 'left'], ['root', 'right'], ['left', 'join'], ['right', 'join']];

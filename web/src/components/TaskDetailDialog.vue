@@ -8,6 +8,8 @@
           <div class="mono meta-sub">
             {{ task.task_id }} · {{ task.workspace }} ·
             {{ completedCount }}/{{ task.nodes.length }} 节点
+            <template v-if="taskTokens"> · {{ fmtTok(taskTokens) }} tok</template>
+            <template v-if="taskCostEstimate"> · ≈${{ taskCostEstimate.toFixed(4) }}（估算）</template>
             <template v-if="task.git_commit"> · ⎇ {{ task.git_commit.branch }}</template>
           </div>
         </div>
@@ -17,35 +19,47 @@
       </div>
 
       <el-tabs v-model="tab">
-        <!-- 作战室 -->
+        <!-- 作战室：阶段 + 轨道 + 检视器（成员会话 / 节点详情） -->
         <el-tab-pane label="作战室" name="warroom">
-          <div class="warroom">
-            <div class="wr-left">
-              <CollabGraph :task="task" :selected-agent="selectedAgent || undefined" @select="selectAgent" />
-              <div class="wr-hint mono">点击成员查看其实时对话流 · 主 Agent 居中分配与回收</div>
+          <div class="stage-banner">
+            <div class="st-steps">
+              <template v-for="(s, i) in STAGE_STEPS" :key="s">
+                <div class="st-step" :class="{ done: stageStep > i, active: stageStep === i, failed: stageFailed && i === STAGE_STEPS.length - 1 }">
+                  <span class="st-dot mono">{{ stageStep > i ? '✓' : i + 1 }}</span>
+                  <span class="st-label">{{ s }}</span>
+                </div>
+                <span v-if="i < STAGE_STEPS.length - 1" class="st-link" :class="{ passed: stageStep > i }"></span>
+              </template>
             </div>
-            <div class="wr-right">
-              <div class="live-head mono">
-                <span class="live-agent">{{ selectedAgent || '选择成员' }}</span>
-                <span v-if="selectedLive?.model" class="live-model">{{ selectedLive.model }}</span>
-                <span v-if="selectedLive?.currentAction" class="live-action">{{ selectedLive.currentAction }}</span>
+            <div class="st-body">
+              <div class="st-text mono">
+                <span class="st-state" :class="task.status">{{ stageLabel }}</span>
+                <span>{{ completedCount }}/{{ task.nodes.length }} 节点</span>
+                <template v-if="progressEta !== null"><span>预计剩余 {{ progressEta }} 分钟</span></template>
               </div>
-              <div class="live-chat">
-                <ChatStream
-                  :task-id="taskId"
-                  :filter-agent="selectedAgent || undefined"
-                />
+              <div class="st-progress"><div class="fill" :style="{ width: progressPct + '%' }"></div></div>
+              <div v-if="progress?.current_nodes?.length" class="st-current">
+                <span class="st-current-label">正在执行</span>
+                <el-tag v-for="n in progress.current_nodes" :key="n.id" size="small" type="warning">{{ n.name }} · {{ n.agent }}</el-tag>
               </div>
-              <InterventionBar :task-id="taskId" :task-status="task.status" />
             </div>
           </div>
-        </el-tab-pane>
 
-        <!-- 执行详情（轨道图 + 归档时间线 + 分支） -->
-        <el-tab-pane label="执行详情" name="exec">
-          <div class="body-grid">
-            <div class="left">
-              <PipelineTrack :nodes="task.nodes" @select="selectNodeId" />
+          <div class="warroom">
+            <div class="wr-left">
+              <div class="member-chips">
+                <button class="m-chip mono" :class="{ active: wrView === 'chat' && !selectedAgent }" @click="pickMember('')">全体</button>
+                <button
+                  v-for="m in members"
+                  :key="m.name"
+                  class="m-chip mono"
+                  :class="{ active: wrView === 'chat' && selectedAgent === m.name, running: m.running }"
+                  @click="pickMember(m.name)"
+                >
+                  <span class="m-dot" :class="{ on: m.running }"></span>{{ m.name }}
+                </button>
+              </div>
+              <PipelineTrack :nodes="task.nodes" :selected-id="selectedNodeId" @select="selectNodeId" />
               <div v-if="branches.length" class="branches mono">
                 <div class="sub-title mono">branches</div>
                 <div v-for="b in branches" :key="b.name" class="branch-row">
@@ -53,11 +67,32 @@
                   <span class="b-commit">{{ b.commit }}</span>
                 </div>
               </div>
+              <div class="wr-hint mono">点击节点查看详情与代码变更 · 点击成员切换会话</div>
             </div>
-            <div class="right">
-              <template v-if="selected">
+            <div class="wr-right">
+              <div class="wr-switch">
+                <button class="sw-btn mono" :class="{ active: wrView === 'chat' }" @click="wrView = 'chat'">成员会话</button>
+                <button class="sw-btn mono" :class="{ active: wrView === 'node' }" :disabled="!selected" @click="wrView = 'node'">节点详情</button>
+                <span v-if="wrView === 'node' && selected" class="sw-cur mono">{{ selected.name }}</span>
+              </div>
+
+              <!-- 成员会话视图 -->
+              <template v-if="wrView === 'chat'">
+                <div class="live-head mono">
+                  <span class="live-agent">{{ selectedAgent || '全体成员' }}</span>
+                  <span v-if="selectedLive?.model" class="live-model">{{ selectedLive.model }}</span>
+                  <span v-if="selectedLive?.currentAction" class="live-action">{{ selectedLive.currentAction }}</span>
+                </div>
+                <div class="live-chat">
+                  <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" />
+                </div>
+                <InterventionBar :task-id="taskId" :task-status="task.status" />
+              </template>
+
+              <!-- 节点详情视图 -->
+              <div v-else-if="selected" class="node-view">
                 <div class="node-head mono">
-                  <span class="stamp" :class="selected.status">{{ selected.status }}</span>
+                  <span class="n-status" :class="selected.status">{{ statusText(selected.status) }}</span>
                   <span class="n-name">{{ selected.name }}</span>
                   <span class="n-meta">[{{ selected.agent }}]{{ selected.branch ? ' ⎇' + selected.branch : '' }}{{ dur(selected) }}</span>
                   <el-select
@@ -71,10 +106,15 @@
                     <el-option v-for="a in agentOptions" :key="a" :label="a" :value="a" />
                   </el-select>
                 </div>
-                <div v-if="selected.reason" class="reason">💡 {{ selected.reason }}</div>
+                <div class="n-obs mono">
+                  <span>{{ selected.result?.model || '模型未记录' }}</span>
+                  <span v-if="selected.result?.tokens"> · {{ fmtTok(selected.result.tokens || 0) }} tok</span>
+                  <el-button v-if="selected.branch" size="small" link type="primary" class="diff-btn" @click="diffNodeId = selected.id">查看代码变更</el-button>
+                </div>
+                <div v-if="selected.reason" class="reason"><span class="mini-label">规划理由</span>{{ selected.reason }}</div>
                 <div v-if="selected.error" class="error mono">✗ {{ selected.error }}</div>
                 <div v-if="selected.result?.summary" class="summary">{{ selected.result.summary }}</div>
-                <div v-if="(selected.result as any)?.verification" class="verification">🛡 验证：{{ (selected.result as any).verification }}</div>
+                <div v-if="(selected.result as any)?.verification" class="verification"><span class="mini-label green">验证</span>{{ (selected.result as any).verification }}</div>
                 <div v-if="selected.result?.report" class="report-card mono">
                   <div class="r-title">TEST REPORT · {{ selected.result.report.framework || 'tests' }} · {{ selected.result.report.attempts }} 轮</div>
                   <div class="r-line">{{ selected.result.report.summary }}</div>
@@ -83,34 +123,52 @@
                 <div v-if="selected.result?.changes?.length" class="changes mono">
                   <div v-for="c in selected.result.changes" :key="c" class="change">✓ {{ c }}</div>
                 </div>
-                <div class="sub-title mono">timeline</div>
-                <el-timeline style="padding-left: 2px">
-                  <el-timeline-item v-for="(e, i) in nodeEvents" :key="i" :timestamp="fmt(e.ts)" :type="tlType(e.type)">
-                    {{ e.type }}<span v-if="e.payload.error" class="tl-err"> — {{ e.payload.error }}</span>
-                  </el-timeline-item>
-                </el-timeline>
-                <div class="sub-title mono">conversation</div>
-                <ChatStream
-                  :task-id="taskId"
-                  :filter-node-id="selected.id"
-                />
-              </template>
-              <div v-else class="empty mono">← 在轨道图上选择一个节点</div>
+                <div class="sub-title mono">时间线</div>
+                <div class="tl">
+                  <div v-for="(e, i) in nodeEvents" :key="i" class="tl-row">
+                    <span class="tl-time mono">{{ fmt(e.ts) }}</span>
+                    <span class="tl-dot" :class="describe(e).level"></span>
+                    <span class="tl-text" :class="describe(e).level">{{ describe(e).text }}</span>
+                  </div>
+                  <div v-if="!nodeEvents.length" class="tl-empty mono">该节点暂无事件</div>
+                </div>
+                <div class="sub-title mono">会话回放</div>
+                <ChatStream :task-id="taskId" :filter-node-id="selected.id" />
+              </div>
+              <div v-else class="empty mono">← 在左侧轨道选择一个节点</div>
             </div>
           </div>
         </el-tab-pane>
 
-        <!-- 归档时间线（全部事件） -->
+        <!-- 事件归档（全部事件，可筛选） -->
         <el-tab-pane :label="`事件归档 (${events.length})`" name="archive">
-          <el-timeline style="padding-left: 2px; margin-top: 4px">
-            <el-timeline-item v-for="(e, i) in events" :key="i" :timestamp="fmt(e.ts)" :type="tlType(e.type)">
-              <span class="tl-type mono">{{ e.type }}</span>
-              <span v-if="e.payload.node_id" class="tl-node mono"> #{{ e.payload.node_id }}</span>
-              <span v-if="e.payload.summary" class="tl-sum"> {{ e.payload.summary }}</span>
-              <span v-if="e.payload.error" class="tl-err"> {{ e.payload.error }}</span>
-              <span v-if="e.payload.agent && e.payload.text" class="tl-sum"> {{ e.payload.agent }}: {{ e.payload.text }}</span>
-            </el-timeline-item>
-          </el-timeline>
+          <div class="arch">
+            <div class="arch-toolbar">
+              <el-radio-group v-model="archCategory" size="small">
+                <el-radio-button value="">全部</el-radio-button>
+                <el-radio-button value="node">节点</el-radio-button>
+                <el-radio-button value="agent">Agent</el-radio-button>
+                <el-radio-button value="task">任务</el-radio-button>
+                <el-radio-button value="system">系统</el-radio-button>
+              </el-radio-group>
+              <el-input v-model="archKeyword" size="small" placeholder="搜索事件…" clearable style="width: 200px" />
+              <el-checkbox v-model="archShowNoisy" size="small">显示高频细节</el-checkbox>
+              <span class="arch-count mono">显示 {{ Math.min(archiveFiltered.length, archLimit) }} / {{ events.length }} 条</span>
+            </div>
+            <div class="arch-list">
+              <div v-for="(e, i) in archiveShown" :key="i" class="tl-row">
+                <span class="tl-time mono">{{ fmt(e.ts) }}</span>
+                <span class="tl-dot" :class="describe(e).level"></span>
+                <span class="tl-text" :class="describe(e).level">{{ describe(e).text }}</span>
+                <span v-if="nodeName(e.payload.node_id)" class="tl-chip mono">{{ nodeName(e.payload.node_id) }}</span>
+                <span v-if="e.payload.agent" class="tl-chip mono">{{ e.payload.agent }}</span>
+              </div>
+              <div v-if="!archiveFiltered.length" class="empty mono">没有匹配的事件</div>
+              <div v-else-if="archiveFiltered.length > archLimit" class="arch-more">
+                <el-button size="small" @click="archLimit += 500">加载更多（还有 {{ archiveFiltered.length - archLimit }} 条）</el-button>
+              </div>
+            </div>
+          </div>
         </el-tab-pane>
 
         <!-- 管理：进度 / 主Agent模型 / 全局目标 / 快照回滚 -->
@@ -123,7 +181,7 @@
                   <el-progress :percentage="progress.percent" :stroke-width="10" />
                 </div>
                 <div class="mg-line mono">
-                  {{ progress.completed }}/{{ progress.total }} 节点 · 状态 {{ progress.status }}
+                  {{ progress.completed }}/{{ progress.total }} 节点 · 状态 {{ statusText(progress.status) }}
                   <template v-if="progress.eta_sec !== undefined"> · 预计剩余 {{ Math.ceil(progress.eta_sec / 60) }} 分钟</template>
                 </div>
                 <div v-if="progress.current_nodes.length" class="mg-line">
@@ -184,6 +242,14 @@
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <DiffDialog
+      :model-value="diffNodeId !== null"
+      :task-id="taskId"
+      :node-id="diffNodeId || ''"
+      :node-name="diffNodeId ? nodeName(diffNodeId) : ''"
+      @close="diffNodeId = null"
+    />
   </el-dialog>
 </template>
 
@@ -192,9 +258,10 @@ import { computed, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, type SnapshotMeta } from '../api';
 import PipelineTrack from './PipelineTrack.vue';
-import CollabGraph from './CollabGraph.vue';
 import ChatStream from './ChatStream.vue';
 import InterventionBar from './InterventionBar.vue';
+import DiffDialog from './DiffDialog.vue';
+import { describeEvent, statusText, taskStage, type EventView } from '../utils/events';
 
 const props = defineProps<{ modelValue: boolean; taskId: string; liveAgents?: Record<string, { model?: string; currentAction?: string }> }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -204,11 +271,13 @@ const events = ref<TaskEvent[]>([]);
 const selectedNodeId = ref('');
 const selectedAgent = ref('');
 const tab = ref('warroom');
+/** 作战室右栏检视器：成员会话 / 节点详情 */
+const wrView = ref<'chat' | 'node'>('chat');
 let pollTimer: number | undefined;
 
 // manage tab state (improvements 6/9/10/11)
 const progress = ref<ProgressInfo | null>(null);
-const modelOptions = ref<{ name: string; healthy: boolean }[]>([]);
+const modelOptions = ref<{ name: string; healthy: boolean; cost: number }[]>([]);
 const newModel = ref('');
 const changingModel = ref(false);
 const goal = ref<{ content: string }>({ content: '' });
@@ -217,10 +286,104 @@ const goalDraft = ref('');
 const savingGoal = ref(false);
 const snapshots = ref<SnapshotMeta[]>([]);
 const creatingSnap = ref(false);
+const diffNodeId = ref<string | null>(null);
 
 const selected = computed(() => task.value?.nodes.find((n) => n.id === selectedNodeId.value) || null);
 
-// ---------- agent reassignment (node-level routing override) ----------
+// ---------- 阶段横幅 ----------
+
+const STAGE_STEPS = ['需求澄清', '计划审核', '节点执行', '完成'];
+const stageStep = computed(() => (task.value ? taskStage(task.value.status).step : 0));
+const stageLabel = computed(() => (task.value ? taskStage(task.value.status).label : ''));
+const stageFailed = computed(() => task.value?.status === 'failed');
+const progressEta = computed(() => (progress.value?.eta_sec !== undefined ? Math.max(1, Math.ceil(progress.value.eta_sec / 60)) : null));
+
+// ---------- 成员 chips ----------
+
+const members = computed(() => {
+  const out: { name: string; running: boolean }[] = [];
+  for (const n of task.value?.nodes || []) {
+    if (n.agent === 'orchestrator') continue;
+    let m = out.find((x) => x.name === n.agent);
+    if (!m) {
+      m = { name: n.agent, running: false };
+      out.push(m);
+    }
+    if (n.status === 'running' || n.status === 'retrying') m.running = true;
+  }
+  return out;
+});
+
+function pickMember(name: string) {
+  selectedAgent.value = name;
+  wrView.value = 'chat';
+}
+
+const nodeNames = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {};
+  for (const n of task.value?.nodes || []) map[n.id] = n.name;
+  return map;
+});
+function nodeName(id?: string): string {
+  return (id && nodeNames.value[id]) || '';
+}
+
+// ---------- 消耗统计（Σ 节点 tokens，按模型池单价估算成本） ----------
+
+const taskTokens = computed(() => (task.value?.nodes || []).reduce((sum, n) => sum + (n.result?.tokens || 0), 0));
+const taskCostEstimate = computed(() =>
+  (task.value?.nodes || []).reduce((sum, n) => {
+    const price = modelOptions.value.find((m) => m.name === n.result?.model)?.cost;
+    if (!price || !n.result?.tokens) return sum;
+    return sum + (n.result.tokens * price) / 1000;
+  }, 0)
+);
+function fmtTok(n: number): string {
+  return n >= 1000 ? (Math.round(n / 100) / 10) + 'k' : String(n);
+}
+
+// ---------- 事件归档筛选 ----------
+
+const archCategory = ref('');
+const archKeyword = ref('');
+const archShowNoisy = ref(false);
+const archLimit = ref(500);
+
+function describe(e: TaskEvent): EventView {
+  return describeEvent(e.type, e.payload);
+}
+
+const archiveFiltered = computed(() =>
+  events.value.filter((e) => {
+    const v = describe(e);
+    if (archCategory.value && v.category !== archCategory.value) return false;
+    if (!archShowNoisy.value && v.noisy) return false;
+    const kw = archKeyword.value.trim().toLowerCase();
+    if (kw) {
+      const hay = `${v.text} ${nodeName(e.payload.node_id)} ${e.payload.agent || ''}`.toLowerCase();
+      if (!hay.includes(kw)) return false;
+    }
+    return true;
+  })
+);
+const archiveShown = computed(() => archiveFiltered.value.slice(0, archLimit.value));
+
+// ---------- 节点选择与联动 ----------
+
+function selectNodeId(id: string) {
+  selectedNodeId.value = id;
+  wrView.value = 'node';
+  const n = task.value?.nodes.find((x) => x.id === id);
+  if (n && n.agent !== 'orchestrator') selectedAgent.value = n.agent;
+}
+
+const nodeEvents = computed(() => events.value.filter((e) => e.payload?.node_id === selectedNodeId.value));
+const selectedLive = computed(() => (selectedAgent.value ? props.liveAgents?.[selectedAgent.value] || null : null));
+const branches = ref<{ name: string; commit: string }[]>([]);
+
+const agentsInTask = computed(() => [...new Set((task.value?.nodes || []).map((n) => n.agent).filter((a) => a !== 'orchestrator'))]);
+
+// ---------- agent reassignment ----------
 
 const agentOptions = ref<string[]>([]);
 
@@ -242,29 +405,16 @@ async function changeAgent(n: TaskNode, agent: string) {
     void refresh();
   }
 }
+
 const completedCount = computed(() => task.value?.nodes.filter((n) => n.status === 'completed').length || 0);
 const progressPct = computed(() => (task.value?.nodes.length ? Math.round((completedCount.value / task.value.nodes.length) * 100) : 0));
-const nodeEvents = computed(() => events.value.filter((e) => e.payload?.node_id === selectedNodeId.value));
-const selectedLive = computed(() => (selectedAgent.value ? props.liveAgents?.[selectedAgent.value] || null : null));
-const branches = ref<{ name: string; commit: string }[]>([]);
 
-const agentsInTask = computed(() => [...new Set((task.value?.nodes || []).map((n) => n.agent).filter((a) => a !== 'orchestrator'))]);
-
-function selectAgent(agent: string) { selectedAgent.value = agent; }
-function selectNodeId(id: string) {
-  selectedNodeId.value = id;
-  const n = task.value?.nodes.find((x) => x.id === id);
-  if (n && n.agent !== 'orchestrator') selectedAgent.value = n.agent;
-}
 function dur(n: TaskNode): string {
   if (!n.started_at) return '';
   const end = n.finished_at ? new Date(n.finished_at).getTime() : Date.now();
   return ' ' + Math.max(0, Math.round((end - new Date(n.started_at).getTime()) / 100) / 10) + 's';
 }
 function fmt(ts: string): string { return new Date(ts).toLocaleTimeString(); }
-function tlType(t: string) {
-  return t.includes('error') ? 'danger' : t.includes('complete') ? 'success' : t.includes('start') ? 'warning' : t.includes('approval') ? 'primary' : 'info';
-}
 
 function pickDefaultAgent() {
   if (!agentsInTask.value.length) return;
@@ -280,11 +430,16 @@ async function refresh() {
   events.value = ev.events;
 }
 
-async function refreshManage() {
+async function refreshProgress() {
   if (!props.modelValue) return;
   try {
     progress.value = await api.taskProgress(props.taskId);
   } catch { /* ignore */ }
+}
+
+async function refreshManage() {
+  if (!props.modelValue) return;
+  await refreshProgress();
   try {
     goal.value = await api.getTaskGoal(props.taskId);
   } catch { /* ignore */ }
@@ -297,7 +452,7 @@ async function loadModels() {
   try {
     const d = await api.getModelPool();
     const health = (d as any).health || {};
-    modelOptions.value = d.model_pool.map((m) => ({ name: m.name, healthy: health[m.name]?.healthy !== false }));
+    modelOptions.value = d.model_pool.map((m) => ({ name: m.name, healthy: health[m.name]?.healthy !== false, cost: m.cost_per_1k || 0 }));
   } catch { /* ignore */ }
 }
 
@@ -373,21 +528,29 @@ function fmtTime(ts: string): string {
 
 async function onOpen() {
   tab.value = 'warroom';
+  wrView.value = 'chat';
   selectedNodeId.value = '';
   newModel.value = '';
   goalEditing.value = false;
+  diffNodeId.value = null;
+  archCategory.value = '';
+  archKeyword.value = '';
+  archShowNoisy.value = false;
+  archLimit.value = 500;
   await refresh();
   await refreshManage();
   void loadModels();
   void loadAgentOptions();
-  const lg = await api.taskLogs(props.taskId);
   branches.value = (task.value?.nodes || [])
     .filter((n) => n.branch)
     .map((n) => ({ name: n.branch as string, commit: (n.result as any)?.git_commit?.commit?.slice(0, 8) || '' }));
   pickDefaultAgent();
   window.clearInterval(pollTimer);
   pollTimer = window.setInterval(() => {
-    if (task.value && ['running', 'pending', 'planned'].includes(task.value.status)) void refresh();
+    if (task.value && ['running', 'pending', 'planned', 'retrying', 'waiting_approval'].includes(task.value.status)) {
+      void refresh();
+      void refreshProgress();
+    }
   }, 3000);
 }
 
@@ -403,32 +566,75 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .meta-sub { font-size: 11px; color: var(--ct-text3); }
 .progress { flex: 0 0 160px; height: 6px; background: var(--ct-panel2); border-radius: 3px; overflow: hidden; }
 .progress-fill { height: 100%; background: var(--ct-accent); transition: width 0.5s; }
-.warroom { display: grid; grid-template-columns: 480px 1fr; gap: 16px; align-items: start; }
-.wr-left, .wr-right { max-height: calc(88vh - 200px); overflow-y: auto; }
-.wr-left { padding-right: 12px; }
+
+/* ---- 阶段横幅 ---- */
+.stage-banner { display: flex; gap: 24px; align-items: flex-start; padding: 12px 14px; background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 8px; margin-bottom: 12px; }
+.st-steps { display: flex; align-items: center; gap: 0; flex-shrink: 0; padding-top: 2px; }
+.st-step { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 64px; }
+.st-dot { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; background: var(--ct-panel); border: 1px solid var(--ct-border2); color: var(--ct-text3); }
+.st-label { font-size: 11px; color: var(--ct-text3); white-space: nowrap; }
+.st-step.done .st-dot { background: var(--ct-green); border-color: var(--ct-green); color: #fff; }
+.st-step.done .st-label { color: var(--ct-text2); }
+.st-step.active .st-dot { background: var(--ct-accent); border-color: var(--ct-accent); color: #fff; font-weight: 700; }
+.st-step.active .st-label { color: var(--ct-text); font-weight: 600; }
+.st-step.failed .st-dot { background: var(--ct-red); border-color: var(--ct-red); color: #fff; }
+.st-link { width: 22px; height: 1px; background: var(--ct-border2); margin: 0 2px 16px; }
+.st-link.passed { background: var(--ct-green); }
+.st-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.st-text { display: flex; gap: 12px; align-items: baseline; font-size: 11px; color: var(--ct-text2); flex-wrap: wrap; }
+.st-state { font-weight: 700; font-size: 12px; }
+.st-state.running, .st-state.retrying { color: var(--ct-yellow); }
+.st-state.completed, .st-state.success { color: var(--ct-green); }
+.st-state.failed { color: var(--ct-red); }
+.st-state.waiting_approval { color: var(--ct-accent); }
+.st-progress { height: 5px; background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 3px; overflow: hidden; }
+.st-progress .fill { height: 100%; background: var(--ct-accent); transition: width 0.5s; }
+.st-current { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.st-current-label { font-size: 11px; color: var(--ct-text3); }
+
+/* ---- 作战室布局 ---- */
+.warroom { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
+.wr-left, .wr-right { max-height: calc(88vh - 300px); }
+.wr-left { overflow-y: auto; padding-right: 12px; }
 .wr-hint { font-size: 10px; color: var(--ct-text3); margin-top: 6px; }
 .wr-right { display: flex; flex-direction: column; min-width: 0; }
+.member-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.m-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ct-text2); background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 12px; padding: 3px 10px; cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+.m-chip:hover { border-color: var(--ct-border2); color: var(--ct-text); }
+.m-chip.active { color: var(--ct-text); border-color: var(--ct-accent); background: var(--ct-panel2); }
+.m-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-text3); }
+.m-dot.on { background: var(--ct-yellow); animation: member-pulse 1.6s ease-in-out infinite; }
+@keyframes member-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(154, 108, 10, 0.35); }
+  50% { box-shadow: 0 0 0 4px rgba(154, 108, 10, 0.08); }
+}
+.wr-switch { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.sw-btn { font-size: 11px; color: var(--ct-text2); background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 4px; padding: 4px 12px; cursor: pointer; }
+.sw-btn.active { color: #fff; background: var(--ct-accent); border-color: var(--ct-accent); }
+.sw-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.sw-cur { font-size: 11px; color: var(--ct-text3); margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--ct-panel2); border-radius: 6px; margin-bottom: 8px; font-size: 11px; flex-wrap: wrap; }
 .live-agent { font-weight: 700; color: var(--ct-text); }
 .live-model { color: var(--ct-accent); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 6px; }
 .live-action { color: var(--ct-yellow); }
-.live-chat { max-height: calc(88vh - 340px); overflow-y: auto; display: flex; flex-direction: column; }
-.body-grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
-.left { border-right: 1px solid var(--ct-border); padding-right: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
-.right { min-width: 0; max-height: calc(88vh - 200px); overflow-y: auto; }
-.branches { margin-top: 14px; }
-.sub-title { font-size: 10px; color: var(--ct-text3); text-transform: uppercase; letter-spacing: 0.6px; margin: 12px 0 6px; }
-.branch-row { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; color: var(--ct-text2); }
-.b-commit { color: var(--ct-text3); }
-.node-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.live-chat { max-height: calc(88vh - 380px); overflow-y: auto; display: flex; flex-direction: column; }
+.node-view { max-height: calc(88vh - 340px); overflow-y: auto; min-width: 0; }
+
+/* ---- 节点详情 ---- */
+.node-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .agent-swap { width: 110px; margin-left: auto; }
-.stamp { font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 1px 5px; border: 1px solid currentColor; border-radius: 2px; transform: rotate(-3deg); }
-.stamp.completed { color: var(--ct-green); }
-.stamp.failed { color: var(--ct-red); }
-.stamp.running, .stamp.retrying { color: var(--ct-yellow); }
-.stamp.waiting_approval { color: var(--ct-accent); }
+.n-status { font-size: 11px; font-weight: 600; flex-shrink: 0; }
+.n-status.completed { color: var(--ct-green); }
+.n-status.failed { color: var(--ct-red); }
+.n-status.running, .n-status.retrying { color: var(--ct-yellow); }
+.n-status.waiting_approval { color: var(--ct-accent); }
+.n-status.pending, .n-status.planned, .n-status.cancelled, .n-status.queued { color: var(--ct-text3); }
 .n-name { color: var(--ct-text); font-weight: 600; }
 .n-meta { color: var(--ct-text3); font-size: 11px; }
+.n-obs { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 4px; padding: 4px 10px; margin-bottom: 8px; }
+.diff-btn { margin-left: auto; }
+.mini-label { display: inline-block; font-size: 10px; color: var(--ct-text3); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 5px; margin-right: 8px; vertical-align: 1px; }
+.mini-label.green { color: var(--ct-green); border-color: var(--ct-green); }
 .reason { font-size: 12px; color: var(--ct-text2); font-style: italic; margin-bottom: 6px; }
 .error { color: var(--ct-red); font-size: 12px; margin-bottom: 6px; }
 .summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 8px; white-space: pre-wrap; }
@@ -438,11 +644,38 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .r-line { font-size: 12px; color: var(--ct-text2); margin-bottom: 4px; }
 .r-fail { font-size: 11px; color: var(--ct-red); }
 .changes .change { font-size: 11px; color: var(--ct-text2); padding: 1px 0; }
-.tl-err { color: var(--ct-red); font-size: 11px; }
-.tl-type { color: var(--ct-text2); font-size: 11px; }
-.tl-node { color: var(--ct-text3); font-size: 11px; }
-.tl-sum { color: var(--ct-text3); font-size: 11px; }
+
+/* ---- 时间线 / 事件行 ---- */
+.sub-title { font-size: 10px; color: var(--ct-text3); text-transform: uppercase; letter-spacing: 0.6px; margin: 12px 0 6px; }
+.branches { margin-top: 14px; }
+.branch-row { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; color: var(--ct-text2); }
+.b-commit { color: var(--ct-text3); }
+.tl { display: flex; flex-direction: column; }
+.tl-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--ct-border); font-size: 12px; }
+.tl-row:last-child { border-bottom: none; }
+.tl-time { color: var(--ct-text3); font-size: 10px; flex-shrink: 0; width: 62px; }
+.tl-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; align-self: center; background: var(--ct-text3); }
+.tl-dot.success { background: var(--ct-green); }
+.tl-dot.warn { background: var(--ct-yellow); }
+.tl-dot.error { background: var(--ct-red); }
+.tl-dot.accent { background: var(--ct-accent); }
+.tl-dot.info { background: var(--ct-border2); }
+.tl-text { color: var(--ct-text2); min-width: 0; }
+.tl-text.success { color: var(--ct-green); }
+.tl-text.warn { color: var(--ct-text); }
+.tl-text.error { color: var(--ct-red); }
+.tl-text.accent { color: var(--ct-text); font-weight: 500; }
+.tl-chip { font-size: 10px; color: var(--ct-text3); border: 1px solid var(--ct-border); border-radius: 3px; padding: 0 5px; flex-shrink: 0; }
+.tl-empty { color: var(--ct-text3); font-size: 12px; padding: 8px 0; }
+
+/* ---- 事件归档 ---- */
+.arch { display: flex; flex-direction: column; gap: 10px; }
+.arch-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.arch-count { font-size: 11px; color: var(--ct-text3); margin-left: auto; }
+.arch-list { max-height: calc(88vh - 260px); overflow-y: auto; }
+.arch-more { display: flex; justify-content: center; padding: 10px 0; }
 .empty { color: var(--ct-text3); text-align: center; padding: 40px 0; }
+
 /* manage tab */
 .manage { display: flex; flex-direction: column; gap: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
 .mg-card { border: 1px solid var(--ct-border); border-radius: 8px; padding: 12px 14px; }

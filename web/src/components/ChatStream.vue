@@ -29,6 +29,7 @@
           <div class="bubble them-b">
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
+          <div v-if="item.entry.model" class="b-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></div>
         </div>
         <AgentAvatar name="orchestrator" :size="36" class="av" />
       </div>
@@ -65,6 +66,7 @@
           </div>
           <div v-else class="bubble them-b">
             <div class="b-text md" v-html="md(item.entry.text)"></div>
+            <div v-if="item.entry.meta?.verification" class="b-verify mono">验证 · {{ item.entry.meta.verification }}</div>
             <div v-if="(item.entry.meta?.changes || []).length" class="chips mono">
               <span v-for="c in (item.entry.meta?.changes || []).slice(0, 6)" :key="c" class="chip">✓ {{ c }}</span>
             </div>
@@ -74,6 +76,7 @@
 commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
             </details>
           </div>
+          <div v-if="item.entry.model" class="b-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></div>
         </div>
         <AgentAvatar :name="item.agent" :size="36" class="av" />
       </div>
@@ -105,6 +108,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
               <pre class="pre mono">{{ item.entry.meta.raw }}</pre>
             </details>
           </div>
+          <div v-if="item.entry.model" class="b-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></div>
         </div>
         <AgentAvatar :name="item.agent" :size="36" class="av err" />
       </div>
@@ -379,6 +383,10 @@ html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575;
 
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .chip { font-size: 10px; color: var(--ct-green); border: 1px solid var(--ct-border); border-radius: 3px; padding: 1px 5px; background: var(--ct-bg); }
+/* 消息级模型与消耗标注 */
+.b-meta { font-size: 10px; color: var(--ct-text3); margin: 2px 2px 0; }
+/* 汇报内的验证行 */
+.b-verify { margin-top: 6px; font-size: 11px; color: var(--ct-green); background: var(--ct-panel2); border-left: 3px solid var(--ct-green); border-radius: 4px; padding: 4px 8px; }
 .attach { margin-top: 6px; }
 .attach summary { cursor: pointer; font-size: 10px; color: var(--ct-text3); }
 .attach .pre { max-height: 180px; overflow: auto; background: var(--ct-bg); border-radius: 4px; padding: 6px; margin-top: 4px; font-size: 10px; white-space: pre-wrap; }

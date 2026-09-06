@@ -447,7 +447,8 @@ export function createApi(ctx: ApiContext): Hono {
             tags: p.tags,
             version: p.version,
             timeout: p.timeout,
-            memory: (await getAgentMemory(p.name, 8).catch(() => [])) || [],
+            // 上限 50 与 store.addAgentMemory 的 maxItems 对齐，前端据此展示真实经验条数
+            memory: (await getAgentMemory(p.name, 50).catch(() => [])) || [],
             profile: profiles[p.name] || { name: p.name, tasks: [], stats: { total: 0, success: 0, failed: 0, tokens: 0 } },
           },
         ])
@@ -500,6 +501,45 @@ export function createApi(ctx: ApiContext): Hono {
     }
     await persistGraph(graph);
     return c.json({ status: 'updated', graph });
+  });
+
+  // 人工补差：计划审核阶段在指定节点后插入节点
+  app.post('/api/tasks/:taskId/nodes', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await c.req.json<{ name?: string; agent?: string; after_node_id?: string }>();
+    if (!body.name?.trim() || !body.agent || !body.after_node_id) {
+      throw new HttpError(400, 'name / agent / after_node_id 均必填');
+    }
+    try {
+      const node = await ctx.orchestrator.addNode(taskId, {
+        name: body.name.trim(),
+        agent: body.agent,
+        afterNodeId: body.after_node_id,
+      });
+      const graph = await getTaskGraph(taskId);
+      return c.json({ status: 'added', node, graph });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  // 节点代码变更：分支工作流下节点完成时已固化 diff 到 KV，随时可查
+  app.get('/api/tasks/:taskId/nodes/:nodeId/diff', async (c) => {
+    const { getNodeDiff } = await import('../store');
+    const taskId = c.req.param('taskId');
+    const nodeId = c.req.param('nodeId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node) throw new HttpError(404, 'node not found');
+    if (!node.branch) {
+      return c.json({ node_id: nodeId, branch: '', available: false, reason: '该节点未启用分支工作流，无独立代码变更', patch: '', files: [] });
+    }
+    const diff = await getNodeDiff(taskId, nodeId);
+    if (!diff) {
+      return c.json({ node_id: nodeId, branch: node.branch, available: false, reason: node.status === 'completed' ? '变更记录缺失（旧任务或未产生提交）' : '节点尚未产生提交', patch: '', files: [] });
+    }
+    return c.json({ node_id: nodeId, branch: node.branch, available: true, patch: diff.patch, files: diff.files });
   });
 
   app.get('/api/system/roadmap', async (c) => {

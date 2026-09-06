@@ -3,11 +3,12 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showDialog, showToast } from 'vant';
 import { api } from '../api';
-import type { TaskGraph, EventEnvelope } from '../api';
+import type { TaskGraph, EventEnvelope, NodeDiffResponse } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import ChatStream from '../components/ChatStream.vue';
 import InterventionInput from '../components/InterventionInput.vue';
 import AgentAvatar from '../components/AgentAvatar.vue';
+import { describeEvent, statusText, taskStage, type EventView } from '../utils/events';
 
 const route = useRoute();
 const router = useRouter();
@@ -40,12 +41,82 @@ const progressPct = computed(() => {
   return Math.round((done / t.nodes.length) * 100);
 });
 
+// 阶段横幅（回答"现在到哪一步了"）
+const stageLabel = computed(() => (task.value ? taskStage(task.value.status).label : ''));
+const stageFailed = computed(() => task.value?.status === 'failed');
+
+// 任务消耗（Σ 节点 tokens）
+const taskTokens = computed(() => (task.value?.nodes || []).reduce((sum, n) => sum + (n.result?.tokens || 0), 0));
+function fmtTok(n: number): string {
+  return n >= 1000 ? (Math.round(n / 100) / 10) + 'k' : String(n);
+}
+
 /** members participating in this task (for the avatar filter strip) */
 const members = computed(() => {
   const t = task.value;
   if (!t) return [] as string[];
   return [...new Set(t.nodes.map((n) => n.agent))];
 });
+
+const nodeNames = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {};
+  for (const n of task.value?.nodes || []) map[n.id] = n.name;
+  return map;
+});
+function nodeName(id?: string): string {
+  return (id && nodeNames.value[id]) || '';
+}
+
+function eventView(e: EventEnvelope): EventView {
+  return describeEvent(e.type, e.payload || {});
+}
+
+// 事件 tab：默认隐藏高频心跳（轮次完成/进度广播/聊天流水）
+const showAllEvents = ref(false);
+const visibleEvents = computed(() =>
+  showAllEvents.value ? events.value : events.value.filter((e) => !eventView(e).noisy)
+);
+
+// 节点展开内的时间线
+function nodeEventsOf(nodeId: string): EventEnvelope[] {
+  return events.value.filter((e) => e.payload?.node_id === nodeId);
+}
+
+// ---------- 节点代码变更（diff） ----------
+
+const diffNode = ref<{ id: string; name: string } | null>(null);
+const diffData = ref<NodeDiffResponse | null>(null);
+const diffLoading = ref(false);
+const diffOpen = computed({
+  get: () => diffNode.value !== null,
+  set: (v: boolean) => { if (!v) { diffNode.value = null; diffData.value = null; } },
+});
+
+function openDiff(n: { id: string; name: string }) {
+  diffNode.value = { id: n.id, name: n.name };
+  void loadDiff(n.id);
+}
+
+async function loadDiff(nodeId: string) {
+  diffLoading.value = true;
+  diffData.value = null;
+  try {
+    diffData.value = await api.nodeDiff(taskId.value, nodeId);
+  } catch (e: any) {
+    diffData.value = { node_id: nodeId, branch: '', available: false, reason: e.message || '加载失败', patch: '', files: [] };
+  } finally {
+    diffLoading.value = false;
+  }
+}
+
+function diffLineClass(line: string): string {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  if (line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
+  return '';
+}
 
 const RUNNING_STATES = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'];
 const isRunning = computed(() => RUNNING_STATES.includes(task.value?.status || ''));
@@ -190,14 +261,6 @@ function fmtTime(ts: string) {
 function nodeIcon(status: string): string {
   return ({ completed: 'checked', failed: 'close', running: 'clock-o', retrying: 'replay', waiting_approval: 'edit', cancelled: 'cross' } as Record<string, string>)[status] || 'arrow';
 }
-
-const STATUS_TEXT: Record<string, string> = {
-  running: '执行中', pending: '待执行', queued: '排队中', planned: '待确认', retrying: '重试中',
-  waiting_approval: '待审批', success: '已完成', completed: '已完成', failed: '失败', cancelled: '已取消', clarifying: '澄清中',
-};
-function statusText(s?: string): string {
-  return STATUS_TEXT[s || ''] || s || '';
-}
 </script>
 
 <template>
@@ -226,6 +289,12 @@ function statusText(s?: string): string {
         <!-- 作战室：微信聊天页 -->
         <van-tab title="聊天" name="warroom">
           <div class="warroom">
+            <!-- 阶段条：现在到哪一步 -->
+            <div class="stage-strip">
+              <span class="ss-state" :class="task.status">{{ stageLabel }}</span>
+              <span class="ss-count mono">{{ progressPct }}% · {{ task.nodes.filter((n) => n.status === 'completed').length }}/{{ task.nodes.length }} 节点<template v-if="taskTokens"> · {{ fmtTok(taskTokens) }} tok</template></span>
+              <div class="ss-bar"><div class="ss-fill" :class="{ failed: stageFailed }" :style="{ width: progressPct + '%' }"></div></div>
+            </div>
             <div class="member-strip">
               <div
                 v-for="m in members"
@@ -291,13 +360,18 @@ function statusText(s?: string): string {
                 <van-icon v-else name="arrow" size="14" color="#b2b2b2" />
 
                 <div v-if="selectedNodeId === n.id" class="n-detail">
+                  <div class="n-obs mono">
+                    <span>{{ n.result?.model || '模型未记录' }}</span>
+                    <span v-if="n.result?.tokens"> · {{ fmtTok(n.result.tokens) }} tok</span>
+                    <button v-if="n.branch" class="n-diff-btn" @click.stop="openDiff({ id: n.id, name: n.name })">查看代码变更</button>
+                  </div>
                   <div v-if="n.status !== 'completed' && agentOptions.length" class="n-swap" @click.stop="openAgentSwap(n)">
                     <span class="n-swap-label">当前 Agent: <b class="mono">{{ n.agent }}</b></span>
                     <van-button size="mini" plain type="primary">更换 Agent</van-button>
                   </div>
                   <div v-if="n.error" class="n-error">✗ {{ n.error }}</div>
                   <div v-if="n.result?.summary" class="n-summary">{{ n.result.summary }}</div>
-                <div v-if="n.result?.verification" class="n-verify">🛡 {{ n.result.verification }}</div>
+                  <div v-if="n.result?.verification" class="n-verify">验证 · {{ n.result.verification }}</div>
                   <div v-if="(n.result?.changes || []).length" class="n-changes">
                     <div v-for="c in n.result!.changes!.slice(0, 8)" :key="c" class="change">✓ {{ c }}</div>
                   </div>
@@ -306,6 +380,14 @@ function statusText(s?: string): string {
                     <div class="r-line">{{ n.result.report.summary || '' }}</div>
                     <div v-for="(f, i) in (n.result.report.failures || []).slice(0, 5)" :key="i" class="r-fail">✗ {{ f.name }}: {{ (f.message || '').slice(0, 100) }}</div>
                   </div>
+                  <div v-if="nodeEventsOf(n.id).length" class="n-timeline">
+                    <div class="nt-title">时间线</div>
+                    <div v-for="(e, i) in nodeEventsOf(n.id)" :key="i" class="nt-row">
+                      <span class="nt-time mono">{{ fmtTime(e.ts || '') }}</span>
+                      <span class="nt-dot" :class="eventView(e).level"></span>
+                      <span class="nt-text" :class="eventView(e).level">{{ eventView(e).text }}</span>
+                    </div>
+                  </div>
                   <ChatStream :task-id="taskId" :filter-node-id="n.id" class="node-chat" />
                 </div>
               </div>
@@ -313,21 +395,29 @@ function statusText(s?: string): string {
           </div>
         </van-tab>
 
-        <!-- 事件：微信分组时间线 -->
+        <!-- 事件：中文化时间线，默认隐藏高频心跳 -->
         <van-tab title="事件" name="events">
           <div class="events">
+            <div class="ev-toolbar">
+              <span class="ev-count mono">显示 {{ visibleEvents.length }} / {{ events.length }} 条</span>
+              <span class="ev-toggle" @click="showAllEvents = !showAllEvents">
+                <span class="ev-toggle-dot" :class="{ on: showAllEvents }"></span>{{ showAllEvents ? '显示全部' : '仅关键事件' }}
+              </span>
+            </div>
             <div class="wx-group">
-              <div v-for="(e, i) in events" :key="i" class="wx-cell event-row">
-                <span class="e-time">{{ fmtTime(e.ts || '') }}</span>
-                <span class="e-type" :class="{ danger: String(e.type).includes('error') || String(e.type).includes('failed') }">{{ e.type }}</span>
+              <div v-for="(e, i) in visibleEvents" :key="i" class="wx-cell event-row">
+                <span class="e-time mono">{{ fmtTime(e.ts || '') }}</span>
+                <span class="e-dot" :class="eventView(e).level"></span>
                 <div class="e-body">
-                  <span v-if="e.payload?.node_id" class="e-node">#{{ e.payload.node_id }}</span>
-                  <span v-if="e.payload?.summary" class="e-sum">{{ e.payload.summary }}</span>
-                  <span v-if="e.payload?.error" class="e-err">{{ e.payload.error }}</span>
+                  <span class="e-text" :class="eventView(e).level">{{ eventView(e).text }}</span>
+                  <div class="e-chips">
+                    <span v-if="nodeName(e.payload?.node_id)" class="e-node">{{ nodeName(e.payload?.node_id) }}</span>
+                    <span v-if="e.payload?.agent" class="e-agent mono">{{ e.payload.agent }}</span>
+                  </div>
                 </div>
               </div>
             </div>
-            <div v-if="!events.length" class="empty">
+            <div v-if="!visibleEvents.length" class="empty">
               <van-icon name="clock-o" size="56" color="#b2b2b2" />
               <div class="empty-text">暂无事件</div>
             </div>
@@ -351,22 +441,41 @@ function statusText(s?: string): string {
     </div>
     <van-loading v-else class="loading" vertical>加载中…</van-loading>
 
-    <!-- 换 Agent：节点转交其他成员 -->
-    <van-action-sheet
-      v-model:show="swapVisible"
-      :actions="swapActions"
-      cancel-text="取消"
-      title="交给哪位成员"
-      @select="onSwapSelect"
-    />
-    <!-- 更换 Agent 选择器 -->
+    <!-- 换 Agent：节点转交其他成员（此前重复绑定了两个 sheet，第二个无 @select 导致选中无效） -->
     <van-action-sheet
       v-model:show="swapVisible"
       :actions="swapActions"
       cancel-text="取消"
       close-on-click-action
-      description="选择接手该节点的 Agent"
+      title="交给哪位成员"
+      @select="onSwapSelect"
     />
+    <!-- 节点代码变更阅读器 -->
+    <van-popup v-model:show="diffOpen" position="bottom" :style="{ height: '80%' }" round>
+      <div class="dl-viewer">
+        <div class="dl-head">
+          <span class="dl-title">代码变更 · {{ diffNode?.name }}</span>
+          <van-icon name="cross" size="18" @click="diffOpen = false" />
+        </div>
+        <div class="dl-body">
+          <div v-if="diffLoading" class="dl-state mono">加载 diff…</div>
+          <template v-else-if="diffData">
+            <div v-if="!diffData.available" class="dl-state mono">{{ diffData.reason || '暂无代码变更' }}</div>
+            <template v-else>
+              <div class="dl-files mono">
+                <div v-for="f in diffData.files" :key="f.path" class="dl-file">
+                  <span class="df-path">{{ f.path }}</span>
+                  <span class="df-ins">+{{ f.insertions }}</span>
+                  <span class="df-del">−{{ f.deletions }}</span>
+                </div>
+              </div>
+              <pre class="dl-patch mono"><code><span v-for="(line, i) in (diffData.patch || '').split('\n')" :key="i" class="pl" :class="diffLineClass(line)">{{ line === '' ? ' ' : line }}
+</span></code></pre>
+            </template>
+          </template>
+        </div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -412,6 +521,17 @@ function statusText(s?: string): string {
 
 /* warroom = WeChat chat page */
 .warroom { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
+/* 阶段条 */
+.stage-strip { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: rgba(17, 26, 40, 0.92); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.ss-state { font-size: 13px; font-weight: 600; color: var(--text-2); flex-shrink: 0; }
+.ss-state.running, .ss-state.retrying { color: var(--wx-orange); }
+.ss-state.completed, .ss-state.success { color: var(--green); }
+.ss-state.failed { color: var(--red); }
+.ss-state.waiting_approval { color: var(--accent); }
+.ss-count { font-size: 11px; color: var(--text-3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.ss-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
+.ss-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, #22d3ee, #0369a1); transition: width 0.5s ease; }
+.ss-fill.failed { background: var(--red); }
 .member-strip {
   display: flex; gap: 18px; overflow-x: auto;
   padding: 12px 16px;
@@ -458,6 +578,9 @@ function statusText(s?: string): string {
 .n-retry { color: var(--wx-orange); }
 
 .n-detail { flex-basis: 100%; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 12px; animation: wx-pop-in 0.2s ease; }
+.n-obs { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); background: var(--panel-2); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }
+.n-diff-btn { margin-left: auto; border: none; background: transparent; color: var(--wx-blue); font-size: 12px; font-weight: 600; padding: 2px 4px; }
+.n-diff-btn:active { opacity: 0.6; }
 .n-swap { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
 .n-swap-label { font-size: 12px; color: var(--text-2); }
 .n-error { color: var(--red); font-size: 14px; margin-bottom: 8px; white-space: pre-wrap; line-height: 1.5; }
@@ -472,16 +595,63 @@ function statusText(s?: string): string {
   margin-top: 8px; overflow: hidden; display: flex; flex-direction: column;
 }
 
-/* events = WeChat grouped timeline */
+/* 节点内时间线 */
+.n-timeline { margin: 8px 0; border-top: 1px dashed var(--border); padding-top: 8px; }
+.nt-title { font-size: 12px; font-weight: 600; color: var(--text-3); margin-bottom: 5px; }
+.nt-row { display: flex; align-items: baseline; gap: 7px; padding: 3px 0; font-size: 12.5px; }
+.nt-time { font-size: 10.5px; color: var(--text-3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.nt-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; align-self: center; background: var(--text-3); }
+.nt-dot.success { background: var(--green); }
+.nt-dot.warn { background: var(--wx-orange); }
+.nt-dot.error { background: var(--red); }
+.nt-dot.accent { background: var(--accent); }
+.nt-text { color: var(--text-2); min-width: 0; }
+.nt-text.success { color: var(--green); }
+.nt-text.error { color: var(--red); }
+
+/* events = 中文化事件流 */
 .events { padding: 10px 0 16px; height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.ev-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 2px 16px 8px; }
+.ev-count { font-size: 11px; color: var(--text-3); }
+.ev-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.ev-toggle-dot { width: 26px; height: 15px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); position: relative; }
+.ev-toggle-dot::after { content: ''; position: absolute; top: 1px; left: 1px; width: 11px; height: 11px; border-radius: 50%; background: var(--text-3); transition: transform 0.15s; }
+.ev-toggle-dot.on { background: rgba(7, 193, 96, 0.25); border-color: var(--green); }
+.ev-toggle-dot.on::after { transform: translateX(11px); background: var(--green); }
 .event-row { flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 11px 16px; }
-.e-time { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.e-type { font-size: 13.5px; color: var(--text); font-weight: 500; }
-.e-type.danger { color: var(--red); }
-.e-body { flex-basis: 100%; }
-.e-node { font-size: 12px; color: var(--wx-blue); margin-right: 8px; }
-.e-sum { font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
-.e-err { font-size: 12.5px; color: var(--red); line-height: 1.5; }
+.e-time { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.e-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; align-self: center; background: var(--text-3); }
+.e-dot.success { background: var(--green); }
+.e-dot.warn { background: var(--wx-orange); }
+.e-dot.error { background: var(--red); }
+.e-dot.accent { background: var(--accent); }
+.e-body { flex-basis: 100%; display: flex; flex-direction: column; gap: 3px; }
+.e-text { font-size: 13.5px; color: var(--text-2); line-height: 1.5; }
+.e-text.success { color: var(--green); }
+.e-text.error { color: var(--red); }
+.e-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.e-node { font-size: 11px; color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); border: 1px solid rgba(76, 194, 255, 0.2); border-radius: 4px; padding: 0 6px; }
+.e-agent { font-size: 11px; color: var(--text-3); border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; }
+
+/* diff 阅读器 */
+.dl-viewer { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
+.dl-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.dl-title { font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 14px; }
+.dl-state { text-align: center; color: var(--text-3); font-size: 13px; padding: 40px 0; }
+.dl-files { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.dl-file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+.dl-file:last-child { border-bottom: none; }
+.df-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.df-ins { color: var(--green); }
+.df-del { color: var(--red); }
+.dl-patch { margin: 0; background: rgba(5, 10, 16, 0.75); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11px; line-height: 1.5; overflow-x: auto; }
+.dl-patch code { display: block; font-family: inherit; }
+.pl { display: block; white-space: pre-wrap; word-break: break-all; color: var(--text-2); }
+.pl.add { background: rgba(7, 193, 96, 0.12); color: var(--green); }
+.pl.del { background: rgba(250, 81, 81, 0.10); color: var(--red); }
+.pl.hunk { color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); }
+.pl.meta { color: var(--text-3); }
 
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0; }
 .empty-text { font-size: 13px; color: var(--text-3); }

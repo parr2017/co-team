@@ -1,14 +1,30 @@
 <template>
   <div class="section">
-    <div class="section-title">运行指标</div>
-    <div class="metrics-summary" v-if="metrics">
-      <div class="metric-row"><span>任务总数</span><b>{{ metrics.tasks.total }}</b></div>
-      <div class="metric-row"><span>成功率</span><b>{{ Math.round(metrics.tasks.success_rate * 100) }}%</b></div>
-      <div class="metric-row"><span>Token 总消耗</span><b>{{ metrics.tokens_total.toLocaleString() }}</b></div>
-      <div class="metric-row"><span>总成本</span><b>${{ metrics.cost_total.toFixed(4) }}</b></div>
+    <div class="section-head">
+      <div class="section-title">运行指标</div>
     </div>
-    <div ref="agentChartEl" class="chart"></div>
-    <div ref="costChartEl" class="chart"></div>
+    <div class="metrics-band" v-if="metrics">
+      <div class="metric-box">
+        <div class="m-num">{{ metrics.tasks.total }}</div>
+        <div class="m-label">任务总数</div>
+      </div>
+      <div class="metric-box">
+        <div class="m-num">{{ Math.round(metrics.tasks.success_rate * 100) }}<i>%</i></div>
+        <div class="m-label">成功率</div>
+      </div>
+      <div class="metric-box">
+        <div class="m-num">{{ metrics.tokens_total.toLocaleString() }}</div>
+        <div class="m-label">Token 消耗</div>
+      </div>
+      <div class="metric-box">
+        <div class="m-num">${{ metrics.cost_total.toFixed(4) }}</div>
+        <div class="m-label">总成本</div>
+      </div>
+    </div>
+    <div class="charts-row">
+      <div ref="agentChartEl" class="chart"></div>
+      <div ref="costChartEl" class="chart"></div>
+    </div>
   </div>
 </template>
 
@@ -105,8 +121,15 @@ defineExpose({ refresh });
 </script>
 
 <style scoped>
-.metrics-summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 10px; }
-.metric-row { display: flex; justify-content: space-between; padding: 2px 0; }
-.metric-row b { color: var(--ct-text); }
-.chart { height: 160px; margin-top: 6px; }
+.metrics-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.metric-box { background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 6px; padding: 12px 14px; }
+.m-num { font-size: 20px; font-weight: 700; color: var(--ct-text); line-height: 1.2; }
+.m-num i { font-style: normal; font-size: 13px; color: var(--ct-text3); }
+.m-label { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
+.charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.chart { height: 170px; min-width: 0; }
+.section-head { margin-bottom: 10px; }
+@media (max-width: 900px) {
+  .charts-row { grid-template-columns: 1fr; }
+}
 </style>

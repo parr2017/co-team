@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { commitOnBranch, createNodeBranch, ensureBase, mergeAllNodes } from '../src/git';
+import { commitOnBranch, createNodeBranch, ensureBase, mergeAllNodes, nodeDiff } from '../src/git';
 import { MemoryBus } from '../src/bus';
 import { emitProgress, getTaskEvents } from '../src/store';
 
@@ -51,6 +51,38 @@ describe('branch workflow (git.ts)', () => {
     // first merge succeeds; second conflicts on same.txt
     expect(result.merged).toContain('coteam/a');
     expect(result.conflicts).toContain('coteam/b');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('nodeDiff returns only the node own changes relative to its fork point', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-git-'));
+    await ensureBase(tmp);
+    fs.writeFileSync(path.join(tmp, 'base.txt'), 'baseline');
+    await commitOnBranch(tmp, 'baseline', ['base.txt']);
+
+    // n1 branches off base and adds a.txt
+    await createNodeBranch(tmp, 'coteam/n1-dev', 'coteam/base');
+    fs.writeFileSync(path.join(tmp, 'a.txt'), 'from dev\nline2');
+    await commitOnBranch(tmp, 'dev work', ['a.txt']);
+
+    // n2 branches off n1 (chained dependency) and adds b.txt
+    await createNodeBranch(tmp, 'coteam/n2-test', 'coteam/n1-dev');
+    fs.writeFileSync(path.join(tmp, 'b.txt'), 'from test');
+    await commitOnBranch(tmp, 'test work', ['b.txt']);
+
+    const d1 = await nodeDiff(tmp, 'coteam/n1-dev', 'coteam/base');
+    expect(d1).not.toBeNull();
+    expect(d1!.files.map((f) => f.path)).toEqual(['a.txt']);
+    expect(d1!.patch).toContain('+from dev');
+
+    const d2 = await nodeDiff(tmp, 'coteam/n2-test', 'coteam/n1-dev');
+    expect(d2).not.toBeNull();
+    // merge-base 切出点保证只含本节点变更，不含父分支的 a.txt
+    expect(d2!.files.map((f) => f.path)).toEqual(['b.txt']);
+    expect(d2!.files[0].insertions).toBe(1);
+
+    // 分支不存在 → null
+    expect(await nodeDiff(tmp, 'coteam/ghost', 'coteam/base')).toBeNull();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

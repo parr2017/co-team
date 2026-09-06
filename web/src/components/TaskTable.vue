@@ -36,6 +36,13 @@
       </template>
     </el-table-column>
 
+    <el-table-column label="Token" width="90">
+      <template #default="{ row }">
+        <span v-if="row.tokens" class="mono t-tok">{{ fmtTok(row.tokens) }}</span>
+        <span v-else class="t-dim mono">—</span>
+      </template>
+    </el-table-column>
+
     <el-table-column label="失败原因" min-width="200" show-overflow-tooltip>
       <template #default="{ row }">
         <span v-if="row.error" class="t-error mono">{{ row.error }}</span>
@@ -103,6 +110,7 @@ interface Row {
   done: number;
   total: number;
   percent: number;
+  tokens: number;
   error: string;
   updated_at: string;
 }
@@ -148,11 +156,16 @@ const rows = computed<Row[]>(() =>
         done,
         total: t.nodes.length,
         percent: t.nodes.length ? Math.round((done / t.nodes.length) * 100) : 0,
+        tokens: t.nodes.reduce((sum, n) => sum + (n.result?.tokens || 0), 0),
         error,
         updated_at: t.updated_at || '',
       };
     })
 );
+
+function fmtTok(n: number): string {
+  return n >= 1000 ? (Math.round(n / 100) / 10) + 'k' : String(n);
+}
 
 const canRestart = (s: string) => ['failed', 'completed', 'success', 'cancelled'].includes(s);
 const canCancel = (s: string) => ['running', 'retrying', 'queued', 'pending', 'waiting_approval'].includes(s);
@@ -214,6 +227,7 @@ function fmtTime(ts: string): string {
 .t-progress { --el-fill-color-blank: transparent; }
 .t-progress :deep(.el-progress) { flex: 1; }
 .t-progress-text { font-size: 11px; color: var(--ct-text3); flex-shrink: 0; }
+.t-tok { font-size: 11px; color: var(--ct-text2); font-variant-numeric: tabular-nums; }
 .t-error { color: var(--ct-red); font-size: 12px; }
 .t-more { margin-left: 12px; }
 </style>

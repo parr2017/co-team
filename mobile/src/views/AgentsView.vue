@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { api, type AgentProfileSummary } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import AgentAvatar from '../components/AgentAvatar.vue';
 
@@ -8,6 +9,27 @@ defineOptions({ name: 'AgentsView' });
 
 const router = useRouter();
 const { agents, tasks, connected } = useDashboard();
+
+const profiles = ref<Record<string, AgentProfileSummary>>({});
+const bindings = ref<Record<string, string[]>>({});
+
+onMounted(async () => {
+  try {
+    const d = await api.agentProfiles();
+    profiles.value = d.agents || {};
+  } catch { /* ignore */ }
+  try {
+    const d = await api.listSkills();
+    bindings.value = d.bindings || {};
+  } catch { /* ignore */ }
+});
+
+function skillsOf(name: string): string[] {
+  return bindings.value[name] || [];
+}
+function memoryCount(name: string): number {
+  return profiles.value[name]?.memory?.length ?? 0;
+}
 
 const GROUP_LABELS: Record<string, string> = {
   orchestrator: '主 Agent',
@@ -99,9 +121,14 @@ function goTaskOf(name: string) {
               <span v-if="isBusy(a.name)" class="m-busy-text wx-pulse">{{ currentTaskOf(a.name) }}</span>
               <span v-else>空闲</span>
             </div>
+              <div v-if="skillsOf(a.name).length" class="m-skills mono">
+                <span v-for="s in skillsOf(a.name).slice(0, 2)" :key="s" class="m-skill">{{ s }}</span>
+                <span v-if="skillsOf(a.name).length > 2" class="m-skill-more">+{{ skillsOf(a.name).length - 2 }}</span>
+              </div>
             </div>
             <div class="m-meta">
               <span v-if="a.model" class="m-model">{{ a.model }}</span>
+              <span class="m-count">经验 {{ memoryCount(a.name) }} 条</span>
               <span v-if="taskCountOf(a.name)" class="m-count">{{ taskCountOf(a.name) }} 节点</span>
             </div>
           </div>
@@ -143,6 +170,9 @@ function goTaskOf(name: string) {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .m-busy-text { color: var(--wx-orange); }
+.m-skills { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+.m-skill { font-size: 10px; color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); border: 1px solid rgba(76, 194, 255, 0.22); border-radius: 4px; padding: 0 5px; }
+.m-skill-more { font-size: 10px; color: var(--text-3); }
 .m-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 .m-model { font-size: 11px; color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); border: 1px solid rgba(76, 194, 255, 0.22); border-radius: 5px; padding: 2px 7px; }
 .m-count { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }

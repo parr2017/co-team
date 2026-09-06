@@ -87,7 +87,8 @@ export async function emitProgress(type: string, payload: Record<string, unknown
   if (taskId) await recordTaskEvent(taskId, type, payload);
 }
 
-const MAX_TASK_EVENTS = 200;
+// 长任务回放不再缺页：200 条会在数小时的 heavy 任务里截断中段历史
+const MAX_TASK_EVENTS = 2000;
 
 /** Persist a task-lifecycle event so timelines survive page refreshes. */
 export async function recordTaskEvent(taskId: string, type: string, payload: Record<string, unknown>): Promise<void> {
@@ -223,7 +224,8 @@ export async function appendJournal(taskId: string, agent: string, entry: Journa
   const key = `task:${taskId}:agent:${agent}:journal`;
   const journal = (await busGet<JournalEntry[]>(key)) || [];
   journal.push(entry);
-  await busSet(key, journal.slice(-120));
+  // 120 条会在长任务里截断中段会话，作战室回放查案需要完整记录
+  await busSet(key, journal.slice(-1000));
   // push the delta so chat surfaces stream live instead of polling
   await emitProgress('journal_append', { task_id: taskId, agent, entry });
 }
@@ -239,7 +241,7 @@ export async function getTaskJournals(taskId: string): Promise<Record<string, Jo
 }
 
 /** Per-agent cross-task lessons ("life experience"). */
-export async function addAgentMemory(agent: string, lesson: string, maxItems = 15): Promise<void> {
+export async function addAgentMemory(agent: string, lesson: string, maxItems = 50): Promise<void> {
   if (!lesson) return;
   const key = `agent:${agent}:memory`;
   const items = (await busGet<string[]>(key)) || [];
@@ -298,6 +300,21 @@ export async function getAgentProfiles(): Promise<Record<string, AgentProfile>> 
   return profiles;
 }
 
+// ---------- node diff (分支工作流下每个节点的代码变更存档) ----------
+
+export interface NodeDiffRecord {
+  patch: string;
+  files: { path: string; insertions: number; deletions: number }[];
+}
+
+export async function saveNodeDiff(taskId: string, nodeId: string, diff: NodeDiffRecord): Promise<void> {
+  await busSet(`task:diff:${taskId}:${nodeId}`, diff);
+}
+
+export async function getNodeDiff(taskId: string, nodeId: string): Promise<NodeDiffRecord | null> {
+  return (await busGet<NodeDiffRecord>(`task:diff:${taskId}:${nodeId}`)) || null;
+}
+
 // ---------- delete operations ----------
 
 export async function deleteTask(taskId: string): Promise<void> {
@@ -307,14 +324,19 @@ export async function deleteTask(taskId: string): Promise<void> {
   await busDel(`task:approvals:${taskId}`);
   await busDel(`task:feedbacks:${taskId}`);
   await busDel(`task:intervene:${taskId}`);
-  
+
   const journalKeys = await busKeys(`task:${taskId}:agent:*:journal`);
   for (const key of journalKeys) {
     await busDel(key);
   }
-  
+
   const sessionKeys = await busKeys(`task:${taskId}:agent:*:session`);
   for (const key of sessionKeys) {
+    await busDel(key);
+  }
+
+  const diffKeys = await busKeys(`task:diff:${taskId}:*`);
+  for (const key of diffKeys) {
     await busDel(key);
   }
 }

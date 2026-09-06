@@ -27,6 +27,7 @@ import {
   isCancelled,
   persistGraph,
   recordAgentTask,
+  saveNodeDiff,
   saveTaskGraph,
   getTaskGraph as loadGraph,
   getProject,
@@ -825,6 +826,8 @@ export class Orchestrator {
       const branch = `coteam/${node.id}-${node.agent}`;
       const ok = await gitTool.createNodeBranch(sandbox, branch, parent).catch(() => false);
       node.branch = ok ? branch : '';
+      // 记录切出分支，节点完成后以此计算该节点的代码变更（diff 基准）
+      node.branch_base = ok ? parent : '';
       await persistGraph(graph);
       await emitProgress('node_branch_created', { task_id: taskId, node_id: node.id, branch: node.branch, parent });
     }
@@ -922,6 +925,7 @@ export class Orchestrator {
           const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name}`, result.changes || []).catch(() => null);
           if (commit && node.result) (node.result as AgentResult).git_commit = { branch: node.branch, commit };
         }
+        await this.captureNodeDiff(taskId, node, sandbox);
         await persistGraph(graph);
         await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
         await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: result.summary || '' });
@@ -944,6 +948,7 @@ export class Orchestrator {
         const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name} (escalated)`, result.changes || []).catch(() => null);
         if (commit) (node.result as any).git_commit = { branch: node.branch, commit };
       }
+      await this.captureNodeDiff(taskId, node, sandbox);
       await persistGraph(graph);
       await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
       await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: (result.summary || '') + '（主 Agent 接管后完成）' });
@@ -1003,6 +1008,58 @@ export class Orchestrator {
       .map((d) => graph.nodes.find((n) => n.id === d)?.branch)
       .filter((b): b is string => !!b);
     return depBranches[depBranches.length - 1] || 'coteam/base';
+  }
+
+  /** 节点完成后立即固化其分支 diff（含测试修复轮提交），供作战室随时查看，不依赖沙箱存活。 */
+  private async captureNodeDiff(taskId: string, node: TaskNode, sandbox: string): Promise<void> {
+    if (!node.branch || !node.branch_base) return;
+    try {
+      const diff = await gitTool.nodeDiff(sandbox, node.branch, node.branch_base);
+      if (diff) await saveNodeDiff(taskId, node.id, diff);
+    } catch (e) {
+      this.logger.warn('captureNodeDiff failed', { taskId, nodeId: node.id, error: String(e) });
+    }
+  }
+
+  /** 人工补差：在指定节点之后插入一个节点，继承其全部出边（含到合并节点的边）。 */
+  async addNode(taskId: string, opts: { name: string; agent: string; afterNodeId: string }): Promise<TaskNode> {
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new Error('task not found');
+    if (!['planned', 'pending', 'queued'].includes(graph.status)) {
+      throw new Error('仅在计划待审核/待执行状态可插入节点；执行中的任务请用重新规划');
+    }
+    if (!opts.name?.trim()) throw new Error('节点名称不能为空');
+    const after = graph.nodes.find((n) => n.id === opts.afterNodeId);
+    if (!after || after.id === 'merge-auto') throw new Error('锚点节点不存在');
+    if (opts.agent === 'orchestrator' || !this.plugins.has(opts.agent)) {
+      throw new Error(`Agent ${opts.agent} 不存在`);
+    }
+    const node: TaskNode = {
+      id: `n-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      task_id: taskId,
+      name: opts.name.trim(),
+      status: 'pending',
+      agent: opts.agent,
+      result: null,
+      error: '',
+      retry_count: 0,
+      complexity: 'normal',
+      requires_approval: false,
+      needs_human: false,
+      reason: '人工插入节点',
+      branch: '',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    // reroute：after 的每条出边 s→d 改为 s→new + new→d（merge-auto 边也随之自然衔接）
+    const outgoing = graph.edges.filter(([src]) => src === after.id);
+    graph.edges = graph.edges.filter(([src]) => src !== after.id);
+    graph.edges.push([after.id, node.id]);
+    for (const [, dst] of outgoing) graph.edges.push([node.id, dst]);
+    graph.nodes.push(node);
+    await persistGraph(graph);
+    await emitProgress('node_added', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, after: after.id });
+    return node;
   }
 
   /** 主 Agent merge: fold every completed agent branch back into coteam/base. */

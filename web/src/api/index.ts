@@ -128,6 +128,10 @@ export interface AgentResult {
   errors?: string[];
   escalated?: boolean;
   report?: TestFixReport;
+  /** 本节点实际使用的模型与 token 消耗（dispatch 成功后写入） */
+  model?: string;
+  tokens?: number;
+  git_commit?: { branch: string; commit: string | null };
 }
 
 export interface TaskNode {
@@ -144,10 +148,21 @@ export interface TaskNode {
   needs_human: boolean;
   reason?: string;
   branch?: string;
+  /** 该节点分支的切出父分支——节点 diff 的计算基准 */
+  branch_base?: string;
   started_at?: string;
   finished_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface NodeDiffResponse {
+  node_id: string;
+  branch: string;
+  available: boolean;
+  reason?: string;
+  patch: string;
+  files: { path: string; insertions: number; deletions: number }[];
 }
 
 export interface TaskEvent {
@@ -396,6 +411,14 @@ export const api = {
     request<{ summary: string }>(`/api/tasks/${id}/replan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }) }),
   updateNode: (taskId: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }) =>
     request(`/api/tasks/${taskId}/nodes/${nodeId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
+  addNode: (taskId: string, payload: { name: string; agent: string; after_node_id: string }) =>
+    request<{ status: string; node: TaskNode; graph: TaskGraph }>(`/api/tasks/${taskId}/nodes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  nodeDiff: (taskId: string, nodeId: string) =>
+    request<NodeDiffResponse>(`/api/tasks/${taskId}/nodes/${nodeId}/diff`),
   roadmap: () => request<{ content: string; updated_at: string }>('/api/system/roadmap'),
   createProject: (name: string, workspace: string, description?: string, scaffold = false) =>
     request<{ project_id: string; scaffold?: { dirs: string[]; files: string[]; git_initialized: boolean } | null }>('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace, description, scaffold }) }),

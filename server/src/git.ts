@@ -139,6 +139,39 @@ export async function commitChanges(workspace: string, message: string, paths: s
   return commitOnBranch(workspace, message, paths);
 }
 
+export interface NodeDiff {
+  patch: string;
+  files: { path: string; insertions: number; deletions: number }[];
+}
+
+/**
+ * 一个节点的全部代码变更 = 节点分支相对其切出点（与父分支的 merge-base）的 diff。
+ * 包含测试修复轮在该分支上的追加提交；分支不存在或无法计算时返回 null。
+ */
+export async function nodeDiff(workspace: string, branch: string, parentBranch: string): Promise<NodeDiff | null> {
+  const g = git(workspace);
+  try {
+    const branches = await g.branchLocal();
+    if (!branches.all.includes(branch)) return null;
+    const base = (await g.raw(['merge-base', parentBranch, branch])).trim();
+    if (!base) return null;
+    const range = `${base}..${branch}`;
+    const patch = await g.raw(['diff', range, '--']);
+    const numstat = await g.raw(['diff', '--numstat', range, '--']);
+    const files = numstat
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [ins, del, ...rest] = line.split('\t');
+        return { path: rest.join('\t'), insertions: Number(ins) || 0, deletions: Number(del) || 0 };
+      });
+    return { patch, files };
+  } catch {
+    return null;
+  }
+}
+
 /** Sync merged result from sandbox back to the real workspace git branch. */
 export async function syncToWorkspace(sandbox: string, workspace: string, branch: string): Promise<boolean> {
   // files were merged in the sandbox; copy them over like the file-merge path does

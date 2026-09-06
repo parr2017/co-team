@@ -2,6 +2,17 @@
   <el-dialog :model-value="modelValue" title="设置" width="760px" @open="loadAll" @close="$emit('close')">
     <el-tabs v-model="tab">
       <!-- 模型池 -->
+      <el-tab-pane label="通用" name="general">
+        <div class="general">
+          <div class="gen-row">
+            <div class="gen-info">
+              <div class="gen-title">桌面通知</div>
+              <div class="gen-desc">任务完成、失败、等待审批、需要澄清时弹出系统通知（需浏览器授权）</div>
+            </div>
+            <el-switch :model-value="notifyEnabled" @change="(v: any) => emit('notify-toggle', Boolean(v))" />
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="模型池" name="models">
         <div class="model-list">
           <div v-for="(m, i) in pool" :key="i" class="model-editor">
@@ -172,10 +183,10 @@ import { ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
 
-defineProps<{ modelValue: boolean }>();
-const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void }>();
+defineProps<{ modelValue: boolean; notifyEnabled?: boolean }>();
+const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void; (e: 'notify-toggle', v: boolean): void }>();
 
-const tab = ref('models');
+const tab = ref('general');
 const pool = ref<(ModelConfig & { tagsText?: string })[]>([]);
 const agents = ref<AgentDefinition[]>([]);
 const skills = ref<SkillMeta[]>([]);
@@ -422,4 +433,9 @@ async function removeAgent(row: AgentDefinition) {
 .toolbar .note { flex: 1; font-size: 11px; color: var(--ct-text3); }
 .mono { font-family: var(--ct-mono); font-size: 11px; }
 .mono-input :deep(textarea) { font-family: var(--ct-mono); font-size: 12px; }
+.general { display: flex; flex-direction: column; gap: 12px; }
+.gen-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--ct-border); border-radius: 8px; }
+.gen-info { flex: 1; min-width: 0; }
+.gen-title { font-size: 13px; font-weight: 500; color: var(--ct-text); }
+.gen-desc { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
 </style>
