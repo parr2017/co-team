@@ -114,6 +114,18 @@ export class ModelPool {
     return [primary, ...rest];
   }
 
+  /**
+   * Last-resort capacity (feature: 降级策略优化): models with free slots IGNORING the
+   * cooldown circuit breaker, ordered by priority. Used only after the regular
+   * selection and the wait window both come up empty — breaking the glass beats
+   * failing the node while the main agent could still run it.
+   */
+  emergencyCandidates(): ModelEntry[] {
+    return this.models
+      .filter((m) => this.availableSlots(m) > 0)
+      .sort((a, b) => a.priority - b.priority || b.professional_weight - a.professional_weight);
+  }
+
   markFailure(m: ModelEntry): void {
     m.failCount += 1;
     m.lastFailureAt = Date.now();

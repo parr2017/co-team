@@ -76,3 +76,56 @@ export function isConfirmation(text: string): boolean {
   if (t.length > 30) return false;
   return /^(确认|确定|同意|没错|可以|开始|执行|ok|yes|confirm|confirmed|go|通过)[!！。.~\s]*$/.test(t);
 }
+
+// ---------- node-level pre-execution brief (feature: 每步骤实施前澄清) ----------
+
+export interface NodeBrief {
+  approach: string;
+  files: string[];
+  risks: string[];
+  questions: string[];
+}
+
+const NODE_BRIEF_SYSTEM = `你是开发节点的实施前澄清助手。基于节点任务与上下文，输出实施简报 JSON，不要其他内容。
+JSON 格式：{"approach":"实施思路（2-3 句中文）","files":["预计改动的文件路径"],"risks":["风险点或注意事项"],"questions":["需要用户确认的问题（最多 3 个，没有则空数组）"]}
+问题要具体、可决策（如范围取舍、方案选择），不要泛泛而问。`;
+
+export async function generateNodeBrief(
+  input: { taskDescription: string; nodeName: string; nodeReason?: string; goal?: string; upstream?: string },
+  pool: ModelPool | null
+): Promise<NodeBrief> {
+  const fallback: NodeBrief = { approach: input.nodeName, files: [], risks: [], questions: [] };
+  if (!pool) return fallback;
+  const model = pool.selectModel(['code'], 'simple');
+  if (!model) return fallback;
+  try {
+    const resp = await chat(
+      model,
+      [
+        { role: 'system', content: NODE_BRIEF_SYSTEM },
+        {
+          role: 'user',
+          content: [
+            `全局目标：${(input.goal || input.taskDescription || '').slice(0, 1500)}`,
+            `节点任务：${input.nodeName}`,
+            input.nodeReason ? `节点分配理由：${input.nodeReason}` : '',
+            input.upstream ? `前置节点成果：\n${input.upstream.slice(0, 1500)}` : '',
+          ].filter(Boolean).join('\n'),
+        },
+      ],
+      2048,
+      0
+    );
+    pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
+    const parsed = extractJson(stripCodeFence(resp.content));
+    if (!parsed) return fallback;
+    return {
+      approach: typeof parsed.approach === 'string' && parsed.approach.trim() ? parsed.approach.trim() : input.nodeName,
+      files: Array.isArray(parsed.files) ? parsed.files.map(String).filter(Boolean).slice(0, 10) : [],
+      risks: Array.isArray(parsed.risks) ? parsed.risks.map(String).filter(Boolean).slice(0, 5) : [],
+      questions: Array.isArray(parsed.questions) ? parsed.questions.map(String).filter(Boolean).slice(0, 3) : [],
+    };
+  } catch {
+    return fallback;
+  }
+}

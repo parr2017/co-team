@@ -11,6 +11,18 @@
             </div>
             <el-switch :model-value="notifyEnabled" @change="(v: any) => emit('notify-toggle', Boolean(v))" />
           </div>
+          <div class="gen-row">
+            <div class="gen-info">
+              <div class="gen-title">每日问题报告</div>
+              <div class="gen-desc">开启后，每天在指定时刻汇总运行中的报错与功能性问题，由你决定是否转为修复任务（关闭则完全不触发）</div>
+              <div class="gen-ctrl">
+                <el-switch v-model="dailyReport.enabled" @change="saveDailyReport" />
+                <span class="gen-time">报告时刻</span>
+                <el-input-number v-model="dailyReport.hour" size="small" :min="0" :max="23" controls-position="right" style="width: 100px" @change="saveDailyReport" />
+                <span class="gen-time">点（本地时间）</span>
+              </div>
+            </div>
+          </div>
         </div>
       </el-tab-pane>
       <el-tab-pane label="模型池" name="models">
@@ -32,8 +44,10 @@
                 <el-input v-model="m.api_key" size="small" type="password" show-password />
               </label>
               <label class="field">
-                <span>标签（逗号分隔）</span>
-                <el-input v-model="m.tagsText" size="small" placeholder="code,debug" />
+                <span>擅长领域 / 标签</span>
+                <el-select v-model="m.tags" multiple filterable allow-create default-first-option size="small" placeholder="选择或输入自定义标签" style="width: 100%">
+                  <el-option v-for="t in CAPABILITY_TAGS" :key="t" :label="CAPABILITY_TAG_LABELS[t] || t" :value="t" />
+                </el-select>
               </label>
               <div class="field-row">
                 <label class="field">
@@ -141,7 +155,11 @@
             <el-option v-for="sk in skills" :key="sk.name" :label="sk.name" :value="sk.name" />
           </el-select>
         </el-form-item>
-        <el-form-item label="模型覆盖"><el-input v-model="editing.model_override" placeholder="留空使用模型池调度" /></el-form-item>
+        <el-form-item label="模型覆盖">
+          <el-select v-model="editing.model_override" clearable filterable placeholder="留空使用模型池调度" style="width: 100%">
+            <el-option v-for="m in pool" :key="m.name" :label="m.name || '(未命名模型)'" :value="m.name" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="超时(秒)"><el-input-number v-model="editing.timeout" :min="30" :max="3600" controls-position="right" /></el-form-item>
         <el-form-item label="Max Tokens"><el-input-number v-model="editing.max_tokens" :min="1024" :max="65536" :step="1024" controls-position="right" /></el-form-item>
         <el-form-item label="系统提示词">
@@ -179,15 +197,31 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
+
+// feature: 模型擅长领域标签 —— 预设能力词表 + 允许自定义
+const CAPABILITY_TAGS = ['reasoning', 'code', 'doc', 'image', 'debug', 'review', 'test', 'deploy'];
+const CAPABILITY_TAG_LABELS: Record<string, string> = {
+  reasoning: '推理',
+  code: '代码',
+  doc: '文档编写',
+  image: '生图',
+  debug: '调试',
+  review: '审查',
+  test: '测试',
+  deploy: '部署',
+};
 
 defineProps<{ modelValue: boolean; notifyEnabled?: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void; (e: 'notify-toggle', v: boolean): void }>();
 
 const tab = ref('general');
-const pool = ref<(ModelConfig & { tagsText?: string })[]>([]);
+const pool = ref<ModelConfig[]>([]);
+// feature: 每日问题报告 —— 界面开关（开启才触发）
+const dailyReport = reactive({ enabled: false, hour: 9 });
+const savingDailyReport = ref(false);
 const agents = ref<AgentDefinition[]>([]);
 const skills = ref<SkillMeta[]>([]);
 const skillBindings = ref<Record<string, string[]>>({});
@@ -208,7 +242,29 @@ const editingOriginal = ref<string | null>(null);
 const editing = ref<Partial<AgentDefinition> & { tagsText?: string; skills?: string[] }>({});
 
 async function loadAll() {
-  await Promise.all([loadModels(), loadAgents(), loadSkills()]);
+  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport()]);
+}
+
+async function loadDailyReport() {
+  try {
+    const d = await api.getDailyReportConfig();
+    dailyReport.enabled = d.enabled;
+    dailyReport.hour = d.hour;
+  } catch {
+    /* 保持默认值 */
+  }
+}
+
+async function saveDailyReport() {
+  savingDailyReport.value = true;
+  try {
+    await api.saveDailyReportConfig(dailyReport.enabled, dailyReport.hour);
+    ElMessage.success(dailyReport.enabled ? `每日问题报告已开启（每天 ${dailyReport.hour} 点）` : '每日问题报告已关闭');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    savingDailyReport.value = false;
+  }
 }
 
 async function loadSkills() {
@@ -284,7 +340,7 @@ async function doReloadSkills() {
 async function loadModels() {
   try {
     const d = await api.getModelPool();
-    pool.value = d.model_pool.map((m) => ({ ...m, tagsText: (m.tags || []).join(',') }));
+    pool.value = d.model_pool.map((m) => ({ ...m, tags: m.tags || [] }));
   } catch (e: any) {
     ElMessage.error(e.message);
   }
@@ -309,14 +365,14 @@ function addModel() {
     priority: 1,
     professional_weight: 50,
     cost_per_1k: 0,
-    tagsText: '',
+    tags: [],
   });
 }
 
 async function saveModels() {
-  const models = pool.value.map(({ tagsText, ...m }) => ({
+  const models = pool.value.map((m) => ({
     ...m,
-    tags: (tagsText || '').split(',').map((t) => t.trim()).filter(Boolean),
+    tags: (m.tags || []).map((t: string) => t.trim()).filter(Boolean),
   }));
   for (const m of models) {
     if (!m.name || !m.api_key || !m.base_url) {
@@ -337,9 +393,9 @@ async function saveModels() {
 }
 
 async function testModelPool() {
-  const models = pool.value.map(({ tagsText, ...m }) => ({
+  const models = pool.value.map((m) => ({
     ...m,
-    tags: (tagsText || '').split(',').map((t) => t.trim()).filter(Boolean),
+    tags: (m.tags || []).map((t: string) => t.trim()).filter(Boolean),
   }));
   const valid = models.filter((m) => m.name && m.api_key && m.base_url);
   if (!valid.length) {
@@ -380,7 +436,9 @@ async function saveAgent() {
   const { tagsText, ...rest } = editing.value;
   const def = {
     ...rest,
-    tags: (tagsText || '').split(',').map((t) => t.trim()).filter(Boolean),
+    // 空 model_override 归一为 null —— 留空即使用模型池调度
+    model_override: rest.model_override || null,
+    tags: (tagsText || '').split(',').map((t: string) => t.trim()).filter(Boolean),
   };
   if (!def.name && !editingOriginal.value) {
     ElMessage.error('请填写 agent 名称');
@@ -438,4 +496,6 @@ async function removeAgent(row: AgentDefinition) {
 .gen-info { flex: 1; min-width: 0; }
 .gen-title { font-size: 13px; font-weight: 500; color: var(--ct-text); }
 .gen-desc { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
+.gen-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.gen-time { font-size: 11px; color: var(--ct-text3); }
 </style>

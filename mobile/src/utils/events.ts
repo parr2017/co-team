@@ -37,6 +37,18 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
       return { text: `第 ${p.attempt ?? (p.retry_count ?? '?')} 次重试${NODE_NAME(p)}`, level: 'warn', category: 'node', noisy: false };
     case 'node_waiting_approval':
       return { text: `${NODE_NAME(p)}等待人工审批`, level: 'accent', category: 'node', noisy: false };
+    case 'node_awaiting_clarify':
+      return { text: `${NODE_NAME(p)}等待实施前澄清`, level: 'accent', category: 'node', noisy: false };
+    case 'node_clarified':
+      return { text: `${NODE_NAME(p)}澄清确认完成，继续执行`, level: 'success', category: 'node', noisy: false };
+    case 'node_main_takeover':
+      return { text: `主 Agent 兜底接管${NODE_NAME(p)} · 使用模型 ${p.model || '?'}`, level: 'warn', category: 'node', noisy: false };
+    case 'command_pending_approval':
+      return { text: '命令等待人工审批（执行策略 approve_required）', level: 'accent', category: 'node', noisy: false };
+    case 'command_resolved':
+      return p.approved
+        ? { text: `命令已批准执行（退出码 ${p.returncode ?? '?'}）`, level: p.returncode === 0 ? 'success' : 'warn', category: 'node', noisy: false }
+        : { text: '命令已被用户拒绝，未执行', level: 'warn', category: 'node', noisy: false };
     case 'node_cancelled':
       return { text: `${NODE_NAME(p)}已取消`, level: 'warn', category: 'node', noisy: false };
     case 'node_escalate':
@@ -127,6 +139,7 @@ export const STATUS_TEXT: Record<string, string> = {
   running: '执行中',
   retrying: '重试中',
   waiting_approval: '待审批',
+  waiting_clarify: '待澄清',
   completed: '已完成',
   failed: '失败',
   cancelled: '已取消',
@@ -147,6 +160,7 @@ export function taskStage(status: string): { label: string; step: number } {
   if (['planned'].includes(status)) return { label: '计划待审核', step: 1 };
   if (['running', 'retrying'].includes(status)) return { label: '节点执行', step: 2 };
   if (['waiting_approval'].includes(status)) return { label: '等待审批', step: 2 };
+  if (['waiting_clarify'].includes(status)) return { label: '实施前澄清', step: 2 };
   if (['completed', 'success'].includes(status)) return { label: '已完成', step: 3 };
   if (['failed'].includes(status)) return { label: '执行失败', step: 3 };
   if (['cancelled'].includes(status)) return { label: '已取消', step: 3 };

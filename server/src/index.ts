@@ -12,6 +12,7 @@ import { TaskQueueManager } from './taskQueue';
 import { policyFromConfig } from './sandbox';
 import { emitProgress } from './store';
 import { startClarifyTimeoutScanner } from './clarifyTimeout';
+import { startDailyReportScanner } from './dailyReport';
 import { configureGrader } from './grader';
 import { initLogger, getLogger } from './logger';
 
@@ -112,6 +113,8 @@ async function main(): Promise<void> {
     branchWorkflow: config.orchestrator.branch_workflow,
     tokenBudget: config.orchestrator.token_budget,
     maxFixRounds: config.orchestrator.max_fix_rounds,
+    modelWaitTimeoutSec: config.orchestrator.model_wait_timeout_sec,
+    nodeClarify: config.orchestrator.node_clarify,
   });
 
   await orchestrator.loadAgents();
@@ -139,7 +142,11 @@ async function main(): Promise<void> {
   startClarifyTimeoutScanner({ timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
   logger.info('Clarify timeout scanner started', { timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
 
-  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue };
+  // feature: 每日问题报告 — minute-tick scanner, inert until the UI switch turns it on
+  const dailyReportScanner = startDailyReportScanner({ enabled: config.daily_report?.enabled ?? false, hour: config.daily_report?.hour ?? 9 });
+  logger.info('Daily report scanner started', { enabled: config.daily_report?.enabled ?? false, hour: config.daily_report?.hour ?? 9 });
+
+  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue, dailyReportScanner };
   const app = createApi(ctx);
 
   // browsers always probe /favicon.ico — answer 204 so it stops spamming the API log

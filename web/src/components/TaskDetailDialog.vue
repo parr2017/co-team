@@ -45,6 +45,26 @@
             </div>
           </div>
 
+          <!-- feature: 实施前澄清 —— 任务被简报门拦下时，在此快速确认 -->
+          <div v-if="clarifyNode" class="clarify-card">
+            <div class="cl-head mono">
+              <span class="cl-title">实施前澄清 · {{ clarifyNode.name }}</span>
+              <span class="cl-mode">{{ clarifyState?.mode === 'confirm' ? '需确认' : '实施简报' }}</span>
+            </div>
+            <div v-if="clarifyState" class="cl-body">
+              <div class="cl-line"><span class="mini-label">思路</span>{{ clarifyState.brief?.approach }}</div>
+              <div v-if="clarifyState.brief?.files?.length" class="cl-line"><span class="mini-label">改动</span>{{ clarifyState.brief.files.join('、') }}</div>
+              <div v-if="clarifyState.brief?.risks?.length" class="cl-line"><span class="mini-label">风险</span>{{ clarifyState.brief.risks.join('；') }}</div>
+              <div v-for="(q, i) in clarifyState.brief?.questions || []" :key="i" class="cl-q mono">Q{{ i + 1 }}. {{ q }}</div>
+              <el-input v-model="clarifyAnswer" size="small" type="textarea" :rows="2" placeholder="补充说明（可选）：范围取舍、方案偏好、约束…" />
+              <div class="cl-ops">
+                <el-button size="small" type="primary" :loading="clarifying" @click="confirmClarify(true)">确认，开始实施</el-button>
+                <el-button size="small" :disabled="!clarifyAnswer.trim()" :loading="clarifying" @click="confirmClarify(false)">带说明继续</el-button>
+              </div>
+            </div>
+            <div v-else class="cl-body mono">加载简报中…</div>
+          </div>
+
           <div class="warroom">
             <div class="wr-left">
               <div class="member-chips">
@@ -192,6 +212,28 @@
             </div>
 
             <div class="mg-card">
+              <div class="mg-title mono">EXECUTION POLICY · 执行策略（命令执行分级）</div>
+              <div class="mg-body mg-row">
+                <el-select v-model="policyLevel" size="small" style="width: 200px" @change="savePolicy">
+                  <el-option label="跟随全局设置" value="" />
+                  <el-option v-for="lv in PERMISSION_LEVELS" :key="lv" :label="PERMISSION_LEVEL_LABELS[lv]" :value="lv" />
+                </el-select>
+                <span class="mg-hint">
+                  只出方案：不写代码只给方案 · 改动需审批：白名单外命令等你批准 · 白名单自动：仅白名单命令自动执行 · 完全控制：全部自动执行
+                </span>
+              </div>
+              <div v-if="pendingCommands.length" class="mg-body">
+                <div class="pc-title mono">待审批命令（{{ pendingCommands.length }}）</div>
+                <div v-for="c in pendingCommands" :key="c.id" class="pc-row mono">
+                  <span class="pc-cmd">{{ c.command }}</span>
+                  <span class="pc-node">{{ c.node_name }}</span>
+                  <el-button size="small" type="primary" @click="resolveCommand(c, true)">批准执行</el-button>
+                  <el-button size="small" type="danger" plain @click="resolveCommand(c, false)">拒绝</el-button>
+                </div>
+              </div>
+            </div>
+
+            <div class="mg-card">
               <div class="mg-title mono">MAIN AGENT MODEL · 主 Agent 模型（锁定）</div>
               <div class="mg-body mg-row">
                 <span class="mg-model mono">{{ task.main_model_id || '自动选择' }}</span>
@@ -256,7 +298,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, type SnapshotMeta } from '../api';
+import { api, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, type SnapshotMeta } from '../api';
 import PipelineTrack from './PipelineTrack.vue';
 import ChatStream from './ChatStream.vue';
 import InterventionBar from './InterventionBar.vue';
@@ -287,6 +329,16 @@ const savingGoal = ref(false);
 const snapshots = ref<SnapshotMeta[]>([]);
 const creatingSnap = ref(false);
 const diffNodeId = ref<string | null>(null);
+// feature: 命令执行分级
+const policyLevel = ref('');
+const pendingCommands = ref<{ id: string; node_id: string; node_name: string; command: string; ts: string }[]>([]);
+// feature: 实施前澄清
+const clarifyNode = computed(() => task.value?.nodes.find((n) => n.status === 'waiting_clarify') || null);
+const clarifyNodeId = computed(() => clarifyNode.value?.id || '');
+const clarifyState = ref<{ mode: string; brief: { approach: string; files: string[]; risks: string[]; questions: string[] }; answers: { question: string; answer: string }[] } | null>(null);
+const clarifyAnswer = ref('');
+const clarifying = ref(false);
+let clarifyStateFetchedFor = '';
 
 const selected = computed(() => task.value?.nodes.find((n) => n.id === selectedNodeId.value) || null);
 
@@ -428,6 +480,11 @@ async function refresh() {
   task.value = d;
   const ev = await api.taskEvents(props.taskId);
   events.value = ev.events;
+  // feature: 实施前澄清 —— 被简报门拦下时拉取简报
+  if (clarifyNode.value && clarifyStateFetchedFor !== clarifyNodeId.value) {
+    clarifyStateFetchedFor = clarifyNodeId.value;
+    void loadClarifyState(clarifyNodeId.value);
+  }
 }
 
 async function refreshProgress() {
@@ -446,6 +503,65 @@ async function refreshManage() {
   try {
     snapshots.value = (await api.listSnapshots(props.taskId)).snapshots;
   } catch { /* ignore */ }
+  // feature: 命令执行分级
+  try {
+    policyLevel.value = (await api.getTaskPolicy(props.taskId)).execution_policy?.level || '';
+  } catch { /* ignore */ }
+  try {
+    pendingCommands.value = (await api.getPendingCommands(props.taskId)).commands;
+  } catch { /* ignore */ }
+}
+
+async function savePolicy() {
+  try {
+    await api.setTaskPolicy(props.taskId, policyLevel.value || null);
+    ElMessage.success(policyLevel.value ? `执行策略已切换为「${PERMISSION_LEVEL_LABELS[policyLevel.value]}」` : '已恢复跟随全局设置');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
+async function resolveCommand(c: { id: string; command: string }, approved: boolean) {
+  try {
+    const r = await api.resolveCommand(props.taskId, c.id, approved);
+    if (approved) {
+      ElMessage.success(r.returncode === 0 ? `命令已执行（退出码 0）` : `命令已执行但退出码为 ${r.returncode}，请查看作战室`);
+    } else {
+      ElMessage.info('命令已拒绝，未执行');
+    }
+    pendingCommands.value = (await api.getPendingCommands(props.taskId)).commands;
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
+async function loadClarifyState(nodeId: string) {
+  try {
+    clarifyState.value = await api.getNodeClarify(props.taskId, nodeId);
+  } catch {
+    clarifyState.value = null;
+  }
+}
+
+async function confirmClarify(approveOnly: boolean) {
+  const nodeId = clarifyNodeId.value;
+  if (!nodeId) return;
+  clarifying.value = true;
+  try {
+    const text = clarifyAnswer.value.trim();
+    await api.clarifyNode(props.taskId, nodeId, {
+      ...(approveOnly ? { approve: true } : {}),
+      ...(text ? { text } : {}),
+    });
+    ElMessage.success('已确认，节点开始实施');
+    clarifyAnswer.value = '';
+    clarifyState.value = null;
+    await refresh();
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    clarifying.value = false;
+  }
 }
 
 async function loadModels() {
@@ -547,7 +663,7 @@ async function onOpen() {
   pickDefaultAgent();
   window.clearInterval(pollTimer);
   pollTimer = window.setInterval(() => {
-    if (task.value && ['running', 'pending', 'planned', 'retrying', 'waiting_approval'].includes(task.value.status)) {
+    if (task.value && ['running', 'pending', 'planned', 'retrying', 'waiting_approval', 'waiting_clarify'].includes(task.value.status)) {
       void refresh();
       void refreshProgress();
     }
@@ -591,6 +707,16 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .st-progress .fill { height: 100%; background: var(--ct-accent); transition: width 0.5s; }
 .st-current { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .st-current-label { font-size: 11px; color: var(--ct-text3); }
+
+/* ---- 实施前澄清卡片 ---- */
+.clarify-card { border: 1px solid var(--ct-accent); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; background: var(--ct-panel2); }
+.cl-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.cl-title { font-size: 12px; font-weight: 700; color: var(--ct-accent); }
+.cl-mode { font-size: 10px; border: 1px solid var(--ct-accent); color: var(--ct-accent); border-radius: 3px; padding: 0 6px; }
+.cl-body { display: flex; flex-direction: column; gap: 6px; }
+.cl-line { font-size: 12px; color: var(--ct-text2); }
+.cl-q { font-size: 12px; color: var(--ct-text); background: var(--ct-panel); border-radius: 4px; padding: 4px 8px; }
+.cl-ops { display: flex; gap: 8px; margin-top: 4px; }
 
 /* ---- 作战室布局 ---- */
 .warroom { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
@@ -689,6 +815,10 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .mg-goal { white-space: pre-wrap; font-size: 12px; color: var(--ct-text2); background: var(--ct-panel2); border-radius: 6px; padding: 10px; }
 .mg-empty { color: var(--ct-text3); font-size: 12px; }
 .mg-progress { max-width: 420px; }
+.pc-title { font-size: 11px; color: var(--ct-yellow); margin-top: 4px; }
+.pc-row { display: flex; align-items: center; gap: 10px; font-size: 11px; padding: 6px 0; border-bottom: 1px dotted var(--ct-border); }
+.pc-cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ct-text); }
+.pc-node { color: var(--ct-text3); flex-shrink: 0; }
 .snap-row { display: flex; align-items: center; gap: 10px; font-size: 11px; padding: 6px 0; border-bottom: 1px dotted var(--ct-border); }
 .snap-tag { border: 1px solid currentColor; border-radius: 3px; padding: 0 6px; font-size: 10px; }
 .snap-tag.manual { color: var(--ct-accent); }

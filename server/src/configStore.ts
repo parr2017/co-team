@@ -25,6 +25,16 @@ export function saveModelPool(models: ModelConfig[], root: string = PROJECT_ROOT
   writeRaw(raw, root);
 }
 
+/** feature: 每日问题报告 — persist the UI toggle + report hour into config.yaml. */
+export function saveDailyReport(cfg: { enabled: boolean; hour: number }, root: string = PROJECT_ROOT): void {
+  const raw = readRaw(root);
+  raw.daily_report = {
+    enabled: cfg.enabled === true,
+    hour: Math.min(23, Math.max(0, Math.floor(Number(cfg.hour) || 0))),
+  };
+  writeRaw(raw, root);
+}
+
 // ---------- agent file management ----------
 
 const DEFAULT_PROMPT = (name: string, role: string) =>

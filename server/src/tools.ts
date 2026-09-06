@@ -152,17 +152,57 @@ export function applyToolCalls(workspace: string, toolCalls: { tool: string; pat
   return results;
 }
 
-/** Apply an agent's final output: write files, run whitelisted commands. Mutates output. */
+/**
+ * Apply an agent's final output according to the execution policy (feature: 命令执行分级):
+ * - plan_only: nothing is written or executed — files/commands are returned as a proposal;
+ * - readonly: file writes are held back as proposals; commands stay whitelist-gated;
+ * - approve_required: whitelisted commands run, the rest are parked in output.pending_commands;
+ * - whitelist_auto: legacy behavior — non-whitelisted commands are rejected outright;
+ * - full: everything runs.
+ */
 export function applyFinalOutput(workspace: string, output: Record<string, any>, policy: PermissionPolicy): Record<string, any> {
-  const written = writeFiles(workspace, output.files || []);
-  const commandResults = (output.commands || []).map((c: string) => executeCommand(String(c), workspace, policy));
+  if (policy.level === 'plan_only') {
+    output.plan_only = true;
+    output.proposed = {
+      files: (output.files || []).map((f: { path: string; content?: string }) => ({ path: f.path, bytes: String(f.content ?? '').length })),
+      commands: (output.commands || []).map(String),
+    };
+    output.files = [];
+    output.commands = [];
+    output.command_results = [];
+    output.changes = [];
+    return output;
+  }
+
+  let written: string[] = [];
+  if (policy.level === 'readonly') {
+    output.proposed = {
+      files: (output.files || []).map((f: { path: string; content?: string }) => ({ path: f.path, bytes: String(f.content ?? '').length })),
+      commands: (output.commands || []).map(String),
+    };
+    output.files = [];
+  } else {
+    written = writeFiles(workspace, output.files || []);
+  }
+
+  const commandResults: CommandResult[] = (output.commands || []).map((c: string) => {
+    const command = String(c);
+    if (policy.level === 'full' || canExecute(policy, command)) return executeCommand(command, workspace, policy);
+    if (policy.level === 'approve_required') {
+      // park the command for human approval — the orchestrator blocks node completion on it
+      return { command, allowed: false, needs_approval: true, returncode: -1, stdout: '', stderr: '等待人工审批（执行策略 approve_required）' };
+    }
+    return { command, allowed: false, returncode: -1, stdout: '', stderr: 'command not in whitelist' };
+  });
+  const pendingCommands = commandResults.filter((c) => c.needs_approval).map((c) => c.command);
+  if (pendingCommands.length) output.pending_commands = pendingCommands;
 
   const declared: string[] = output.changes || [];
   const merged = [...new Set([...written, ...declared.map((c: unknown) => String(c))])];
   output.changes = merged;
-  output.command_results = commandResults.map((c: CommandResult) => ({ command: c.command, returncode: c.returncode, stderr: c.stderr.slice(-500), stdout: c.stdout.slice(-4000) }));
+  output.command_results = commandResults.map((c: CommandResult) => ({ command: c.command, needs_approval: c.needs_approval || false, returncode: c.returncode, stderr: c.stderr.slice(-500), stdout: c.stdout.slice(-4000) }));
 
-  const failed = commandResults.filter((c: CommandResult) => c.returncode !== 0);
+  const failed = commandResults.filter((c: CommandResult) => c.returncode !== 0 && !c.needs_approval);
   if (failed.length) {
     output.errors = [...(output.errors || []), ...failed.map((c: CommandResult) => `command failed: ${c.command}: ${c.stderr.slice(-200)}`)];
   }

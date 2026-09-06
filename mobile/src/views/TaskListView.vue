@@ -46,7 +46,7 @@ function sessionTime(ts?: string): string {
 
 /** red-dot: needs my attention (approval / clarification) */
 function needsAttention(t: TaskGraph): boolean {
-  return t.status === 'waiting_approval' || t.status === 'clarifying' || t.nodes.some((n) => n.status === 'waiting_approval');
+  return t.status === 'waiting_approval' || t.status === 'waiting_clarify' || t.status === 'clarifying' || t.nodes.some((n) => n.status === 'waiting_approval' || n.status === 'waiting_clarify');
 }
 
 // project id → name map so rows can show their project tag

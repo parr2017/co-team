@@ -8,7 +8,12 @@ export type TaskStatus =
   | 'failed'
   | 'retrying'
   | 'cancelled'
-  | 'waiting_approval';
+  | 'waiting_approval'
+  /** node-level pre-execution clarification gate (实施前澄清) */
+  | 'waiting_clarify';
+
+/** Per-node pre-execution clarification gate (feature: 每步骤实施前澄清). */
+export type ClarifyMode = 'off' | 'brief' | 'confirm';
 
 export type Complexity = 'simple' | 'normal' | 'complex';
 
@@ -87,6 +92,10 @@ export interface TaskNode {
   branch?: string;
   /** the branch this node's branch was cut from — diff base for node changes */
   branch_base?: string;
+  /** node-level model pin (feature: 每步骤可用不同 LLM); falls back to agent model_override, then pool selection */
+  model_id?: string;
+  /** pre-execution clarification gate for this node; unset → task-level / global default */
+  clarify_mode?: ClarifyMode;
   started_at?: string;
   finished_at?: string;
   created_at: string;
@@ -122,6 +131,10 @@ export interface TaskGraph {
   main_model_id?: string;
   /** task grading level (improvement 7) */
   level?: TaskLevel;
+  /** task-level command execution policy overriding the global config (feature: 命令执行分级) */
+  execution_policy?: { level: string; whitelist_commands?: string[] };
+  /** task-level default for the per-node pre-execution clarification gate */
+  node_clarify?: ClarifyMode;
 }
 
 export interface EventEnvelope {

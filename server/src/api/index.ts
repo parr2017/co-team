@@ -22,6 +22,8 @@ export interface ApiContext {
   orchestrator: Orchestrator;
   modelPool: ModelPool;
   taskQueue: TaskQueueManager;
+  /** feature: 每日问题报告 — scanner handle so the PUT config route can hot-reload it */
+  dailyReportScanner?: { reload(enabled: boolean, hour: number): void };
 }
 
 function validateWorkspace(workspace: string): string {
@@ -164,6 +166,7 @@ export function createApi(ctx: ApiContext): Hono {
     const body = await readJsonAuto<{
       description?: string; request?: string; workspace?: string; auto_run?: boolean; project_id?: string;
       main_model_id?: string; level?: string; skip_clarification?: boolean;
+      execution_policy?: { level?: string; whitelist_commands?: string[] }; node_clarify?: string;
     }>(c);
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
@@ -173,15 +176,21 @@ export function createApi(ctx: ApiContext): Hono {
       const { getProject } = await import('../store');
       if (!(await getProject(body.project_id))) throw new HttpError(404, `project not found: ${body.project_id}`);
     }
+    if (body.node_clarify && !['off', 'brief', 'confirm'].includes(body.node_clarify)) {
+      throw new HttpError(400, 'node_clarify must be off | brief | confirm');
+    }
 
     logger.info('Creating task', {
       description: description.slice(0, 100), workspace, auto_run: body.auto_run,
       main_model_id: body.main_model_id, level: body.level,
+      execution_policy: body.execution_policy?.level, node_clarify: body.node_clarify,
     });
 
     const { taskId, graph, needsClarification, questions, summary, level } = await ctx.orchestrator.createTask(description, workspace, body.project_id, {
       mainModelId: body.main_model_id,
       level: body.level,
+      executionPolicy: body.execution_policy,
+      nodeClarify: body.node_clarify as any,
     });
 
     logger.info('Task created', {
@@ -351,6 +360,78 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'approved', task_id: taskId, node_id: nodeId });
   });
 
+  // feature: 实施前澄清 — 用户查看节点简报后确认/答复，节点回到待执行
+  app.post('/api/tasks/:taskId/nodes/:nodeId/clarify', async (c) => {
+    const taskId = c.req.param('taskId');
+    const nodeId = c.req.param('nodeId');
+    const body = await readJsonAuto<{ approve?: boolean; answers?: { question: string; answer: string }[]; text?: string }>(c);
+    try {
+      const result = await ctx.orchestrator.clarifyNode(taskId, nodeId, body);
+      const graph = await getTaskGraph(taskId);
+      if (result.status === 'pending' && graph) {
+        await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, graph.workspace || '.');
+      }
+      return c.json({ task_id: taskId, node_id: nodeId, ...result });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  // feature: 实施前澄清 — 读取节点简报与用户答复
+  app.get('/api/tasks/:taskId/nodes/:nodeId/clarify', async (c) => {
+    const taskId = c.req.param('taskId');
+    const nodeId = c.req.param('nodeId');
+    const state = await busGet(`task:node:clarify:${taskId}:${nodeId}`);
+    if (!state) throw new HttpError(404, 'no clarify state for this node');
+    return c.json({ task_id: taskId, node_id: nodeId, ...state });
+  });
+
+  // feature: 命令执行分级 — 查看/调整任务的执行策略
+  app.get('/api/tasks/:taskId/policy', async (c) => {
+    const graph = await getTaskGraph(c.req.param('taskId'));
+    if (!graph) throw new HttpError(404, 'task not found');
+    return c.json({ task_id: graph.task_id, execution_policy: graph.execution_policy ?? null });
+  });
+
+  app.put('/api/tasks/:taskId/policy', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await readJsonAuto<{ level?: string | null; whitelist_commands?: string[] }>(c);
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const { isPermissionLevel } = await import('../sandbox');
+    if (body.level !== null && body.level !== undefined && body.level !== '' && !isPermissionLevel(body.level)) {
+      throw new HttpError(400, 'level must be plan_only | readonly | approve_required | whitelist_auto | full');
+    }
+    if (body.level === null || body.level === '') {
+      graph.execution_policy = undefined;
+    } else {
+      graph.execution_policy = {
+        level: isPermissionLevel(body.level) ? body.level : graph.execution_policy?.level || 'approve_required',
+        ...(body.whitelist_commands ? { whitelist_commands: body.whitelist_commands.map(String) } : {}),
+      };
+    }
+    await persistGraph(graph);
+    return c.json({ status: 'updated', task_id: taskId, execution_policy: graph.execution_policy ?? null });
+  });
+
+  // feature: 命令执行分级 — 任务级待审批命令队列
+  app.get('/api/tasks/:taskId/pending-commands', async (c) => {
+    const taskId = c.req.param('taskId');
+    return c.json({ task_id: taskId, commands: (await busGet(`task:pending_commands:${taskId}`)) || [] });
+  });
+
+  app.post('/api/tasks/:taskId/commands/:commandId/approve', async (c) => {
+    const taskId = c.req.param('taskId');
+    const commandId = c.req.param('commandId');
+    const body = await readJsonAuto<{ approved?: boolean }>(c);
+    try {
+      const result = await ctx.orchestrator.resolvePendingCommand(taskId, commandId, body.approved !== false);
+      return c.json({ task_id: taskId, command_id: commandId, ...result });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
   app.get('/api/tasks/:taskId', async (c) => {
     const graph = await getTaskGraph(c.req.param('taskId'));
     if (!graph) throw new HttpError(404, 'task not found');
@@ -471,7 +552,7 @@ export function createApi(ctx: ApiContext): Hono {
   app.put('/api/tasks/:taskId/nodes/:nodeId', async (c) => {
     const taskId = c.req.param('taskId');
     const nodeId = c.req.param('nodeId');
-    const body = await c.req.json<{ name?: string; agent?: string; action?: 'delete' }>();
+    const body = await readJsonAuto<{ name?: string; agent?: string; model_id?: string | null; clarify_mode?: string; action?: 'delete' }>(c);
     const graph = await getTaskGraph(taskId);
     if (!graph) throw new HttpError(404, 'task not found');
     const node = graph.nodes.find((n) => n.id === nodeId);
@@ -487,6 +568,18 @@ export function createApi(ctx: ApiContext): Hono {
           throw new HttpError(400, `unknown agent: ${body.agent}`);
         }
         node.agent = body.agent;
+      }
+      // feature: 每步骤可用不同 LLM — node-level model pin (null/'' clears the pin)
+      if (body.model_id !== undefined) {
+        const modelId = (body.model_id || '').trim();
+        if (modelId && !ctx.modelPool.getModel(modelId)) throw new HttpError(400, `model not in pool: ${modelId}`);
+        node.model_id = modelId || undefined;
+      }
+      if (body.clarify_mode !== undefined) {
+        if (body.clarify_mode && !['off', 'brief', 'confirm'].includes(body.clarify_mode)) {
+          throw new HttpError(400, 'clarify_mode must be off | brief | confirm');
+        }
+        node.clarify_mode = (body.clarify_mode || undefined) as any;
       }
     }
     // keep the auto merge node waiting on every agent node
@@ -780,6 +873,65 @@ export function createApi(ctx: ApiContext): Hono {
         latency_ms: Date.now() - start,
       }, 400);
     }
+  });
+
+  // ---------- feature: 每日问题报告 ----------
+
+  app.get('/api/config/daily-report', (c) => {
+    return c.json(ctx.config.daily_report || { enabled: false, hour: 9 });
+  });
+
+  app.put('/api/config/daily-report', async (c) => {
+    const body = await readJsonAuto<{ enabled?: boolean; hour?: number }>(c);
+    const enabled = body.enabled === true;
+    const hour = Math.min(23, Math.max(0, Math.floor(Number(body.hour ?? 9))));
+    const { saveDailyReport } = await import('../configStore');
+    saveDailyReport({ enabled, hour });
+    ctx.config.daily_report = { enabled, hour };
+    // hot-reload the scanner — the UI switch takes effect immediately
+    ctx.dailyReportScanner?.reload(enabled, hour);
+    return c.json({ status: 'saved', enabled, hour });
+  });
+
+  app.get('/api/reports/daily', async (c) => {
+    const { listDailyReports } = await import('../dailyReport');
+    const limit = Number(c.req.query('limit') || 30);
+    return c.json({ reports: await listDailyReports(Number.isFinite(limit) ? limit : 30) });
+  });
+
+  app.get('/api/reports/daily/:date', async (c) => {
+    const { getDailyReport } = await import('../dailyReport');
+    const report = await getDailyReport(c.req.param('date'));
+    if (!report) throw new HttpError(404, `report not found: ${c.req.param('date')}`);
+    return c.json(report);
+  });
+
+  // 用户决策：忽略 / 立即修复 / 转为修复任务（进入计划评审）
+  app.post('/api/reports/daily/:date/resolve', async (c) => {
+    const date = c.req.param('date');
+    const body = await readJsonAuto<{ item_id?: string; action?: 'fix_now' | 'create_task' | 'skip'; workspace?: string }>(c);
+    if (!body.item_id || !body.action) throw new HttpError(400, 'item_id and action are required');
+    const { getDailyReport, resolveReportItem } = await import('../dailyReport');
+    const report = await getDailyReport(date);
+    if (!report) throw new HttpError(404, `report not found: ${date}`);
+    const item = report.items.find((i) => i.id === body.item_id);
+    if (!item) throw new HttpError(404, 'report item not found');
+
+    let repairTaskId: string | undefined;
+    if (body.action === 'fix_now' || body.action === 'create_task') {
+      // derive a repair task from the report item; workspace comes from the source task
+      let workspace = body.workspace || '';
+      if (!workspace && item.sources[0]?.task_id) {
+        const src = await getTaskGraph(item.sources[0].task_id);
+        workspace = src?.workspace || '';
+      }
+      if (!workspace) throw new HttpError(400, 'workspace is required (no source task workspace found)');
+      const description = `修复问题报告（${date}）：${item.sample.slice(0, 300)}${item.sources[0]?.task_id ? `\n\n来源任务: ${item.sources[0].task_id}` : ''}`;
+      const created = await ctx.orchestrator.createTask(description, workspace, undefined, { level: 'light' });
+      repairTaskId = created.taskId;
+    }
+    const updated = await resolveReportItem(date, body.item_id, body.action, repairTaskId);
+    return c.json({ status: 'resolved', action: body.action, task_id: repairTaskId, report: updated });
   });
 
   // ---------- project progress & cost report (进度成本表) ----------

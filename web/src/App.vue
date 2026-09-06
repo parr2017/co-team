@@ -8,7 +8,10 @@
         </div>
         <nav class="nav mono">
           <button class="nav-tab" :class="{ active: page === 'workbench' }" @click="page = 'workbench'">工作台</button>
-          <button class="nav-tab" :class="{ active: page === 'tasks' }" @click="page = 'tasks'">任务中心</button>
+          <button class="nav-tab" :class="{ active: page === 'tasks' }" @click="page = 'tasks'">
+            任务中心
+            <span v-if="pendingGateCount" class="nav-badge" :title="`${pendingGateCount} 个任务等待你的反馈（审批/澄清/计划评审）`">{{ pendingGateCount }}</span>
+          </button>
           <button class="nav-tab" :class="{ active: page === 'project' }" @click="page = 'project'">项目开发</button>
         </nav>
         <div class="header-right">
@@ -28,6 +31,10 @@
             <div class="page-ops">
               <el-button size="small" @click="roadmapVisible = true">项目路线图</el-button>
               <el-button size="small" @click="knowledgeVisible = true">知识库</el-button>
+              <el-button size="small" @click="dailyReportVisible = true">
+                问题报告
+                <span v-if="pendingGateCount" class="btn-badge">{{ pendingGateCount }}</span>
+              </el-button>
               <el-button size="small" @click="settingsVisible = true">设置</el-button>
               <el-button size="small" @click="refreshStatus(); metricsRef?.refresh()">刷新状态</el-button>
               <el-button size="small" @click="onReloadAgents">重载 Agent</el-button>
@@ -78,6 +85,7 @@
       <PlanReviewDialog :model-value="reviewTaskId !== null" :task-id="reviewTaskId || ''" @close="reviewTaskId = null" @started="onPlanStarted" @cancelled="loadTasks" @changed="loadTasks" />
       <ClarifyDialog :model-value="clarifyTaskId !== null" :task-id="clarifyTaskId || ''" @close="clarifyTaskId = null" @planned="onClarifyPlanned" @cancelled="loadTasks" @changed="loadTasks" />
       <KnowledgeDialog v-model="knowledgeVisible" />
+      <DailyReportDialog v-model="dailyReportVisible" @open-task="(tid: string) => { dailyReportVisible = false; detailTaskId = tid; }" />
       <TaskDetailDialog :model-value="detailTaskId !== null" :task-id="detailTaskId || ''" :live-agents="agents" @close="detailTaskId = null" />
       <RoadmapDialog v-model="roadmapVisible" />
     </div>
@@ -104,6 +112,7 @@ import SettingsDialog from './components/SettingsDialog.vue';
 import PlanReviewDialog from './components/PlanReviewDialog.vue';
 import ClarifyDialog from './components/ClarifyDialog.vue';
 import KnowledgeDialog from './components/KnowledgeDialog.vue';
+import DailyReportDialog from './components/DailyReportDialog.vue';
 import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
 import ProjectView from './components/ProjectView.vue';
@@ -120,6 +129,12 @@ const reviewTaskId = ref<string | null>(null);
 const detailTaskId = ref<string | null>(null);
 const clarifyTaskId = ref<string | null>(null);
 const knowledgeVisible = ref(false);
+const dailyReportVisible = ref(false);
+
+// feature: 实施前澄清 + 快速反馈 —— 等待人工处理的任务数（审批/澄清/计划评审）作为徽标提醒
+const pendingGateCount = computed(
+  () => Object.values(tasks).filter((t) => ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned'].includes(t.status)).length
+);
 
 function openReview(taskId: string) {
   reviewTaskId.value = taskId;
@@ -297,6 +312,8 @@ body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: 
 .nav-tab { font-family: var(--ct-mono); font-size: 12px; color: var(--ct-text3); background: transparent; border: none; border-bottom: 2px solid transparent; padding: 6px 10px; cursor: pointer; }
 .nav-tab.active { color: var(--ct-text); border-bottom-color: var(--ct-accent); }
 .nav-tab:hover { color: var(--ct-text); }
+.nav-badge { display: inline-block; min-width: 16px; text-align: center; font-size: 10px; color: #fff; background: var(--ct-red); border-radius: 8px; padding: 0 4px; margin-left: 4px; vertical-align: 1px; }
+.btn-badge { display: inline-block; min-width: 16px; text-align: center; font-size: 10px; color: #fff; background: var(--ct-red); border-radius: 8px; padding: 0 4px; margin-left: 4px; }
 .header-right { display: flex; align-items: center; gap: 14px; }
 .header-metrics { display: flex; gap: 14px; font-size: 11px; color: var(--ct-text3); }
 .header-metrics b { color: var(--ct-text2); font-weight: 500; }

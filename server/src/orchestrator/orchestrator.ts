@@ -4,7 +4,7 @@ import { generateTaskGraph, PlannedGraph } from './planner';
 import type { ModelPool, ModelEntry } from '../scheduler';
 import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
-import { createSandbox, cleanupSandbox, mergeChanges, PermissionPolicy } from '../sandbox';
+import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
 import { applyFinalOutput, applyToolCalls, listFiles } from '../tools';
 import type { KnowledgeToolContext } from '../tools';
 import * as gitTool from '../git';
@@ -34,9 +34,9 @@ import {
   getProjectMemory,
   addProjectMemory,
 } from '../store';
-import { TaskGraph, TaskNode, TaskStatus, TaskLevel, AgentResult, AgentConversation, ProgressInfo } from '../types';
+import { TaskGraph, TaskNode, TaskStatus, TaskLevel, ClarifyMode, Complexity, AgentResult, AgentConversation, ProgressInfo } from '../types';
 import { getLogger } from '../logger';
-import { assessRequirement, isConfirmation, MAX_CLARIFY_ROUNDS, type ClarifyAnswer } from '../clarify';
+import { assessRequirement, isConfirmation, MAX_CLARIFY_ROUNDS, generateNodeBrief, type ClarifyAnswer, type NodeBrief } from '../clarify';
 import { gradeTask, normalizeLevel, LEVEL_PROFILES } from '../grader';
 import { computeProgress, shouldBroadcast, clearProgressThrottle } from '../progress';
 import { writeKnowledge, relevantKnowledge } from '../knowledge';
@@ -58,6 +58,10 @@ export interface OrchestratorOptions {
   branchWorkflow?: boolean;
   tokenBudget?: number;
   maxFixRounds?: number;
+  /** how long dispatch waits for model capacity (cooldown expiry / slot release) before breaking the glass */
+  modelWaitTimeoutSec?: number;
+  /** global default for the per-node pre-execution clarification gate (feature: 实施前澄清) */
+  nodeClarify?: ClarifyMode;
   /** global SKILL.md library dir (defaults to PROJECT_ROOT/skills) */
   skillsGlobalDir?: string;
 }
@@ -79,6 +83,8 @@ function newNode(base: Record<string, any>, taskId: string): TaskNode {
     needs_human: false,
     reason: String(base.reason ?? ''),
     goal_link: String(base.goal_link ?? ''),
+    model_id: base.model_id ? String(base.model_id) : undefined,
+    clarify_mode: base.clarify_mode ?? undefined,
     branch: '',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -118,6 +124,8 @@ export class Orchestrator {
   private branchWorkflow: boolean;
   private tokenBudget?: number;
   private maxFixRounds: number;
+  private modelWaitTimeoutMs: number;
+  private nodeClarify: ClarifyMode;
   private agentsDir: string;
   private skillsGlobalDir: string;
   private taskTokens = new Map<string, number>();
@@ -136,6 +144,8 @@ export class Orchestrator {
     this.branchWorkflow = opts.branchWorkflow ?? true;
     this.tokenBudget = opts.tokenBudget;
     this.maxFixRounds = opts.maxFixRounds ?? MAX_FIX_ROUNDS;
+    this.modelWaitTimeoutMs = Math.max(0, (opts.modelWaitTimeoutSec ?? 120) * 1000);
+    this.nodeClarify = opts.nodeClarify ?? 'off';
     this.router = new Router([], DEFAULT_RULES, this.makeLlmRouter());
     this.logger.info('Orchestrator initialized', {
       agentsDir: opts.agentsDir,
@@ -189,7 +199,7 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode }
   ): Promise<{ taskId: string; graph: PlannedGraph; needsClarification?: boolean; questions?: string[]; summary?: string; level?: TaskLevel }> {
     this.logger.info('Creating task', { description, workspace, projectId });
 
@@ -225,6 +235,8 @@ export class Orchestrator {
         assessment,
         level,
         main_model_id: mainModelId,
+        execution_policy: opts?.executionPolicy,
+        node_clarify: opts?.nodeClarify,
       });
       const graph = { nodes: [], edges: [], summary: assessment.summary || '' } as PlannedGraph;
       await emitProgress('task_needs_clarification', { task_id: taskId, questions: assessment.questions, missing: assessment.missing });
@@ -233,7 +245,12 @@ export class Orchestrator {
     }
 
     await emitProgress('task_creating', { stage: 'planning', task_id: taskId, description: description.slice(0, 80) });
-    const planned = await this.planAndSave(taskId, description, workspace, projectId, { level, mainModelId });
+    const planned = await this.planAndSave(taskId, description, workspace, projectId, {
+      level,
+      mainModelId,
+      executionPolicy: opts?.executionPolicy,
+      nodeClarify: opts?.nodeClarify,
+    });
     return { taskId, graph: planned.graph, level: planned.level };
   }
 
@@ -243,7 +260,7 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId: string | undefined,
-    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string }
+    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode }
   ): Promise<{ graph: PlannedGraph; level: TaskLevel }> {
     // project mode: agents get up to speed from the project's accumulated memory
     let requestWithContext = description;
@@ -277,6 +294,8 @@ export class Orchestrator {
       project_id: projectId,
       level: opts.level,
       main_model_id: opts.mainModelId,
+      execution_policy: opts.executionPolicy?.level || opts.executionPolicy?.whitelist_commands ? { level: opts.executionPolicy!.level || 'approve_required', whitelist_commands: opts.executionPolicy!.whitelist_commands } : undefined,
+      node_clarify: opts.nodeClarify,
     });
     return { graph: planned, level: opts.level };
   }
@@ -290,7 +309,7 @@ export class Orchestrator {
     if (!graph) throw new Error('Task graph not found');
     if (graph.status !== 'clarifying') return { status: graph.status };
 
-    const state = (await busGet<{ rounds: number; questions: string[]; answers: ClarifyAnswer[]; level: TaskLevel; main_model_id?: string }>(`task:clarify:${taskId}`)) || {
+    const state = (await busGet<{ rounds: number; questions: string[]; answers: ClarifyAnswer[]; level: TaskLevel; main_model_id?: string; execution_policy?: { level?: string; whitelist_commands?: string[] }; node_clarify?: ClarifyMode }>(`task:clarify:${taskId}`)) || {
       rounds: 1,
       questions: [],
       answers: [],
@@ -324,6 +343,8 @@ export class Orchestrator {
       level: state.level,
       mainModelId: state.main_model_id,
       clarifyContext: clarifiedContext || undefined,
+      executionPolicy: state.execution_policy,
+      nodeClarify: state.node_clarify,
     });
     await busSet(`task:clarify:${taskId}`, { ...state, done: true, confirmed_at: new Date().toISOString() });
     await emitProgress('task_clarified', { task_id: taskId, rounds: state.rounds, answers: state.answers.length });
@@ -514,9 +535,12 @@ export class Orchestrator {
     await createSnapshot(taskId, { tag: 'task-start', workspace, sandbox }).catch((e) => this.logger.warn('task-start snapshot failed', { taskId, error: String(e) }));
     await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
 
+    // feature: 命令执行分级 — task-level policy overrides the global default
+    const policy = policyWithLevel(this.policy, graph.execution_policy);
+
     let result: Record<string, any> = { status: 'failed', error: 'execution did not run' };
     try {
-      result = await this.runGraph(taskId, graph, sandbox);
+      result = await this.runGraph(taskId, graph, sandbox, policy);
     } catch (error) {
       this.logger.error('Task execution failed', { taskId, error: String(error) });
       result = { status: 'failed', error: `Execution failed: ${error}` };
@@ -656,7 +680,7 @@ export class Orchestrator {
 
   // ---------- DAG execution ----------
 
-  private async runGraph(taskId: string, graph: TaskGraph, sandbox: string): Promise<Record<string, any>> {
+  private async runGraph(taskId: string, graph: TaskGraph, sandbox: string, policy: PermissionPolicy): Promise<Record<string, any>> {
     const upstream = new Map<string, string[]>();
     for (const node of graph.nodes) upstream.set(node.id, []);
     for (const [src, dst] of graph.edges) upstream.get(dst)?.push(src);
@@ -697,7 +721,7 @@ export class Orchestrator {
         }
       }
 
-      await Promise.all(runnable.map((node) => this.executeNode(taskId, graph, node, sandbox, maxWorkers)));
+      await Promise.all(runnable.map((node) => this.executeNode(taskId, graph, node, sandbox, maxWorkers, policy)));
 
       // improvement 4: keep STATUS_REPORT in sync after every execution wave
       // improvement 6: node transitions are milestones — broadcast progress (throttled)
@@ -727,10 +751,11 @@ export class Orchestrator {
       return { status: 'cancelled' };
     }
 
-    // guard: never report success while some nodes are still waiting for approval
+    // guard: never report success while some nodes still wait on a human gate or run
     // (they are no longer 'pending', so the ready-loop above exits without touching them)
-    if (graph.nodes.some((n) => n.status === 'waiting_approval' || n.status === 'running' || n.status === 'retrying')) {
-      return { status: 'waiting_approval', changes: [] };
+    const humanGate = graph.nodes.find((n) => n.status === 'waiting_clarify' || n.status === 'waiting_approval');
+    if (humanGate || graph.nodes.some((n) => n.status === 'running' || n.status === 'retrying')) {
+      return { status: humanGate?.status === 'waiting_clarify' ? 'waiting_clarify' : 'waiting_approval', changes: [] };
     }
 
     const completed = graph.nodes.filter((n) => n.status === 'completed');
@@ -772,9 +797,9 @@ export class Orchestrator {
   // ---------- single node ----------
 
   /** Safety wrapper: a node must ALWAYS land on a terminal status, even if the inner pipeline throws. */
-  private async executeNode(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, workers: number): Promise<void> {
+  private async executeNode(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, workers: number, policy: PermissionPolicy): Promise<void> {
     try {
-      await this.executeNodeInner(taskId, graph, node, sandbox, workers);
+      await this.executeNodeInner(taskId, graph, node, sandbox, workers, policy);
     } catch (e: any) {
       if (node.status === 'completed' || node.status === 'cancelled') return;
       this.logger.error('Node execution crashed unexpectedly', { taskId, nodeId: node.id, error: String(e) });
@@ -787,7 +812,7 @@ export class Orchestrator {
     }
   }
 
-  private async executeNodeInner(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, _workers: number): Promise<void> {
+  private async executeNodeInner(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, _workers: number, policy: PermissionPolicy): Promise<void> {
     this.logger.nodeStart(taskId, node.id, node.agent, node.name);
     
     node.status = 'running';
@@ -816,6 +841,38 @@ export class Orchestrator {
       node.error = `Agent ${node.agent} not found`;
       await persistGraph(graph);
       await emitProgress('node_error', { task_id: taskId, node_id: node.id, error: node.error });
+      return;
+    }
+
+    // feature: 实施前澄清门 — brief/confirm 模式下节点首次执行前先给用户一份实施简报，
+    // 用户确认（或补充答复）后节点才会真正开始实施
+    const clarifyMode = node.clarify_mode || graph.node_clarify || this.nodeClarify;
+    const alreadyClarified = await busGet(`task:node:clarified:${taskId}:${node.id}`);
+    if (clarifyMode && clarifyMode !== 'off' && !alreadyClarified) {
+      const brief = await generateNodeBrief({
+        taskDescription: graph.description || '',
+        nodeName: node.name,
+        nodeReason: node.reason,
+        goal: (await busGet<{ content: string }>(`task:goal:${taskId}`))?.content || '',
+        upstream: await this.upstreamContext(taskId, node),
+      }, this.pool);
+      await busSet(`task:node:clarify:${taskId}:${node.id}`, { mode: clarifyMode, brief, ts: new Date().toISOString(), answers: [] as ClarifyAnswer[] });
+      node.status = 'waiting_clarify';
+      await persistGraph(graph);
+      await appendJournal(taskId, plugin.name, {
+        role: 'master',
+        kind: 'brief',
+        text: `实施前澄清（${clarifyMode === 'confirm' ? '需用户确认' : '实施简报'}）：\n${brief.approach}` +
+          (brief.files.length ? `\n预计改动: ${brief.files.join(', ')}` : '') +
+          (brief.risks.length ? `\n风险: ${brief.risks.join('; ')}` : '') +
+          (brief.questions.length ? `\n待确认问题:\n${brief.questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}` : ''),
+        ts: new Date().toISOString(),
+        node_id: node.id,
+        node_name: node.name,
+        meta: { brief },
+      });
+      await emitProgress('node_awaiting_clarify', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, mode: clarifyMode, brief });
+      notify('node_awaiting_clarify', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」等待实施前澄清，请查看简报并确认`);
       return;
     }
 
@@ -855,7 +912,7 @@ export class Orchestrator {
         await persistGraph(graph);
         await emitProgress('node_retry', { task_id: taskId, node_id: node.id, attempt: attempt + 1 });
       }
-      const result = await this.dispatch(taskId, node, plugin, sandbox, false, error, `第 ${attempt + 1} 次尝试`);
+      const result = await this.dispatch(taskId, node, plugin, sandbox, false, error, `第 ${attempt + 1} 次尝试`, undefined, policy);
       if (result.status === 'success') {
         // improvement 8: test-fix loop — a failing test command blocks the commit and
         // triggers a targeted repair round instead of accepting broken code
@@ -907,11 +964,6 @@ export class Orchestrator {
         }
         this.logger.nodeComplete(taskId, node.id, node.agent);
 
-        node.status = 'completed';
-        node.finished_at = new Date().toISOString();
-        node.result = result;
-        node.error = '';
-        await saveDeliverable(taskId, node).catch(() => {});
         // improvement 8 (R9): a test-fix loop that ends green reports its rounds + zero failures
         if (fixRound > 0) {
           result.report = {
@@ -921,14 +973,7 @@ export class Orchestrator {
             summary: `测试修复循环 ${fixRound} 轮后全部通过`,
           };
         }
-        if (useBranch && node.branch) {
-          const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name}`, result.changes || []).catch(() => null);
-          if (commit && node.result) (node.result as AgentResult).git_commit = { branch: node.branch, commit };
-        }
-        await this.captureNodeDiff(taskId, node, sandbox);
-        await persistGraph(graph);
-        await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
-        await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: result.summary || '' });
+        await this.finalizeNodeSuccess(taskId, graph, node, result, useBranch, sandbox, false);
         return;
       }
       error = result.error || 'unknown error';
@@ -937,41 +982,171 @@ export class Orchestrator {
 
     // escalation: main agent takes over with an adjusted strategy
     await emitProgress('node_escalate', { task_id: taskId, node_id: node.id, name: node.name, error });
-    const result = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 接管');
+    const result = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 接管', undefined, policy);
     if (result.status === 'success') {
-      node.status = 'completed';
-      node.finished_at = new Date().toISOString();
-      node.result = { ...result, escalated: true };
-      node.error = '';
-      await saveDeliverable(taskId, node).catch(() => {});
-      if (useBranch && node.branch) {
-        const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name} (escalated)`, result.changes || []).catch(() => null);
-        if (commit) (node.result as any).git_commit = { branch: node.branch, commit };
-      }
-      await this.captureNodeDiff(taskId, node, sandbox);
-      await persistGraph(graph);
-      await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
-      await emitProgress('node_complete', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch, changes: result.changes || [], summary: (result.summary || '') + '（主 Agent 接管后完成）' });
+      await this.finalizeNodeSuccess(taskId, graph, node, result, useBranch, sandbox, true);
       return;
+    }
+
+    // 主 Agent 兜底（feature: 降级策略优化）：接管也失败且败因是模型不可用时，
+    // 用任务主模型或任意剩余容量执行最后一次——主 Agent 永远在线，不应因模型池空转而弃疗
+    let finalResult = result;
+    if (this.pool && /no available model|all models failed/i.test(result.error || error)) {
+      const mainEntry = (graph.main_model_id ? this.pool.getModel(graph.main_model_id) : null) || this.pool.emergencyCandidates()[0] || null;
+      if (mainEntry) {
+        this.logger.warn('Main-agent fallback takeover', { taskId, nodeId: node.id, model: mainEntry.name });
+        await appendJournal(taskId, plugin.name, {
+          role: 'master',
+          kind: 'brief',
+          text: `主 Agent 兜底接管：常规调度与降级链均不可用，改用模型「${mainEntry.name}」执行本节点`,
+          ts: new Date().toISOString(),
+          node_id: node.id,
+          node_name: node.name,
+        });
+        await emitProgress('node_main_takeover', { task_id: taskId, node_id: node.id, name: node.name, model: mainEntry.name });
+        finalResult = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 兜底', mainEntry, policy);
+        if (finalResult.status === 'success') {
+          await this.finalizeNodeSuccess(taskId, graph, node, finalResult, useBranch, sandbox, true);
+          return;
+        }
+      }
     }
 
     node.status = 'failed';
     node.finished_at = new Date().toISOString();
-    node.error = result.error || error;
-    node.result = fixReport ? { ...result, report: fixReport } : result;
+    node.error = finalResult.error || error;
+    node.result = fixReport ? { ...finalResult, report: fixReport } : finalResult;
     node.needs_human = true;
     await saveDeliverable(taskId, node).catch(() => {});
-    
+
     this.logger.nodeFailed(taskId, node.id, node.agent, node.error);
-    
+
     await persistGraph(graph);
-    await this.recordAgentLife(taskId, graph, node, false, result.tokens || 0);
+    await this.recordAgentLife(taskId, graph, node, false, finalResult.tokens || 0);
     await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
     notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」重试与接管均失败，需要人工介入`);
   }
 
-  /** Agent life: update its persistent profile and write a lesson to its memory. */
-  private async recordAgentLife(taskId: string, graph: TaskGraph, node: TaskNode, success: boolean, tokens: number): Promise<void> {
+  /** Shared success tail: persist result, commit branch, capture diff, bookkeeping.
+   *  approve_required 策略下暂存的命令在节点完成的同时登记到任务级待审批队列。 */
+  private async finalizeNodeSuccess(taskId: string, graph: TaskGraph, node: TaskNode, result: AgentResult, useBranch: boolean, sandbox: string, escalated: boolean): Promise<void> {
+    node.status = 'completed';
+    node.finished_at = new Date().toISOString();
+    node.result = escalated ? { ...result, escalated: true } : result;
+    node.error = '';
+    const pendingCommands = ((result as Record<string, any>).pending_commands || []) as string[];
+    if (pendingCommands.length) await this.registerPendingCommands(taskId, node, pendingCommands);
+    await saveDeliverable(taskId, node).catch(() => {});
+    if (useBranch && node.branch) {
+      const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name}${escalated ? ' (escalated)' : ''}`, result.changes || []).catch(() => null);
+      if (commit && node.result) (node.result as AgentResult).git_commit = { branch: node.branch, commit };
+    }
+    await this.captureNodeDiff(taskId, node, sandbox);
+    await persistGraph(graph);
+    await this.recordAgentLife(taskId, graph, node, true, result.tokens || 0);
+    await emitProgress('node_complete', {
+      task_id: taskId,
+      node_id: node.id,
+      name: node.name,
+      agent: node.agent,
+      branch: node.branch,
+      changes: result.changes || [],
+      summary: (result.summary || '') + (escalated ? '（主 Agent 接管后完成）' : ''),
+      ...(pendingCommands.length ? { pending_commands: pendingCommands.length } : {}),
+    });
+  }
+
+  /** feature: 命令执行分级 — 登记 approve_required 策略下等待人工审批的命令。 */
+  private async registerPendingCommands(taskId: string, node: TaskNode, commands: string[]): Promise<void> {
+    const key = `task:pending_commands:${taskId}`;
+    const queue = (await busGet<{ id: string; node_id: string; node_name: string; command: string; ts: string }[]>(key)) || [];
+    for (const command of commands) {
+      queue.push({ id: Math.random().toString(36).slice(2, 10), node_id: node.id, node_name: node.name, command, ts: new Date().toISOString() });
+    }
+    await busSet(key, queue);
+    await emitProgress('command_pending_approval', { task_id: taskId, node_id: node.id, node_name: node.name, commands });
+    notify('command_pending_approval', { task_id: taskId, node_id: node.id }, `[Co-Team] 任务 ${taskId} 有 ${commands.length} 条命令等待审批（执行策略 approve_required）`);
+  }
+
+  /** feature: 命令执行分级 — 用户批准/拒绝一条待审批命令；批准后在任务工作区执行并留痕。 */
+  async resolvePendingCommand(taskId: string, commandId: string, approved: boolean): Promise<{ ok: boolean; returncode?: number }> {
+    const graph = await loadGraph(taskId);
+    if (!graph) throw new Error('Task graph not found');
+    const key = `task:pending_commands:${taskId}`;
+    const queue = (await busGet<{ id: string; node_id: string; node_name: string; command: string; ts: string }[]>(key)) || [];
+    const idx = queue.findIndex((q) => q.id === commandId);
+    if (idx === -1) throw new Error('pending command not found');
+    const [item] = queue.splice(idx, 1);
+    await busSet(key, queue);
+
+    if (!approved) {
+      await appendJournal(taskId, 'orchestrator', {
+        role: 'master',
+        kind: 'error',
+        text: `命令已拒绝（未执行）：${item.command}`,
+        ts: new Date().toISOString(),
+        node_id: item.node_id,
+        node_name: item.node_name,
+      });
+      await emitProgress('command_resolved', { task_id: taskId, command_id: item.id, approved: false, command: item.command });
+      return { ok: true };
+    }
+
+    const policy = policyWithLevel(this.policy, graph.execution_policy);
+    const result = await executeCommandAsync(item.command, graph.workspace || '.', policy);
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master',
+      kind: 'tool_results',
+      text: `已批准执行：${item.command}\n退出码 ${result.returncode}` +
+        (result.stdout ? `\nstdout: ${result.stdout.slice(-800)}` : '') +
+        (result.stderr ? `\nstderr: ${result.stderr.slice(-400)}` : ''),
+      ts: new Date().toISOString(),
+      node_id: item.node_id,
+      node_name: item.node_name,
+      meta: { command: item.command, returncode: result.returncode },
+    });
+    await emitProgress('command_resolved', { task_id: taskId, command_id: item.id, approved: true, command: item.command, returncode: result.returncode });
+    return { ok: true, returncode: result.returncode };
+  }
+
+  /** feature: 实施前澄清 — 记录用户对节点简报的确认/答复，节点回到待执行状态。 */
+  async clarifyNode(taskId: string, nodeId: string, input: { approve?: boolean; answers?: { question: string; answer: string }[]; text?: string }): Promise<{ status: string }> {
+    const graph = await loadGraph(taskId);
+    if (!graph) throw new Error('Task graph not found');
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node) throw new Error('node not found');
+    if (node.status !== 'waiting_clarify') return { status: node.status };
+
+    const key = `task:node:clarify:${taskId}:${nodeId}`;
+    const state = (await busGet<{ mode: ClarifyMode; brief: NodeBrief; answers: ClarifyAnswer[] }>(key)) || {
+      mode: 'brief' as ClarifyMode,
+      brief: { approach: '', files: [], risks: [], questions: [] } as NodeBrief,
+      answers: [] as ClarifyAnswer[],
+    };
+    for (const a of input.answers || []) {
+      if (a.answer?.trim()) state.answers.push({ question: a.question || '', answer: a.answer.trim() });
+    }
+    if (input.text?.trim()) state.answers.push({ question: '(补充说明)', answer: input.text.trim() });
+    await busSet(key, state);
+    await busSet(`task:node:clarified:${taskId}:${nodeId}`, true);
+
+    const answered = state.answers.map((a) => `- ${a.question} → ${a.answer}`).join('\n');
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master',
+      kind: 'intervene',
+      text: `节点「${node.name}」澄清确认：${input.approve === true ? '用户确认按简报执行' : '用户补充了说明后继续'}${answered ? `\n${answered}` : ''}`,
+      ts: new Date().toISOString(),
+      node_id: node.id,
+      node_name: node.name,
+    });
+    await emitProgress('node_clarified', { task_id: taskId, node_id: node.id, name: node.name, approved: input.approve === true });
+
+    node.status = 'pending';
+    await persistGraph(graph);
+    return { status: 'pending' };
+  }
+
+  /** Agent life: update its persistent profile and write a lesson to its memory. */  private async recordAgentLife(taskId: string, graph: TaskGraph, node: TaskNode, success: boolean, tokens: number): Promise<void> {
     if (node.agent === 'orchestrator') return;
     try {
       await recordAgentTask(node.agent, {
@@ -1102,7 +1277,60 @@ export class Orchestrator {
     await emitProgress('node_complete', { task_id: graph.task_id, node_id: node.id, name: node.name, agent: node.agent, changes: [], summary: node.result.summary });
   }
 
-  private async dispatch(taskId: string, node: TaskNode, plugin: AgentPlugin, workspace: string, escalate: boolean, lastError: string, attemptLabel: string): Promise<AgentResult> {
+  /**
+   * Primary-model resolution (features: 每步骤可用不同 LLM / 降级策略优化):
+   * node pin → agent model_override → dynamic selection; on empty selection wait for
+   * capacity, then break the cooldown glass. A node must not fail while any model
+   * could still run it.
+   */
+  private async resolvePrimary(taskId: string, node: TaskNode, plugin: AgentPlugin): Promise<ModelEntry | null> {
+    if (!this.pool) return null;
+    const nodePin = node.model_id ? this.pool.getModel(node.model_id) : null;
+    if (node.model_id && !nodePin) {
+      this.logger.warn('Node-pinned model not in pool, falling back', { taskId, nodeId: node.id, model: node.model_id });
+    }
+    if (plugin.modelOverride && !this.pool.getModel(plugin.modelOverride)) {
+      this.logger.warn('Agent model_override not in pool, falling back to dynamic selection', { taskId, nodeId: node.id, agent: plugin.name, model: plugin.modelOverride });
+    }
+    let primary = nodePin || (plugin.modelOverride ? this.pool.getModel(plugin.modelOverride) : null);
+    if (!primary) primary = this.pool.selectModel(plugin.tags, node.complexity);
+    if (!primary) primary = await this.waitForModel(taskId, plugin.tags, node.complexity);
+    if (!primary) {
+      primary = this.pool.emergencyCandidates()[0] || null;
+      if (primary) {
+        this.logger.warn('All healthy models exhausted — breaking cooldown glass', { taskId, nodeId: node.id, model: primary.name, failCount: primary.failCount });
+      }
+    }
+    return primary;
+  }
+
+  /** Poll for model capacity (cooldown expiry / slot release) instead of failing immediately. */
+  private async waitForModel(taskId: string, tags: string[], complexity: Complexity): Promise<ModelEntry | null> {
+    if (!this.pool || this.modelWaitTimeoutMs <= 0) return null;
+    const deadline = Date.now() + this.modelWaitTimeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (await isCancelled(taskId)) return null;
+      const m = this.pool.selectModel(tags, complexity);
+      if (m) {
+        this.logger.info('Model became available after wait', { taskId, model: m.name, waitedMs: this.modelWaitTimeoutMs - (deadline - Date.now()) });
+        return m;
+      }
+    }
+    return null;
+  }
+
+  private async dispatch(
+    taskId: string,
+    node: TaskNode,
+    plugin: AgentPlugin,
+    workspace: string,
+    escalate: boolean,
+    lastError: string,
+    attemptLabel: string,
+    forceEntry?: ModelEntry,
+    policy: PermissionPolicy = this.policy
+  ): Promise<AgentResult> {
     try {
       await this.checkBudget(taskId);
     } catch (e: any) {
@@ -1114,15 +1342,19 @@ export class Orchestrator {
       return { status: 'failed', error: 'No available model' };
     }
 
-    const primary = this.pool.selectModel(plugin.tags, node.complexity);
-    if (!primary) {
-      this.logger.error('No model available for agent', { taskId, nodeId: node.id, agent: plugin.name });
-      return { status: 'failed', error: 'No available model' };
+    let chain: ModelEntry[];
+    if (forceEntry) {
+      chain = [forceEntry];
+    } else {
+      const primary = await this.resolvePrimary(taskId, node, plugin);
+      if (!primary) {
+        this.logger.error('No model available even after wait & emergency bypass', { taskId, nodeId: node.id, agent: plugin.name });
+        return { status: 'failed', error: 'No available model' };
+      }
+      chain = this.pool.fallbackChain(primary, plugin.tags);
     }
 
-    this.logger.agentDispatch(taskId, node.id, plugin.name, primary.name);
-    
-    const chain = this.pool.fallbackChain(primary, plugin.tags);
+    this.logger.agentDispatch(taskId, node.id, plugin.name, chain[0].name);
     let lastErr = '';
     let triedCount = 0;
     // content failures (parse/schema/refusal) are usually not model-specific: retry the
@@ -1142,7 +1374,7 @@ export class Orchestrator {
       }
       triedCount++;
       try {
-        const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastErr || lastError, attemptLabel);
+        const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastErr || lastError, attemptLabel, policy);
         if (result.status === 'success') {
           this.pool.markSuccess(entry);
           this.logger.agentResponse(taskId, node.id, plugin.name, result.tokens || 0);
@@ -1206,7 +1438,8 @@ export class Orchestrator {
     workspace: string,
     escalate: boolean,
     lastError: string,
-    attemptLabel: string
+    attemptLabel: string,
+    policy: PermissionPolicy = this.policy
   ): Promise<AgentResult> {
     const context = await this.upstreamContext(taskId, node);
     const workspaceFiles = listFiles(workspace, 50).join(', ');
@@ -1276,6 +1509,15 @@ export class Orchestrator {
       ? `\n\n## 用户介入指示（必须响应，并在汇报中说明如何落实）\n${interventions.map((m, i) => `${i + 1}. ${m.message}`).join('\n')}`
       : '';
 
+    // feature: 实施前澄清 — 用户确认过的简报与答复作为强制上下文注入
+    const nodeClarifyState = await busGet<{ brief: NodeBrief; answers: ClarifyAnswer[] }>(`task:node:clarify:${taskId}:${node.id}`);
+    const clarifyBlock = nodeClarifyState
+      ? '\n\n## 实施前澄清（用户已确认，必须按此执行）' +
+        (nodeClarifyState.brief?.approach ? `\n实施思路: ${nodeClarifyState.brief.approach}` : '') +
+        (nodeClarifyState.brief?.files?.length ? `\n预计改动: ${nodeClarifyState.brief.files.join(', ')}` : '') +
+        (nodeClarifyState.answers?.length ? `\n用户答复:\n${nodeClarifyState.answers.map((a) => `- ${a.question} → ${a.answer}`).join('\n')}` : '')
+      : '';
+
     const userMsg = [
       `工作目录: ${workspace}`,
       `现有文件: ${workspaceFiles}`,
@@ -1283,6 +1525,7 @@ export class Orchestrator {
       node.goal_link ? `对全局目标的贡献: ${node.goal_link}` : '',
       `节点复杂度: ${node.complexity}`,
       context ? `前置节点成果:\n${context}\n` : '',
+      clarifyBlock,
       escalationBlock,
       fixContextBlock,
       interveneBlock,
@@ -1491,7 +1734,7 @@ export class Orchestrator {
       }
 
       let result: AgentResult = parsed as AgentResult;
-      result = applyFinalOutput(workspace, result as Record<string, any>, this.policy) as AgentResult;
+      result = applyFinalOutput(workspace, result as Record<string, any>, policy) as AgentResult;
       result = plugin.handler.postRun ? plugin.handler.postRun(result) : result;
       delete (result as Record<string, any>).tool_calls;
       result.tokens = record.tokens;

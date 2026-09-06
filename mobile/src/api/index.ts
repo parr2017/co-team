@@ -25,7 +25,7 @@ function post<T>(url: string, payload?: unknown): Promise<T> {
 
 export type TaskStatus =
   | 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'success'
-  | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
+  | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval' | 'waiting_clarify';
 
 export interface TaskNode {
   id: string;
@@ -273,7 +273,7 @@ export const api = {
 export function statusLabel(s: string): string {
   return ({
     planned: '待确认计划', clarifying: '需求需澄清', pending: '待执行', queued: '排队中', running: '执行中',
-    completed: '已完成', success: '已完成', failed: '失败', waiting_approval: '待审批',
+    completed: '已完成', success: '已完成', failed: '失败', waiting_approval: '待审批', waiting_clarify: '待澄清',
     retrying: '重试中', cancelled: '已取消',
   } as Record<string, string>)[s] || s;
 }

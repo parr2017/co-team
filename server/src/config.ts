@@ -13,6 +13,10 @@ export interface OrchestrationConfig {
   max_fix_rounds?: number;
   /** improvement 5 (R5): hours before a 'clarifying' task gets a timeout reminder */
   clarify_timeout_hours?: number;
+  /** feature: 降级策略优化 — seconds dispatch waits for model capacity before breaking the glass */
+  model_wait_timeout_sec?: number;
+  /** feature: 实施前澄清 — global default clarify gate: off | brief | confirm */
+  node_clarify?: 'off' | 'brief' | 'confirm';
 }
 
 export interface AppConfig {
@@ -31,6 +35,8 @@ export interface AppConfig {
   };
   /** custom grading keywords (improvement 7 / R6), appended to built-in rules */
   grading?: { heavy?: string[]; light?: string[] };
+  /** feature: 每日问题报告 — disabled by default; only reports when explicitly enabled */
+  daily_report?: { enabled: boolean; hour: number };
   /** feishu bot (event subscription mode); secrets come from COTEAM_FEISHU_* env vars */
   feishu?: FeishuConfig;
 }
@@ -67,6 +73,10 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       max_fix_rounds: raw.orchestrator?.max_fix_rounds,
       // improvement 5 (R5): tasks stuck in 'clarifying' longer than this get a one-shot reminder
       clarify_timeout_hours: raw.orchestrator?.clarify_timeout_hours ?? 24,
+      // feature: 降级策略优化 — wait for capacity instead of failing the node instantly
+      model_wait_timeout_sec: raw.orchestrator?.model_wait_timeout_sec ?? 120,
+      // feature: 实施前澄清 — off by default; 'brief' | 'confirm' turn the gate on globally
+      node_clarify: ['off', 'brief', 'confirm'].includes(raw.orchestrator?.node_clarify) ? raw.orchestrator.node_clarify : 'off',
     },
     permissions: raw.permissions || {},
     redis: raw.redis || { host: '127.0.0.1', port: 6379, db: 0 },
@@ -78,6 +88,11 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       stale_days: raw.knowledge?.stale_days ?? 90,
     },
     grading: raw.grading || undefined,
+    daily_report: {
+      // feature: 每日问题报告 — 默认关闭，界面开关打开后才会触发
+      enabled: raw.daily_report?.enabled === true,
+      hour: Number.isFinite(raw.daily_report?.hour) ? Math.min(23, Math.max(0, Number(raw.daily_report.hour))) : 9,
+    },
     // secrets never live in config.yaml — environment variables win
     feishu: raw.feishu
       ? {

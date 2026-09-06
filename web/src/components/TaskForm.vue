@@ -34,6 +34,25 @@
         <span class="opt-hint">创建后锁定，任务全程使用；可随时在详情中手动更换</span>
       </div>
     </div>
+    <div class="form-row opts-row">
+      <div class="opt">
+        <span class="opt-label">执行策略</span>
+        <el-select v-model="policy" size="small" style="width: 150px">
+          <el-option label="跟随全局设置" value="" />
+          <el-option v-for="lv in PERMISSION_LEVELS" :key="lv" :label="PERMISSION_LEVEL_LABELS[lv]" :value="lv" />
+        </el-select>
+        <span class="opt-hint">控制 Agent 命令/文件写入的自主程度</span>
+      </div>
+      <div class="opt">
+        <span class="opt-label">实施前澄清</span>
+        <el-select v-model="nodeClarify" size="small" style="width: 150px">
+          <el-option label="关闭" value="off" />
+          <el-option label="简报确认（推荐）" value="brief" />
+          <el-option label="逐步确认" value="confirm" />
+        </el-select>
+        <span class="opt-hint">每个步骤实施前先给简报，经你确认再动手</span>
+      </div>
+    </div>
     <div class="form-hint">{{ hint }}</div>
 
     <el-dialog v-model="pickerVisible" title="选择工作目录" width="620px">
@@ -61,7 +80,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { api, type FsListing } from '../api';
+import { api, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type FsListing } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
 const description = ref('');
@@ -83,8 +102,11 @@ watch(createStage, (stage) => {
 watch(submitting, (on) => { if (!on && createStage.value) createStage.value = ''; });
 
 // improvement 7: task grading; improvement 11: main-agent model pinning
+// features: 命令执行分级 + 实施前澄清
 const level = ref('auto');
 const mainModel = ref('');
+const policy = ref('');
+const nodeClarify = ref('brief');
 const modelOptions = ref<{ name: string; healthy: boolean; label: string }[]>([]);
 const modelsLoading = ref(false);
 
@@ -156,6 +178,8 @@ async function submit() {
     const d = await api.createTask(description.value.trim(), workspace.value.trim(), false, undefined, {
       level: level.value === 'auto' ? undefined : level.value,
       mainModelId: mainModel.value || undefined,
+      executionPolicy: policy.value ? { level: policy.value } : undefined,
+      nodeClarify: nodeClarify.value === 'off' ? undefined : nodeClarify.value,
     });
     if (d.status === 'needs_clarification') {
       hint.value = `[?] 需求不够清晰，请回答澄清问题: ${d.task_id}`;

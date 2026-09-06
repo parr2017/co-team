@@ -139,9 +139,9 @@ export class TaskQueueManager {
     const key = this.taskLane.get(taskId);
     const lane = key ? this.lanes.get(key) : undefined;
     if (!key || !lane || lane.running !== taskId) return;
-    // waiting_approval: the task is paused on a human gate, it keeps the lane slot;
-    // approving a node relaunches it through enqueue() with the slot still held
-    if (status === 'waiting_approval') return;
+    // waiting_approval / waiting_clarify: the task is paused on a human gate, it keeps
+    // the lane slot; approving/clarifying relaunches it through enqueue() with the slot held
+    if (status === 'waiting_approval' || status === 'waiting_clarify') return;
     lane.running = null;
     if (status === 'failed') {
       lane.blocked = true;

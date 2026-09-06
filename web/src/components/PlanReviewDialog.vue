@@ -28,6 +28,25 @@
             >
               <el-option v-for="a in agentOptions" :key="a" :label="a" :value="a" />
             </el-select>
+            <!-- feature: 每步骤可用不同 LLM -->
+            <el-select
+              v-if="n._editing"
+              :model-value="n.model_id || ''"
+              size="small"
+              style="width: 190px"
+              placeholder="模型：自动调度"
+              @update:model-value="(v: string) => (n.model_id = v || undefined)"
+            >
+              <el-option label="自动调度" value="" />
+              <el-option v-for="m in modelOptions" :key="m.name" :label="m.name" :value="m.name">
+                <span class="model-opt">
+                  <i class="dot" :class="m.healthy ? 'on' : 'off'"></i>
+                  {{ m.name }}
+                  <span class="model-hint mono">{{ m.tags }}</span>
+                </span>
+              </el-option>
+            </el-select>
+            <span v-if="!n._editing && n.model_id" class="model-badge mono" :title="`指定模型 ${n.model_id}`">⚡ {{ n.model_id }}</span>
             <span v-if="n.requires_approval" class="stamp mono">APPROVAL</span>
             <span v-if="n._deleted" class="stamp mono del">REMOVED</span>
             <span v-else-if="!n._editing" class="branch mono">{{ branchOf(n) }}</span>
@@ -89,6 +108,7 @@ interface EditableNode {
   agent: string;
   reason: string;
   requires_approval: boolean;
+  model_id?: string;
   _editing?: boolean;
   _deleted?: boolean;
   _agentPicked?: boolean;
@@ -102,6 +122,7 @@ const feedback = ref('');
 const replanning = ref(false);
 const approving = ref(false);
 const agentOptions = ref<string[]>([]);
+const modelOptions = ref<{ name: string; healthy: boolean; tags: string }[]>([]);
 
 function statusLabel(s?: string) {
   return ({ planned: '待确认', pending: '待执行', running: '执行中', success: '已完成', failed: '失败', cancelled: '已取消', waiting_approval: '待审批' } as Record<string, string>)[s || ''] || s || '';
@@ -118,6 +139,18 @@ async function onOpen() {
   } catch {
     agentOptions.value = ['orchestrator', 'dev'];
   }
+  // feature: 每步骤可用不同 LLM — 模型池选项带健康状态与能力标签
+  try {
+    const d = await api.getModelPool();
+    const health = (d as any).health || {};
+    modelOptions.value = d.model_pool.map((m) => ({
+      name: m.name,
+      healthy: health[m.name]?.healthy !== false,
+      tags: (m.tags || []).join('·'),
+    }));
+  } catch {
+    modelOptions.value = [];
+  }
 }
 
 async function reload() {
@@ -125,20 +158,19 @@ async function reload() {
   graph.value = d;
   editableNodes.value = d.nodes
     .filter((n) => n.id !== 'merge-auto')
-    .map((n) => ({ id: n.id, name: n.name, agent: n.agent, reason: n.reason || '', requires_approval: n.requires_approval }));
+    .map((n) => ({ id: n.id, name: n.name, agent: n.agent, reason: n.reason || '', requires_approval: n.requires_approval, model_id: (n as any).model_id }));
 }
 
 const liveCount = computed(() => editableNodes.value.filter((n) => !n._deleted).length);
 
 function toggleEdit(n: EditableNode) {
   if (n._editing) {
-    const orig = n._original || { name: n.name, agent: n.agent };
-    void applyNode(n, { name: n.name, agent: n.agent });
+    void applyNode(n, { name: n.name, agent: n.agent, model_id: n.model_id ?? null });
   }
   n._editing = !n._editing;
 }
 
-async function applyNode(n: EditableNode, patch: { name?: string; agent?: string }) {
+async function applyNode(n: EditableNode, patch: { name?: string; agent?: string; model_id?: string | null }) {
   try {
     await api.updateNode(props.taskId, n.id, patch);
     n._original = { name: n.name, agent: n.agent };
@@ -251,6 +283,12 @@ async function cancelTask() {
 .entry-name-input { width: 320px; }
 .entry-agent { color: var(--ct-accent); font-size: 11px; }
 .entry-agent.orchestrator { color: var(--ct-text3); }
+.model-badge { font-size: 10px; color: var(--ct-accent); }
+.model-opt { display: inline-flex; align-items: center; gap: 6px; }
+.model-opt .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.model-opt .dot.on { background: var(--ct-green); }
+.model-opt .dot.off { background: var(--ct-red); }
+.model-hint { font-size: 10px; color: var(--ct-text3); }
 .branch { font-size: 10px; color: var(--ct-text3); }
 .stamp { font-size: 9px; border: 1px solid var(--ct-accent); color: var(--ct-accent); border-radius: 2px; padding: 0 4px; transform: rotate(-3deg); }
 .stamp.del { color: var(--ct-red); border-color: var(--ct-red); }

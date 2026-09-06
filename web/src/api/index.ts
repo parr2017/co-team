@@ -352,12 +352,55 @@ export interface SkillMeta {
   body?: string;
 }
 
+/** feature: 每日问题沉淀报告 */
+export interface DailyReportItem {
+  id: string;
+  signature: string;
+  category: 'model_env' | 'code_defect' | 'command_risk' | 'requirement' | 'other';
+  count: number;
+  sample: string;
+  first_seen: string;
+  last_seen: string;
+  sources: { task_id?: string; node_id?: string; node_name?: string; agent?: string }[];
+}
+
+export interface DailyReport {
+  date: string;
+  generated_at: string;
+  items: DailyReportItem[];
+  resolved: Record<string, { action: string; ts: string; task_id?: string }>;
+}
+
+export const PERMISSION_LEVELS = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'] as const;
+export const PERMISSION_LEVEL_LABELS: Record<string, string> = {
+  plan_only: '只出方案',
+  readonly: '只读',
+  approve_required: '改动需审批',
+  whitelist_auto: '白名单自动',
+  full: '完全控制',
+};
+
 export const api = {
-  createTask: (description: string, workspace: string, autoRun = true, projectId?: string, opts?: { mainModelId?: string; level?: string }) =>
+  createTask: (
+    description: string,
+    workspace: string,
+    autoRun = true,
+    projectId?: string,
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string }; nodeClarify?: string }
+  ) =>
     request<{ task_id: string; status?: string; questions?: string[]; summary?: string; level?: string; graph?: TaskGraph }>('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description, workspace, auto_run: autoRun, project_id: projectId, main_model_id: opts?.mainModelId, level: opts?.level }),
+      body: JSON.stringify({
+        description,
+        workspace,
+        auto_run: autoRun,
+        project_id: projectId,
+        main_model_id: opts?.mainModelId,
+        level: opts?.level,
+        execution_policy: opts?.executionPolicy,
+        node_clarify: opts?.nodeClarify,
+      }),
     }),
   clarifyTask: (id: string, payload: { answers?: ClarifyAnswer[]; confirm?: boolean; text?: string }) =>
     request<{ status: string; questions?: string[]; graph?: TaskGraph }>(`/api/tasks/${id}/clarify`, {
@@ -409,7 +452,7 @@ export const api = {
   taskEvents: (id: string) => request<{ task_id: string; events: TaskEvent[] }>(`/api/tasks/${id}/events`),
   replan: (id: string, feedback: string) =>
     request<{ summary: string }>(`/api/tasks/${id}/replan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }) }),
-  updateNode: (taskId: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }) =>
+  updateNode: (taskId: string, nodeId: string, patch: { name?: string; agent?: string; model_id?: string | null; clarify_mode?: string; action?: 'delete' }) =>
     request(`/api/tasks/${taskId}/nodes/${nodeId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   addNode: (taskId: string, payload: { name: string; agent: string; after_node_id: string }) =>
     request<{ status: string; node: TaskNode; graph: TaskGraph }>(`/api/tasks/${taskId}/nodes`, {
@@ -429,6 +472,48 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
+  // feature: 实施前澄清
+  getNodeClarify: (taskId: string, nodeId: string) =>
+    request<{ task_id: string; node_id: string; mode: string; brief: { approach: string; files: string[]; risks: string[]; questions: string[] }; answers: { question: string; answer: string }[] }>(
+      `/api/tasks/${taskId}/nodes/${nodeId}/clarify`
+    ),
+  clarifyNode: (taskId: string, nodeId: string, payload: { approve?: boolean; answers?: { question: string; answer: string }[]; text?: string }) =>
+    request<{ status: string }>(`/api/tasks/${taskId}/nodes/${nodeId}/clarify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  // feature: 命令执行分级
+  getTaskPolicy: (taskId: string) => request<{ task_id: string; execution_policy: { level: string; whitelist_commands?: string[] } | null }>(`/api/tasks/${taskId}/policy`),
+  setTaskPolicy: (taskId: string, level: string | null) =>
+    request<{ status: string; execution_policy: { level: string } | null }>(`/api/tasks/${taskId}/policy`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level }),
+    }),
+  getPendingCommands: (taskId: string) =>
+    request<{ task_id: string; commands: { id: string; node_id: string; node_name: string; command: string; ts: string }[] }>(`/api/tasks/${taskId}/pending-commands`),
+  resolveCommand: (taskId: string, commandId: string, approved: boolean) =>
+    request<{ ok: boolean; returncode?: number }>(`/api/tasks/${taskId}/commands/${commandId}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    }),
+  // feature: 每日问题报告
+  getDailyReportConfig: () => request<{ enabled: boolean; hour: number }>('/api/config/daily-report'),
+  saveDailyReportConfig: (enabled: boolean, hour: number) =>
+    request<{ status: string; enabled: boolean; hour: number }>('/api/config/daily-report', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled, hour }),
+    }),
+  listDailyReports: (limit = 30) => request<{ reports: DailyReport[] }>(`/api/reports/daily?limit=${limit}`),
+  resolveReportItem: (date: string, itemId: string, action: 'fix_now' | 'create_task' | 'skip') =>
+    request<{ status: string; action: string; task_id?: string }>(`/api/reports/daily/${date}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, action }),
+    }),
   listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),
   getDeliverable: (taskId: string, nodeId: string) => request<DeliverableDoc & { task_id: string }>(`/api/tasks/${taskId}/deliverables/${nodeId}`),
   projectReport: (id: string) => request<ProjectProgressReport>(`/api/projects/${id}/report`),

@@ -42,6 +42,10 @@ orchestrator:
   git: true
   branch_workflow: true
   max_fix_rounds: 3
+  # 降级策略：模型池全忙/冷却时，dispatch 等待容量的最长时间（秒）；超时后突破冷却取最高优先级模型
+  model_wait_timeout_sec: 120
+  # 实施前澄清全局默认：off（关闭）/ brief（实施简报+确认，推荐）/ confirm（逐步确认）
+  node_clarify: off
 knowledge:
   dir: ./data/knowledge
   # RAG 语义检索：指向模型池中支持 /v1/embeddings 的条目；未启用时回退关键词检索
@@ -61,7 +65,9 @@ knowledge:
 #   verification_token: ""
 #   encrypt_key: ""
 permissions:
-  level: normal
+  # 命令执行分级：plan_only（只出方案不写代码）/ readonly（只读）/
+  # approve_required（白名单外命令需人工审批，默认）/ whitelist_auto（白名单自动，其余拒绝）/ full（完全控制）
+  level: approve_required
   whitelist_commands:
     - python
     - pip
@@ -75,6 +81,11 @@ permissions:
     - ls
     - cat
     - chmod
+# 每日问题报告：开启后每天在指定时刻把运行中的报错与功能性问题汇总报告给用户，
+# 由用户决定是否转为修复任务（默认关闭，可在界面 设置 → 通用 中开关）
+daily_report:
+  enabled: false
+  hour: 9
 redis:
   db: 0
   host: 127.0.0.1

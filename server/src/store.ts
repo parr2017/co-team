@@ -9,7 +9,10 @@ export async function saveTaskGraph(
   taskId: string,
   nodes: TaskNode[],
   edges: [string, string][],
-  meta?: { description?: string; workspace?: string; status?: string; project_id?: string; level?: TaskLevel; main_model_id?: string }
+  meta?: {
+    description?: string; workspace?: string; status?: string; project_id?: string; level?: TaskLevel; main_model_id?: string;
+    execution_policy?: { level: string; whitelist_commands?: string[] }; node_clarify?: string;
+  }
 ): Promise<void> {
   const existing = await getTaskGraph(taskId);
   const graph: TaskGraph = {
@@ -22,6 +25,8 @@ export async function saveTaskGraph(
     project_id: meta?.project_id ?? existing?.project_id ?? undefined,
     level: meta?.level ?? existing?.level ?? undefined,
     main_model_id: meta?.main_model_id ?? existing?.main_model_id ?? undefined,
+    execution_policy: meta?.execution_policy ?? existing?.execution_policy ?? undefined,
+    node_clarify: (meta?.node_clarify as TaskGraph['node_clarify']) ?? existing?.node_clarify ?? undefined,
     created_at: existing?.created_at ?? new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
