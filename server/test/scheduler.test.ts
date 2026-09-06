@@ -52,3 +52,25 @@ describe('ModelPool', () => {
     expect(pool.tryAcquire(m)).toBe(true);
   });
 });
+
+describe('ModelPool failure cooldown (circuit breaker)', () => {
+  const configs = [{ name: 'flakey', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 50, cost_per_1k: 0, tags: [] }];
+
+  it('cooldown grows exponentially with consecutive failures and expires', () => {
+    const pool = new ModelPool(configs);
+    const m = (pool as any).models[0];
+    for (let i = 0; i < 3; i++) pool.markFailure(m);
+    expect(pool.cooldownRemainingMs(m)).toBeGreaterThan(0);
+    expect(pool.isHealthy(m)).toBe(false);
+    // 5 consecutive failures → 4min window (60s * 2^2), capped at 15min later on
+    for (let i = 0; i < 2; i++) pool.markFailure(m);
+    expect(pool.cooldownRemainingMs(m)).toBeGreaterThan(3 * 60_000);
+    // once the window elapses the model returns to the pool
+    m.lastFailureAt = Date.now() - 16 * 60_000;
+    expect(pool.isHealthy(m)).toBe(true);
+    // a success resets the failure counter entirely
+    pool.markFailure(m);
+    pool.markSuccess(m);
+    expect(pool.isHealthy(m)).toBe(true);
+  });
+});

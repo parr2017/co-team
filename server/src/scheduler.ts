@@ -45,9 +45,15 @@ export class ModelPool {
     this.models = configs.map(makeEntry);
   }
 
+  /** Cooldown for a model with >=3 consecutive failures, doubling per extra failure (capped at 15 min). */
+  cooldownRemainingMs(m: ModelEntry): number {
+    if (m.failCount < 3) return 0;
+    const window = Math.min(15 * 60_000, 60_000 * Math.pow(2, Math.min(m.failCount - 3, 4)));
+    return Math.max(0, m.lastFailureAt + window - Date.now());
+  }
+
   isHealthy(m: ModelEntry): boolean {
-    // a model that failed repeatedly is skipped for a cool-down window
-    return m.failCount < 3 || Date.now() - m.lastFailureAt > 60_000;
+    return this.cooldownRemainingMs(m) === 0;
   }
 
   /** Look up a model entry by name (used for task-pinned main-agent models). */
@@ -160,6 +166,8 @@ export class ModelPool {
           priority: m.priority,
           tags: m.tags,
           healthy: this.isHealthy(m),
+          fail_count: m.failCount,
+          cooldown_ms: this.cooldownRemainingMs(m),
           cost_per_1k: m.cost_per_1k,
         },
       ])
