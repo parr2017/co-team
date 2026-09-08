@@ -177,13 +177,13 @@ describe('输出预算分档（不再无脑 128000）', () => {
     writeAgent('timeout: 3600\n');
     chatScript = [okNode()];
     fs.writeFileSync(path.join(tmp, 'package.json'), '{}');
-    await runOne({ description: 'x', workspace: tmp }, { outputTiers: { simple: 8000, normal: 16000, complex: 32000 } });
-    expect(chatCalls[0].maxTokens).toBe(32000); // complex（m1 未配 max_tokens → 缺省 128000 封顶不生效）
+    await runOne({ description: 'x', workspace: tmp }, { outputTiers: { simple: 8000, normal: 32000, complex: 64000 } });
+    expect(chatCalls[0].maxTokens).toBe(64000); // complex（m1 未配 max_tokens → 缺省 128000 封顶不生效）
 
     chatCalls.length = 0;
     chatScript = [okNode()];
     const pool2 = new ModelPool([{ name: 'm2', api_key: 'k', base_url: 'http://localhost:9', max_tokens: 5000 }]);
-    const orch2 = makeOrchestrator(pool2);
+    const orch2 = makeOrchestrator(pool2, { outputTiers: { simple: 8000, normal: 32000, complex: 64000 } });
     await orch2.loadAgents();
     await saveTaskGraph('t-ctx2', [makeNode({ complexity: 'simple' })], [], { description: 'x', workspace: tmp, status: 'running' } as any);
     await (orch2 as any).runGraph('t-ctx2', (await getTaskGraph('t-ctx2'))!, tmp);
