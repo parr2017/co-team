@@ -26,4 +26,5 @@
 
 - 开发/测试/构建遵循 `DEVELOPMENT_STYLE.md` 与 CONTRIBUTING.md。
 - `config/config.yaml`（含密钥）与 `data/`（运行时状态）已被 .gitignore 覆盖，不要把它们加入版本库。
+- **超时不判死（2026-09-09 语义重做）**：agent.yaml timeout 是节点级总时长预算（超线停靠人工）；LLM 失败判定只认确定性信号（连接错误/流无 finish_reason/持续静默），慢但持续推进的生成永不中止。上下文注入保持静态前缀 + append-only 以保住推理服务前缀缓存，历史折叠每尝试至多一次。详见开发路线.md 同日章节。
 - **UI 改动必须考虑移动端**：任何涉及界面（`web/`）的修改，必须同步评估 `mobile/`（Vant）端是否需要对应调整并一并落地；新增事件、卡片、状态展示、对话框等 UI 元素时 web 与 mobile 双端保持一致，验收必须包含移动端实拍（8857）。只改 web 不看 mobile 视为未完成。

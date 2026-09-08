@@ -100,7 +100,9 @@
           <el-table-column label="标签" width="160">
             <template #default="{ row }"><span class="mono">{{ row.tags.join(', ') }}</span></template>
           </el-table-column>
-          <el-table-column prop="timeout" label="超时" width="70" />
+          <el-table-column prop="timeout" label="预算(秒)" width="80">
+            <template #header><el-tooltip content="节点级总时长预算：超时后节点停靠人工（非模型失败），时长本身不再判死" placement="top"><span>预算(秒) ⓘ</span></el-tooltip></template>
+          </el-table-column>
           <el-table-column label="" width="130" align="center">
             <template #default="{ row }">
               <el-button size="small" link type="primary" @click="editAgent(row)">编辑</el-button>
@@ -170,7 +172,10 @@
             <el-option v-for="m in pool" :key="m.name" :label="m.name || '(未命名模型)'" :value="m.name" />
           </el-select>
         </el-form-item>
-        <el-form-item label="超时(秒)"><el-input-number v-model="editing.timeout" :min="30" :max="3600" controls-position="right" /></el-form-item>
+        <el-form-item label="节点预算(秒)">
+          <el-input-number v-model="editing.timeout" :min="60" :max="14400" controls-position="right" />
+          <div class="field-hint">节点级总时长预算，超线后节点停靠人工处理（不再作为单次模型调用超时——时长不判死）</div>
+        </el-form-item>
         <el-form-item label="系统提示词">
           <el-input v-model="editing.prompt" type="textarea" :rows="12" class="mono-input" placeholder="系统提示词（Markdown）" />
         </el-form-item>
@@ -439,7 +444,7 @@ function editAgent(row: AgentDefinition | null) {
   editingOriginal.value = row ? row.dir : null;
   editing.value = row
     ? { ...row, tagsText: row.tags.join(','), skills: row.skills || [] }
-    : { name: '', role: '', description: '', tagsText: '', model_override: '', timeout: 300, prompt: '', skills: [] };
+    : { name: '', role: '', description: '', tagsText: '', model_override: '', timeout: 3600, prompt: '', skills: [] };
   agentEditorVisible.value = true;
 }
 
@@ -502,6 +507,7 @@ async function removeAgent(row: AgentDefinition) {
 .toolbar .note { flex: 1; font-size: 11px; color: var(--ct-text3); }
 .mono { font-family: var(--ct-mono); font-size: 11px; }
 .mono-input :deep(textarea) { font-family: var(--ct-mono); font-size: 12px; }
+.field-hint { font-size: 11px; color: var(--el-text-color-secondary); line-height: 1.4; margin-top: 2px; }
 .general { display: flex; flex-direction: column; gap: 12px; }
 .gen-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--ct-border); border-radius: 8px; }
 .gen-info { flex: 1; min-width: 0; }
