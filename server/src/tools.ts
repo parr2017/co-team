@@ -5,6 +5,7 @@ import { assertWithinJail, jailViolationMessage } from './workspace';
 import { writeKnowledge } from './knowledge';
 import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
 import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agentMessages';
+import { findSkillForAgent } from './skills';
 
 export interface KnowledgeToolContext {
   agent: string;
@@ -14,13 +15,75 @@ export interface KnowledgeToolContext {
   sandboxDir?: string;
   /** valid send_message targets: agent names (orchestrator/user are always allowed) */
   availableAgents?: string[];
+  /** names of the skills indexed for this node (load_skill hints on miss) */
+  availableSkills?: string[];
   node_id?: string;
   node_name?: string;
 }
 
 const MAX_FILE_BYTES = 64 * 1024;
+/** i6efv5h2 复盘：单文件注入的字符预算——全文回显是上下文膨胀主源，超出截断并注明 */
+const MAX_READ_CHARS = 16000;
 const IGNORED_DIRS = new Set(['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']);
 const GREP_MAX_RESULTS = 80;
+
+/** 缓存优先裁剪的度量基线：CJK 1 token/字、其余 ~4 字符/token 的保守启发式 */
+export function estimateTokens(s: string): number {
+  let cjk = 0;
+  let other = 0;
+  // 用显式码点区间：字面量字符类里 "空格-〿" 会连出 U+0020..U+303F 把拉丁字母吞进 CJK
+  const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/;
+  for (const ch of s) {
+    if (CJK.test(ch)) cjk += 1;
+    else other += 1;
+  }
+  return cjk + Math.ceil(other / 4);
+}
+
+/** load_skill 注入上限：技能正文按需拉取后仍然限幅，防单技能撑爆窗口 */
+const MAX_SKILL_BODY_CHARS = 12000;
+
+/**
+ * 缓存优先的目录树渲染（替代 flat 全量 join）：深度/行数/字符三重预算，
+ * 排序确定性——同一工作树必产出字节一致的字符串（前缀缓存友好）。
+ */
+export function renderWorkspaceTree(workspace: string, maxChars = 1500, maxDepth = 3): string {
+  const base = path.resolve(workspace);
+  if (!fs.existsSync(base)) return '(工作目录为空)';
+  const lines: string[] = [];
+  let totalFiles = 0;
+  let truncated = false;
+  const walk = (dir: string, depth: number) => {
+    if (truncated) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // 目录级 fs 异常静默降级（缓存优先裁剪不得炸掉组装）
+    }
+    const dirs = entries.filter((e) => e.isDirectory() && !IGNORED_DIRS.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
+    const files = entries.filter((e) => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
+    totalFiles += files.length;
+    const indent = '  '.repeat(depth);
+    const shown = files.slice(0, depth >= maxDepth ? 3 : 12);
+    for (const f of shown) {
+      lines.push(`${indent}${f.name}${files.length > shown.length && f === shown[shown.length - 1] ? ` …(+${files.length - shown.length})` : ''}`);
+      if (lines.join('\n').length > maxChars) { truncated = true; return; }
+    }
+    if (depth < maxDepth) for (const d of dirs) {
+      lines.push(`${indent}${d.name}/`);
+      if (lines.join('\n').length > maxChars) { truncated = true; return; }
+      walk(path.join(dir, d.name), depth + 1);
+      if (truncated) return;
+    } else if (dirs.length) {
+      lines.push(`${indent}[+${dirs.length} 个子目录，明细用 list_files]`);
+      if (lines.join('\n').length > maxChars) { truncated = true; return; }
+    }
+  };
+  walk(base, 0);
+  const body = lines.join('\n');
+  return truncated ? `${body}\n…（目录树过大已截断，共 ${totalFiles}+ 文件可见部分如上，明细用 list_files 工具）` : body;
+}
 
 export function listFiles(workspace: string, limit = 200): string[] {
   const base = path.resolve(workspace);
@@ -40,14 +103,22 @@ export function listFiles(workspace: string, limit = 200): string[] {
   return out;
 }
 
-export function readFile(workspace: string, filePath: string): { ok: boolean; path: string; content?: string; error?: string } {
+export function readFile(workspace: string, filePath: string): { ok: boolean; path: string; content?: string; error?: string; truncated?: boolean } {
   const base = path.resolve(workspace);
   const target = path.resolve(base, filePath);
   if (!target.startsWith(base)) return { ok: false, path: filePath, error: 'path outside workspace' };
   if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return { ok: false, path: filePath, error: `file not found: ${filePath}` };
   const stat = fs.statSync(target);
-  if (stat.size > MAX_FILE_BYTES) return { ok: false, path: filePath, error: `file too large: ${stat.size} bytes` };
-  return { ok: true, path: filePath, content: fs.readFileSync(target, 'utf-8') };
+  if (stat.size > MAX_FILE_BYTES) {
+    // 大文件不再是死路：仍给开头预算内的内容 + 指引（旧行为直接报错逼模型盲改）
+    const head = fs.readFileSync(target, 'utf-8').slice(0, MAX_READ_CHARS);
+    return { ok: true, path: filePath, content: `${head}\n…(文件共 ${stat.size} 字节，仅注入前 ${MAX_READ_CHARS} 字符；用 grep 定位后编辑，或用 edits 做精确替换)`, truncated: true };
+  }
+  const text = fs.readFileSync(target, 'utf-8');
+  if (text.length > MAX_READ_CHARS) {
+    return { ok: true, path: filePath, content: `${text.slice(0, MAX_READ_CHARS)}\n…(文件共 ${text.length} 字符，已截断注入；用 grep 定位后编辑，或用 edits 做精确替换)`, truncated: true };
+  }
+  return { ok: true, path: filePath, content: text };
 }
 
 export function readDir(workspace: string, dirPath: string): { ok: boolean; path: string; entries?: string[]; error?: string } {
@@ -71,9 +142,33 @@ export function grepFiles(workspace: string, pattern: string, subPath?: string):
   if (!fs.existsSync(searchRoot)) return { ok: false, error: `path not found: ${subPath || '.'}` };
 
   let regex: RegExp;
-  try { regex = new RegExp(pattern, 'i'); } catch { return { ok: false, error: `invalid regex: ${pattern}` }; }
+  try {
+    regex = new RegExp(pattern, 'i');
+    // 部分引擎错误（嵌套层数超上限等）在 test 编译路径才抛——这里提前触发一次，
+    // 转软错误给模型，而不是留到逐文件匹配时被 catch-all 静默吞成 0 命中（伪成功）。
+    regex.test('');
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    return { ok: false, error: /too complex|number of captures/i.test(msg) ? `invalid regex: pattern 过于复杂（嵌套层数超引擎上限），请简化: ${pattern.slice(0, 80)}` : `invalid regex: ${pattern}` };
+  }
 
   const matches: { file: string; line: number; text: string }[] = [];
+
+  // ENOTDIR 修复（i6efv5h2 复盘）：模型常把 grep 的 path 参数传成【文件】而非目录
+  // （"在这个文件里搜"），旧代码直接 readdirSync(文件) 抛 ENOTDIR，异常沿调用链
+  // 炸毁整次模型尝试——两个任务共 8 次死亡源于此。文件路径就单文件逐行匹配。
+  if (fs.statSync(searchRoot).isFile()) {
+    try {
+      const lines = fs.readFileSync(searchRoot, 'utf-8').split('\n');
+      for (let i = 0; i < lines.length && matches.length < GREP_MAX_RESULTS; i++) {
+        if (regex.test(lines[i])) matches.push({ file: path.relative(base, searchRoot), line: i + 1, text: lines[i].trim().slice(0, 200) });
+      }
+      return { ok: true, matches };
+    } catch (e: any) {
+      return { ok: false, error: `grep on file failed: ${String(e?.message || e).slice(0, 200)}` };
+    }
+  }
+
   const walk = (dir: string) => {
     if (matches.length >= GREP_MAX_RESULTS) return;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -96,7 +191,11 @@ export function grepFiles(workspace: string, pattern: string, subPath?: string):
       } catch { /* skip binary / unreadable */ }
     }
   };
-  walk(searchRoot);
+  try {
+    walk(searchRoot);
+  } catch (e: any) {
+    return { ok: false, error: `grep walk failed: ${String(e?.message || e).slice(0, 200)}` };
+  }
   return { ok: true, matches };
 }
 
@@ -121,12 +220,32 @@ export function gitDiff(workspace: string): { ok: boolean; diff?: string; error?
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
+    // 软错误纪律（i6efv5h2 复盘）：任何 fs/遍历异常转 {ok:false} 回喂模型，
+    // 绝不允许沿调用链炸毁整次 LLM 尝试——一次 throw = 一次 600s 模型尝试陪葬。
     if (name === 'list_files' || name === 'list' || name === 'ls') {
-      results.push({ tool: 'list_files', files: listFiles(workspace) });
+      try {
+        results.push({ tool: 'list_files', files: listFiles(workspace) });
+      } catch (e: any) {
+        results.push({ tool: 'list_files', ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
+    } else if (name === 'load_skill') {
+      // 技能正文按需拉取（缓存优先裁剪）：注入的只有索引，模型判断相关才拉全文
+      const skillName = String(call.name || call.path || '').trim();
+      const skill = skillName ? findSkillForAgent(skillName, knowledgeCtx?.agent || '') : null;
+      if (!skill) {
+        results.push({
+          tool: 'load_skill', ok: false,
+          error: `技能不存在或对本 agent 不可用: ${skillName || '(name 缺失)'}`,
+          available: knowledgeCtx?.availableSkills || [],
+        });
+      } else {
+        const body = skill.body.length > MAX_SKILL_BODY_CHARS ? `${skill.body.slice(0, MAX_SKILL_BODY_CHARS)}\n…(技能正文超长已截断)` : skill.body;
+        results.push({ tool: 'load_skill', ok: true, name: skill.name, description: skill.description, body });
+      }
     } else if (name === 'read_file' || name === 'read') {
       results.push({ tool: 'read_file', ...readFile(workspace, call.path || '') });
     } else if (name === 'read_dir' || name === 'readdir') {

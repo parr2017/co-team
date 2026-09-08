@@ -66,6 +66,28 @@ orchestrator:
       - server/src/orchestrator/
       - skills/
       - agents/
+# LLM 超时语义重做（2026-09-09，i6efv5h2 复盘）：时长本身不构成失败——
+# 只有 ①连接错误/流无 finish_reason 提前结束 ②持续静默（真停滞）③人工终止 才中止调用。
+# 慢但在吐字的大上下文请求永不被误杀（旧 600s 总超时把"活着生成"当"停滞"绞死）。
+# agent.yaml 的 timeout 字段语义同步变为"节点级总时长预算"：超线节点停靠人工，不记模型失败。
+llm:
+  first_token_idle_sec: 900   # 请求发出→首个数据块的静默上限（覆盖大 prompt prefill）；0=关闭
+  stream_idle_sec: 900        # 数据块之间静默上限，任意 chunk 刷新计时；0=关闭
+  wallclock_cap_sec: 0        # 墙钟保险丝（默认关闭），仅想要自动故障转移的部署按需开启
+  non_stream_timeout_sec: 900 # 非流式请求（COTEAM_LLM_STREAM=0）无进度信号，只能用总时长兜底
+  slow_success_sec: 300       # 单轮成功但超该秒数 → 模型降权（slow），不记失败不冷却
+  # 按节点复杂度的输出预算分档（模型 max_tokens 仅封顶）——替代过去每个请求无脑填入
+  # 模型上限（128000）导致本地推理超额预留/完成时间无上界的问题；置 output_tiers: {} 关闭
+  output_tiers:
+    simple: 8000
+    normal: 16000
+    complex: 32000
+# 上下文预算（缓存优先裁剪）：固定注入全部指针化（技能索引+load_skill、目标摘要、目录树），
+# 工具循环严格 append-only 保住推理服务的前缀缓存；仅当估算超预算时做一次性确定性折叠
+context:
+  max_prompt_tokens: 16000          # prompt 估算超线触发断崖折叠（每尝试至多一次）
+  workspace_tree_max_chars: 1500    # 文件树注入预算
+  goal_max_chars: 1500              # 全局目标注入上限（超出截断并指向 GLOBAL_GOAL.md）
 knowledge:
   dir: ./data/knowledge
   # RAG 语义检索：指向模型池中支持 /v1/embeddings 的条目；未启用时回退关键词检索

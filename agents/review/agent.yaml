@@ -8,7 +8,8 @@ tags:
   - quality
   - security
 model_override: null
-timeout: 600
+# timeout 语义：节点级总时长预算（秒），超线转人工，不作为单次 LLM 调用绞杀线
+timeout: 3600
 skills:
   - code-review
   - code-review-checklist

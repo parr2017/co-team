@@ -321,20 +321,21 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
       let parsed: Record<string, any> | null = null;
       try {
         const userMsg = await speakerUserPrompt(deps, disc, await getMessages(discId), agent, round, firstSubstantive);
-        // honor agent.yaml `timeout` (seconds) like the orchestrator does — a stalled
-        // upstream must abort at the agent's budget, not the 600s global default
-        const plugin = deps.orchestrator.plugins.get(agent);
+        // 超时语义重做（2026-09-09）：agent.yaml `timeout` 现在是任务管线的节点级
+        // 总预算（3600s），不再适用于交互式的讨论发言轮。讨论轮自带墙钟上限；
+        // 真停滞由 llm 层的 idle watchdog 负责，慢但活着就让它说完。
+        const SPEAKER_WALLCLOCK_CAP_MS = 300_000;
         const res = await chat(entry, [
           { role: 'system', content: speakerSystemPrompt(deps, agent, forced) },
           { role: 'user', content: userMsg },
-        ], undefined, 0.3, undefined, (plugin?.timeout || 300) * 1000);
+        ], undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS);
         parsed = extractJson(res.content);
         // forced speakers must speak: a weak model returning speak:false is nudged once
         if (forced && (!parsed || parsed.speak !== true)) {
           const retry = await chat(entry, [
             { role: 'system', content: speakerSystemPrompt(deps, agent, true) },
             { role: 'user', content: userMsg + '\n\n注意：用户直接 @ 了你提问，你必须给出实质性发言（speak=true）。' },
-          ], undefined, 0.3, undefined, (plugin?.timeout || 300) * 1000);
+          ], undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS);
           parsed = extractJson(retry.content);
         }
       } catch (e) {

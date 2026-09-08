@@ -58,7 +58,9 @@ export async function discoverAgents(agentsDir: string): Promise<AgentPlugin[]> 
       description: cfg.description || '',
       tags: cfg.tags || [],
       modelOverride: cfg.model_override ?? null,
-      timeout: cfg.timeout ?? 300,
+      // timeout 语义（2026-09-09 重做）：节点级总时长预算（秒），超线转人工；
+      // 不再是单次 LLM 调用绞杀线——缺省 1 小时以容纳本地慢模型
+      timeout: cfg.timeout ?? 3600,
       prompt,
       handler,
       dir: agentDir,

@@ -8,13 +8,13 @@ tags:
   - implement
   - debug
 model_override: null
-timeout: 600
+# timeout 语义（2026-09-09 重做）：节点级总时长预算（秒），超线转人工，
+# 不再作为单次 LLM 调用的绞杀线——时长本身不构成模型失败
+timeout: 3600
+# 绑定技能只注入索引，正文经 load_skill 工具按需拉取（省固定前缀、保 KV 缓存）
 skills:
   - ask-matt
   - code-review
   - bg-shell
   - code-review-checklist
   - development-habits
-  - pdf
-  - pptx
-  - xlsx

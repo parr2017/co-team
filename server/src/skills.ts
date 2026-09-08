@@ -189,10 +189,28 @@ export function pickSkillsForNode(
   return picks;
 }
 
-/** Format the picked skills into the harness L3 block. */
+/** Look a loaded skill up by name, honoring agent-private scope (load_skill tool). */
+export function findSkillForAgent(name: string, agent: string): SkillMeta | null {
+  return getSkills().find((s) => s.name === name && (s.source === 'global' || s.source === agent)) || null;
+}
+
+/**
+ * Format the picked skills into the harness L3 block — INDEX ONLY (2026-09-09
+ * 缓存优先裁剪): the full bodies used to ride in every system prompt (8 bound
+ * skills × up to 6000 chars = the single largest fixed context tax seen on
+ * i6efv5h2 node 6). The model now sees name+description and pulls the body via
+ * the load_skill tool when the skill is actually relevant; bodies arrive as
+ * appended tool results, which keeps the system prefix byte-stable for KV caching.
+ */
 export function formatSkillsBlock(picks: SkillPick[]): string {
   if (!picks.length) return '';
-  return picks
-    .map((p) => `#### 技能：${p.skill.name}${p.skill.description ? ` — ${p.skill.description}` : ''}\n\n${p.body}`)
-    .join('\n\n');
+  const lines = picks.map((p) => {
+    const obligation = p.reason === 'bound' ? '本 agent 绑定技能：动手前若与该任务相关必须先拉取正文并遵循' : '自动匹配技能：酌情拉取';
+    return `- ${p.skill.name}${p.skill.description ? ` — ${p.skill.description}` : ''}（${obligation}）`;
+  });
+  return [
+    '本节点可用技能（正文未注入，按需拉取）：',
+    ...lines,
+    '拉取方式：`{"tool_calls":[{"tool":"load_skill","name":"技能名"}]}`（可与侦查工具合并同一轮）；与本任务无关的技能无需拉取。',
+  ].join('\n');
 }

@@ -142,7 +142,7 @@ describe('skill injection into the agent prompt (real callAgent via runGraph)', 
     };
   }
 
-  it('bound skill body appears in the agent system prompt', async () => {
+  it('bound skills ride as INDEX only; the body stays out of the fixed prefix (缓存优先裁剪)', async () => {
     seenSystems.length = 0;
     closeBus();
     await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
@@ -155,7 +155,25 @@ describe('skill injection into the agent prompt (real callAgent via runGraph)', 
 
     expect(seenSystems.length).toBeGreaterThan(0);
     expect(seenSystems[0]).toContain('已装载技能');
-    expect(seenSystems[0]).toContain('BOUND_SKILL_BODY_X');
+    // 索引进固定前缀（确定性、可缓存）：技能名 + 拉取方式
+    expect(seenSystems[0]).toContain('bound-skill-x');
+    expect(seenSystems[0]).toContain('load_skill');
+    // 正文绝不进 system——i6efv5h2 节点 6 的 44k token 主要就是这么背出来的
+    expect(seenSystems[0]).not.toContain('BOUND_SKILL_BODY_X');
+  });
+
+  it('load_skill tool returns the body on demand', async () => {
+    closeBus();
+    await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
+    const orch = makeOrchestrator();
+    await orch.loadAgents();
+    const { applyToolCalls } = await import('../src/tools');
+    const res = (await applyToolCalls(tmp, [{ tool: 'load_skill', name: 'bound-skill-x' }], { agent: 'dev', availableSkills: ['bound-skill-x'] })) as Record<string, any>[];
+    expect(res[0].ok).toBe(true);
+    expect(res[0].body).toContain('BOUND_SKILL_BODY_X');
+    const miss = (await applyToolCalls(tmp, [{ tool: 'load_skill', name: 'nope' }], { agent: 'dev', availableSkills: ['bound-skill-x'] })) as Record<string, any>[];
+    expect(miss[0].ok).toBe(false);
+    expect(miss[0].available).toContain('bound-skill-x');
   });
 });
 

@@ -63,7 +63,9 @@ export function errorSignature(err: string): string {
 
 export function classifyError(sample: string): DailyReportItem['category'] {
   const s = sample.toLowerCase();
-  if (/no available model|all models failed|cooldown|模型池|model .*fail|econn|etimedout|502|503|504|timeout|rate.?limit/.test(s)) return 'model_env';
+  // stream_stalled/wallclock_cap/connection_died/non_stream_timeout：2026-09-09 超时新语义文案
+  // （旧文案含"timeout"可被兜住，新文案必须显式收编，否则模型环境类问题会漏归为 other）
+  if (/no available model|all models failed|cooldown|模型池|model .*fail|econn|etimedout|502|503|504|timeout|rate.?limit|stream_stalled|wallclock_cap|connection_died|non_stream_timeout/.test(s)) return 'model_env';
   if (/command not in whitelist|等待人工审批|command failed|拒绝/.test(s)) return 'command_risk';
   if (/需求|澄清|clarif|验收/.test(s)) return 'requirement';
   if (/parse|schema|not valid json|failed to produce|assert|expect|error|exception|fail/.test(s)) return 'code_defect';

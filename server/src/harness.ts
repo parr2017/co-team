@@ -90,6 +90,8 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
     ' {"tool_calls":[{"tool":"git_log"}]}',
     ' {"tool_calls":[{"tool":"git_diff"}]}',
+    '技能正文按需拉取：下方"已装载技能"只有索引，与任务相关的技能必须先拉正文再动工（可与侦查合并同一轮）:',
+    ' {"tool_calls":[{"tool":"load_skill","name":"技能名"}]}',
     '经验沉淀（推荐）：遇到通用经验/项目踩坑时主动调用知识写入工具:',
     ' {"tool_calls":[{"tool":"write_knowledge","category":"general-tech|project","title":"条目标题","tags":["标签"],"content":"经验内容（Markdown）"}]}',
     '协同文档（文档驱动协同）：实现涉及 API/接口的节点后，必须把实际接口写入 API_CONTRACT；需要修正任务规格/状态时写对应文档:',

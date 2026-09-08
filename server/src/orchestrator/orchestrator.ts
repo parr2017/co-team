@@ -5,7 +5,7 @@ import type { ModelPool, ModelEntry } from '../scheduler';
 import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
 import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
-import { applyFinalOutput, applyToolCalls, listFiles } from '../tools';
+import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens } from '../tools';
 import type { KnowledgeToolContext } from '../tools';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
 import * as gitTool from '../git';
@@ -48,7 +48,7 @@ import { createSnapshot } from '../snapshot';
 import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
-import { PROJECT_ROOT, DEFAULT_META_PATHS, type SelfModGateConfig } from '../config';
+import { PROJECT_ROOT, DEFAULT_META_PATHS, type SelfModGateConfig, type ContextConfig } from '../config';
 import { prepareSelfdevClone } from '../workspace';
 import { sampleTaskRun } from '../metrics';
 
@@ -86,9 +86,69 @@ export interface OrchestratorOptions {
   selfModGate?: SelfModGateConfig;
   /** 项目治理：自指任务的隔离克隆根目录所在配置（缺省则自指任务不隔离） */
   projects?: { root: string; selfdev_root: string };
+  /** 超时语义重做：单轮 LLM 成功但耗时超该秒数 → slow 降权（不记失败） */
+  slowSuccessSec?: number;
+  /** 按节点复杂度的输出预算分档（模型 max_tokens 封顶）；undefined 关闭回退旧行为 */
+  outputTiers?: { simple: number; normal: number; complex: number };
+  /** 缓存优先上下文裁剪配置 */
+  context?: ContextConfig;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
+
+// ---------- i6efv5h2 复盘：错误分型（2026-09-09） ----------
+// 时长/环境/前置类失败与"模型能力"无关：重试必复发，烧完整条模型阶梯只是浪费。
+// 三类标记由 dispatch 打在 error 前缀上，executeNodeInner 命中即停止重试与接管、转人工。
+export const ENV_DEFECT_PREFIX = '[env-defect]';
+export const NODE_BUDGET_PREFIX = '[node-budget]';
+export const PRECONDITION_PREFIX = '[precondition]';
+/** fs 级系统缺陷（如 ENOTDIR）：harness/环境问题，不计模型健康度 */
+export const SYSTEM_DEFECT_RE = /\bENOTDIR\b|\bEISDIR\b|\bEROFS\b|\bEDQUOT\b|\bENOSPC\b|\bEMFILE\b/i;
+/** 模型明确申报的前置缺失（"缺源码/文件不在本沙箱"）：换模型没用，直接转人工 */
+export const PRECONDITION_FAIL_RE = /缺少(项目)?源代码|文件不在本沙箱|前序节点产出的?代码不在|missing source( files)?|无 package\.json/i;
+
+/**
+ * 断崖压缩：把最早的完整工具轮次折叠为一条确定性摘要（纯函数、不经 LLM、
+ * 同输入同字节——失败重试/同模型再入场时前缀仍可复用）。
+ * 保留结构：head（system+会话续传+简报，永不折叠）→ 折叠摘要 → 最近 2 条原文。
+ * 返回是否实际发生了折叠（不足两轮完整历史时不折叠）。
+ */
+export function foldMessagesInto(messages: { role: string; content: string }[]): boolean {
+  const firstResult = messages.findIndex((m) => m.role === 'user' && m.content.startsWith('工具执行结果：'));
+  if (firstResult <= 1) return false;
+  const head = firstResult - 1; // 折叠区从发起首轮工具调用的 assistant 消息开始（结果与请求成对折叠）
+  const foldEnd = messages.length - 2; // 最近一条 assistant + 工具结果保持原文
+  if (foldEnd - head < 2) return false; // 不足一轮完整往返，折叠无收益
+  const folded = messages.slice(head, foldEnd);
+  const lines: string[] = [];
+  let roundNo = 1;
+  for (const m of folded) {
+    if (m.role === 'assistant') {
+      const parsed = extractJson(m.content);
+      if (parsed && Array.isArray(parsed.tool_calls) && parsed.tool_calls.length) {
+        lines.push(`- 第 ${roundNo} 次请求工具: ${parsed.tool_calls.map((t: Record<string, any>) => `${t.tool}${t.path ? `(${t.path})` : ''}${t.pattern ? `[${String(t.pattern).slice(0, 24)}]` : ''}${t.name ? `(${t.name})` : ''}`).join('、')}`);
+      } else if (parsed && parsed.status) {
+        lines.push(`- 第 ${roundNo} 次中间产出(${parsed.status}): ${String(parsed.summary || '').replace(/\s+/g, ' ').slice(0, 100)}`);
+      } else {
+        lines.push(`- 第 ${roundNo} 次文本输出: ${m.content.replace(/\s+/g, ' ').slice(0, 100)}…`);
+      }
+      roundNo += 1;
+    } else {
+      if (m.content.startsWith('工具执行结果：')) {
+        const tools = [...m.content.matchAll(/"tool"\s*:\s*"([^"]+)"/g)].map((x) => x[1]);
+        lines.push(`- 工具结果: ${[...new Set(tools)].join('、') || '（见折叠内容）'}，共 ${m.content.length} 字符已折叠`);
+      } else {
+        lines.push(`- 系统指令: ${m.content.replace(/\s+/g, ' ').slice(0, 60)}…`);
+      }
+    }
+  }
+  const summary = {
+    role: 'user',
+    content: `## 更早侦查历史（系统确定性折叠，${lines.length} 条）\n${lines.join('\n')}\n（历史细节已折叠以控制上下文规模；结论以最近轮次为准，仍缺失的信息请重新用只读工具侦查，不要臆测。）`,
+  };
+  messages.splice(head, foldEnd - head, summary);
+  return true;
+}
 
 function newNode(base: Record<string, any>, taskId: string): TaskNode {
   return {
@@ -158,6 +218,9 @@ export class Orchestrator {
   private skillsGlobalDir: string;
   private selfModGate: SelfModGateConfig;
   private projects?: { root: string; selfdev_root: string };
+  private slowSuccessMs: number;
+  private outputTiers?: { simple: number; normal: number; complex: number };
+  private contextCfg: ContextConfig;
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
@@ -177,6 +240,9 @@ export class Orchestrator {
     this.modelWaitTimeoutMs = Math.max(0, (opts.modelWaitTimeoutSec ?? 120) * 1000);
     this.nodeClarify = opts.nodeClarify ?? 'off';
     this.projects = opts.projects;
+    this.slowSuccessMs = Math.max(0, (opts.slowSuccessSec ?? 300) * 1000);
+    this.outputTiers = opts.outputTiers;
+    this.contextCfg = opts.context || { max_prompt_tokens: 16000, workspace_tree_max_chars: 1500, goal_max_chars: 1500 };
     this.selfModGate = opts.selfModGate || {
       enabled: true,
       test_command: 'npm test',
@@ -1514,17 +1580,27 @@ export class Orchestrator {
       if (error.toLowerCase().includes('token budget')) break;
       // B4/E2: content refusals (missing info / needs human) won't heal through more
       // retries or a strategy change — surface for human intervention immediately.
-      if (/需要人类|需要人工|需要补充|信息不足|素材不足|无法完成|缺少.{0,6}(信息|权限)|cannot proceed|need human/i.test(error)) {
+      // i6efv5h2 复盘：[env-defect]/[node-budget]/[precondition] 同理——重试、降级链、
+      // 接管都改变不了事实，烧的是时间与冷却，必须在这里就停靠人工。
+      const hardStop = error.startsWith(ENV_DEFECT_PREFIX) || error.startsWith(NODE_BUDGET_PREFIX) || error.startsWith(PRECONDITION_PREFIX);
+      if (hardStop || /需要人类|需要人工|需要补充|信息不足|素材不足|无法完成|缺少.{0,6}(信息|权限)|cannot proceed|need human/i.test(error)) {
+        const stopReason = error.startsWith(ENV_DEFECT_PREFIX)
+          ? '系统/环境缺陷（重试不会好转，需修复设施或环境）'
+          : error.startsWith(NODE_BUDGET_PREFIX)
+            ? '节点总时长预算超线（模型慢或任务过大，请人工决定拆分或放宽预算）'
+            : error.startsWith(PRECONDITION_PREFIX)
+              ? '执行前置缺失（缺源码/信息，需人工补齐后重试）'
+              : '需要人工补充信息';
         node.status = 'failed';
         node.finished_at = new Date().toISOString();
-        node.error = `需人工介入：${error}`;
-        node.result = { status: 'failed', error: node.error, summary: '节点因需要人工补充信息而停止，未产出变更' };
+        node.error = `需人工介入（${stopReason}）：${error}`;
+        node.result = { status: 'failed', error: node.error, summary: `节点停止（${stopReason}），未产出变更` };
         node.needs_human = true;
         await saveDeliverable(taskId, node).catch(() => {});
         await persistGraph(graph);
         await this.recordAgentLife(taskId, graph, node, false, 0);
         await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
-        notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」需要人工补充信息，已暂停自动重试：${error.slice(0, 80)}`);
+        notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」${stopReason}，已停止自动重试与接管：${error.slice(0, 80)}`);
         return;
       }
     }
@@ -1922,6 +1998,9 @@ export class Orchestrator {
     this.logger.agentDispatch(taskId, node.id, plugin.name, chain[0].name);
     let lastErr = '';
     let triedCount = 0;
+    // i6efv5h2 复盘：终局错误必须如实反映"几轮 × 哪些模型、各死于什么"，
+    // 旧的 "(N tried): 末次错误" 掩盖了三种模型死于三种不同事实的真相
+    const tally: string[] = [];
     // content failures (parse/schema/refusal) are usually not model-specific: retry the
     // SAME model once with the failure text as feedback before burning the fallback chain
     const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
@@ -1938,10 +2017,18 @@ export class Orchestrator {
         continue;
       }
       triedCount++;
+      const attemptStartedAt = Date.now();
       try {
         const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastErr || lastError, attemptLabel, policy);
         if (result.status === 'success') {
-          this.pool.markSuccess(entry);
+          const attemptMs = Date.now() - attemptStartedAt;
+          if (this.slowSuccessMs > 0 && attemptMs > this.slowSuccessMs) {
+            // 慢不是失败：只降权（本地慢模型与远程快模型混池的正确记账）
+            this.pool.markSlow(entry);
+            this.logger.warn('Model slow but usable', { taskId, nodeId: node.id, model: entry.name, attempt_sec: Math.round(attemptMs / 1000), slow_streak: (this.pool.getStatus()[entry.name] as Record<string, unknown> | undefined)?.slow_count });
+          } else {
+            this.pool.markSuccess(entry);
+          }
           this.logger.agentResponse(taskId, node.id, plugin.name, result.tokens || 0);
           if (triedCount > 1) this.logger.info('Model degraded successfully', { taskId, nodeId: node.id, agent: plugin.name, tried: triedCount, finalModel: entry.name });
           return result;
@@ -1949,6 +2036,16 @@ export class Orchestrator {
         // Failed result (content-level: parse/schema/refusal) — do NOT poison model health;
         // retry the same model once with feedback, then move down the chain
         lastErr = result.error || 'agent reported failure';
+        tally.push(`${entry.name}: ${lastErr.slice(0, 120)}`);
+        // 节点时长预算 / 前置缺失：换模型不会改变结局——立即终止阶梯转人工
+        if (lastErr.startsWith(NODE_BUDGET_PREFIX)) {
+          this.logger.warn('Node time budget exceeded — stopping ladder (not a model failure)', { taskId, nodeId: node.id, model: entry.name, error: lastErr });
+          return { status: 'failed', error: lastErr, tokens: result.tokens };
+        }
+        if (PRECONDITION_FAIL_RE.test(lastErr)) {
+          this.logger.warn('Precondition failure — stopping ladder, going straight to human', { taskId, nodeId: node.id, model: entry.name, error: lastErr });
+          return { status: 'failed', error: `${PRECONDITION_PREFIX} ${lastErr}`, tokens: result.tokens };
+        }
         this.logger.warn('Model returned failure, trying next', { taskId, nodeId: node.id, agent: plugin.name, model: entry.name, error: lastErr });
         const retried = sameModelRetries.get(entry.name) ?? 0;
         if (CONTENT_FAIL_RE.test(lastErr) && retried < 1) {
@@ -1962,6 +2059,12 @@ export class Orchestrator {
           return { status: 'failed', error: 'token budget exceeded for this task' };
         }
         lastErr = String(e).slice(0, 500);
+        tally.push(`${entry.name}: ${lastErr.slice(0, 120)}`);
+        // 系统缺陷（fs 异常等）：重试必复发——不计模型健康度、不烧阶梯，直接转人工
+        if (SYSTEM_DEFECT_RE.test(lastErr)) {
+          this.logger.error('System defect (harness/env), NOT counting model health', { taskId, nodeId: node.id, model: entry.name, error: lastErr });
+          return { status: 'failed', error: `${ENV_DEFECT_PREFIX} ${lastErr}` };
+        }
         this.logger.error('Agent dispatch failed', {
           taskId,
           nodeId: node.id,
@@ -1969,13 +2072,16 @@ export class Orchestrator {
           model: entry.name,
           error: lastErr
         });
-        // infra-level failure (network/5xx/crash) — count against model health
+        // 确定性模型侧失败（连接死亡/真停滞）——计入模型健康度
         this.pool.markFailure(entry);
       } finally {
         this.pool.release(entry);
       }
     }
-    return { status: 'failed', error: `all models failed (${triedCount} tried): ${lastErr || 'unknown'}` };
+    return {
+      status: 'failed',
+      error: `all models failed (${triedCount} 次尝试 / 链 ${chain.map((e) => e.name).join('→')}): ${tally.join(' ｜ ') || lastErr || 'unknown'}`.slice(0, 900),
+    };
   }
 
   private async acquireWithWait(entry: ModelEntry, timeoutMs = 120_000): Promise<boolean> {
@@ -2010,8 +2116,17 @@ export class Orchestrator {
     // B3a/B3b: recon rounds and visible file list scale with node complexity —
     // complex nodes get more tool rounds and a wider view of the workspace.
     const maxRounds = node.complexity === 'complex' ? 8 : node.complexity === 'simple' ? 3 : 5;
-    const workspaceFiles = listFiles(workspace, node.complexity === 'complex' ? 200 : node.complexity === 'simple' ? 50 : 100).join(', ');
-    const maxTokens = entry.max_tokens ?? 128000;
+    // 缓存优先裁剪：预算内的确定性目录树替代 flat 全量清单（同树同字节，前缀可缓存）
+    const workspaceFiles = renderWorkspaceTree(workspace, this.contextCfg.workspace_tree_max_chars);
+    // i6efv5h2 复盘：max_tokens 不再无脑取模型上限（128000）——超大输出预算让本地
+    // 推理服务超额预留 KV、让慢模型的完成时间没有上界；按复杂度分档，模型配置仅封顶
+    const tierCap = this.outputTiers
+      ? this.outputTiers[node.complexity === 'complex' ? 'complex' : node.complexity === 'simple' ? 'simple' : 'normal']
+      : undefined;
+    const maxTokens = tierCap ? Math.min(entry.max_tokens ?? 128000, tierCap) : entry.max_tokens ?? 128000;
+    // 节点级总时长预算：原 plugin.timeout 的单调用绞杀语义已废除（时长不判死），
+    // 现在只在轮次之间检查"整个节点是否跑得过久"，超线转人工而不是记模型失败
+    const nodeBudgetMs = plugin.timeout && plugin.timeout > 0 ? plugin.timeout * 1000 : 0;
 
     const escalationBlock = escalate
       ? `\n\n## 重要：主 Agent 接管\n该任务之前已尝试 ${this.maxRetries} 次均失败，最近一次错误：${lastError}\n请调整策略：换一种实现思路，或把任务范围缩小到可完成的最小闭环，确保本次成功。`
@@ -2031,9 +2146,15 @@ export class Orchestrator {
       : '';
 
     // improvement 9: the global goal rides along with every agent call
+    // 缓存优先裁剪：goal 全文（可能是整份规划方案）曾是每次调用的固定重税，截断为
+    // 预算内摘要 + 指向工作区内的全文文件，需要精确边界时模型用 read_file 自取
     const goal = await busGet<{ content: string }>(`task:goal:${taskId}`);
-    const goalBlock = goal?.content
-      ? `\n\n## 全局目标（所有工作必须服务于此目标）\n${goal.content}\n在 summary 的开头用一句话说明本次工作对全局目标的贡献。`
+    const goalFull = (goal?.content || '').trim();
+    const goalShown = goalFull.length > this.contextCfg.goal_max_chars
+      ? `${goalFull.slice(0, this.contextCfg.goal_max_chars)}\n…（目标全文 ${goalFull.length} 字已截断；全文见工作目录 GLOBAL_GOAL.md 或任务详情，需要精确对齐时用 read_file 查阅）`
+      : goalFull;
+    const goalBlock = goalShown
+      ? `\n\n## 全局目标（所有工作必须服务于此目标）\n${goalShown}\n在 summary 的开头用一句话说明本次工作对全局目标的贡献。`
       : '';
 
     // improvement 4: SSOT documents available in docs/
@@ -2095,7 +2216,7 @@ export class Orchestrator {
 
     const userMsg = [
       `工作目录: ${workspace}`,
-      `现有文件: ${workspaceFiles}`,
+      `现有文件树:\n${workspaceFiles}`,
       `任务: ${node.name}`,
       node.goal_link ? `对全局目标的贡献: ${node.goal_link}` : '',
       `节点复杂度: ${node.complexity}`,
@@ -2132,6 +2253,26 @@ export class Orchestrator {
       { role: 'user', content: userMsg },
     ];
 
+    // 观测（i6efv5h2 复盘：44k token 单轮请求里没人知道谁贡献了多少）：
+    // 分段尺寸写进会话存档，供直方图校准 context 预算
+    record.prompt_profile = {
+      system_chars: systemMsg.length,
+      session_msgs: compacted.length,
+      session_chars: compacted.reduce((s, m) => s + m.content.length, 0),
+      user_chars: userMsg.length,
+      skills_indexed: picks.length,
+      max_output_tokens: maxTokens,
+      est_base_tokens:
+        estimateTokens(systemMsg) + estimateTokens(userMsg) + estimateTokens(compacted.map((m) => m.content).join('')),
+    };
+    this.logger.info('Prompt profile', {
+      taskId,
+      nodeId: node.id,
+      agent: plugin.name,
+      model: entry.name,
+      ...record.prompt_profile,
+    });
+
     // war-room journal: master briefing
     await appendJournal(taskId, plugin.name, {
       role: 'master', kind: 'brief', text: userMsg, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name,
@@ -2157,19 +2298,43 @@ export class Orchestrator {
       let parseErrorLogged = false;
       // improvement #4: SSOT docs this agent updated via write_doc during this dispatch
       const docUpdates: { type: string; version: number }[] = [];
+      // 缓存优先裁剪：断崖压缩每尝试至多一次（触发后重新 append-only，不逐轮重写历史）
+      let foldedOnce = false;
+      // 重复调用指针化：同工具+同参数不再读盘回显
+      const seenToolCalls = new Map<string, number>();
       for (let round = 0; round < maxRounds; round++) {
         // Check for cancellation before each LLM call
         if (await isCancelled(taskId)) {
           return { status: 'failed', error: 'task cancelled', tokens: record.tokens };
         }
+        // 节点级总时长预算（轮间检查；超线转人工，不记模型失败、不换模型——时间问题换谁都一样）
+        if (nodeBudgetMs > 0 && Date.now() - startedAt > nodeBudgetMs) {
+          const spent = Math.round((Date.now() - startedAt) / 1000);
+          record.error = `${NODE_BUDGET_PREFIX} 本节点已执行 ${spent}s，超出总预算 ${Math.round(nodeBudgetMs / 1000)}s（进行到第 ${round + 1}/${maxRounds} 轮）`;
+          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
+          await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
+          return { status: 'failed', error: record.error, tokens: record.tokens };
+        }
         await emitProgress('agent_activity', {
           task_id: taskId, node_id: node.id, agent: plugin.name,
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,
         });
-        const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, plugin.timeout ? plugin.timeout * 1000 : undefined);
+        const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
         this.pool!.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
         record.tokens += resp.promptTokens + resp.completionTokens;
+        // 缓存命中观测：服务端回传 cached_tokens 时记录（vLLM APC / LM Studio prompt cache）
+        this.logger.info('LLM round telemetry', {
+          taskId,
+          nodeId: node.id,
+          model: entry.name,
+          round: round + 1,
+          prompt_tokens: resp.promptTokens,
+          cached_tokens: resp.cachedTokens ?? null,
+          completion_tokens: resp.completionTokens,
+          first_token_ms: resp.firstTokenMs ?? null,
+          elapsed_ms: resp.elapsedMs,
+        });
         content = stripCodeFence(resp.content);
         // E5: empty content with finish_reason=length means the reasoning burned the
         // whole output budget — not a format problem. Skip the format-repair round and
@@ -2190,7 +2355,18 @@ export class Orchestrator {
             this.logger.info('Salvaged tool calls from malformed output', { taskId, nodeId: node.id, agent: plugin.name, model: entry.name, count: salvaged.length });
           }
         }
-        const roundEntry: Record<string, any> = { assistant: content, tool_results: null, parse_error: null };
+        const roundEntry: Record<string, any> = {
+          assistant: content,
+          tool_results: null,
+          parse_error: null,
+          // 缓存命中观测：本轮 prompt 实际规模与服务端回报的命中前缀量
+          telemetry: {
+            prompt_tokens: resp.promptTokens,
+            cached_tokens: resp.cachedTokens ?? null,
+            first_token_ms: resp.firstTokenMs ?? null,
+            elapsed_ms: resp.elapsedMs,
+          },
+        };
         if (!parsed) {
           // If this is the last round and the model returned substantial text,
           // treat it as a successful analysis result (wrap as JSON)
@@ -2258,10 +2434,17 @@ export class Orchestrator {
           messages.push({ role: 'assistant', content });
           messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
           // Do one more round to get final output
-          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, plugin.timeout ? plugin.timeout * 1000 : undefined);
+          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
           this.pool!.recordUsage(entry.name, finalResp.promptTokens, finalResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + finalResp.promptTokens + finalResp.completionTokens);
           record.tokens += finalResp.promptTokens + finalResp.completionTokens;
+          roundEntry.telemetry = {
+            prompt_tokens: finalResp.promptTokens,
+            cached_tokens: finalResp.cachedTokens ?? null,
+            first_token_ms: finalResp.firstTokenMs ?? null,
+            elapsed_ms: finalResp.elapsedMs,
+            forced_final: true,
+          };
           content = stripCodeFence(finalResp.content);
           parsed = extractJson(content);
           if (parsed && !parsed.tool_calls) {
@@ -2292,10 +2475,31 @@ export class Orchestrator {
           project_id: projectId || undefined,
           sandboxDir: workspace,
           availableAgents: [...this.router.getAvailable().keys()],
+          availableSkills: picks.map((p) => p.skill.name),
           node_id: node.id,
           node_name: node.name,
         };
-        const results = await applyToolCalls(workspace, toolCalls, knowledgeCtx);
+        // 重复调用指针化（缓存优先裁剪）：同工具+同参数再次出现不再读盘回显全文——
+        // 既省上下文增量，也让模型看到"结果同上轮"而不是被第二份大体积 JSON 挤爆窗口
+        const fresh: typeof toolCalls = [];
+        const freshIdx: number[] = [];
+        const positioned: unknown[] = new Array(toolCalls.length);
+        for (let ti = 0; ti < toolCalls.length; ti++) {
+          const t = toolCalls[ti] as Record<string, any>;
+          const tName = String(t.tool || '').toLowerCase();
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message';
+          const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}`;
+          if (!sideEffect && seenToolCalls.has(dedupKey)) {
+            positioned[ti] = { tool: t.tool, ok: true, dedup: `与第 ${seenToolCalls.get(dedupKey)} 轮完全相同的调用，结果从略（可信任上轮结果）` };
+            continue;
+          }
+          seenToolCalls.set(dedupKey, round + 1);
+          fresh.push(toolCalls[ti]);
+          freshIdx.push(ti);
+        }
+        const freshResults = await applyToolCalls(workspace, fresh, knowledgeCtx);
+        freshIdx.forEach((orig, i) => { positioned[orig] = freshResults[i]; });
+        const results = positioned;
         // improvement 3: agent-driven knowledge deposits are audited in the war room;
         // improvement #4: doc updates and agent messages likewise
         for (const r of results as Record<string, any>[]) {
@@ -2348,6 +2552,21 @@ export class Orchestrator {
         messages.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results).slice(0, 8000)}\n\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/${maxRounds} 轮完成，剩余 ${maxRounds - 1 - round} 轮——规划好是否还需要侦查）` });
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
         await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
+
+        // 断崖压缩（缓存优先：循环内其余时刻严格 append-only）：估算超硬预算才折叠，
+        // 折叠是确定性的纯函数、每尝试至多一次——一次 prefill 重置换后续全部小 prompt。
+        // 折叠真正发生才置位（历史不足一轮时继续观察后续轮次）
+        if (!foldedOnce) {
+          const est = estimateTokens(JSON.stringify(messages));
+          if (est > this.contextCfg.max_prompt_tokens && foldMessagesInto(messages)) {
+            foldedOnce = true;
+            record.folded_at_round = round + 1;
+            this.logger.warn('Prompt folded (cliff compaction)', {
+              taskId, nodeId: node.id, model: entry.name, round: round + 1,
+              est_before: est, est_after: estimateTokens(JSON.stringify(messages)),
+            });
+          }
+        }
       }
 
       if (parsed!.status !== 'success') {

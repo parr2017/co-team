@@ -14,6 +14,7 @@ import { emitProgress } from './store';
 import { startClarifyTimeoutScanner } from './clarifyTimeout';
 import { startDailyReportScanner } from './dailyReport';
 import { configureGrader } from './grader';
+import { configureLlmTimeouts } from './llm';
 import { initLogger, getLogger } from './logger';
 
 const MIME: Record<string, string> = {
@@ -87,6 +88,21 @@ async function main(): Promise<void> {
     modelsCount: config.model_pool.length 
   });
 
+  // 超时语义重做：idle/cap 策略来自 config.yaml `llm:` 段（时长本身不判死）
+  if (config.llm) {
+    configureLlmTimeouts({
+      first_token_idle_sec: config.llm.first_token_idle_sec,
+      stream_idle_sec: config.llm.stream_idle_sec,
+      wallclock_cap_sec: config.llm.wallclock_cap_sec,
+      non_stream_timeout_sec: config.llm.non_stream_timeout_sec,
+    });
+    logger.info('LLM timeout policy loaded', {
+      first_token_idle_sec: config.llm.first_token_idle_sec,
+      stream_idle_sec: config.llm.stream_idle_sec,
+      wallclock_cap_sec: config.llm.wallclock_cap_sec,
+    });
+  }
+
   await initBus(config.redis);
   logger.info('Message bus initialized');
 
@@ -117,6 +133,9 @@ async function main(): Promise<void> {
     nodeClarify: config.orchestrator.node_clarify,
     selfModGate: config.orchestrator.self_mod_gate,
     projects: config.projects,
+    slowSuccessSec: config.llm?.slow_success_sec,
+    outputTiers: config.llm?.output_tiers,
+    context: config.context,
   });
 
   await orchestrator.loadAgents();

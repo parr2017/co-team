@@ -64,9 +64,52 @@ export interface AppConfig {
   };
   /** feature: 每日问题报告 — disabled by default; only reports when explicitly enabled */
   daily_report?: { enabled: boolean; hour: number };
+  /** 2026-09-09 超时语义重做：时长本身不判死——只有确定性死亡/静默超线/人工判定才是失败 */
+  llm?: LlmTimeoutConfig;
+  /** 上下文预算（缓存优先裁剪）：估算 prompt 超线触发一次性断崖折叠 */
+  context?: ContextConfig;
   /** feishu bot (event subscription mode); secrets come from COTEAM_FEISHU_* env vars */
   feishu?: FeishuConfig;
 }
+
+export interface LlmTimeoutConfig {
+  /** 发出请求→首个数据块的静默上限（秒），覆盖大 prompt prefill 阶段；0=关闭 */
+  first_token_idle_sec: number;
+  /** 流打开后两次数据块之间的静默上限（秒）；任意 chunk 刷新计时；0=关闭 */
+  stream_idle_sec: number;
+  /** 墙钟保险丝（秒），默认关闭——慢不是失败，仅防失控；0=关闭 */
+  wallclock_cap_sec: number;
+  /** 非流式请求的总上限（秒，无进度信号可用，只能用总时长兜底） */
+  non_stream_timeout_sec: number;
+  /** 单轮 LLM 调用超过该秒数但成功 → 记 slow（降权），不记失败 */
+  slow_success_sec: number;
+  /** 按节点复杂度的输出预算分档；置空对象 {} 可整体关闭（回退模型 max_tokens） */
+  output_tiers: { simple: number; normal: number; complex: number };
+}
+
+export interface ContextConfig {
+  /** prompt 估算超该 token 数触发一次确定性历史折叠（每尝试至多一次） */
+  max_prompt_tokens: number;
+  /** 工作区文件树注入的字符预算 */
+  workspace_tree_max_chars: number;
+  /** 全局目标注入的字符上限（超出截断并注明） */
+  goal_max_chars: number;
+}
+
+export const DEFAULT_LLM_TIMEOUT: LlmTimeoutConfig = {
+  first_token_idle_sec: 900,
+  stream_idle_sec: 900,
+  wallclock_cap_sec: 0,
+  non_stream_timeout_sec: 900,
+  slow_success_sec: 300,
+  output_tiers: { simple: 8000, normal: 16000, complex: 32000 },
+};
+
+export const DEFAULT_CONTEXT: ContextConfig = {
+  max_prompt_tokens: 16000,
+  workspace_tree_max_chars: 1500,
+  goal_max_chars: 1500,
+};
 
 export interface FeishuConfig {
   app_id?: string;
@@ -78,6 +121,18 @@ export interface FeishuConfig {
 }
 
 export const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+
+/** seconds config: undefined/negative → default; 0 → explicit "off" (kept) */
+function pickSec(v: unknown, dflt: number): number {
+  const n = Number(v);
+  if (v === undefined || v === null || !Number.isFinite(n)) return dflt;
+  return n < 0 ? dflt : n;
+}
+/** token/char budget: anything non-positive or non-finite → default */
+function positiveOr(v: unknown, dflt: number): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : dflt;
+}
 
 export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
   const configPath = path.join(root, 'config', 'config.yaml');
@@ -132,6 +187,26 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       // feature: 每日问题报告 — 默认关闭，界面开关打开后才会触发
       enabled: raw.daily_report?.enabled === true,
       hour: Number.isFinite(raw.daily_report?.hour) ? Math.min(23, Math.max(0, Number(raw.daily_report.hour))) : 9,
+    },
+    llm: {
+      // 2026-09-09 超时语义重做：秒数可带小数（便于测试调小阈值）；负数按缺省，0 为显式关闭
+      first_token_idle_sec: pickSec(raw.llm?.first_token_idle_sec, DEFAULT_LLM_TIMEOUT.first_token_idle_sec),
+      stream_idle_sec: pickSec(raw.llm?.stream_idle_sec, DEFAULT_LLM_TIMEOUT.stream_idle_sec),
+      wallclock_cap_sec: pickSec(raw.llm?.wallclock_cap_sec, DEFAULT_LLM_TIMEOUT.wallclock_cap_sec),
+      non_stream_timeout_sec: pickSec(raw.llm?.non_stream_timeout_sec, DEFAULT_LLM_TIMEOUT.non_stream_timeout_sec),
+      slow_success_sec: pickSec(raw.llm?.slow_success_sec, DEFAULT_LLM_TIMEOUT.slow_success_sec),
+      output_tiers: raw.llm?.output_tiers === undefined
+        ? { ...DEFAULT_LLM_TIMEOUT.output_tiers }
+        : {
+            simple: positiveOr(raw.llm?.output_tiers?.simple, DEFAULT_LLM_TIMEOUT.output_tiers.simple),
+            normal: positiveOr(raw.llm?.output_tiers?.normal, DEFAULT_LLM_TIMEOUT.output_tiers.normal),
+            complex: positiveOr(raw.llm?.output_tiers?.complex, DEFAULT_LLM_TIMEOUT.output_tiers.complex),
+          },
+    },
+    context: {
+      max_prompt_tokens: positiveOr(raw.context?.max_prompt_tokens, DEFAULT_CONTEXT.max_prompt_tokens),
+      workspace_tree_max_chars: positiveOr(raw.context?.workspace_tree_max_chars, DEFAULT_CONTEXT.workspace_tree_max_chars),
+      goal_max_chars: positiveOr(raw.context?.goal_max_chars, DEFAULT_CONTEXT.goal_max_chars),
     },
     // secrets never live in config.yaml — environment variables win
     feishu: raw.feishu

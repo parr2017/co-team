@@ -189,6 +189,8 @@ export interface AgentConversationRound {
   user?: string;
   tool_results?: unknown[] | null;
   parse_error?: string | null;
+  /** 缓存命中观测（i6efv5h2 复盘）：prompt/cached/首token/耗时 */
+  telemetry?: Record<string, unknown>;
 }
 
 export interface AgentConversation {
@@ -202,6 +204,10 @@ export interface AgentConversation {
   tokens: number;
   error: string;
   duration_sec?: number;
+  /** 组装期分段尺寸直方图（校准上下文预算用） */
+  prompt_profile?: Record<string, number>;
+  /** 断崖压缩发生的轮次（每尝试至多一次） */
+  folded_at_round?: number;
 }
 
 export interface AgentInfo {

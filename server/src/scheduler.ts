@@ -9,6 +9,8 @@ export interface ModelEntry extends ModelConfig {
   activeSlots: number;
   failCount: number;
   lastFailureAt: number;
+  /** slow-but-successful streak — demotes selection order without cooldown (超时语义重做) */
+  slowCount: number;
 }
 
 export interface UsageEntry {
@@ -31,6 +33,7 @@ export function makeEntry(cfg: ModelConfig): ModelEntry {
     activeSlots: 0,
     failCount: 0,
     lastFailureAt: 0,
+    slowCount: 0,
   };
 }
 
@@ -92,12 +95,12 @@ export class ModelPool {
 
     if (complexity === 'simple') {
       // cost optimization: cheapest healthy model
-      return available.sort((a, b) => a.priority - b.priority || a.cost_per_1k - b.cost_per_1k)[0];
+      return available.sort((a, b) => this.effectivePriority(a) - this.effectivePriority(b) || a.cost_per_1k - b.cost_per_1k)[0];
     }
     if (complexity === 'complex') {
-      return available.sort((a, b) => b.professional_weight - a.professional_weight || a.priority - b.priority)[0];
+      return available.sort((a, b) => b.professional_weight - a.professional_weight || this.effectivePriority(a) - this.effectivePriority(b))[0];
     }
-    const sorted = [...available].sort((a, b) => a.priority - b.priority || b.professional_weight - a.professional_weight);
+    const sorted = [...available].sort((a, b) => this.effectivePriority(a) - this.effectivePriority(b) || b.professional_weight - a.professional_weight);
     const top = sorted.slice(0, Math.max(3, Math.floor(sorted.length / 2)));
     const totalWeight = top.reduce((s, m) => s + m.professional_weight, 0);
     let roll = Math.random() * totalWeight;
@@ -112,7 +115,7 @@ export class ModelPool {
   fallbackChain(primary: ModelEntry, tags?: string[]): ModelEntry[] {
     const rest = this.filterByTags(this.models, tags)
       .filter((m) => m.name !== primary.name && this.isHealthy(m))
-      .sort((a, b) => a.priority - b.priority || b.professional_weight - a.professional_weight);
+      .sort((a, b) => this.effectivePriority(a) - this.effectivePriority(b) || b.professional_weight - a.professional_weight);
     return [primary, ...rest];
   }
 
@@ -125,7 +128,7 @@ export class ModelPool {
   emergencyCandidates(): ModelEntry[] {
     return this.models
       .filter((m) => this.availableSlots(m) > 0)
-      .sort((a, b) => a.priority - b.priority || b.professional_weight - a.professional_weight);
+      .sort((a, b) => this.effectivePriority(a) - this.effectivePriority(b) || b.professional_weight - a.professional_weight);
   }
 
   markFailure(m: ModelEntry): void {
@@ -135,6 +138,18 @@ export class ModelPool {
 
   markSuccess(m: ModelEntry): void {
     m.failCount = 0;
+    m.slowCount = 0;
+  }
+
+  /** 慢但成功：不是失败（不进冷却），只降权——本地慢模型与快模型混池时的正确记账方式 */
+  markSlow(m: ModelEntry): void {
+    m.failCount = 0;
+    m.slowCount += 1;
+  }
+
+  /** 选择/降级链排序用的有效优先级：每段连续慢成功降一级 */
+  effectivePriority(m: ModelEntry): number {
+    return m.priority + m.slowCount;
   }
 
   recordUsage(modelName: string, promptTokens: number, completionTokens: number): void {
@@ -181,6 +196,8 @@ export class ModelPool {
           tags: m.tags,
           healthy: this.isHealthy(m),
           fail_count: m.failCount,
+          slow_count: m.slowCount,
+          effective_priority: this.effectivePriority(m),
           cooldown_ms: this.cooldownRemainingMs(m),
           cost_per_1k: m.cost_per_1k,
         },
