@@ -22,16 +22,16 @@ export const LEVEL_PROFILES: Record<TaskLevel, LevelProfile> = {
   standard: {
     level: 'standard',
     label: '标准级',
-    planRule: '该任务为标准级：按常规粒度拆解（4-6 个节点），每个开发节点后紧跟验证节点。',
+    planRule: '该任务为标准级：按常规粒度拆解（4-8 个节点），每个开发节点后紧跟验证节点。',
     docs: true,
-    maxNodes: 8,
+    maxNodes: 10,
   },
   heavy: {
     level: 'heavy',
     label: '重量级',
     planRule: '该任务为重量级（架构级变更）：拆解务必充分，先有设计/评审节点，再分步实现，每个关键模块单独验证，并在实现前增加一个 review 审查节点把关方案。',
     docs: true,
-    maxNodes: 12,
+    maxNodes: 16,
   },
 };
 

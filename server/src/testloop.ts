@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 export interface TestFailure {
   name: string;
   message: string;
@@ -9,10 +12,24 @@ export interface ParsedTestOutput {
   passed: boolean;
   failures: TestFailure[];
   summary: string;
+  /** E8: false when the output carries no parseable structured result —
+   *  crashed command / "no tests collected" / runner banner absent. */
+  parseOk: boolean;
+}
+
+/** E9: wrong-stack test run — pytest/python inside a Node workspace can never
+ *  exercise the JS code, so its failures are noise, not repair input. */
+export function detectStackMismatch(command: string, workspace: string): boolean {
+  if (!/(^|[\s/])(pytest|python3?|pip3?)(\s|$)/.test(command || '')) return false;
+  const hasNode = fs.existsSync(path.join(workspace, 'package.json'));
+  const hasPy = fs.existsSync(path.join(workspace, 'pyproject.toml'))
+    || fs.existsSync(path.join(workspace, 'requirements.txt'))
+    || fs.existsSync(path.join(workspace, 'setup.py'));
+  return hasNode && !hasPy;
 }
 
 const TEST_COMMAND_PATTERN =
-  /^\s*(npm (run )?test|npx (vitest|jest)|yarn (test|vitest|jest)|pnpm (test|vitest|jest)|pytest|python -m pytest|python3 -m pytest|vitest|jest|go test|cargo test)/;
+  /^\s*(npm (run )?test|npx (vitest|jest)|yarn (test|vitest|jest)|pnpm (test|vitest|jest)|pytest|python -m pytest|python3 -m pytest|vitest|jest|go test|cargo test|node (--test|--experimental-test)\b)/;
 
 export function isTestCommand(command: string): boolean {
   return TEST_COMMAND_PATTERN.test(command || '');
@@ -52,7 +69,8 @@ export function parseTestOutput(output: string, hint?: string): ParsedTestOutput
         failures.push({ name: m[1], message: (m[0].match(/E\s+.*/)?.[0] || 'assertion failed').slice(0, 300), stack: m[0].slice(0, 600) });
       }
     }
-    return { framework: 'pytest', passed: failures.length === 0, failures: dedupe(failures).slice(0, 10), summary: summarize(text) || `${failures.length} 个 pytest 用例失败` };
+    const pytestSummary = summarize(text);
+    return { framework: 'pytest', passed: failures.length === 0, failures: dedupe(failures).slice(0, 10), summary: pytestSummary || `${failures.length} 个 pytest 用例失败`, parseOk: pytestSummary !== '' || failures.length > 0 };
   }
 
   if (looksJs) {
@@ -64,10 +82,12 @@ export function parseTestOutput(output: string, hint?: string): ParsedTestOutput
       if (!name || name.length < 3) continue;
       failures.push({ name: name.slice(0, 200), message: extractJsMessage(text, name) });
     }
-    return { framework: 'js', passed: failures.length === 0, failures: dedupe(failures).slice(0, 10), summary: summarize(text) || `${failures.length} 个用例失败` };
+    const jsSummary = summarize(text);
+    return { framework: 'js', passed: failures.length === 0, failures: dedupe(failures).slice(0, 10), summary: jsSummary || `${failures.length} 个用例失败`, parseOk: jsSummary !== '' || failures.length > 0 };
   }
 
-  return { framework: 'unknown', passed: false, failures: [], summary: summarize(text) || '测试命令执行失败' };
+  const rawSummary = summarize(text);
+  return { framework: 'unknown', passed: false, failures: [], summary: rawSummary || '测试命令执行失败', parseOk: rawSummary !== '' };
 }
 
 function dedupe(failures: TestFailure[]): TestFailure[] {
@@ -98,8 +118,10 @@ function extractPytestStack(text: string, caseName: string): string | undefined 
 
 const MAX_FIX_ROUNDS = 3;
 
-/** Build a targeted fix prompt from parsed failures (fed to the repair agent). */
-export function buildFixPrompt(parsed: ParsedTestOutput, command: string, round: number, maxRounds = MAX_FIX_ROUNDS): string {
+/** Build a targeted fix prompt from parsed failures (fed to the repair agent).
+ *  E8: pass rawOutput when no failure case could be parsed — the model then sees
+ *  the unfiltered tail (crash stack / "no tests collected") instead of nothing. */
+export function buildFixPrompt(parsed: ParsedTestOutput, command: string, round: number, maxRounds = MAX_FIX_ROUNDS, rawOutput?: string): string {
   const lines = [
     `自动化测试修复循环（第 ${round}/${maxRounds} 轮）：测试命令「${command}」失败，请根据以下失败信息修复代码后重新验证。`,
     '',
@@ -110,8 +132,11 @@ export function buildFixPrompt(parsed: ParsedTestOutput, command: string, round:
     lines.push(`- 用例: ${f.name}`, `  错误: ${f.message}`);
     if (f.stack) lines.push(`  堆栈: ${f.stack.split('\n').slice(0, 6).join('\n  ')}`);
   }
-  if (!parsed.failures.length) lines.push(`输出摘要: ${parsed.summary}`);
-  lines.push('', '请定位根因并修复（优先修改被测代码而非删除测试；确属测试过时才可调整测试）。');
+  if (!parsed.failures.length) {
+    lines.push(`输出摘要: ${parsed.summary}`);
+    if (rawOutput) lines.push('原始输出（截断，真实错误通常在末尾）:', rawOutput.slice(-2000));
+  }
+  lines.push('', '请定位根因并修复（优先修改被测代码而非删除测试；确属测试过时才可调整测试；若输出显示命令本身崩溃或未收集到用例，先修测试环境/命令而非业务代码）。');
   return lines.join('\n');
 }
 

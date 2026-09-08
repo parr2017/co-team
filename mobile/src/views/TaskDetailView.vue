@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showDialog, showToast } from 'vant';
+import { marked } from 'marked';
 import { api } from '../api';
 import type { TaskGraph, EventEnvelope, NodeDiffResponse } from '../api';
 import { useDashboard } from '../composables/useDashboard';
@@ -92,6 +93,77 @@ const diffOpen = computed({
   set: (v: boolean) => { if (!v) { diffNode.value = null; diffData.value = null; } },
 });
 
+// ---------- A3 合并 · A2 协同文档 · A1 实时产出 ----------
+const merging = ref(false);
+const docsOpen = ref(false);
+const docsList = ref<{ type: string; version: number; updated_by: string; content: string }[]>([]);
+const docView = ref<{ title: string; content: string } | null>(null);
+const outputOpen = ref(false);
+const outputAvailable = ref(false);
+const outputFiles = ref<string[]>([]);
+const outputFile = ref<{ path: string; content: string } | null>(null);
+
+function showMerge() {
+  if (merging.value) return;
+  showDialog({ title: '合并成果', message: '先试运行检查冲突（不改任何文件），通过后再确认合并到主分支？', showCancelButton: true })
+    .then((r) => {
+      if (r !== 'confirm') return;
+      merging.value = true;
+      api.mergeTask(taskId.value, true)
+        .then((res) => {
+          merging.value = false;
+          if (!res.ok) { showToast(res.message || '试运行未通过'); return; }
+          showDialog({ title: '试运行通过', message: res.message + '，确认合并？', showCancelButton: true })
+            .then((r2) => {
+              if (r2 !== 'confirm') return;
+              merging.value = true;
+              api.mergeTask(taskId.value, false)
+                .then((res2) => {
+                  showToast(res2.message || (res2.ok ? '合并成功' : '合并失败'));
+                  void refresh();
+                })
+                .catch((e) => showToast(e.message))
+                .finally(() => { merging.value = false; });
+            });
+        })
+        .catch((e) => { merging.value = false; showToast(e.message); });
+    });
+}
+
+async function openDocs() {
+  try {
+    const r = await api.taskDocs(taskId.value);
+    docsList.value = r.docs || [];
+    docsOpen.value = true;
+  } catch (e: any) {
+    showToast(e.message || '加载协同文档失败');
+  }
+}
+
+async function openOutput() {
+  try {
+    const r = await api.taskOutput(taskId.value);
+    outputAvailable.value = r.available;
+    outputFiles.value = r.files || [];
+    outputOpen.value = true;
+  } catch (e: any) {
+    showToast(e.message || '加载产出失败');
+  }
+}
+
+function renderMd(text: string): string {
+  const escaped = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(marked.parse(escaped, { async: false, breaks: true }));
+}
+
+async function viewOutputFile(path: string) {
+  try {
+    outputFile.value = await api.taskOutputFile(taskId.value, path);
+  } catch (e: any) {
+    showToast(e.message || '读取文件失败');
+  }
+}
+
 function openDiff(n: { id: string; name: string }) {
   diffNode.value = { id: n.id, name: n.name };
   void loadDiff(n.id);
@@ -164,16 +236,6 @@ watch(taskId, () => {
   tab.value = 'warroom';
   void refresh();
 }, { immediate: true });
-
-watch(
-  () => task.value?.status,
-  () => {
-    if (!selectedAgent.value && task.value) {
-      const working = task.value.nodes.find((n) => ['running', 'retrying', 'waiting_approval'].includes(n.status));
-      if (working) selectedAgent.value = working.agent;
-    }
-  }
-);
 
 unsub = onEvent((msg) => {
   if (msg.payload?.task_id === taskId.value) void fetchSingleTask(taskId.value);
@@ -284,6 +346,12 @@ function nodeIcon(status: string): string {
         <span class="ab-text">Agent 需要你回复澄清问题</span>
         <button class="ab-btn" @click="router.push(`/clarify/${taskId}`)">去回复</button>
       </div>
+      <div v-else-if="task.status === 'success'" class="action-bar">
+        <span class="ab-text">成果已交付</span>
+        <button class="ab-btn" @click="showMerge">合并</button>
+        <button class="ab-btn" @click="openDocs">文档</button>
+        <button class="ab-btn" @click="openOutput">产出</button>
+      </div>
 
       <van-tabs v-model:active="tab" class="tabs" sticky :offset-top="46" line-width="24px">
         <!-- 作战室：微信聊天页 -->
@@ -310,6 +378,7 @@ function nodeIcon(status: string): string {
               <div v-if="!members.length" class="no-members">
                 <template v-if="task.status === 'clarifying'">需求澄清中，回复后开始规划</template>
                 <template v-else-if="task.status === 'planned'">计划待确认，确认后开始执行</template>
+                <template v-else-if="task.status === 'pending' && !task.nodes.length">团队评估需求中，请稍候…</template>
                 <template v-else>暂无成员</template>
               </div>
             </div>
@@ -472,6 +541,59 @@ function nodeIcon(status: string): string {
               <pre class="dl-patch mono"><code><span v-for="(line, i) in (diffData.patch || '').split('\n')" :key="i" class="pl" :class="diffLineClass(line)">{{ line === '' ? ' ' : line }}
 </span></code></pre>
             </template>
+          </template>
+        </div>
+      </div>
+    </van-popup>
+
+    <!-- A2 协同文档列表 -->
+    <van-popup v-model:show="docsOpen" position="bottom" :style="{ height: '70%' }" round>
+      <div class="dl-viewer">
+        <div class="dl-head">
+          <span class="dl-title">协同文档（SSOT）</span>
+          <van-icon name="cross" size="18" @click="docsOpen = false" />
+        </div>
+        <div class="dl-body">
+          <div v-if="!docsList.length" class="dl-state">暂无协同文档</div>
+          <div v-for="d in docsList" :key="d.type" class="docs-row" @click="docView = { title: `docs/${d.type}.md（v${d.version}）`, content: d.content }">
+            <span class="docs-name">📘 docs/{{ d.type }}.md · v{{ d.version }}</span>
+            <span class="docs-meta">{{ d.updated_by }}</span>
+          </div>
+        </div>
+      </div>
+    </van-popup>
+
+    <!-- A2 文档内容查看 -->
+    <van-popup :show="!!docView" position="bottom" :style="{ height: '82%' }" round @update:show="(v: boolean) => { if (!v) docView = null; }">
+      <div class="dl-viewer">
+        <div class="dl-head">
+          <span class="dl-title">{{ docView?.title }}</span>
+          <van-icon name="cross" size="18" @click="docView = null" />
+        </div>
+        <div class="dl-body md" v-html="renderMd(docView?.content || '')"></div>
+      </div>
+    </van-popup>
+
+    <!-- A1 实时产出视图 -->
+    <van-popup v-model:show="outputOpen" position="bottom" :style="{ height: '80%' }" round>
+      <div class="dl-viewer">
+        <div class="dl-head">
+          <span class="dl-title">实时产出（沙箱 · 只读）</span>
+          <van-icon name="cross" size="18" @click="outputOpen = false" />
+        </div>
+        <div class="dl-body">
+          <div v-if="!outputAvailable" class="dl-state">沙箱已清理或任务未在沙箱中执行</div>
+          <template v-else>
+            <div v-if="outputFile" class="out-file">
+              <div class="docs-name mono">{{ outputFile.path }}</div>
+              <pre class="out-pre">{{ outputFile.content }}</pre>
+            </div>
+            <div class="out-list">
+              <div v-for="f in outputFiles" :key="f" class="docs-row" @click="viewOutputFile(f)">
+                <span class="docs-name">📄 {{ f }}</span>
+              </div>
+              <div v-if="!outputFiles.length" class="dl-state">暂无文件</div>
+            </div>
           </template>
         </div>
       </div>
@@ -653,6 +775,12 @@ function nodeIcon(status: string): string {
 .pl.hunk { color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); }
 .pl.meta { color: var(--text-3); }
 
+.docs-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px; border-bottom: 1px solid var(--border); }
+.docs-name { font-size: 13px; color: var(--text); }
+.docs-meta { font-size: 11px; color: var(--text-3); }
+.out-list { margin-top: 10px; }
+.out-file { margin-bottom: 10px; }
+.out-pre { max-height: 260px; overflow: auto; background: rgba(5, 10, 16, 0.75); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11px; white-space: pre-wrap; color: #9fe8f5; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0; }
 .empty-text { font-size: 13px; color: var(--text-3); }
 </style>

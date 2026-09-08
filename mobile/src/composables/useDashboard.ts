@@ -98,6 +98,7 @@ export function useDashboard() {
     tasks, taskTotal, taskPage, taskPageSize, agents, connected,
     loadTasks, fetchSingleTask, loadAgents,
     onEvent(fn: (msg: EventEnvelope) => void) { return onEvent(fn); },
+    onResync(fn: () => void): () => void { return onResync(fn); },
     onTaskStatus(fn: (t: TaskGraph) => void): () => void {
       statusListeners.add(fn);
       return () => statusListeners.delete(fn);

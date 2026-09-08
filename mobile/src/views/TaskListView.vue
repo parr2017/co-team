@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { showToast } from 'vant';
+import { showToast, showConfirmDialog } from 'vant';
 import { api, statusLabel } from '../api';
 import type { TaskGraph, QueueSnapshot } from '../api';
 import { useDashboard } from '../composables/useDashboard';
@@ -24,6 +24,7 @@ const error = ref('');
 const PAGE_SIZE = 20;
 
 const sorted = computed(() => [...list.value].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')));
+const visible = computed(() => sorted.value.filter(matchesFilter));
 
 /** the agent leading this task drives the conversation avatar */
 function avatarAgent(t: TaskGraph): string {
@@ -129,6 +130,69 @@ function openTask(t: TaskGraph) {
   router.push(`/task/${t.task_id}`);
 }
 
+// ---------- 任务中心: status stats + filter + restart ----------
+
+/** same restartable set as the web TaskTable */
+const canRestart = (st: string) => ['failed', 'cancelled', 'success', 'completed'].includes(st);
+
+async function onRestart(t: TaskGraph) {
+  try {
+    await showConfirmDialog({
+      title: '重启任务',
+      message: '任务将重新进入执行队列，未完成的节点会重新执行（已完成节点保留）。',
+      confirmButtonText: '重启',
+      cancelButtonText: '取消',
+    });
+  } catch {
+    return; // user dismissed
+  }
+  try {
+    await api.executeTask(t.task_id);
+    showToast('已重新加入执行队列');
+    await onRefresh();
+  } catch (e: any) {
+    showToast(e.message || '重启失败');
+  }
+}
+
+const statusFilter = ref('');
+const stats = ref({ total: 0, running: 0, waiting: 0, failed: 0, done: 0 });
+
+async function refreshStats() {
+  try {
+    const d = await api.listTasks(1, 200);
+    const all = d.tasks || [];
+    stats.value = {
+      total: d.total,
+      running: all.filter((t) => ['running', 'retrying', 'queued'].includes(t.status)).length,
+      waiting: all.filter((t) => ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned', 'pending'].includes(t.status)).length,
+      failed: all.filter((t) => t.status === 'failed').length,
+      done: all.filter((t) => ['success', 'completed'].includes(t.status)).length,
+    };
+  } catch { /* server unreachable — keep last snapshot */ }
+}
+
+const chips = [
+  { key: '', label: '全部', get count() { return stats.value.total; } },
+  { key: 'running', label: '执行中', get count() { return stats.value.running; } },
+  { key: 'waiting', label: '待处理', get count() { return stats.value.waiting; } },
+  { key: 'failed', label: '失败', get count() { return stats.value.failed; } },
+  { key: 'done', label: '完成', get count() { return stats.value.done; } },
+];
+
+function matchesFilter(t: TaskGraph): boolean {
+  if (!statusFilter.value) return true;
+  if (statusFilter.value === 'running') return ['running', 'retrying', 'queued'].includes(t.status);
+  if (statusFilter.value === 'waiting') return ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned', 'pending'].includes(t.status);
+  if (statusFilter.value === 'failed') return t.status === 'failed';
+  if (statusFilter.value === 'done') return ['success', 'completed'].includes(t.status);
+  return true;
+}
+
+function toggleFilter(key: string) {
+  statusFilter.value = statusFilter.value === key ? '' : key;
+}
+
 // ---------- execution queues (project lanes) ----------
 
 const queues = ref<QueueSnapshot[]>([]);
@@ -155,7 +219,8 @@ async function onClear(key: string) {
 
 onMounted(() => {
   refreshQueues();
-  queueTimer = window.setInterval(refreshQueues, 5000);
+  refreshStats();
+  queueTimer = window.setInterval(() => { refreshQueues(); refreshStats(); }, 5000);
 });
 onUnmounted(() => {
   if (queueTimer !== null) window.clearInterval(queueTimer);
@@ -177,6 +242,20 @@ onUnmounted(() => {
       background="transparent"
       @search="onSearch"
     />
+
+    <!-- 任务中心 status chips: tap to filter the session list -->
+    <div class="stat-row">
+      <button
+        v-for="c in chips"
+        :key="c.key"
+        class="stat-chip"
+        :class="{ active: statusFilter === c.key }"
+        @click="toggleFilter(c.key)"
+      >
+        <span class="stat-num mono">{{ c.count }}</span>
+        <span class="stat-label">{{ c.label }}</span>
+      </button>
+    </div>
 
     <!-- execution queues: one lane per project, blocked lanes wait for the user -->
     <div v-for="q in visibleQueues" :key="q.key" class="queue-strip" :class="{ 'queue-blocked': q.blocked }">
@@ -203,14 +282,14 @@ onUnmounted(() => {
           finished-text="没有更多了"
           @load="onLoad"
         >
-          <div v-if="!sorted.length && finished" class="empty">
+          <div v-if="!visible.length && finished" class="empty">
             <van-icon name="chat-o" size="52" class="wx-float" color="var(--text-3)" />
             <div class="empty-title">暂无任务</div>
             <div class="empty-text">点右上角 + 发起第一个任务</div>
           </div>
 
           <!-- WeChat session-list rows -->
-          <div v-for="t in sorted" :key="t.task_id" class="session" @click="openTask(t)">
+          <div v-for="t in visible" :key="t.task_id" class="session" @click="openTask(t)">
             <div class="s-avatar">
               <AgentAvatar :name="avatarAgent(t)" :size="48" />
               <span v-if="badgeCount(t)" class="s-badge">{{ badgeCount(t) > 99 ? '99+' : badgeCount(t) }}</span>
@@ -224,6 +303,14 @@ onUnmounted(() => {
               <div class="s-line2">
                 <span class="s-digest" :class="{ unread: needsAttention(t) }">{{ digest(t) }}</span>
                 <span class="s-meta">
+                  <van-button
+                    v-if="canRestart(t.status)"
+                    size="mini"
+                    plain
+                    type="primary"
+                    class="s-restart"
+                    @click.stop="onRestart(t)"
+                  >重启</van-button>
                   <span
                     v-if="t.status === 'running' || t.status === 'retrying'"
                     class="s-pill run wx-pulse"
@@ -317,6 +404,20 @@ onUnmounted(() => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .s-chevron { flex-shrink: 0; opacity: 0.55; }
+
+.stat-row { display: flex; gap: 7px; padding: 0 12px 8px; overflow-x: auto; }
+.stat-chip {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  min-width: 58px; padding: 5px 11px;
+  background: rgba(17, 26, 40, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 9px; cursor: pointer; text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.stat-chip.active { border-color: var(--accent); background: var(--accent-soft); }
+.stat-num { font-size: 16px; font-weight: 700; color: var(--text); line-height: 1.1; }
+.stat-label { font-size: 11px; color: var(--text-3); }
+.s-restart { height: 22px; padding: 0 9px; border-radius: 6px; font-weight: 500; }
 
 /* queue strips between search and the session list */
 .queue-strip {

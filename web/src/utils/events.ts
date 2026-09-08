@@ -124,6 +124,27 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
       return { text: `回滚到快照${p.snapshot?.created_at ? `（${p.snapshot.created_at}）` : ''}`, level: 'accent', category: 'system', noisy: false };
     case 'doc_updated':
       return { text: `文档更新${p.path ? ` — ${CLIP(p.path, 60)}` : ''}`, level: 'info', category: 'system', noisy: false };
+
+    // ---- 群组沟通（讨论 → 方案 → 转项目 → 经验沉淀）----
+    case 'discussion_started':
+      return { text: `群组讨论「${CLIP(p.title, 30)}」开始 · 成员：${(p.members || []).join('、')}`, level: 'accent', category: 'system', noisy: false };
+    case 'discussion_message': {
+      const from = p.message?.from === 'user' ? '用户' : p.message?.from;
+      return { text: `${from}：${CLIP(p.message?.text, 60)}`, level: 'info', category: 'system', noisy: true };
+    }
+    case 'discussion_round':
+      return { text: `第 ${p.round ?? '?'} 轮讨论完成${Array.isArray(p.speakers) && p.speakers.length ? ` · 发言：${p.speakers.join('、')}` : ' · 全员沉默'}`, level: 'info', category: 'system', noisy: true };
+    case 'discussion_ask_user':
+      return { text: `${p.agent || '成员'}需要你拍板：${CLIP(p.question, 60)}`, level: 'accent', category: 'system', noisy: false };
+    case 'discussion_scheme_updated':
+      return { text: `项目规划方案已更新（v${p.version ?? '?'}）`, level: 'success', category: 'system', noisy: false };
+    case 'discussion_status':
+      return { text: `讨论状态：${p.status || (p.waiting_user ? '等待你的回答' : '')}`, level: 'info', category: 'system', noisy: true };
+    case 'discussion_converted':
+      return { text: `方案已转为项目开发 · 项目 ${p.project_id || ''} / 任务 ${p.task_id || ''}`, level: 'success', category: 'system', noisy: false };
+    case 'discussion_experience':
+      return { text: `${p.agent || '成员'}沉淀经验到知识库：${CLIP(p.title, 40)}`, level: 'success', category: 'system', noisy: false };
+
     default: {
       // 未登记类型：尽量从 payload 拼出可读内容，而不是裸 type
       const fallback = p.text || p.summary || p.message || p.name || p.error || '';

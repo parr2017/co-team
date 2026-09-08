@@ -105,6 +105,23 @@
       </el-collapse>
     </div>
 
+    <!-- 项目经验（知识库：群组讨论沉淀 + 任务复盘 + 规划方案） -->
+    <div class="office-exp">
+      <el-collapse>
+        <el-collapse-item :title="`项目经验 · 知识库 (${projectKnowledge.length})`" name="kexp">
+          <div v-for="e in projectKnowledge" :key="e.id" class="exp-item">
+            <div class="exp-title mono">
+              {{ e.title }}
+              <span v-for="t in (e.tags || []).filter((x: string) => ['群组讨论', '项目规划方案', '任务复盘'].includes(x))" :key="t" class="exp-tag">{{ t }}</span>
+            </div>
+            <div class="exp-src mono">来源 {{ e.source }} · {{ (e.updated_at || e.created_at || '').slice(0, 10) }}</div>
+            <div class="exp-body">{{ e.content.slice(0, 300) }}{{ e.content.length > 300 ? '…' : '' }}</div>
+          </div>
+          <div v-if="!projectKnowledge.length" class="empty mono">暂无条目 — 群组讨论经验、任务复盘与规划方案会自动沉淀到这里</div>
+        </el-collapse-item>
+      </el-collapse>
+    </div>
+
     <!-- 发起新任务 -->
     <el-dialog v-model="newTaskVisible" title="发起新任务" width="560px" @open="() => {}">
       <el-form label-width="80px" size="small">
@@ -178,7 +195,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { marked } from 'marked';
-import { api, type AgentInfo, type ProjectProgressReport, type ProjectDetail, type TaskGraph, type TaskNode } from '../api';
+import { api, type AgentInfo, type ProjectProgressReport, type ProjectDetail, type TaskGraph, type TaskNode, type KnowledgeEntry } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
 interface Seat {
@@ -201,6 +218,13 @@ const emit = defineEmits<{ (e: 'back'): void; (e: 'open-detail', taskId: string)
 
 const { agents } = useDashboard();
 const detail = ref<ProjectDetail | null>(null);
+/** 项目经验：知识库 category=project 条目（群组讨论沉淀 / 任务复盘 / 规划方案） */
+const projectKnowledge = ref<KnowledgeEntry[]>([]);
+async function loadProjectKnowledge() {
+  try {
+    projectKnowledge.value = (await api.listKnowledge({ category: 'project', project_id: props.projectId, limit: 100 })).entries;
+  } catch { projectKnowledge.value = []; }
+}
 const agentDefs = ref<AgentInfo[]>([]);
 const newTaskVisible = ref(false);
 const costVisible = ref(false);
@@ -343,6 +367,7 @@ function fmtShort(ts: string): string {
 async function refreshDetail() {
   if (!props.projectId) return;
   try { detail.value = await api.getProject(props.projectId); } catch { /* ignore */ }
+  await loadProjectKnowledge();
 }
 
 async function loadAgents() {
@@ -505,6 +530,15 @@ defineExpose({ refreshDetail, loadAgents });
 .mem-kind { flex-shrink: 0; font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--ct-border2); color: var(--ct-text3); }
 .mem-text { color: var(--ct-text2); flex: 1; }
 .mem-ts { flex-shrink: 0; font-size: 10px; color: var(--ct-text3); }
+
+/* 项目经验 · 知识库 */
+.office-exp { margin-top: 4px; }
+.exp-item { padding: 8px 6px; border-bottom: 1px dotted var(--ct-border); }
+.exp-item:last-child { border-bottom: none; }
+.exp-title { font-size: 12px; font-weight: 600; color: var(--ct-text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.exp-tag { font-size: 9px; font-weight: 400; color: var(--ct-accent); border: 1px solid var(--ct-accent); border-radius: 3px; padding: 0 4px; }
+.exp-src { font-size: 10px; color: var(--ct-text3); margin: 2px 0; }
+.exp-body { font-size: 11px; color: var(--ct-text2); line-height: 1.6; white-space: pre-wrap; }
 
 .empty { color: var(--ct-text3); text-align: center; padding: 30px; font-size: 12px; }
 .muted { color: var(--ct-text3); text-transform: none; font-weight: 400; }

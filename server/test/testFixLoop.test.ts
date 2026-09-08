@@ -71,6 +71,30 @@ function failingTestResult(): AgentResult {
   };
 }
 
+function unparseableTestResult(): AgentResult {
+  return {
+    status: 'success',
+    changes: ['src/calc.ts: ok'],
+    summary: 'done but tests fail',
+    errors: [],
+    command_results: [
+      { command: 'python -m pytest tests/ -x -q', returncode: 1, stderr: '', stdout: 'collected 0 items\nno tests ran' },
+    ],
+  };
+}
+
+function wrongStackTestResult(): AgentResult {
+  return {
+    status: 'success',
+    changes: ['tests/test_storage.py: written'],
+    summary: 'wrong stack',
+    errors: [],
+    command_results: [
+      { command: 'python -m pytest -q', returncode: 1, stderr: 'FAILED tests/test_x.py::test_a - boom', stdout: '' },
+    ],
+  };
+}
+
 describe('test-fix loop (improvement 8, orchestrator integration)', () => {
   it('blocks the commit on failing tests and repairs with a targeted prompt', async () => {
     const calls: { lastError: string; escalate: boolean }[] = [];
@@ -118,5 +142,50 @@ describe('test-fix loop (improvement 8, orchestrator integration)', () => {
     expect(report!.failures.length).toBeGreaterThan(0);
     expect(report!.failures[0].name).toContain('adds numbers');
     expect(report!.summary).toContain('修复 3 轮后仍有');
+  });
+});
+
+describe('test-fix loop guard rails (E8/E9)', () => {
+  it('terminates after two consecutive unparseable test runs instead of looping blindly (E8)', async () => {
+    const calls: { escalate: boolean; lastError: string }[] = [];
+    (orchestrator as any).dispatch = async (_t: string, _n: TaskNode, _p: unknown, _w: string, escalate: boolean, lastError: string) => {
+      calls.push({ escalate, lastError });
+      return escalate ? { status: 'failed', error: '' } : unparseableTestResult();
+    };
+    await saveTaskGraph('t-noinfo', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp });
+    const result = await (orchestrator as any).runGraph('t-noinfo', (await getTaskGraph('t-noinfo'))!, tmp);
+
+    // calls[0] is the initial attempt whose test run is already unparseable,
+    // calls[1] is the repair round fed the raw output, calls[2] is escalation
+    expect(calls).toHaveLength(3);
+    expect(calls[0].lastError).toBe('');
+    expect(calls[1].lastError).toContain('原始输出');
+    expect(calls[1].lastError).toContain('no tests ran');
+    expect(calls[2].escalate).toBe(true);
+    expect(calls[2].lastError).toContain('测试命令连续 2 轮失败');
+    expect(result.status).toBe('failed');
+    const graph = await getTaskGraph('t-noinfo');
+    expect(graph!.nodes[0].error).toContain('测试命令连续 2 轮失败');
+    expect(JSON.stringify(await getTaskJournals('t-noinfo'))).toContain('解析不出任何失败用例');
+  });
+
+  it('refuses to repair a wrong-stack test run and escalates immediately (E9)', async () => {
+    fs.writeFileSync(path.join(tmp, 'package.json'), '{}');
+    const calls: { escalate: boolean; lastError: string }[] = [];
+    (orchestrator as any).dispatch = async (_t: string, _n: TaskNode, _p: unknown, _w: string, escalate: boolean, lastError: string) => {
+      calls.push({ escalate, lastError });
+      return escalate ? { status: 'failed', error: '' } : wrongStackTestResult();
+    };
+    await saveTaskGraph('t-stack', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp });
+    const result = await (orchestrator as any).runGraph('t-stack', (await getTaskGraph('t-stack'))!, tmp);
+
+    // one regular attempt + escalation — no repair rounds on a wrong-stack run
+    expect(calls).toHaveLength(2);
+    expect(calls[1].escalate).toBe(true);
+    expect(calls[1].lastError).toContain('技术栈不匹配');
+    expect(result.status).toBe('failed');
+    const graph = await getTaskGraph('t-stack');
+    expect(graph!.nodes[0].error).toContain('技术栈不匹配');
+    expect(JSON.stringify(await getTaskJournals('t-stack'))).toContain('技术栈不匹配');
   });
 });

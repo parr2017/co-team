@@ -57,7 +57,7 @@ export function canExecute(policy: PermissionPolicy, command: string): boolean {
   return policy.whitelistCommands.includes(bin);
 }
 
-const IGNORE = new Set(['.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', 'venv', '.idea', '.vscode']);
+const IGNORE = new Set(['.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'logs', '.history']);
 /** Runtime artifacts, never deliverables: caches and databases carry execution state
  *  that breaks repeat runs when committed (tests then hit their own leftover rows). */
 const IGNORE_EXT = new Set(['.pyc', '.pyo', '.db', '.sqlite', '.sqlite3']);

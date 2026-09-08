@@ -34,3 +34,4 @@ config/config.yaml
 .vscode/
 .history/
 .zcode/
+server/tsconfig.tsbuildinfo

@@ -2,7 +2,7 @@
 // 服务端事件流已含全部所需信号，无需后端改动。
 import { ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { useDashboard } from './useDashboard';
+import { useDashboard, onEvent } from './useDashboard';
 
 const KEY = 'ct-desktop-notify';
 const enabled = ref(typeof localStorage !== 'undefined' && localStorage.getItem(KEY) === '1');
@@ -56,6 +56,13 @@ export function useNotifier() {
       }
     }
   );
+
+  // 群组沟通：成员需要用户拍板 / 方案转项目成功 → 值得打断提醒
+  onEvent((msg) => {
+    const p: Record<string, any> = msg.payload || {};
+    if (msg.type === 'discussion_ask_user') fire('讨论待你拍板', `${p.agent || ''}：${String(p.question || '').slice(0, 60)}`);
+    else if (msg.type === 'discussion_converted') fire('方案已转项目开发', `项目 ${p.project_id} · 任务 ${p.task_id}`);
+  });
 
   return { enabled, setEnabled };
 }

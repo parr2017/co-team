@@ -122,6 +122,15 @@ async function main(): Promise<void> {
     agents: [...orchestrator.plugins.keys()]
   });
 
+  // E7: tasks still 'running' at boot have no executor behind them (the previous
+  // process died mid-dispatch) — mark them failed so they never zombie.
+  const interrupted = await orchestrator.sweepInterruptedTasks();
+  if (interrupted.length) logger.warn('Startup sweep: interrupted tasks marked failed', { tasks: interrupted });
+
+  // 群组讨论：上一进程死在轮次中会遗留 busy/stop 锁（无属主，TTL 内会卡住讨论）——启动即清
+  const { clearStaleDiscussionLocks } = await import('./discussion');
+  await clearStaleDiscussionLocks(logger);
+
   // improvement 7 (R6): project-specific grading keywords from config.yaml
   if (config.grading) {
     configureGrader(config.grading);

@@ -97,6 +97,33 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <AgentAvatar :name="item.agent" :size="36" class="av" />
       </div>
 
+      <!-- Agent 留言（send_message，延迟派发）：左侧气泡，标注收件人 -->
+      <div v-else-if="item.t === 'message'" class="row them">
+        <div class="them-col">
+          <div class="who-name mono">{{ item.agent }}<template v-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template></div>
+          <div class="bubble them-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
+          </div>
+        </div>
+        <AgentAvatar :name="item.agent" :size="36" class="av" />
+      </div>
+
+      <!-- 协同文档更新卡片：点击弹出阅读器 -->
+      <div v-else-if="item.t === 'doc'" class="row them">
+        <div class="them-col">
+          <div class="who-name mono">{{ item.agent }} · 协同文档</div>
+          <button class="deliv-card mono" @click="openDoc(item.entry)">
+            <span class="dc-ico">📘</span>
+            <span class="dc-body">
+              <span class="dc-title">docs/{{ item.entry.meta?.doc_type }}.md → v{{ item.entry.meta?.version }}</span>
+              <span class="dc-sub">协同文档更新 · 点击阅读</span>
+            </span>
+            <span class="dc-arrow">›</span>
+          </button>
+        </div>
+        <AgentAvatar :name="item.agent" :size="36" class="av" />
+      </div>
+
       <!-- 子 Agent：错误（左侧红色边气泡） -->
       <div v-else-if="item.t === 'error'" class="row them">
         <div class="them-col">
@@ -128,7 +155,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
     <!-- 交付成果阅读器：统一模板固定展现 -->
     <el-dialog
       v-model="deliverableOpen"
-      :title="'交付成果 · ' + (deliverableView?.title || '')"
+      :title="deliverableView?.title || '阅读器'"
       width="720px"
       top="6vh"
       append-to-body
@@ -152,7 +179,7 @@ type Entry = JournalEntry & { agent: string };
 type RenderItem =
   | { t: 'time'; label: string }
   | { t: 'node'; name: string; models: string[] }
-  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable'; entry: Entry; agent: string };
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 
@@ -207,12 +234,19 @@ function copyDeliverable() {
 function openDeliverable(entry: JournalEntry) {
   const md = entry.meta?.markdown;
   if (md) {
-    deliverableView.value = { title: entry.node_name || entry.node_id, markdown: md };
+    deliverableView.value = { title: '交付成果 · ' + (entry.node_name || entry.node_id), markdown: md };
   } else {
     // journal cap may have evicted the body — fetch on demand
     void api.getDeliverable(props.taskId, entry.node_id).then((d) => {
-      deliverableView.value = { title: d.node_name || entry.node_id, markdown: d.markdown };
+      deliverableView.value = { title: '交付成果 · ' + (d.node_name || entry.node_id), markdown: d.markdown };
     }).catch(() => {});
+  }
+}
+/** 协同文档更新卡片：正文随 journal 落盘（截断 16KB），点击即读 */
+function openDoc(entry: JournalEntry) {
+  const content = entry.meta?.content;
+  if (content) {
+    deliverableView.value = { title: `协同文档 · docs/${entry.meta?.doc_type}.md (v${entry.meta?.version})`, markdown: content };
   }
 }
 

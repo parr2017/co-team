@@ -34,11 +34,35 @@ export async function getDocRegistry(taskId: string): Promise<SsotDoc[]> {
   return (await busGet<SsotDoc[]>(docsKey(taskId))) || [];
 }
 
-/** Render the docs section injected into agent prompts so every agent works from the SSOT. */
+/** Render the docs section injected into agent prompts so every agent works from the SSOT.
+ *  Short docs ride inline (agents otherwise burn a recon round reading the file); long ones
+ *  stay pointer-only with a truncation note. */
+const DOC_INLINE_MAX_CHARS = 2 * 1024;
+const DOC_INLINE_MAX_DOCS = 3;
+const DOC_INLINE_TOTAL_MAX_CHARS = 6 * 1024;
+
 export async function docsSection(taskId: string): Promise<string> {
   const docs = await getDocRegistry(taskId);
   if (!docs.length) return '';
-  return '\n\n## 协同文档（单一事实来源，请勿在回复中复述，直接以文档为准）\n' + docs.map((d) => `- docs/${d.type}.md (v${d.version})`).join('\n');
+  const pointers = docs.map((d) => `- docs/${d.type}.md (v${d.version})`).join('\n');
+  let budget = DOC_INLINE_TOTAL_MAX_CHARS;
+  const bodies: string[] = [];
+  for (const d of docs) {
+    if (bodies.length >= DOC_INLINE_MAX_DOCS || budget <= 0) break;
+    const text = d.content || '';
+    if (!text.trim()) continue;
+    if (text.length <= DOC_INLINE_MAX_CHARS && text.length <= budget) {
+      bodies.push(`### docs/${d.type}.md (v${d.version})\n${text}`);
+      budget -= text.length;
+    } else {
+      const head = text.slice(0, Math.min(DOC_INLINE_MAX_CHARS, budget));
+      bodies.push(`### docs/${d.type}.md (v${d.version}，内容过长已截断，可用 read_file 读取全文)\n${head}`);
+      break;
+    }
+  }
+  let out = '\n\n## 协同文档（单一事实来源，请勿在回复中复述，直接以文档为准）\n' + pointers;
+  if (bodies.length) out += '\n\n#### 文档内容\n' + bodies.join('\n\n');
+  return out;
 }
 
 /** Atomic file write: temp file + rename prevents concurrent-write corruption. */

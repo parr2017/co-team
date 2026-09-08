@@ -67,6 +67,16 @@
                   <el-input-number v-model="m.cost_per_1k" size="small" :min="0" :step="0.001" controls-position="right" style="width: 100%" />
                 </label>
               </div>
+              <div class="field-row">
+                <label class="field">
+                  <span>输出上限 Max Tokens</span>
+                  <el-input-number v-model="m.max_tokens" size="small" :min="1024" :max="1000000" :step="1024" controls-position="right" style="width: 100%" />
+                </label>
+                <label class="field">
+                  <span>上下文长度</span>
+                  <el-input-number v-model="m.context_length" size="small" :min="4096" :max="2000000" :step="4096" controls-position="right" style="width: 100%" />
+                </label>
+              </div>
             </div>
           </div>
           <el-button size="small" style="width: 100%" @click="addModel">+ 添加模型</el-button>
@@ -161,7 +171,6 @@
           </el-select>
         </el-form-item>
         <el-form-item label="超时(秒)"><el-input-number v-model="editing.timeout" :min="30" :max="3600" controls-position="right" /></el-form-item>
-        <el-form-item label="Max Tokens"><el-input-number v-model="editing.max_tokens" :min="1024" :max="65536" :step="1024" controls-position="right" /></el-form-item>
         <el-form-item label="系统提示词">
           <el-input v-model="editing.prompt" type="textarea" :rows="12" class="mono-input" placeholder="系统提示词（Markdown）" />
         </el-form-item>
@@ -365,6 +374,8 @@ function addModel() {
     priority: 1,
     professional_weight: 50,
     cost_per_1k: 0,
+    max_tokens: 128000,
+    context_length: 131072,
     tags: [],
   });
 }
@@ -428,7 +439,7 @@ function editAgent(row: AgentDefinition | null) {
   editingOriginal.value = row ? row.dir : null;
   editing.value = row
     ? { ...row, tagsText: row.tags.join(','), skills: row.skills || [] }
-    : { name: '', role: '', description: '', tagsText: '', model_override: '', max_tokens: 8192, timeout: 300, prompt: '', skills: [] };
+    : { name: '', role: '', description: '', tagsText: '', model_override: '', timeout: 300, prompt: '', skills: [] };
   agentEditorVisible.value = true;
 }
 

@@ -18,6 +18,14 @@
         </div>
       </div>
 
+      <!-- A3/A2/A1: 验收合并 · 协同文档 · 实时产出 -->
+      <div class="meta-actions">
+        <el-button v-if="task.status === 'success'" size="small" type="primary" :loading="merging" @click="onMergePreview">⎇ 合并到主分支</el-button>
+        <el-button size="small" @click="openDocs">📘 协同文档</el-button>
+        <el-button size="small" @click="openOutput">📂 实时产出</el-button>
+        <span v-if="mergeMsg" class="mono merge-msg" :class="{ ok: mergeOk }">{{ mergeMsg }}</span>
+      </div>
+
       <el-tabs v-model="tab">
         <!-- 作战室：阶段 + 轨道 + 检视器（成员会话 / 节点详情） -->
         <el-tab-pane label="作战室" name="warroom">
@@ -292,12 +300,55 @@
       :node-name="diffNodeId ? nodeName(diffNodeId) : ''"
       @close="diffNodeId = null"
     />
+
+    <!-- A3 合并确认弹窗 -->
+    <el-dialog :model-value="mergeConfirmOpen" title="确认合并" width="560px" append-to-body @close="mergeConfirmOpen = false">
+      <div class="md">{{ mergeMsg }}</div>
+      <div class="mono" style="margin-top: 8px; color: var(--ct-text3)">合并后成果进入主分支；任务分支保留可回溯。</div>
+      <template #footer>
+        <el-button size="small" @click="mergeConfirmOpen = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="merging" @click="onMerge">确认合并</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- A2 协同文档列表 -->
+    <el-dialog v-model="docsOpen" title="协同文档（SSOT 单一事实来源）" width="680px" append-to-body>
+      <div v-if="!docsList.length" class="mono" style="color: var(--ct-text3)">暂无协同文档</div>
+      <div v-for="d in docsList" :key="d.type" class="doc-row">
+        <el-button link type="primary" @click="docView = { title: `docs/${d.type}.md（v${d.version}）`, content: d.content }">
+          📘 docs/{{ d.type }}.md · v{{ d.version }} · {{ d.updated_by }}
+        </el-button>
+        <el-button link size="small" @click="downloadText(`${d.type}.md`, d.content)">下载</el-button>
+      </div>
+    </el-dialog>
+
+    <!-- A2/A1 文档与产出文件内容查看器 -->
+    <el-dialog :model-value="!!docView" :title="docView?.title || '查看'" width="760px" top="6vh" append-to-body @close="docView = null">
+      <div class="md" v-html="mdRender(docView?.content || '')"></div>
+    </el-dialog>
+
+    <!-- A1 实时产出视图 -->
+    <el-dialog v-model="outputOpen" title="实时产出（沙箱工作副本 · 只读）" width="680px" append-to-body>
+      <div class="output-bar">
+        <span class="mono" style="color: var(--ct-text3)">{{ outputAvailable ? `沙箱: ${outputSandbox}` : '沙箱已清理或任务未在沙箱中执行' }}</span>
+        <el-button size="small" @click="refreshOutput">刷新</el-button>
+      </div>
+      <div v-if="outputFile" class="output-file">
+        <div class="mono output-file-path">{{ outputFile.path }}</div>
+        <pre class="mono output-pre">{{ outputFile.content }}</pre>
+      </div>
+      <div class="output-list">
+        <div v-for="f in outputFiles" :key="f" class="output-item mono" @click="viewOutputFile(f)">{{ f }}</div>
+        <div v-if="!outputFiles.length" class="mono" style="color: var(--ct-text3)">暂无文件</div>
+      </div>
+    </el-dialog>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { marked } from 'marked';
 import { api, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, type SnapshotMeta } from '../api';
 import PipelineTrack from './PipelineTrack.vue';
 import ChatStream from './ChatStream.vue';
@@ -378,6 +429,100 @@ const nodeNames = computed<Record<string, string>>(() => {
 });
 function nodeName(id?: string): string {
   return (id && nodeNames.value[id]) || '';
+}
+
+// ---------- A3/A2/A1: 验收合并 · 协同文档 · 实时产出 ----------
+const merging = ref(false);
+const mergeMsg = ref('');
+const mergeOk = ref(false);
+const mergeConfirmOpen = ref(false);
+const docsOpen = ref(false);
+const docsList = ref<{ type: string; path: string; version: number; updated_by: string; content: string }[]>([]);
+const docView = ref<{ title: string; content: string } | null>(null);
+const outputOpen = ref(false);
+const outputAvailable = ref(false);
+const outputSandbox = ref('');
+const outputFiles = ref<string[]>([]);
+const outputFile = ref<{ path: string; content: string } | null>(null);
+
+async function onMergePreview() {
+  merging.value = true;
+  mergeMsg.value = '';
+  try {
+    const r = await api.mergeTask(props.taskId, true);
+    mergeOk.value = r.ok;
+    mergeMsg.value = r.message + (r.conflicts.length ? `：${r.conflicts.slice(0, 5).join('、')}` : '');
+    if (r.ok) mergeConfirmOpen.value = true;
+  } catch (e: any) {
+    mergeMsg.value = e.message || '合并预览失败';
+  } finally {
+    merging.value = false;
+  }
+}
+
+async function onMerge() {
+  merging.value = true;
+  try {
+    const r = await api.mergeTask(props.taskId, false);
+    mergeOk.value = r.ok;
+    mergeMsg.value = r.message;
+    mergeConfirmOpen.value = false;
+    if (r.ok) ElMessage.success(`成果已合并到 ${r.target}`);
+    task.value = await api.getTask(props.taskId);
+  } catch (e: any) {
+    mergeMsg.value = e.message || '合并失败';
+  } finally {
+    merging.value = false;
+  }
+}
+
+async function openDocs() {
+  try {
+    const r = await api.taskDocs(props.taskId);
+    docsList.value = r.docs || [];
+    docsOpen.value = true;
+  } catch (e: any) {
+    ElMessage.error(e.message || '加载协同文档失败');
+  }
+}
+
+function downloadText(name: string, content: string) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function openOutput() {
+  await refreshOutput();
+  outputOpen.value = true;
+}
+
+async function refreshOutput() {
+  try {
+    const r = await api.taskOutput(props.taskId);
+    outputAvailable.value = r.available;
+    outputSandbox.value = r.sandbox_path || '';
+    outputFiles.value = r.files || [];
+  } catch (e: any) {
+    ElMessage.error(e.message || '加载产出失败');
+  }
+}
+
+async function viewOutputFile(path: string) {
+  try {
+    outputFile.value = await api.taskOutputFile(props.taskId, path);
+  } catch (e: any) {
+    ElMessage.error(e.message || '读取文件失败');
+  }
+}
+
+function mdRender(text: string): string {
+  const escaped = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(marked.parse(escaped, { async: false, breaks: true }));
 }
 
 // ---------- 消耗统计（Σ 节点 tokens，按模型池单价估算成本） ----------
@@ -470,8 +615,8 @@ function fmt(ts: string): string { return new Date(ts).toLocaleTimeString(); }
 
 function pickDefaultAgent() {
   if (!agentsInTask.value.length) return;
-  const working = task.value?.nodes.find((n) => n.status === 'running' || n.status === 'retrying');
-  selectedAgent.value = working?.agent || agentsInTask.value[0];
+  // E1: 默认「全体」——不再自动选中某个成员（曾导致其他成员的卡片/留言初看不显示）
+  selectedAgent.value = '';
 }
 
 async function refresh() {
@@ -677,6 +822,16 @@ onUnmounted(() => window.clearInterval(pollTimer));
 <style scoped>
 .detail { font-size: 13px; }
 .meta { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+.meta-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.merge-msg { font-size: 11px; color: var(--ct-text3); }
+.merge-msg.ok { color: var(--ct-green); }
+.doc-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed var(--ct-border); }
+.output-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.output-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--ct-border); border-radius: 6px; padding: 4px; }
+.output-item { font-size: 11px; padding: 3px 8px; cursor: pointer; border-radius: 4px; color: var(--ct-text); }
+.output-item:hover { background: var(--ct-panel2); }
+.output-file-path { font-size: 11px; color: var(--ct-accent); margin: 8px 0 4px; }
+.output-pre { max-height: 320px; overflow: auto; background: var(--ct-panel2); border-radius: 6px; padding: 8px; font-size: 11px; white-space: pre-wrap; }
 .meta-main { flex: 1; min-width: 0; }
 .desc { font-size: 13px; font-weight: 600; color: var(--ct-text); margin-bottom: 4px; }
 .meta-sub { font-size: 11px; color: var(--ct-text3); }

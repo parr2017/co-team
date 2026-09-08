@@ -76,7 +76,6 @@ export function readAgentDefinition(agentsDir: string, dirName: string) {
     description: cfg.description || '',
     tags: cfg.tags || [],
     model_override: cfg.model_override ?? null,
-    max_tokens: cfg.max_tokens ?? 8192,
     timeout: cfg.timeout ?? 300,
     version: cfg.version || '1.0.0',
     skills: Array.isArray(cfg.skills) ? cfg.skills.map(String) : [],
@@ -114,7 +113,6 @@ export function writeAgentDefinition(
     description: def.description ?? '',
     tags: def.tags ?? [],
     model_override: def.model_override ?? null,
-    max_tokens: def.max_tokens ?? 8192,
     timeout: def.timeout ?? 300,
     skills: def.skills ?? [],
   };

@@ -13,8 +13,12 @@ const task = ref<TaskGraph | null>(null);
 const questions = ref<{ question: string; answer: string }[]>([]);
 const supplement = ref('');
 const submitting = ref(false);
+const loading = ref(true);
+const loadError = ref('');
 
 async function load() {
+  loading.value = true;
+  loadError.value = '';
   try {
     const t = await api.getTask(taskId.value);
     task.value = t;
@@ -32,7 +36,10 @@ async function load() {
       if (!questions.value.length) questions.value = [{ question: '请补充说明需求细节', answer: '' }];
     } catch { /* ignore */ }
   } catch (e: any) {
-    showFailToast(e.message || '任务不存在');
+    // never strand the user on a dead page: show a retry-able error state
+    loadError.value = e.message || '任务不存在';
+  } finally {
+    loading.value = false;
   }
 }
 
@@ -41,19 +48,27 @@ watch(taskId, () => void load(), { immediate: true });
 async function submit(confirm: boolean) {
   submitting.value = true;
   try {
+    // plan_async: the server replies before any LLM work — the follow-up (next round of
+    // questions / plan generation) happens in the background and lands via WS events
     const r = await api.clarifyTask(taskId.value, {
       answers: questions.value.filter((q) => q.answer.trim()),
       confirm,
       text: supplement.value.trim() || undefined,
     });
     if (r.status === 'clarifying' && r.questions?.length) {
-      // next clarification round with fresh questions
+      // next clarification round with fresh questions (sync/desktop-parity path)
       questions.value = r.questions.map((q) => ({ question: q, answer: '' }));
       supplement.value = '';
       showToast('已回复，进入下一轮澄清');
     } else if (r.status === 'planned') {
       showToast('需求已明确，计划已生成');
       router.replace(`/plan/${taskId.value}`);
+    } else if (r.status === 'pending') {
+      showToast('需求已确认，正在生成计划…');
+      router.replace(`/task/${taskId.value}`);
+    } else if (r.status === 'assessing') {
+      showToast('已提交，团队评估需求中…');
+      router.replace(`/task/${taskId.value}`);
     } else {
       showToast(`当前状态：${r.status}`);
       if (r.status !== 'clarifying') router.replace(`/task/${taskId.value}`);
@@ -70,7 +85,18 @@ async function submit(confirm: boolean) {
   <div class="page">
     <van-nav-bar title="需求澄清" left-arrow fixed placeholder @click-left="router.back()" />
 
-    <div class="content">
+    <van-loading v-if="loading" class="loading" vertical>加载中…</van-loading>
+
+    <!-- 加载失败：可重试的错误态，替代无响应的空白页 -->
+    <div v-else-if="loadError" class="err-state">
+      <van-icon name="warning-o" size="56" color="#fa9d3b" />
+      <div class="err-title">加载失败</div>
+      <div class="err-sub">{{ loadError }}</div>
+      <button class="wx-btn err-btn" @click="load">重新加载</button>
+      <button class="wx-btn wx-btn-plain err-btn" @click="router.replace(`/task/${taskId}`)">查看任务详情</button>
+    </div>
+
+    <div v-else class="content">
       <div class="wx-caption">任务描述</div>
       <div class="wx-group">
         <div class="wx-cell">
@@ -118,7 +144,13 @@ async function submit(confirm: boolean) {
 <style scoped>
 .page { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--bg); }
 .content { padding-bottom: 30px; }
+.loading { margin: 80px auto; }
 .task-desc { font-size: 16px; line-height: 1.6; color: var(--text); white-space: pre-wrap; }
+
+.err-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 90px 40px 0; }
+.err-title { font-size: 17px; font-weight: 600; color: var(--text); margin-top: 8px; }
+.err-sub { font-size: 13px; color: var(--text-3); text-align: center; line-height: 1.6; }
+.err-btn { margin-top: 16px; max-width: 220px; }
 
 .q-card { padding: 12px 14px; }
 .q-card + .q-card { position: relative; }

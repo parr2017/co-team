@@ -2,11 +2,19 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { canExecute, executeCommand, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
 import { writeKnowledge } from './knowledge';
+import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
+import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agentMessages';
 
 export interface KnowledgeToolContext {
   agent: string;
   task_id?: string;
   project_id?: string;
+  /** sandbox dir receiving doc file writes (write_doc) */
+  sandboxDir?: string;
+  /** valid send_message targets: agent names (orchestrator/user are always allowed) */
+  availableAgents?: string[];
+  node_id?: string;
+  node_name?: string;
 }
 
 const MAX_FILE_BYTES = 64 * 1024;
@@ -109,8 +117,10 @@ export function gitDiff(workspace: string): { ok: boolean; diff?: string; error?
   }
 }
 
-/** Read-only tools the agent may request mid-conversation, plus write_knowledge for experience deposit. */
-export function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): unknown[] {
+/** Read-only tools the agent may request mid-conversation, plus write_knowledge for
+ *  experience deposit, write_doc for SSOT collaboration docs and send_message for
+ *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -145,6 +155,53 @@ export function applyToolCalls(workspace: string, toolCalls: { tool: string; pat
       } catch (e: any) {
         results.push({ tool: 'write_knowledge', ok: false, error: String(e?.message || e).slice(0, 200) });
       }
+    } else if (name === 'write_doc') {
+      if (!knowledgeCtx?.task_id) {
+        results.push({ tool: 'write_doc', ok: false, error: 'doc update not available in this context' });
+        continue;
+      }
+      const type = String(call.type || '').trim().toUpperCase() as SsotDocType;
+      if (!(SSOT_DOC_TYPES as string[]).includes(type)) {
+        results.push({ tool: 'write_doc', ok: false, error: `type 必须是 ${SSOT_DOC_TYPES.join('/')} 之一` });
+        continue;
+      }
+      try {
+        const doc = await writeDoc(knowledgeCtx.task_id, type, String(call.content || ''), knowledgeCtx.agent, knowledgeCtx.sandboxDir);
+        results.push({ tool: 'write_doc', ok: true, type, version: doc.version, path: doc.path });
+      } catch (e: any) {
+        results.push({ tool: 'write_doc', ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
+    } else if (name === 'send_message') {
+      if (!knowledgeCtx) {
+        results.push({ tool: 'send_message', ok: false, error: 'messaging not available in this context' });
+        continue;
+      }
+      const to = String(call.to || '').trim();
+      const allowed = [...new Set([...(knowledgeCtx?.availableAgents || []), 'orchestrator', 'user'])];
+      if (!to || !allowed.includes(to)) {
+        results.push({ tool: 'send_message', ok: false, error: `to 必须是以下之一: ${allowed.join(', ')}` });
+        continue;
+      }
+      const text = String(call.text || '').trim().slice(0, MAX_MESSAGE_LENGTH);
+      if (!text) {
+        results.push({ tool: 'send_message', ok: false, error: 'text 不能为空' });
+        continue;
+      }
+      const msg: AgentMessage = {
+        id: Math.random().toString(36).slice(2, 10),
+        from: knowledgeCtx.agent,
+        to,
+        text,
+        ts: new Date().toISOString(),
+        node_id: knowledgeCtx.node_id,
+        node_name: knowledgeCtx.node_name,
+      };
+      try {
+        await pushAgentMessage(knowledgeCtx.task_id || '', msg);
+        results.push({ tool: 'send_message', ok: true, to, id: msg.id });
+      } catch (e: any) {
+        results.push({ tool: 'send_message', ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
     } else {
       results.push({ tool: name, ok: false, error: `tool '${name}' not allowed mid-run` });
     }
@@ -165,9 +222,11 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
     output.plan_only = true;
     output.proposed = {
       files: (output.files || []).map((f: { path: string; content?: string }) => ({ path: f.path, bytes: String(f.content ?? '').length })),
+      edits: (output.edits || []).map((e: { path?: string }) => String(e.path || '')),
       commands: (output.commands || []).map(String),
     };
     output.files = [];
+    output.edits = [];
     output.commands = [];
     output.command_results = [];
     output.changes = [];
@@ -178,11 +237,17 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
   if (policy.level === 'readonly') {
     output.proposed = {
       files: (output.files || []).map((f: { path: string; content?: string }) => ({ path: f.path, bytes: String(f.content ?? '').length })),
+      edits: (output.edits || []).map((e: { path?: string }) => String(e.path || '')),
       commands: (output.commands || []).map(String),
     };
     output.files = [];
+    output.edits = [];
   } else {
     written = writeFiles(workspace, output.files || []);
+    // B3c: incremental find/replace edits on existing files
+    const { edited, failures } = applyEdits(workspace, output.edits || []);
+    written.push(...edited);
+    if (failures.length) output.errors = [...(output.errors || []), ...failures];
   }
 
   const commandResults: CommandResult[] = (output.commands || []).map((c: string) => {
@@ -200,6 +265,11 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
   const declared: string[] = output.changes || [];
   const merged = [...new Set([...written, ...declared.map((c: unknown) => String(c))])];
   output.changes = merged;
+  // D2: delivery declaration discipline — files actually written but not declared
+  // by the model are surfaced instead of silently accepted.
+  const declaredPaths = new Set(declared.map((c: unknown) => String(c).split(':')[0].trim()));
+  const unreported = written.filter((w) => !declaredPaths.has(w));
+  if (unreported.length) output.unreported_files = unreported;
   output.command_results = commandResults.map((c: CommandResult) => ({ command: c.command, needs_approval: c.needs_approval || false, returncode: c.returncode, stderr: c.stderr.slice(-500), stdout: c.stdout.slice(-4000) }));
 
   const failed = commandResults.filter((c: CommandResult) => c.returncode !== 0 && !c.needs_approval);
@@ -207,6 +277,27 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
     output.errors = [...(output.errors || []), ...failed.map((c: CommandResult) => `command failed: ${c.command}: ${c.stderr.slice(-200)}`)];
   }
   return output;
+}
+
+/** B3c: apply find/replace edits to existing files. Returns edited relative paths;
+ *  find-text misses and path violations are reported as failures (never silent). */
+export function applyEdits(workspace: string, edits: { path?: string; find?: string; replace?: string }[] | undefined): { edited: string[]; failures: string[] } {
+  const base = path.resolve(workspace);
+  const edited: string[] = [];
+  const failures: string[] = [];
+  for (const ed of edits || []) {
+    const rel = String(ed.path || '').trim();
+    if (!rel) continue;
+    const target = path.resolve(base, rel);
+    if (!target.startsWith(base)) { failures.push(`edit rejected (path outside workspace): ${rel}`); continue; }
+    let before: string;
+    try { before = fs.readFileSync(target, 'utf-8'); } catch { failures.push(`edit failed (file not found): ${rel}`); continue; }
+    const find = String(ed.find ?? '');
+    if (!find || !before.includes(find)) { failures.push(`edit failed (find text not found): ${rel}`); continue; }
+    fs.writeFileSync(target, before.replace(find, String(ed.replace ?? '')), 'utf-8');
+    edited.push(rel);
+  }
+  return { edited, failures };
 }
 
 export { canExecute } from './sandbox';

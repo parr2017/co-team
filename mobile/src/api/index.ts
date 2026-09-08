@@ -7,9 +7,16 @@
 const BASE = import.meta.env.VITE_API_BASE ?? '';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, init);
+  } catch {
+    // phones (esp. iOS Safari) abort long fetches with "Load failed" / "Failed to fetch";
+    // surface a readable message instead of the raw browser error
+    throw new Error('网络连接失败或请求超时，请检查网络后重试');
+  }
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as any).detail || res.statusText);
+  if (!res.ok) throw new Error((body as any).detail || res.statusText || `请求失败(${res.status})`);
   return body as T;
 }
 
@@ -157,6 +164,61 @@ export interface ProjectDetail extends ProjectSummary {
   memory: { text: string; ts: string; kind: string }[];
 }
 
+// ---------- 群组沟通 / 知识库 ----------
+
+export interface DiscussionMessage {
+  id: string;
+  /** 'user' | agent 名 | 'system' */
+  from: string;
+  text: string;
+  ts: string;
+  round?: number;
+  mentioned?: string[];
+  needs_user?: boolean;
+}
+
+export interface Discussion {
+  id: string;
+  title: string;
+  topic?: string;
+  members: string[];
+  mode: 'manual' | 'auto';
+  status: 'discussing' | 'converged' | 'converted';
+  scheme: string;
+  scheme_version: number;
+  project_id?: string;
+  task_id?: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+  pending_user?: boolean;
+}
+
+export interface DiscussionDetail extends Discussion {
+  messages: DiscussionMessage[];
+}
+
+export interface ConvertDiscussionPayload {
+  target: 'new' | 'existing';
+  name?: string;
+  workspace?: string;
+  scaffold?: boolean;
+  project_id?: string;
+  auto_run?: boolean;
+}
+
+export interface KnowledgeEntry {
+  id: string;
+  title: string;
+  category: string;
+  project_id?: string;
+  tags: string[];
+  source: string;
+  created_at: string;
+  updated_at: string;
+  content: string;
+}
+
 export interface DeliverableDoc {
   node_id: string;
   node_name: string;
@@ -230,16 +292,12 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   approveNode: (taskId: string, nodeId: string) => post(`/api/tasks/${taskId}/approve/${nodeId}`),
   cancelTask: (id: string) => post(`/api/tasks/${id}/cancel`),
-  updateNode: async (id: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }): Promise<{ status: string }> => {
-    const res = await fetch(`${BASE}/api/tasks/${id}/nodes/${nodeId}`, {
+  updateNode: (id: string, nodeId: string, patch: { name?: string; agent?: string; action?: 'delete' }): Promise<{ status: string }> =>
+    request<{ status: string }>(`/api/tasks/${id}/nodes/${nodeId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error((body as any).detail || res.statusText);
-    return body as { status: string };
-  },
+    }),
   listAgents: async (): Promise<string[]> => {
     const d = await request<{ agents: { name: string }[] }>('/api/agents');
     return (d.agents || []).map((a) => a.name);
@@ -248,10 +306,12 @@ export const api = {
   replan: (id: string, feedback: string) => post(`/api/tasks/${id}/replan`, { feedback }),
   interveneTask: (id: string, message: string) =>
     post<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${id}/intervene`, { message }),
-  createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string }) =>
-    post<{ status: 'created' | 'needs_clarification'; task_id: string; questions?: string[]; summary?: string; graph?: TaskGraph }>('/api/tasks', { ...payload, auto_run: false }),
+  createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string; profile?: 'simple' | 'expert' }) =>
+    post<{ status: 'created' | 'needs_clarification' | 'pending'; task_id: string; questions?: string[]; summary?: string; graph?: TaskGraph }>('/api/tasks', payload.profile === 'simple'
+      ? { ...payload, auto_run: true, plan_async: true, skip_clarification: true }
+      : { ...payload, auto_run: false, plan_async: true }),
   clarifyTask: (id: string, payload: { answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }) =>
-    post<{ status: string; questions?: string[]; graph?: TaskGraph }>(`/api/tasks/${id}/clarify`, payload),
+    post<{ status: string; questions?: string[]; graph?: TaskGraph }>(`/api/tasks/${id}/clarify`, { ...payload, plan_async: true }),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileSummary> }>('/api/agents/profiles'),
   listSkills: () => request<{ skills: SkillMeta[]; bindings: Record<string, string[]> }>('/api/skills'),
   nodeDiff: (taskId: string, nodeId: string) => request<NodeDiffResponse>(`/api/tasks/${taskId}/nodes/${nodeId}/diff`),
@@ -259,14 +319,49 @@ export const api = {
   fsList: (p: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(p)}`),
   listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),
   getDeliverable: (taskId: string, nodeId: string) => request<DeliverableDoc & { task_id: string }>(`/api/tasks/${taskId}/deliverables/${nodeId}`),
+  // A3 验收合并闭环
+  mergeTask: (taskId: string, dryRun: boolean, target?: string) =>
+    post<{ ok: boolean; target: string; message: string; conflicts?: string[] }>(`/api/tasks/${taskId}/merge`, { dry_run: dryRun, target }),
+  // A2 协同文档
+  taskDocs: (taskId: string) =>
+    request<{ task_id: string; docs: { type: string; path: string; version: number; updated_by: string; content: string }[] }>(`/api/tasks/${taskId}/docs`),
+  // A1 实时产出视图
+  taskOutput: (taskId: string) =>
+    request<{ task_id: string; sandbox_path: string | null; available: boolean; files: string[] }>(`/api/tasks/${taskId}/output`),
+  taskOutputFile: (taskId: string, path: string) =>
+    request<{ path: string; content: string }>(`/api/tasks/${taskId}/output/file?path=${encodeURIComponent(path)}`),
   projectReport: (id: string) => request<ProjectProgressReport>(`/api/projects/${id}/report`),
   // ---------- projects ----------
   listProjects: () => request<{ projects: ProjectSummary[] }>('/api/projects'),
   getProject: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
+  createProject: (payload: { name: string; workspace: string; description?: string }) =>
+    post<{ status: string; project_id: string }>('/api/projects', payload),
   listProjectTasks: async (projectId: string, page = 1, pageSize = 50): Promise<{ tasks: TaskGraph[]; total: number; page: number; pageSize: number }> => {
     const sp = new URLSearchParams({ page: String(page), pageSize: String(pageSize), project_id: projectId });
     const d = await request<{ tasks: Record<string, any>[]; total: number; page: number; pageSize: number }>(`/api/tasks?${sp}`);
     return { ...d, tasks: d.tasks.map(normalizeTask) };
+  },
+  // ---------- 群组沟通（与 web 端同名方法，服务端 discussion.ts 的镜像） ----------
+  listDiscussions: () => request<{ discussions: Discussion[] }>('/api/discussions'),
+  getDiscussion: (id: string) => request<DiscussionDetail>(`/api/discussions/${id}`),
+  createDiscussion: (payload: { title: string; topic?: string; members: string[]; mode?: 'manual' | 'auto'; project_id?: string }) =>
+    post<{ status: string; discussion: Discussion }>('/api/discussions', payload),
+  updateDiscussion: (id: string, patch: { mode?: 'manual' | 'auto'; title?: string; scheme?: string }) =>
+    request<{ status: string; discussion: Discussion }>(`/api/discussions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
+  deleteDiscussion: (id: string) => request(`/api/discussions/${id}`, { method: 'DELETE' }),
+  postDiscussionMessage: (id: string, text: string) =>
+    post<{ status: string; message: DiscussionMessage; responding: string[] | null }>(`/api/discussions/${id}/messages`, { text }),
+  discussionRound: (id: string) => post<{ status: string }>(`/api/discussions/${id}/round`),
+  discussionStop: (id: string) => post<{ status: string }>(`/api/discussions/${id}/stop`),
+  generateScheme: (id: string) => post<{ status: string; discussion: Discussion }>(`/api/discussions/${id}/scheme`),
+  convertDiscussion: (id: string, payload: { target: 'new' | 'existing'; name?: string; workspace?: string; scaffold?: boolean; project_id?: string; auto_run?: boolean }) =>
+    post<{ status: string; project_id: string; task_id: string }>(`/api/discussions/${id}/convert`, payload),
+  listKnowledge: (params: { category?: string; project_id?: string; source?: string } = {}) => {
+    const sp = new URLSearchParams();
+    if (params.category) sp.set('category', params.category);
+    if (params.project_id) sp.set('project_id', params.project_id);
+    if (params.source) sp.set('source', params.source);
+    return request<{ entries: KnowledgeEntry[] }>(`/api/knowledge?${sp}`);
   },
 };
 

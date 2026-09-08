@@ -12,6 +12,11 @@ import { busGet, busKeys, busSet, busDel, getBus } from '../bus';
 import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask, listProjects } from '../store';
 import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
+import { mergeTaskBranch } from '../git';
+import { DiscussionError } from '../discussion';
+import { getDocRegistry } from '../ssot';
+import { listFiles, readFile } from '../tools';
+import { isIgnoredRelPath } from '../sandbox';
 import type { AppConfig, OrchestrationConfig } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
 import type { FeishuHandler } from '../feishu/webhook';
@@ -25,6 +30,9 @@ export interface ApiContext {
   /** feature: 每日问题报告 — scanner handle so the PUT config route can hot-reload it */
   dailyReportScanner?: { reload(enabled: boolean, hour: number): void };
 }
+
+/** A4 简单模式: safe default whitelist for auto-exec when the user didn't pick a policy. */
+const SIMPLE_MODE_WHITELIST = ['node', 'npm', 'npx', 'git', 'python', 'python3', 'pip', 'pytest', 'ls', 'dir', 'cat', 'type', 'mkdir', 'echo'];
 
 function validateWorkspace(workspace: string): string {
   const ws = (workspace || '').trim().replace(/^"|"$/g, '');
@@ -72,7 +80,8 @@ export function createApi(ctx: ApiContext): Hono {
   // a time, different projects run concurrently, failures block the lane until resumed
 
   app.onError((err, c) => {
-    const status = err instanceof HttpError ? err.status : 500;
+    // DiscussionError carries its own HTTP status (409 busy / 400 validation / ...)
+    const status = err instanceof HttpError || err instanceof DiscussionError ? err.status : 500;
     logger.error('API error', { error: err.message, status, stack: err.stack });
     return c.json({ detail: err.message }, status as any);
   });
@@ -165,12 +174,17 @@ export function createApi(ctx: ApiContext): Hono {
   app.post('/api/tasks', async (c) => {
     const body = await readJsonAuto<{
       description?: string; request?: string; workspace?: string; auto_run?: boolean; project_id?: string;
-      main_model_id?: string; level?: string; skip_clarification?: boolean;
+      main_model_id?: string; level?: string; skip_clarification?: boolean; plan_async?: boolean;
       execution_policy?: { level?: string; whitelist_commands?: string[] }; node_clarify?: string;
+      profile?: 'simple' | 'expert';
     }>(c);
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
     const workspace = validateWorkspace(body.workspace || '');
+    // A4 模式档位: simple mode bundles completion-first defaults so non-experts just
+    // submit a description — clarification skipped, no per-node brief gate, safe
+    // whitelist auto-exec, auto-run after planning.
+    const simpleMode = body.profile === 'simple';
     // a task pointing at a nonexistent project would silently vanish from every project view
     if (body.project_id) {
       const { getProject } = await import('../store');
@@ -189,8 +203,10 @@ export function createApi(ctx: ApiContext): Hono {
     const { taskId, graph, needsClarification, questions, summary, level } = await ctx.orchestrator.createTask(description, workspace, body.project_id, {
       mainModelId: body.main_model_id,
       level: body.level,
-      executionPolicy: body.execution_policy,
-      nodeClarify: body.node_clarify as any,
+      executionPolicy: body.execution_policy ?? (simpleMode ? { level: 'whitelist_auto', whitelist_commands: SIMPLE_MODE_WHITELIST } : undefined),
+      nodeClarify: (body.node_clarify ?? (simpleMode ? 'off' : undefined)) as any,
+      planAsync: body.plan_async === true,
+      skipClarification: simpleMode || body.skip_clarification === true,
     });
 
     logger.info('Task created', {
@@ -202,24 +218,36 @@ export function createApi(ctx: ApiContext): Hono {
       level,
     });
 
+    // plan_async (mobile): assessment/planning run in the background — the task graph
+    // already exists in `pending`; clients follow it via WS events or GET /api/tasks/:id
+    if (body.plan_async === true) {
+      return c.json({ status: 'pending', task_id: taskId, level });
+    }
+
     // clarification gate (improvement 5): never auto-run an unclarified task
     if (needsClarification) {
       return c.json({ status: 'needs_clarification', task_id: taskId, questions: questions || [], summary, level });
     }
 
     // tasks land in "planned" state waiting for user review in the plan review panel;
-    // auto_run is opt-in for script/API callers
+    // auto_run is opt-in for script/API callers — simple mode defaults to auto-run
     let queue: QueueSnapshot | null = null;
-    if (body.auto_run === true) queue = await ctx.taskQueue.enqueue(taskId, body.project_id ?? null, workspace);
+    if (body.auto_run === true || (simpleMode && body.auto_run !== false)) queue = await ctx.taskQueue.enqueue(taskId, body.project_id ?? null, workspace);
     return c.json({ status: 'created', task_id: taskId, graph, auto_run: body.auto_run === true, level, queue });
   });
 
   // improvement 5: clarification loop — human answers, then explicit confirmation
+  // plan_async (mobile): the request returns before any LLM work ('assessing' | 'pending')
   app.post('/api/tasks/:taskId/clarify', async (c) => {
     const taskId = c.req.param('taskId');
-    const body = await c.req.json<{ answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }>();
+    const body = await c.req.json<{ answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string; plan_async?: boolean }>();
     try {
-      const result = await ctx.orchestrator.clarify(taskId, body);
+      const result = await ctx.orchestrator.clarify(taskId, {
+        answers: body.answers,
+        confirm: body.confirm,
+        text: body.text,
+        planAsync: body.plan_async === true,
+      });
       return c.json({ task_id: taskId, ...result });
     } catch (e: any) {
       throw new HttpError(400, String(e.message || e));
@@ -288,6 +316,65 @@ export function createApi(ctx: ApiContext): Hono {
     // a cancelled task must not stay in the queue — drop it from the pending tail
     await ctx.taskQueue.removePending(taskId);
     return c.json({ status: 'cancelling', task_id: taskId });
+  });
+
+  // ---------- A3 验收合并闭环: one-click merge of the task deliverable branch ----------
+
+  app.post('/api/tasks/:taskId/merge', async (c) => {
+    const taskId = c.req.param('taskId');
+    const body = await readJsonAuto<{ target?: string; dry_run?: boolean }>(c).catch(() => ({}) as { target?: string; dry_run?: boolean });
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    if (graph.status !== 'success') throw new HttpError(400, `任务未成功完成（当前: ${graph.status}），无可合并成果`);
+    const workspace = validateWorkspace(graph.workspace || '.');
+    const taskBranch = `coteam/task-${taskId}`;
+    const result = await mergeTaskBranch(workspace, taskBranch, body.target, body.dry_run === true);
+    logger.info('Task merge', { taskId, ...result });
+    return c.json({ task_id: taskId, ...result });
+  });
+
+  // ---------- A2 协同文档列表/预览/导出 ----------
+
+  app.get('/api/tasks/:taskId/docs', async (c) => {
+    const taskId = c.req.param('taskId');
+    const registry = await getDocRegistry(taskId);
+    return c.json({
+      task_id: taskId,
+      docs: registry.map((d) => ({
+        type: d.type,
+        path: d.path,
+        version: d.version,
+        updated_at: d.updated_at,
+        updated_by: d.updated_by,
+        content: d.content,
+      })),
+    });
+  });
+
+  // ---------- A1 实时产出视图: browse the task's working sandbox read-only ----------
+
+  app.get('/api/tasks/:taskId/output', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const sandbox = graph.sandbox_path;
+    if (!sandbox || !fs.existsSync(sandbox)) {
+      return c.json({ task_id: taskId, sandbox_path: sandbox || null, available: false, files: [] });
+    }
+    const files = listFiles(sandbox, 500).filter((f) => !isIgnoredRelPath(f));
+    return c.json({ task_id: taskId, sandbox_path: sandbox, available: true, files });
+  });
+
+  app.get('/api/tasks/:taskId/output/file', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const sandbox = graph.sandbox_path;
+    if (!sandbox || !fs.existsSync(sandbox)) throw new HttpError(410, '任务工作副本不存在（沙箱已清理）');
+    const rel = c.req.query('path') || '';
+    const result = readFile(sandbox, rel);
+    if (!result.ok) throw new HttpError(400, result.error || 'cannot read file');
+    return c.json({ task_id: taskId, path: rel, content: result.content ?? '' });
   });
 
   // ---------- task queues (project-scoped execution lanes) ----------
@@ -651,18 +738,21 @@ export function createApi(ctx: ApiContext): Hono {
     const category = c.req.query('category') as 'general-tech' | 'project' | undefined;
     const projectId = c.req.query('project_id') || undefined;
     const q = c.req.query('q') || '';
+    // source filter: e.g. source=discussion:<id> lists experiences deposited by one group discussion
+    const sourcePrefix = c.req.query('source') || '';
     const limit = parseInt(c.req.query('limit') || '50');
     const query = { category, project_id: projectId, limit };
+    const bySource = (entries: { source?: string }[]) => (sourcePrefix ? entries.filter((e) => (e.source || '').startsWith(sourcePrefix)) : entries);
     // governance: stale-candidate listing (updated_at older than stale_days)
     if (c.req.query('stale') === '1') {
       const days = parseInt(c.req.query('days') || String(ctx.config.knowledge?.stale_days ?? 90), 10) || 90;
-      return c.json({ stale_days: days, entries: listStaleKnowledge(days, query) });
+      return c.json({ stale_days: days, entries: bySource(listStaleKnowledge(days, query)) });
     }
     if (q) {
       // hybrid: keyword score + embedding cosine (degrades to keyword-only without a model)
-      return c.json({ entries: await searchKnowledgeHybrid(q, query) });
+      return c.json({ entries: bySource(await searchKnowledgeHybrid(q, query)) });
     }
-    return c.json({ entries: listKnowledge(query) });
+    return c.json({ entries: bySource(listKnowledge(query)) });
   });
 
   app.post('/api/knowledge', async (c) => {
@@ -731,6 +821,97 @@ export function createApi(ctx: ApiContext): Hono {
     const ok = deleteKnowledge(c.req.param('id'));
     if (!ok) throw new HttpError(404, 'knowledge entry not found');
     return c.json({ status: 'deleted', id: c.req.param('id') });
+  });
+
+  // ---------- group discussions (群组沟通 → 方案转项目 → 经验沉淀) ----------
+
+  const discDeps = () => ({ orchestrator: ctx.orchestrator, pool: ctx.modelPool, taskQueue: ctx.taskQueue, logger });
+
+  app.post('/api/discussions', async (c) => {
+    const { createDiscussion } = await import('../discussion');
+    const body = await readJsonAuto<{ title?: string; topic?: string; members?: string[]; mode?: 'manual' | 'auto'; project_id?: string }>(c);
+    const disc = await createDiscussion(discDeps(), {
+      title: body.title || '', topic: body.topic, members: body.members || [], mode: body.mode, project_id: body.project_id,
+    });
+    return c.json({ status: 'created', discussion: disc });
+  });
+
+  app.get('/api/discussions', async (c) => {
+    const { listDiscussions, getMessages, hasPendingUserQuestion } = await import('../discussion');
+    const status = c.req.query('status');
+    const items = [];
+    for (const d of await listDiscussions()) {
+      if (status && d.status !== status) continue;
+      const msgs = await getMessages(d.id);
+      items.push({ ...d, message_count: msgs.length, pending_user: hasPendingUserQuestion(msgs) });
+    }
+    return c.json({ discussions: items });
+  });
+
+  app.get('/api/discussions/:id', async (c) => {
+    const { getDiscussion, getMessages, hasPendingUserQuestion } = await import('../discussion');
+    const d = await getDiscussion(c.req.param('id'));
+    if (!d) throw new HttpError(404, 'discussion not found');
+    const msgs = await getMessages(d.id);
+    return c.json({ ...d, messages: msgs, pending_user: hasPendingUserQuestion(msgs) });
+  });
+
+  app.put('/api/discussions/:id', async (c) => {
+    const { updateDiscussion } = await import('../discussion');
+    const body = await readJsonAuto<{ mode?: 'manual' | 'auto'; title?: string; scheme?: string }>(c);
+    const disc = await updateDiscussion(c.req.param('id'), body);
+    return c.json({ status: 'updated', discussion: disc });
+  });
+
+  app.delete('/api/discussions/:id', async (c) => {
+    const { getDiscussion, deleteDiscussion } = await import('../discussion');
+    if (!(await getDiscussion(c.req.param('id')))) throw new HttpError(404, 'discussion not found');
+    await deleteDiscussion(c.req.param('id'));
+    return c.json({ status: 'deleted', id: c.req.param('id') });
+  });
+
+  app.post('/api/discussions/:id/messages', async (c) => {
+    const { postUserMessage, getDiscussion, triggerRound, isDiscussionBusy } = await import('../discussion');
+    const id = c.req.param('id');
+    if (await isDiscussionBusy(id)) throw new HttpError(409, '该讨论有一轮正在进行，请稍候');
+    const body = await readJsonAuto<{ text?: string }>(c);
+    const { message, mentioned } = await postUserMessage(discDeps(), id, body.text || '');
+    const disc = await getDiscussion(id);
+    if (disc) triggerRound(discDeps(), disc, mentioned);
+    return c.json({ status: 'accepted', message, responding: mentioned.length ? mentioned : null });
+  });
+
+  app.post('/api/discussions/:id/round', async (c) => {
+    const { getDiscussion, runDiscussionRound, isDiscussionBusy } = await import('../discussion');
+    const id = c.req.param('id');
+    if (await isDiscussionBusy(id)) throw new HttpError(409, '该讨论有一轮正在进行，请稍候');
+    if (!(await getDiscussion(id))) throw new HttpError(404, 'discussion not found');
+    void runDiscussionRound(discDeps(), id).catch(() => undefined);
+    return c.json({ status: 'accepted' });
+  });
+
+  app.post('/api/discussions/:id/stop', async (c) => {
+    const { requestStop } = await import('../discussion');
+    await requestStop(discDeps(), c.req.param('id'));
+    return c.json({ status: 'stopping' });
+  });
+
+  app.post('/api/discussions/:id/scheme', async (c) => {
+    const { generateScheme } = await import('../discussion');
+    const disc = await generateScheme(discDeps(), c.req.param('id'));
+    return c.json({ status: 'converged', discussion: disc });
+  });
+
+  app.post('/api/discussions/:id/convert', async (c) => {
+    const { convertToProject } = await import('../discussion');
+    const body = await readJsonAuto<{
+      target?: 'new' | 'existing'; name?: string; workspace?: string; scaffold?: boolean;
+      project_id?: string; auto_run?: boolean;
+    }>(c);
+    const target = body.target === 'new' || body.target === 'existing' ? body.target : null;
+    if (!target) throw new HttpError(400, "target must be 'new' | 'existing'");
+    const result = await convertToProject(discDeps(), c.req.param('id'), { ...body, target }, validateWorkspace);
+    return c.json({ status: 'converted', ...result });
   });
 
   // ---------- snapshots (improvement 10) ----------

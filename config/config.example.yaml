@@ -8,6 +8,8 @@ model_pool:
     concurrency: 4
     cost_per_1k: 0.005
     name: deepseek-v4-flash
+    max_tokens: 128000
+    context_length: 128000
     priority: 6
     professional_weight: 80
     provider: rhythm
@@ -20,6 +22,8 @@ model_pool:
     concurrency: 4
     cost_per_1k: 0.004
     name: glm-5.3-flash
+    max_tokens: 128000
+    context_length: 200000
     priority: 6
     professional_weight: 70
     provider: rhythm
@@ -27,6 +31,8 @@ model_pool:
       - code
       - debug
   - name: qwen3.6
+    max_tokens: 128000
+    context_length: 256000
     provider: ''
     api_key: '12345'
     base_url: http://192.168.1.237:8001/v1

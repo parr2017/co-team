@@ -12,6 +12,13 @@
     </div>
     <div class="form-row opts-row">
       <div class="opt">
+        <span class="opt-label">模式</span>
+        <el-switch v-model="simpleMode" active-text="简单模式" inactive-text="专家模式" />
+        <span class="opt-hint">{{ simpleMode ? '自动澄清/自动执行/白名单放行，提交后直接开跑' : '完整控制：分级、模型、策略、澄清逐项可调' }}</span>
+      </div>
+    </div>
+    <div v-if="!simpleMode" class="form-row opts-row">
+      <div class="opt">
         <span class="opt-label">任务分级</span>
         <el-select v-model="level" size="small" style="width: 130px">
           <el-option label="自动评估" value="auto" />
@@ -34,7 +41,7 @@
         <span class="opt-hint">创建后锁定，任务全程使用；可随时在详情中手动更换</span>
       </div>
     </div>
-    <div class="form-row opts-row">
+    <div v-if="!simpleMode" class="form-row opts-row">
       <div class="opt">
         <span class="opt-label">执行策略</span>
         <el-select v-model="policy" size="small" style="width: 150px">
@@ -102,7 +109,8 @@ watch(createStage, (stage) => {
 watch(submitting, (on) => { if (!on && createStage.value) createStage.value = ''; });
 
 // improvement 7: task grading; improvement 11: main-agent model pinning
-// features: 命令执行分级 + 实施前澄清
+// features: 命令执行分级 + 实施前澄清 + A4 模式档位
+const simpleMode = ref(false);
 const level = ref('auto');
 const mainModel = ref('');
 const policy = ref('');
@@ -175,11 +183,12 @@ async function submit() {
   try {
     // tasks land in "planned" state: the plan review dialog decides when to run;
     // unclear requirements land in "clarifying" state: the clarify dialog takes over
-    const d = await api.createTask(description.value.trim(), workspace.value.trim(), false, undefined, {
+    const d = await api.createTask(description.value.trim(), workspace.value.trim(), simpleMode.value, undefined, {
       level: level.value === 'auto' ? undefined : level.value,
       mainModelId: mainModel.value || undefined,
       executionPolicy: policy.value ? { level: policy.value } : undefined,
       nodeClarify: nodeClarify.value === 'off' ? undefined : nodeClarify.value,
+      profile: simpleMode.value ? 'simple' : undefined,
     });
     if (d.status === 'needs_clarification') {
       hint.value = `[?] 需求不够清晰，请回答澄清问题: ${d.task_id}`;
@@ -188,8 +197,13 @@ async function submit() {
       description.value = '';
       return;
     }
-    hint.value = `[ok] 计划已生成: ${d.task_id}（等待审核）`;
-    ElMessage.success(`计划已生成，请审核: ${d.task_id}`);
+    if (simpleMode.value) {
+      hint.value = `[ok] 任务已提交并自动执行: ${d.task_id}`;
+      ElMessage.success(`简单模式：任务已自动开始执行 ${d.task_id}`);
+    } else {
+      hint.value = `[ok] 计划已生成: ${d.task_id}（等待审核）`;
+      ElMessage.success(`计划已生成，请审核: ${d.task_id}`);
+    }
     description.value = '';
     emit('planned', d.task_id);
   } catch (e: any) {

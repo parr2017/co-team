@@ -13,6 +13,10 @@
             <span v-if="pendingGateCount" class="nav-badge" :title="`${pendingGateCount} 个任务等待你的反馈（审批/澄清/计划评审）`">{{ pendingGateCount }}</span>
           </button>
           <button class="nav-tab" :class="{ active: page === 'project' }" @click="page = 'project'">项目开发</button>
+          <button class="nav-tab" :class="{ active: page === 'discuss' }" @click="page = 'discuss'">
+            群组沟通
+            <span v-if="discussAlertCount" class="nav-badge" :title="`${discussAlertCount} 个讨论有成员等你拍板`">{{ discussAlertCount }}</span>
+          </button>
         </nav>
         <div class="header-right">
           <div class="header-metrics mono" v-if="status">
@@ -78,6 +82,12 @@
         </main>
       </div>
 
+      <div class="layout single" v-else-if="page === 'discuss'">
+        <main class="main">
+          <GroupDiscussionView @open-task="detailTaskId = $event" />
+        </main>
+      </div>
+
       <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid: string) => { detailAgent = null; detailTaskId = tid; }" />
       <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :task="chatTask" />
       <TaskDagDialog :model-value="dagTaskId !== null" :task="dagTaskId ? tasks[dagTaskId] : null" @close="dagTaskId = null" />
@@ -116,14 +126,17 @@ import DailyReportDialog from './components/DailyReportDialog.vue';
 import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
 import ProjectView from './components/ProjectView.vue';
+import GroupDiscussionView from './components/GroupDiscussionView.vue';
+import { useDiscussion } from './composables/useDiscussion';
 
 const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, clearEvents } = useDashboard();
+const { list: discList, loadList: loadDiscussions } = useDiscussion();
 const { theme, toggle } = useTheme();
 const { enabled: notifyEnabled, setEnabled: setNotifyEnabled } = useNotifier();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
 const settingsVisible = ref(false);
-const page = ref<'workbench' | 'tasks' | 'project'>('workbench');
+const page = ref<'workbench' | 'tasks' | 'project' | 'discuss'>('workbench');
 const roadmapVisible = ref(false);
 const reviewTaskId = ref<string | null>(null);
 const detailTaskId = ref<string | null>(null);
@@ -135,6 +148,9 @@ const dailyReportVisible = ref(false);
 const pendingGateCount = computed(
   () => Object.values(tasks).filter((t) => ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned'].includes(t.status)).length
 );
+
+// 群组沟通：有待拍板提问的讨论数作为徽标提醒
+const discussAlertCount = computed(() => discList.value.filter((d) => d.pending_user).length);
 
 function openReview(taskId: string) {
   reviewTaskId.value = taskId;
@@ -239,6 +255,7 @@ async function onNotifyToggle(v: boolean) {
 let timer: number | undefined;
 onMounted(() => {
   refreshStatus();
+  void loadDiscussions();
   timer = window.setInterval(refreshStatus, 8000);
 });
 onUnmounted(() => window.clearInterval(timer));

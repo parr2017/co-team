@@ -26,6 +26,8 @@ export function makeEntry(cfg: ModelConfig): ModelEntry {
     priority: cfg.priority ?? 1,
     tags: cfg.tags ?? [],
     cost_per_1k: cfg.cost_per_1k ?? 0,
+    max_tokens: cfg.max_tokens ?? 128000,
+    context_length: cfg.context_length ?? 131072,
     activeSlots: 0,
     failCount: 0,
     lastFailureAt: 0,

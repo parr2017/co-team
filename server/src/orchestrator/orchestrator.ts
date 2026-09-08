@@ -7,6 +7,7 @@ import type { AgentPlugin, AgentTask } from '../agents';
 import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
 import { applyFinalOutput, applyToolCalls, listFiles } from '../tools';
 import type { KnowledgeToolContext } from '../tools';
+import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
 import * as gitTool from '../git';
 import { simpleGit } from 'simple-git';
 import { saveConversation } from '../transcript';
@@ -25,6 +26,7 @@ import {
   getMemory,
   getTaskGraph,
   isCancelled,
+  listTaskGraphs,
   persistGraph,
   recordAgentTask,
   saveNodeDiff,
@@ -36,17 +38,31 @@ import {
 } from '../store';
 import { TaskGraph, TaskNode, TaskStatus, TaskLevel, ClarifyMode, Complexity, AgentResult, AgentConversation, ProgressInfo } from '../types';
 import { getLogger } from '../logger';
-import { assessRequirement, isConfirmation, MAX_CLARIFY_ROUNDS, generateNodeBrief, type ClarifyAnswer, type NodeBrief } from '../clarify';
+import { assessRequirement, isConfirmation, MAX_CLARIFY_ROUNDS, generateNodeBrief, type ClarificationAssessment, type ClarifyAnswer, type NodeBrief } from '../clarify';
 import { gradeTask, normalizeLevel, LEVEL_PROFILES } from '../grader';
 import { computeProgress, shouldBroadcast, clearProgressThrottle } from '../progress';
 import { writeKnowledge, relevantKnowledge } from '../knowledge';
 import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract, docsSection, getDocRegistry } from '../ssot';
-import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, MAX_FIX_ROUNDS } from '../testloop';
+import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, detectStackMismatch, MAX_FIX_ROUNDS } from '../testloop';
 import { createSnapshot } from '../snapshot';
 import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
 import { PROJECT_ROOT } from '../config';
+
+/** persisted clarification-loop state (task:clarify:* bus key) */
+export interface ClarifyLoopState {
+  rounds: number;
+  questions: string[];
+  answers: ClarifyAnswer[];
+  level: TaskLevel;
+  main_model_id?: string;
+  execution_policy?: { level?: string; whitelist_commands?: string[] };
+  node_clarify?: ClarifyMode;
+  assessment?: unknown;
+  done?: boolean;
+  confirmed_at?: string;
+}
 
 export interface OrchestratorOptions {
   agentsDir: string;
@@ -113,6 +129,12 @@ function appendMergeNode(planned: PlannedGraph): PlannedGraph {
   return { ...planned, nodes, edges };
 }
 
+/** improvement #4 (B2 partial): doc attribution appended to an upstream node's handoff line. */
+export function formatDocAttribution(docUpdates?: { type: string; version: number }[]): string {
+  if (!docUpdates?.length) return '';
+  return `；该节点更新了协同文档: ${docUpdates.map((u) => `docs/${u.type}.md (v${u.version})`).join(', ')}`;
+}
+
 export class Orchestrator {
   plugins: Map<string, AgentPlugin>;
   router: Router;
@@ -169,6 +191,35 @@ export class Orchestrator {
     return [...this.plugins.keys()];
   }
 
+  /** E7: 服务重启会杀掉在途执行循环，发现的 running 任务背后已没有进程驱动，
+   *  不清扫就永远僵尸。节点不可重入（沙箱/模型调用状态未知），不做自动续跑，
+   *  诚实标记 failed 并留痕，已完成节点的成果保留。 */
+  async sweepInterruptedTasks(): Promise<string[]> {
+    const swept: string[] = [];
+    for (const graph of await listTaskGraphs()) {
+      if (graph.status !== 'running') continue;
+      for (const node of graph.nodes) {
+        if (node.status === 'running' || node.status === 'retrying' || node.status === 'waiting_approval') {
+          node.status = 'failed';
+          node.error = node.error || '服务重启导致执行中断';
+          node.finished_at = new Date().toISOString();
+        }
+      }
+      graph.status = 'failed';
+      graph.updated_at = new Date().toISOString();
+      await persistGraph(graph);
+      await appendJournal(graph.task_id, 'orchestrator', {
+        role: 'master', kind: 'error',
+        text: '服务重启导致任务执行中断，已将任务标记为失败（节点不可安全续跑）。已完成节点的成果保留，可基于它们重新发起任务。',
+        ts: new Date().toISOString(), node_id: '', node_name: '',
+      });
+      notify('task_interrupted', { task_id: graph.task_id, reason: 'server_restart' }, `[Co-Team] 任务 ${graph.task_id} 因服务重启被中断，已标记为失败`);
+      this.logger.warn('Startup sweep marked interrupted task as failed', { taskId: graph.task_id });
+      swept.push(graph.task_id);
+    }
+    return swept;
+  }
+
   private makeLlmRouter() {
     if (!this.pool) return undefined;
     return async (description: string, available: string[]): Promise<string | null> => {
@@ -199,9 +250,9 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; planAsync?: boolean; skipClarification?: boolean }
   ): Promise<{ taskId: string; graph: PlannedGraph; needsClarification?: boolean; questions?: string[]; summary?: string; level?: TaskLevel }> {
-    this.logger.info('Creating task', { description, workspace, projectId });
+    this.logger.info('Creating task', { description, workspace, projectId, planAsync: opts?.planAsync === true });
 
     // improvement 7: task grading (explicit user level wins, otherwise auto-graded)
     const level: TaskLevel = normalizeLevel(opts?.level) ?? gradeTask(description);
@@ -212,12 +263,36 @@ export class Orchestrator {
       throw new Error(`model not in pool: ${mainModelId}`);
     }
 
+    // plan_async (mobile): LLM assessment + planning run in the background so the HTTP
+    // response returns immediately — phone browsers abort fetches around 60s ("Load failed"),
+    // while model_wait_timeout_sec alone can hold a request for 120s+
+    if (opts?.planAsync) {
+      const taskId = Math.random().toString(36).slice(2, 10);
+      await saveTaskGraph(taskId, [], [], {
+        description,
+        workspace,
+        status: 'pending',
+        project_id: projectId,
+        level,
+        main_model_id: mainModelId,
+      });
+      void this.assessThenPlan(taskId, description, workspace, projectId, {
+        level,
+        mainModelId,
+        executionPolicy: opts?.executionPolicy,
+        nodeClarify: opts?.nodeClarify,
+        skipClarification: opts?.skipClarification,
+      });
+      return { taskId, graph: { nodes: [], edges: [], summary: '' } as PlannedGraph, level };
+    }
+
     // improvement 5: requirement clarification loop — ambiguous requirements must be
     // resolved with the human before any planning/execution happens
     // staged feedback: the API request is synchronous and can take minutes on a slow
     // upstream — emit the current stage so the UI can show progress instead of a spinner
     await emitProgress('task_creating', { stage: 'assessing', description: description.slice(0, 80) });
-    const assessment = await assessRequirement(description, this.pool);
+    // A4 简单模式: explicit skip wins over the clarification loop
+    const assessment = opts?.skipClarification ? ({ clear: true } as ClarificationAssessment) : await assessRequirement(description, this.pool);
     const taskId = Math.random().toString(36).slice(2, 10);
 
     if (!assessment.clear) {
@@ -303,13 +378,15 @@ export class Orchestrator {
   /**
    * Clarification loop step (improvement 5): record human answers, re-assess, and only
    * proceed to planning on explicit confirmation, a clear re-assessment, or round limit.
+   * plan_async (mobile): acknowledges immediately and finishes assessment/planning in the
+   * background — the next round's questions arrive via the task_needs_clarification event.
    */
-  async clarify(taskId: string, input: { answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }): Promise<{ status: string; questions?: string[]; graph?: PlannedGraph; summary?: string }> {
+  async clarify(taskId: string, input: { answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string; planAsync?: boolean }): Promise<{ status: string; questions?: string[]; graph?: PlannedGraph; summary?: string }> {
     const graph = await loadGraph(taskId);
     if (!graph) throw new Error('Task graph not found');
     if (graph.status !== 'clarifying') return { status: graph.status };
 
-    const state = (await busGet<{ rounds: number; questions: string[]; answers: ClarifyAnswer[]; level: TaskLevel; main_model_id?: string; execution_policy?: { level?: string; whitelist_commands?: string[] }; node_clarify?: ClarifyMode }>(`task:clarify:${taskId}`)) || {
+    const state = (await busGet<ClarifyLoopState>(`task:clarify:${taskId}`)) || {
       rounds: 1,
       questions: [],
       answers: [],
@@ -325,6 +402,26 @@ export class Orchestrator {
 
     const clarifiedContext = state.answers.map((a, i) => `${i + 1}. ${a.question} → ${a.answer}`).join('\n');
     const explicitConfirm = input.confirm === true || state.answers.some((a) => isConfirmation(a.answer));
+    const planOpts = {
+      level: state.level,
+      mainModelId: state.main_model_id,
+      clarifyContext: clarifiedContext || undefined,
+      executionPolicy: state.execution_policy,
+      nodeClarify: state.node_clarify,
+    };
+
+    // plan_async: no LLM work on the request path (mobile fetch dies at ~60s)
+    if (input.planAsync) {
+      if (explicitConfirm || state.rounds >= MAX_CLARIFY_ROUNDS) {
+        await busSet(`task:clarify:${taskId}`, { ...state, done: true, confirmed_at: new Date().toISOString() });
+        await this.setGraphStatus(taskId, 'pending');
+        await emitProgress('task_clarified', { task_id: taskId, rounds: state.rounds, answers: state.answers.length });
+        void this.planInBackground(taskId, graph.description, graph.workspace, graph.project_id, planOpts);
+        return { status: 'pending' };
+      }
+      void this.assessNextRound(taskId, graph, state);
+      return { status: 'assessing' };
+    }
 
     if (!explicitConfirm && state.rounds < MAX_CLARIFY_ROUNDS) {
       // re-assess with the accumulated answers
@@ -339,17 +436,115 @@ export class Orchestrator {
     }
 
     // confirmed / clear / max rounds reached → proceed to planning
-    const planned = await this.planAndSave(taskId, graph.description, graph.workspace, graph.project_id, {
-      level: state.level,
-      mainModelId: state.main_model_id,
-      clarifyContext: clarifiedContext || undefined,
-      executionPolicy: state.execution_policy,
-      nodeClarify: state.node_clarify,
-    });
+    const planned = await this.planAndSave(taskId, graph.description, graph.workspace, graph.project_id, planOpts);
     await busSet(`task:clarify:${taskId}`, { ...state, done: true, confirmed_at: new Date().toISOString() });
     await emitProgress('task_clarified', { task_id: taskId, rounds: state.rounds, answers: state.answers.length });
     this.logger.info('Requirement confirmed, plan generated', { taskId, rounds: state.rounds });
     return { status: 'planned', graph: planned.graph };
+  }
+
+  /** status-only graph update (plan_async background flow) */
+  private async setGraphStatus(taskId: string, status: TaskStatus): Promise<void> {
+    const g = await loadGraph(taskId);
+    if (!g) return;
+    g.status = status;
+    await persistGraph(g);
+  }
+
+  /** plan_async background failure: park the task in `failed` so the UI never waits forever */
+  private async failGraph(taskId: string, e: unknown): Promise<void> {
+    this.logger.error('Background task flow failed', { taskId, error: String((e as any)?.message || e) });
+    const g = await loadGraph(taskId);
+    if (g && g.status !== 'cancelled') {
+      g.status = 'failed';
+      await persistGraph(g);
+    }
+    await emitProgress('task_plan_failed', { task_id: taskId, error: String((e as any)?.message || e) });
+  }
+
+  /** plan_async background: assess requirement → clarification loop setup or background planning */
+  private async assessThenPlan(
+    taskId: string,
+    description: string,
+    workspace: string,
+    projectId: string | undefined,
+    opts: { level: TaskLevel; mainModelId?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; skipClarification?: boolean }
+  ): Promise<void> {
+    try {
+      await emitProgress('task_creating', { stage: 'assessing', task_id: taskId, description: description.slice(0, 80) });
+      if (await isCancelled(taskId)) return;
+      const assessment = opts?.skipClarification ? ({ clear: true } as ClarificationAssessment) : await assessRequirement(description, this.pool);
+      if (await isCancelled(taskId)) return;
+      if (!assessment.clear) {
+        this.logger.info('Requirement unclear, entering clarification loop', { taskId, missing: assessment.missing });
+        await busSet(`task:clarify:${taskId}`, {
+          rounds: 1,
+          questions: assessment.questions,
+          answers: [] as ClarifyAnswer[],
+          assessment,
+          level: opts.level,
+          main_model_id: opts.mainModelId,
+          execution_policy: opts.executionPolicy,
+          node_clarify: opts.nodeClarify,
+        });
+        await this.setGraphStatus(taskId, 'clarifying');
+        await emitProgress('task_needs_clarification', { task_id: taskId, questions: assessment.questions, missing: assessment.missing });
+        notify('task_needs_clarification', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 需求不清晰，请回答澄清问题`);
+        return;
+      }
+      await this.planInBackground(taskId, description, workspace, projectId, opts);
+    } catch (e) {
+      await this.failGraph(taskId, e);
+    }
+  }
+
+  /** plan_async background re-assessment: next clarification round or transition to planning */
+  private async assessNextRound(taskId: string, graph: TaskGraph, state: ClarifyLoopState): Promise<void> {
+    try {
+      if (state.rounds < MAX_CLARIFY_ROUNDS) {
+        const assessment = await assessRequirement(graph.description, this.pool, state.answers);
+        if (await isCancelled(taskId)) return;
+        if (!assessment.clear) {
+          state.rounds += 1;
+          state.questions = assessment.questions;
+          await busSet(`task:clarify:${taskId}`, state);
+          await emitProgress('task_needs_clarification', { task_id: taskId, round: state.rounds, questions: assessment.questions });
+          return;
+        }
+      }
+      // clear / max rounds reached → plan in the background
+      await busSet(`task:clarify:${taskId}`, { ...state, done: true, confirmed_at: new Date().toISOString() });
+      await this.setGraphStatus(taskId, 'pending');
+      const clarifiedContext = state.answers.map((a, i) => `${i + 1}. ${a.question} → ${a.answer}`).join('\n');
+      await emitProgress('task_clarified', { task_id: taskId, rounds: state.rounds, answers: state.answers.length });
+      await this.planInBackground(taskId, graph.description, graph.workspace, graph.project_id, {
+        level: state.level,
+        mainModelId: state.main_model_id,
+        clarifyContext: clarifiedContext || undefined,
+        executionPolicy: state.execution_policy,
+        nodeClarify: state.node_clarify,
+      });
+    } catch (e) {
+      await this.failGraph(taskId, e);
+    }
+  }
+
+  /** plan_async background wrapper: generate the plan off the request path, keep the graph status truthful */
+  private async planInBackground(
+    taskId: string,
+    description: string,
+    workspace: string,
+    projectId: string | undefined,
+    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode }
+  ): Promise<void> {
+    try {
+      if (await isCancelled(taskId)) return;
+      await emitProgress('task_creating', { stage: 'planning', task_id: taskId, description: description.slice(0, 80) });
+      await this.planAndSave(taskId, description, workspace, projectId, opts);
+      this.logger.info('Background planning finished', { taskId });
+    } catch (e) {
+      await this.failGraph(taskId, e);
+    }
   }
 
   /** Re-generate the plan for a task from user feedback (multi-round refinement). */
@@ -479,6 +674,9 @@ export class Orchestrator {
     try {
       sandbox = this.sandboxEnabled ? createSandbox(workspace) : workspace;
       this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled });
+      // A1 实时产出视图: remember where the work is happening so the API can browse it
+      graph.sandbox_path = sandbox;
+      await persistGraph(graph);
     } catch (error) {
       // persist the failure — otherwise the graph stays 'running' forever
       this.logger.error('Failed to create sandbox', { taskId, error: String(error) });
@@ -549,8 +747,11 @@ export class Orchestrator {
         if (result?.status === 'success') {
           try {
             if (this.branchWorkflow && this.gitEnabled) {
-              // merged result lives on the sandbox base branch; sync files to the real workspace
-              await gitTool.syncToWorkspace(sandbox, workspace, 'coteam/base');
+              // merged result lives on the sandbox base branch; sync files to the real workspace.
+              // a failed sync must NOT stay 'success' — the deliverables would stay trapped
+              // in the sandbox and the user would never see them (observed in task gnq6h5p6)
+              const synced = await gitTool.syncToWorkspace(sandbox, workspace, 'coteam/base');
+              if (!synced) throw new Error('syncToWorkspace returned false (copy failed, e.g. a locked target file)');
               result.merged_branches = result.merged_branches || [];
             } else {
               result.merged_files = mergeChanges(sandbox, workspace);
@@ -564,7 +765,10 @@ export class Orchestrator {
               changes: result.changes || [],
             };
           }
-        } else {
+        }
+        // recovery runs for genuinely failed/cancelled tasks AND for tasks whose
+        // success-path sync just failed above — completed nodes must still be salvaged
+        if (result?.status !== 'success') {
           // failure/cancel recovery: the completed nodes' work still lives only in the
           // sandbox — salvage it into the workspace instead of silently deleting it
           const completedNodes = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').length;
@@ -617,6 +821,8 @@ export class Orchestrator {
     }
 
     const status = String(result.status);
+    // improvement #4 (C4): task terminal — report messages nobody consumed into the journal
+    await flushUndelivered(taskId).catch(() => {});
     this.logger.info('Task execution completed', { 
       taskId, 
       status, 
@@ -821,6 +1027,29 @@ export class Orchestrator {
     await persistGraph(graph);
     await emitProgress('node_start', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, branch: node.branch });
 
+    // improvement #4 (C4): surface deferred messages addressed to the orchestrator / the
+    // user before this node runs — best-effort, never blocks execution
+    try {
+      const drained = await drainSystemMessages(taskId);
+      for (const m of drained.orchestrator) {
+        await appendJournal(taskId, m.from, {
+          role: 'master', kind: 'message',
+          text: `给主 Agent 留言：${m.text}`,
+          ts: new Date().toISOString(), node_id: m.node_id || '', node_name: m.node_name || '',
+          meta: { to: 'orchestrator', text: m.text },
+        });
+      }
+      for (const m of drained.user) {
+        await appendJournal(taskId, m.from, {
+          role: 'agent', kind: 'message',
+          text: `给用户留言：${m.text}`,
+          ts: new Date().toISOString(), node_id: m.node_id || '', node_name: m.node_name || '',
+          meta: { to: 'user', text: m.text },
+        });
+        notify('agent_user_message', { task_id: taskId, node_id: m.node_id }, `[Co-Team] ${m.from} 给你留言：${m.text.slice(0, 80)}`);
+      }
+    } catch { /* messaging is best-effort */ }
+
     if (node.agent === 'orchestrator') {
       if (node.name.includes('合并')) {
         await this.runMergeNode(graph, node, sandbox);
@@ -891,6 +1120,8 @@ export class Orchestrator {
 
     let error = '';
     let fixRound = 0;
+    // E8: consecutive fix rounds whose failed test output yields zero parseable cases
+    let noInfoRounds = 0;
     // R9: survives past the loop so the terminal node.result carries the fix-loop report
     // even after the escalation attempt overwrites the intermediate result
     let fixReport: AgentResult['report'] = undefined;
@@ -918,16 +1149,49 @@ export class Orchestrator {
         // triggers a targeted repair round instead of accepting broken code
         const testFail = findTestFailure(result.command_results);
         if (testFail && fixRound < this.maxFixRounds) {
-          fixRound += 1;
           const parsed = parseTestOutput(testFail.output);
-          error = buildFixPrompt(parsed, testFail.command, fixRound, this.maxFixRounds);
+          // E9: a wrong-stack test run (pytest inside a Node workspace) never exercises
+          // the project code — its "failures" are noise; escalate instead of repairing.
+          if (detectStackMismatch(testFail.command, graph.workspace)) {
+            result.status = 'failed';
+            result.error = `测试命令与项目技术栈不匹配：Node 项目（package.json）不应执行「${testFail.command}」，请使用项目对应的测试器（vitest/jest/node --test）`;
+            result.errors = [...(result.errors || []), result.error];
+            result.report = { framework: 'unknown', attempts: fixRound, failures: [], summary: result.error };
+            fixReport = result.report;
+            error = result.error;
+            await appendJournal(taskId, plugin.name, {
+              role: 'master', kind: 'error', text: result.error, ts: new Date().toISOString(),
+              node_id: node.id, node_name: node.name, meta: { command: testFail.command },
+            });
+            break;
+          }
+          // E8: rc≠0 with zero parseable cases means the run itself is broken (command
+          // crashed / nothing collected) — feed the raw output; two such rounds in a row
+          // means the test setup is broken, stop burning repair rounds.
+          const noCaseInfo = parsed.failures.length === 0;
+          if (noCaseInfo) noInfoRounds += 1; else noInfoRounds = 0;
+          if (noCaseInfo && noInfoRounds >= 2) {
+            result.status = 'failed';
+            result.error = `测试命令连续 ${noInfoRounds} 轮失败且解析不出任何失败用例（${testFail.command}），测试环境/命令可能已损坏`;
+            result.errors = [...(result.errors || []), result.error];
+            result.report = { framework: parsed.framework, attempts: fixRound + 1, failures: [], summary: result.error };
+            fixReport = result.report;
+            error = result.error;
+            await appendJournal(taskId, plugin.name, {
+              role: 'master', kind: 'error', text: result.error, ts: new Date().toISOString(),
+              node_id: node.id, node_name: node.name, meta: { command: testFail.command, output: testFail.output.slice(-1500) },
+            });
+            break;
+          }
+          fixRound += 1;
+          error = buildFixPrompt(parsed, testFail.command, fixRound, this.maxFixRounds, noCaseInfo ? testFail.output : undefined);
           node.status = 'retrying';
           node.retry_count = attempt + 1;
           await persistGraph(graph);
           await appendJournal(taskId, plugin.name, {
             role: 'master',
             kind: 'error',
-            text: `测试修复循环 第 ${fixRound}/${this.maxFixRounds} 轮：${parsed.summary}。失败用例: ${parsed.failures.map((f) => f.name).slice(0, 5).join(', ') || '（未解析出具体用例）'}`,
+            text: `测试修复循环 第 ${fixRound}/${this.maxFixRounds} 轮：${parsed.summary}。失败用例: ${parsed.failures.map((f) => f.name).slice(0, 5).join(', ') || (noCaseInfo ? '（无可解析用例，已附原始输出）' : '（未解析出具体用例）')}`,
             ts: new Date().toISOString(),
             node_id: node.id,
             node_name: node.name,
@@ -978,6 +1242,21 @@ export class Orchestrator {
       }
       error = result.error || 'unknown error';
       if (error.toLowerCase().includes('token budget')) break;
+      // B4/E2: content refusals (missing info / needs human) won't heal through more
+      // retries or a strategy change — surface for human intervention immediately.
+      if (/需要人类|需要人工|需要补充|信息不足|素材不足|无法完成|缺少.{0,6}(信息|权限)|cannot proceed|need human/i.test(error)) {
+        node.status = 'failed';
+        node.finished_at = new Date().toISOString();
+        node.error = `需人工介入：${error}`;
+        node.result = { status: 'failed', error: node.error, summary: '节点因需要人工补充信息而停止，未产出变更' };
+        node.needs_human = true;
+        await saveDeliverable(taskId, node).catch(() => {});
+        await persistGraph(graph);
+        await this.recordAgentLife(taskId, graph, node, false, 0);
+        await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
+        notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」需要人工补充信息，已暂停自动重试：${error.slice(0, 80)}`);
+        return;
+      }
     }
 
     // escalation: main agent takes over with an adjusted strategy
@@ -1442,8 +1721,11 @@ export class Orchestrator {
     policy: PermissionPolicy = this.policy
   ): Promise<AgentResult> {
     const context = await this.upstreamContext(taskId, node);
-    const workspaceFiles = listFiles(workspace, 50).join(', ');
-    const maxTokens = plugin.maxTokens ?? 8192;
+    // B3a/B3b: recon rounds and visible file list scale with node complexity —
+    // complex nodes get more tool rounds and a wider view of the workspace.
+    const maxRounds = node.complexity === 'complex' ? 8 : node.complexity === 'simple' ? 3 : 5;
+    const workspaceFiles = listFiles(workspace, node.complexity === 'complex' ? 200 : node.complexity === 'simple' ? 50 : 100).join(', ');
+    const maxTokens = entry.max_tokens ?? 128000;
 
     const escalationBlock = escalate
       ? `\n\n## 重要：主 Agent 接管\n该任务之前已尝试 ${this.maxRetries} 次均失败，最近一次错误：${lastError}\n请调整策略：换一种实现思路，或把任务范围缩小到可完成的最小闭环，确保本次成功。`
@@ -1497,7 +1779,7 @@ export class Orchestrator {
       memories,
       skillsBlock,
       round: 0,
-      maxRounds: 3,
+      maxRounds,
       escalate,
       lastError,
     });
@@ -1507,6 +1789,13 @@ export class Orchestrator {
     const interventions = await consumeInterventions(taskId);
     const interveneBlock = interventions.length
       ? `\n\n## 用户介入指示（必须响应，并在汇报中说明如何落实）\n${interventions.map((m, i) => `${i + 1}. ${m.message}`).join('\n')}`
+      : '';
+
+    // improvement #4 (C4): deferred agent-to-agent messages consumed here so the
+    // recipient answers them in this dispatch (mirrors the interventions contract)
+    const agentMessages = await consumeAgentMessages(taskId, plugin.name);
+    const agentMessageBlock = agentMessages.length
+      ? `\n\n## 来自其他 Agent 的留言（必须响应，并在汇报中说明如何落实）\n${agentMessages.map((m, i) => `${i + 1}. [${m.from}] ${m.text}`).join('\n')}`
       : '';
 
     // feature: 实施前澄清 — 用户确认过的简报与答复作为强制上下文注入
@@ -1529,6 +1818,7 @@ export class Orchestrator {
       escalationBlock,
       fixContextBlock,
       interveneBlock,
+      agentMessageBlock,
     ].filter(Boolean).join('\n');
 
     const record: AgentConversation = {
@@ -1579,7 +1869,9 @@ export class Orchestrator {
       let parsed: Record<string, any> | null = null;
       let content = '';
       let parseErrorLogged = false;
-      for (let round = 0; round < 3; round++) {
+      // improvement #4: SSOT docs this agent updated via write_doc during this dispatch
+      const docUpdates: { type: string; version: number }[] = [];
+      for (let round = 0; round < maxRounds; round++) {
         // Check for cancellation before each LLM call
         if (await isCancelled(taskId)) {
           return { status: 'failed', error: 'task cancelled', tokens: record.tokens };
@@ -1588,11 +1880,20 @@ export class Orchestrator {
           task_id: taskId, node_id: node.id, agent: plugin.name,
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,
         });
-        const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
+        const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, plugin.timeout ? plugin.timeout * 1000 : undefined);
         this.pool!.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
         record.tokens += resp.promptTokens + resp.completionTokens;
         content = stripCodeFence(resp.content);
+        // E5: empty content with finish_reason=length means the reasoning burned the
+        // whole output budget — not a format problem. Skip the format-repair round and
+        // fail over (the budget won't grow by re-prompting the same model).
+        if (!content.trim() && resp.finishReason === 'length') {
+          record.error = `输出预算耗尽（finish_reason=length）：思考消耗了全部 ${maxTokens} 输出 token，正文为空`;
+          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
+          await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
+          return { status: 'failed', error: record.error, tokens: record.tokens };
+        }
         parsed = extractJson(content);
         // malformed tool-call JSON (nested/unclosed tool_calls) is recoverable:
         // pull out the individual {"tool":...} fragments and run them as a normal tool round
@@ -1607,7 +1908,7 @@ export class Orchestrator {
         if (!parsed) {
           // If this is the last round and the model returned substantial text,
           // treat it as a successful analysis result (wrap as JSON)
-          if (round >= 2 && content.trim().length > 20) {
+          if (round >= maxRounds - 1 && content.trim().length > 20) {
             parsed = {
               status: 'success',
               summary: content.trim(),
@@ -1629,13 +1930,15 @@ export class Orchestrator {
             }
             await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
             // If this was the last round, return failure
-            if (round >= 2) {
+            if (round >= maxRounds - 1) {
               record.error = 'failed to parse agent output as JSON';
               return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
             }
             // Otherwise, inject correction message and retry
             messages.push({ role: 'assistant', content });
-            messages.push({ role: 'user', content: '你返回的内容无法解析为 JSON。请严格按照以下格式输出（不要包含任何 markdown 或额外文字）：\n{"status":"success|failed","changes":[],"summary":"你的分析或结果","errors":[],"files":[],"commands":[]}' });
+            // E5⑤: keep this example identical to the harness L6 contract (verification included),
+            // otherwise the repaired JSON passes parse but fails the schema gate next round.
+            messages.push({ role: 'user', content: '你返回的内容无法解析为 JSON。请严格按照以下格式输出（不要包含任何 markdown 或额外文字）：\n{"status":"success|failed","changes":[],"summary":"你的分析或结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
             continue;
           }
         }
@@ -1652,7 +1955,7 @@ export class Orchestrator {
               await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: `第 ${round + 1} 轮输出违反契约：${check.violations.slice(0, 3).join('；')}，已要求修正`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
             }
             await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
-            if (round >= 2) {
+            if (round >= maxRounds - 1) {
               record.error = 'result schema violations: ' + check.violations.join('; ');
               return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
             }
@@ -1665,11 +1968,11 @@ export class Orchestrator {
           break;
         }
         // If this is the last round and model still requests tools, force final output
-        if (round >= 2) {
+        if (round >= maxRounds - 1) {
           messages.push({ role: 'assistant', content });
-          messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","errors":[],"files":[],"commands":[]}' });
+          messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
           // Do one more round to get final output
-          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
+          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, plugin.timeout ? plugin.timeout * 1000 : undefined);
           this.pool!.recordUsage(entry.name, finalResp.promptTokens, finalResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + finalResp.promptTokens + finalResp.completionTokens);
           record.tokens += finalResp.promptTokens + finalResp.completionTokens;
@@ -1697,9 +2000,18 @@ export class Orchestrator {
           text: '请求读取工具: ' + toolCalls.map((t: any) => t.tool + (t.path ? ':' + t.path : '')).join(', '),
           model: entry.name,
         });
-        const knowledgeCtx: KnowledgeToolContext = { agent: plugin.name, task_id: taskId, project_id: projectId || undefined };
-        const results = applyToolCalls(workspace, toolCalls, knowledgeCtx);
-        // improvement 3: agent-driven knowledge deposits are audited in the war room
+        const knowledgeCtx: KnowledgeToolContext = {
+          agent: plugin.name,
+          task_id: taskId,
+          project_id: projectId || undefined,
+          sandboxDir: workspace,
+          availableAgents: [...this.router.getAvailable().keys()],
+          node_id: node.id,
+          node_name: node.name,
+        };
+        const results = await applyToolCalls(workspace, toolCalls, knowledgeCtx);
+        // improvement 3: agent-driven knowledge deposits are audited in the war room;
+        // improvement #4: doc updates and agent messages likewise
         for (const r of results as Record<string, any>[]) {
           if (r?.tool === 'write_knowledge' && r.ok) {
             const call = toolCalls.find((t: any) => t.tool === 'write_knowledge');
@@ -1714,6 +2026,32 @@ export class Orchestrator {
               meta: { knowledge_id: r.id },
             });
             await emitProgress('knowledge_deposited', { task_id: taskId, node_id: node.id, agent: plugin.name, id: r.id, updated: r.updated });
+          } else if (r?.tool === 'write_doc' && r.ok) {
+            docUpdates.push({ type: r.type, version: r.version });
+            const call = toolCalls.find((t: any) => t.tool === 'write_doc' && String(t.type || '').toUpperCase() === r.type);
+            await appendJournal(taskId, plugin.name, {
+              role: 'agent',
+              kind: 'doc',
+              text: `更新协同文档 docs/${r.type}.md → v${r.version}`,
+              ts: new Date().toISOString(),
+              node_id: node.id,
+              node_name: node.name,
+              model: entry.name,
+              meta: { doc_type: r.type, version: r.version, content: String(call?.content || '').slice(0, 16384) },
+            });
+            await emitProgress('agent_message', { task_id: taskId, node_id: node.id, agent: plugin.name, kind: 'doc', doc_type: r.type, version: r.version });
+          } else if (r?.tool === 'send_message' && r.ok) {
+            const call = toolCalls.find((t: any) => t.tool === 'send_message' && t.to === r.to);
+            await appendJournal(taskId, plugin.name, {
+              role: 'agent',
+              kind: 'message',
+              text: `给 ${r.to} 留言：${String(call?.text || '').slice(0, 500)}`,
+              ts: new Date().toISOString(),
+              node_id: node.id,
+              node_name: node.name,
+              meta: { to: r.to, text: call?.text },
+            });
+            await emitProgress('agent_message', { task_id: taskId, node_id: node.id, agent: plugin.name, kind: 'message', to: r.to });
           }
         }
         roundEntry.tool_results = results;
@@ -1721,7 +2059,7 @@ export class Orchestrator {
         await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, tool_calls: toolCalls });
         await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'round', text: `请求读取工具: ${toolCalls.map((t: any) => t.tool + (t.path ? ':' + t.path : '')).join(', ')}`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
         messages.push({ role: 'assistant', content });
-        messages.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results).slice(0, 8000)}\n\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/3 轮完成，剩余 ${2 - round} 轮——规划好是否还需要侦查）` });
+        messages.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results).slice(0, 8000)}\n\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/${maxRounds} 轮完成，剩余 ${maxRounds - 1 - round} 轮——规划好是否还需要侦查）` });
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
         await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
       }
@@ -1739,6 +2077,7 @@ export class Orchestrator {
       delete (result as Record<string, any>).tool_calls;
       result.tokens = record.tokens;
       result.model = entry.name;
+      if (docUpdates.length) result.doc_updates = docUpdates;
 
       // session continuity: remember this exchange for the agent's next node in this task
       await busSet(sessionKey, [...priorSession, { role: 'user', content: userMsg }, { role: 'assistant', content }].slice(-20));
@@ -1779,7 +2118,7 @@ export class Orchestrator {
       const d = nodeMap.get(dep);
       if (d && d.status === 'completed' && d.result) {
         const changes = d.result.changes || [];
-        lines.push(`- [${d.name}] ${d.result.summary || ''}` + (changes.length ? `（变更: ${changes.slice(0, 5).join(', ')}）` : ''));
+        lines.push(`- [${d.name}] ${d.result.summary || ''}` + (changes.length ? `（变更: ${changes.slice(0, 5).join(', ')}）` : '') + formatDocAttribution(d.result.doc_updates));
       }
     }
     return lines.join('\n');

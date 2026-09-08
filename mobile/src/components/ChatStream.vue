@@ -9,7 +9,7 @@ type Entry = JournalEntry & { agent: string };
 type RenderItem =
   | { t: 'time'; label: string }
   | { t: 'node'; name: string }
-  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable'; entry: Entry; agent: string };
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 
@@ -20,7 +20,12 @@ const typingText = ref('');
 let stickToBottom = true;
 let unsubFns: (() => void)[] = [];
 
-const { onEvent } = useDashboard();
+const { onEvent, onResync, connected } = useDashboard();
+
+// mobile networks drop sockets: when the WS reconnects or the app returns to the
+// foreground, re-fetch the journals — live events alone leave the stream stale
+watch(connected, (now, before) => { if (now && !before) void load(); });
+unsubFns.push(onResync(() => { void load(); }));
 
 const filtered = computed(() =>
   entries.value.filter((e) => {
@@ -60,11 +65,18 @@ const deliverableOpen = computed({
 function openDeliverable(entry: JournalEntry) {
   const md = entry.meta?.markdown;
   if (md) {
-    deliverableView.value = { title: entry.node_name || entry.node_id, markdown: md };
+    deliverableView.value = { title: '交付成果 · ' + (entry.node_name || entry.node_id), markdown: md };
   } else {
     void api.getDeliverable(props.taskId, entry.node_id).then((d) => {
-      deliverableView.value = { title: d.node_name || entry.node_id, markdown: d.markdown };
+      deliverableView.value = { title: '交付成果 · ' + (d.node_name || entry.node_id), markdown: d.markdown };
     }).catch(() => {});
+  }
+}
+/** 协同文档更新卡片：正文随 journal 落盘（截断 16KB），点击即读 */
+function openDoc(entry: JournalEntry) {
+  const content = entry.meta?.content;
+  if (content) {
+    deliverableView.value = { title: `协同文档 · docs/${entry.meta?.doc_type}.md (v${entry.meta?.version})`, markdown: content };
   }
 }
 function nodeNameOf(nodeId: string): string {
@@ -74,6 +86,9 @@ function nodeNameOf(nodeId: string): string {
 watch(() => props.taskId, () => void load(), { immediate: true });
 
 async function load() {
+  // E3: WS 重连/前台恢复会触发整表重载——若用户正在上翻历史（stickToBottom=false），
+  // 重载后不再强制拉回底部，保留其阅读位置。
+  const stick = stickToBottom;
   typingAgent.value = '';
   typingText.value = '';
   entries.value = [];
@@ -93,7 +108,7 @@ async function load() {
     all.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
     entries.value = all;
     await nextTick();
-    scrollToBottom(true);
+    if (stick) scrollToBottom(true);
   } catch { /* ignore */ }
 }
 
@@ -261,6 +276,33 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         </div>
       </div>
 
+      <!-- Agent 留言（send_message，延迟派发）：左侧气泡，标注收件人 -->
+      <div v-else-if="item.t === 'message'" class="row them">
+        <AgentAvatar :name="item.agent" :size="36" />
+        <div class="them-col">
+          <div class="who-name">{{ item.agent }}<template v-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template></div>
+          <div class="bubble them-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 协同文档更新卡片：点击弹出阅读器 -->
+      <div v-else-if="item.t === 'doc'" class="row them">
+        <AgentAvatar :name="item.agent" :size="36" />
+        <div class="them-col">
+          <div class="who-name">{{ item.agent }} · 协同文档</div>
+          <button class="deliv-card" @click="openDoc(item.entry)">
+            <span class="dc-ico">📘</span>
+            <span class="dc-body">
+              <span class="dc-title">docs/{{ item.entry.meta?.doc_type }}.md → v{{ item.entry.meta?.version }}</span>
+              <span class="dc-sub">协同文档更新 · 点击阅读</span>
+            </span>
+            <span class="dc-arrow">›</span>
+          </button>
+        </div>
+      </div>
+
       <!-- 子 Agent 错误 -->
       <div v-else-if="item.t === 'error'" class="row them">
         <AgentAvatar :name="item.agent" :size="36" />
@@ -293,7 +335,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
     <van-popup v-model:show="deliverableOpen" position="bottom" :style="{ height: '82%' }" round>
       <div class="dl-viewer">
         <div class="dl-head">
-          <span class="dl-title">交付成果 · {{ deliverableView?.title }}</span>
+          <span class="dl-title">{{ deliverableView?.title || '阅读器' }}</span>
           <van-icon name="cross" size="18" @click="deliverableOpen = false" />
         </div>
         <div class="dl-body md" v-html="md(deliverableView?.markdown || '')"></div>

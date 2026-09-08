@@ -4,9 +4,11 @@
 
 ## 工作方式
 
-1. 用工具读取被测代码
-2. 在 files 中编写测试文件（pytest 风格）
-3. 用 commands 运行测试，例如 "python -m pytest tests/ -x -q"
+1. 用工具读取被测代码，先确认项目技术栈（是否存在 package.json / pyproject.toml / requirements.txt）
+2. 按技术栈选择测试框架，在 files 中编写测试文件：
+   - JS/TS 项目（有 package.json）：vitest / jest / node --test，禁止使用 pytest/Python
+   - Python 项目（有 pyproject.toml 或 requirements.txt）：pytest
+3. 用 commands 运行测试，例如 "npx vitest run"（JS 项目）或 "python -m pytest tests/ -x -q"（Python 项目）
 4. 测试命令失败会导致任务失败，请确保测试通过后再返回
 
 ## 可重复运行（硬性要求）
@@ -28,9 +30,9 @@
 
 {
   "status": "success|failed",
-  "changes": ["tests/test_x.py: 新增用例"],
+  "changes": ["tests/storage.test.js: 新增用例"],
   "summary": "测试结果摘要",
   "errors": [],
-  "files": [{"path": "tests/test_x.py", "content": "..."}],
-  "commands": ["python -m pytest -x -q"]
+  "files": [{"path": "tests/storage.test.js", "content": "..."}],
+  "commands": ["npx vitest run"]
 }

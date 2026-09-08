@@ -1,6 +1,6 @@
 // Shared API client + types mirroring the server contract.
 
-export type TaskStatus = 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval';
+export type TaskStatus = 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval' | 'waiting_clarify';
 
 export type TaskLevel = 'light' | 'standard' | 'heavy';
 
@@ -113,6 +113,15 @@ export interface DeliverableDoc {
   ts: string;
 }
 
+export interface TaskMergeResult {
+  ok: boolean;
+  target: string;
+  taskBranch: string;
+  commit: string | null;
+  conflicts: string[];
+  message: string;
+}
+
 export interface TestFixReport {
   framework?: string;
   attempts: number;
@@ -193,7 +202,6 @@ export interface AgentInfo {
   description: string;
   tags: string[];
   modelOverride: string | null;
-  maxTokens: number;
   timeout: number;
 }
 
@@ -249,6 +257,10 @@ export interface ModelConfig {
   provider?: string;
   api_key: string;
   base_url: string;
+  /** 单次生成输出 token 上限（含思考 token），属模型能力 */
+  max_tokens?: number;
+  /** 模型上下文窗口（prompt 与输出共享） */
+  context_length?: number;
   concurrency?: number;
   priority?: number;
   professional_weight?: number;
@@ -263,7 +275,6 @@ export interface AgentDefinition {
   description: string;
   tags: string[];
   model_override: string | null;
-  max_tokens: number;
   timeout: number;
   version: string;
   prompt: string;
@@ -380,13 +391,58 @@ export const PERMISSION_LEVEL_LABELS: Record<string, string> = {
   full: '完全控制',
 };
 
+/** 群组沟通：多 agent + 用户的自主讨论 → 方案 → 转项目（服务端 discussion.ts 的镜像） */
+export type DiscussionMode = 'manual' | 'auto';
+export type DiscussionStatus = 'discussing' | 'converged' | 'converted';
+
+export interface DiscussionMessage {
+  id: string;
+  /** 'user' | agent 名 | 'system' */
+  from: string;
+  text: string;
+  ts: string;
+  round?: number;
+  mentioned?: string[];
+  needs_user?: boolean;
+}
+
+export interface Discussion {
+  id: string;
+  title: string;
+  topic?: string;
+  members: string[];
+  mode: DiscussionMode;
+  status: DiscussionStatus;
+  scheme: string;
+  scheme_version: number;
+  project_id?: string;
+  task_id?: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+  pending_user?: boolean;
+}
+
+export interface DiscussionDetail extends Discussion {
+  messages: DiscussionMessage[];
+}
+
+export interface ConvertDiscussionPayload {
+  target: 'new' | 'existing';
+  name?: string;
+  workspace?: string;
+  scaffold?: boolean;
+  project_id?: string;
+  auto_run?: boolean;
+}
+
 export const api = {
   createTask: (
     description: string,
     workspace: string,
     autoRun = true,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string }; nodeClarify?: string }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string }; nodeClarify?: string; profile?: 'simple' | 'expert' }
   ) =>
     request<{ task_id: string; status?: string; questions?: string[]; summary?: string; level?: string; graph?: TaskGraph }>('/api/tasks', {
       method: 'POST',
@@ -400,6 +456,7 @@ export const api = {
         level: opts?.level,
         execution_policy: opts?.executionPolicy,
         node_clarify: opts?.nodeClarify,
+        profile: opts?.profile,
       }),
     }),
   clarifyTask: (id: string, payload: { answers?: ClarifyAnswer[]; confirm?: boolean; text?: string }) =>
@@ -414,12 +471,13 @@ export const api = {
   updateTaskGoal: (id: string, content: string) =>
     request(`/api/tasks/${id}/goal`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }),
   taskProgress: (id: string) => request<ProgressInfo>(`/api/tasks/${id}/progress`),
-  listKnowledge: (params: { category?: string; project_id?: string; q?: string; limit?: number } = {}) => {
+  listKnowledge: (params: { category?: string; project_id?: string; q?: string; limit?: number; source?: string } = {}) => {
     const sp = new URLSearchParams();
     if (params.category) sp.set('category', params.category);
     if (params.project_id) sp.set('project_id', params.project_id);
     if (params.q) sp.set('q', params.q);
     if (params.limit) sp.set('limit', String(params.limit));
+    if (params.source) sp.set('source', params.source);
     return request<{ entries: KnowledgeEntry[] }>(`/api/knowledge?${sp}`);
   },
   createKnowledge: (payload: { title: string; content: string; category?: string; project_id?: string; tags?: string[] }) =>
@@ -516,6 +574,21 @@ export const api = {
     }),
   listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),
   getDeliverable: (taskId: string, nodeId: string) => request<DeliverableDoc & { task_id: string }>(`/api/tasks/${taskId}/deliverables/${nodeId}`),
+  // A3 验收合并闭环
+  mergeTask: (taskId: string, dryRun: boolean, target?: string) =>
+    request<TaskMergeResult>(`/api/tasks/${taskId}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dry_run: dryRun, target }),
+    }),
+  // A2 协同文档列表/预览
+  taskDocs: (taskId: string) =>
+    request<{ task_id: string; docs: { type: string; path: string; version: number; updated_at: string; updated_by: string; content: string }[] }>(`/api/tasks/${taskId}/docs`),
+  // A1 实时产出视图（沙箱只读浏览）
+  taskOutput: (taskId: string) =>
+    request<{ task_id: string; sandbox_path: string | null; available: boolean; files: string[] }>(`/api/tasks/${taskId}/output`),
+  taskOutputFile: (taskId: string, path: string) =>
+    request<{ task_id: string; path: string; content: string }>(`/api/tasks/${taskId}/output/file?path=${encodeURIComponent(path)}`),
   projectReport: (id: string) => request<ProjectProgressReport>(`/api/projects/${id}/report`),
   listSkills: () => request<{ skills: SkillMeta[]; bindings: Record<string, string[]> }>('/api/skills'),
   createSkill: (payload: { name: string; description?: string; tags?: string[]; content?: string }) =>
@@ -547,6 +620,27 @@ export const api = {
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(model) }
     ),
   reloadAgents: () => request('/api/agents/reload', { method: 'POST' }),
+  // ---------- 群组沟通 ----------
+  listDiscussions: (status?: string) =>
+    request<{ discussions: Discussion[] }>(`/api/discussions${status ? `?status=${status}` : ''}`),
+  getDiscussion: (id: string) => request<DiscussionDetail>(`/api/discussions/${id}`),
+  createDiscussion: (payload: { title: string; topic?: string; members: string[]; mode?: DiscussionMode; project_id?: string }) =>
+    request<{ status: string; discussion: Discussion }>('/api/discussions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  updateDiscussion: (id: string, patch: { mode?: DiscussionMode; title?: string; scheme?: string }) =>
+    request<{ status: string; discussion: Discussion }>(`/api/discussions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
+  deleteDiscussion: (id: string) => request(`/api/discussions/${id}`, { method: 'DELETE' }),
+  postDiscussionMessage: (id: string, text: string) =>
+    request<{ status: string; message: DiscussionMessage; responding: string[] | null }>(`/api/discussions/${id}/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    }),
+  discussionRound: (id: string) => request<{ status: string }>(`/api/discussions/${id}/round`, { method: 'POST' }),
+  discussionStop: (id: string) => request<{ status: string }>(`/api/discussions/${id}/stop`, { method: 'POST' }),
+  generateScheme: (id: string) =>
+    request<{ status: string; discussion: Discussion }>(`/api/discussions/${id}/scheme`, { method: 'POST' }),
+  convertDiscussion: (id: string, payload: ConvertDiscussionPayload) =>
+    request<{ status: string; project_id: string; task_id: string }>(`/api/discussions/${id}/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    }),
   status: () => request<StatusResponse>('/api/status'),
   metrics: () => request<MetricsResponse>('/api/metrics'),
   fsList: (path: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(path)}`),

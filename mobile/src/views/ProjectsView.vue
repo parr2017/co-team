@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { showToast } from 'vant';
 import { api } from '../api';
 import type { ProjectSummary } from '../api';
 
@@ -33,11 +34,48 @@ function donePct(p: ProjectSummary): number {
 function open(p: ProjectSummary) {
   router.push(`/project/${p.id}`);
 }
+
+// ---------- 新建项目（POST /api/projects） ----------
+
+const showCreate = ref(false);
+const creating = ref(false);
+const form = ref({ name: '', workspace: '', description: '' });
+
+function openCreate() {
+  form.value = { name: '', workspace: '', description: '' };
+  showCreate.value = true;
+}
+
+async function submitCreate() {
+  if (!form.value.name.trim() || !form.value.workspace.trim()) {
+    showToast('请填写项目名称和工作区路径');
+    return;
+  }
+  creating.value = true;
+  try {
+    await api.createProject({
+      name: form.value.name.trim(),
+      workspace: form.value.workspace.trim(),
+      description: form.value.description.trim() || undefined,
+    });
+    showCreate.value = false;
+    showToast('项目已创建');
+    await load();
+  } catch (e: any) {
+    showToast(e.message || '创建失败');
+  } finally {
+    creating.value = false;
+  }
+}
 </script>
 
 <template>
   <div class="page">
-    <van-nav-bar title="项目" fixed placeholder />
+    <van-nav-bar title="项目" fixed placeholder>
+      <template #right>
+        <van-icon name="plus" size="22" color="#07c160" @click="openCreate" />
+      </template>
+    </van-nav-bar>
 
     <van-pull-refresh :model-value="false" class="pull-wrap" @refresh="load">
       <div class="pull">
@@ -52,7 +90,7 @@ function open(p: ProjectSummary) {
       <div v-else-if="!projects.length" class="empty">
         <van-icon name="apps-o" size="52" class="wx-float" color="var(--text-3)" />
         <div class="empty-title">暂无项目</div>
-        <div class="empty-text">在桌面端「项目开发」页可创建项目</div>
+        <div class="empty-text">点右上角 + 创建第一个项目</div>
       </div>
 
       <template v-else>
@@ -82,10 +120,21 @@ function open(p: ProjectSummary) {
             <van-icon name="arrow" size="14" color="#b2b2b2" />
           </div>
         </div>
-        <div class="wx-caption hint">项目创建与设置在桌面端进行，这里监控进度与下发任务</div>
+        <div class="wx-caption hint">监控进度与下发任务；项目初始化（脚手架/git）由服务端自动完成</div>
       </template>
       </div>
     </van-pull-refresh>
+
+    <van-popup v-model:show="showCreate" position="bottom" round class="create-pop" :style="{ background: 'var(--panel)' }">
+      <div class="create-head">新建项目</div>
+      <van-field v-model="form.name" label="名称" placeholder="如 accountapp" class="create-field" />
+      <van-field v-model="form.workspace" label="工作区" placeholder="如 D:\pxx\my-app" class="create-field" />
+      <van-field v-model="form.description" label="描述" type="textarea" rows="2" autosize placeholder="一句话说明项目用途（可选）" class="create-field" />
+      <div class="create-actions">
+        <van-button size="small" plain @click="showCreate = false">取消</van-button>
+        <van-button size="small" type="primary" :loading="creating" @click="submitCreate">创建</van-button>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -132,4 +181,8 @@ function open(p: ProjectSummary) {
 .err-text { font-size: 14px; color: var(--text-2); }
 .err-btn { margin-top: 12px; max-width: 180px; }
 .hint { text-align: center; padding-bottom: 16px; }
+
+.create-head { padding: 16px 16px 6px; font-size: 16px; font-weight: 600; color: var(--text); }
+.create-field { background: transparent; }
+.create-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); }
 </style>

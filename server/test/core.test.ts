@@ -10,7 +10,7 @@ import { canExecute, createSandbox, executeCommand, mergeChanges, policyFromConf
 import type { PermissionPolicy } from '../src/sandbox';
 
 function agent(name: string, tags: string[]): AgentPlugin {
-  return { name, role: '', description: '', tags, modelOverride: null, maxTokens: 4096, timeout: 300, prompt: '', handler: {}, dir: '', version: '1.0.0' };
+  return { name, role: '', description: '', tags, modelOverride: null, timeout: 300, prompt: '', handler: {}, dir: '', version: '1.0.0' };
 }
 
 describe('Router', () => {

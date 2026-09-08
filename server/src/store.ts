@@ -215,7 +215,7 @@ export async function listProjectTasks(projectId: string): Promise<TaskGraph[]> 
 
 export interface JournalEntry {
   role: 'master' | 'agent';
-  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc';
   text: string;
   ts: string;
   node_id: string;

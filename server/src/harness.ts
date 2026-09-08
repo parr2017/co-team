@@ -91,6 +91,11 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     ' {"tool_calls":[{"tool":"git_diff"}]}',
     '经验沉淀（推荐）：遇到通用经验/项目踩坑时主动调用知识写入工具:',
     ' {"tool_calls":[{"tool":"write_knowledge","category":"general-tech|project","title":"条目标题","tags":["标签"],"content":"经验内容（Markdown）"}]}',
+    '协同文档（文档驱动协同）：实现涉及 API/接口的节点后，必须把实际接口写入 API_CONTRACT；需要修正任务规格/状态时写对应文档:',
+    ' {"tool_calls":[{"tool":"write_doc","type":"TASK_SPEC|API_CONTRACT|STATUS_REPORT","content":"完整 Markdown 文档内容"}]}',
+    'Agent 间留言（必要时）：需要提醒/询问其他 Agent、主 Agent 或用户时发送留言，收件方在它下次执行时会收到:',
+    ' {"tool_calls":[{"tool":"send_message","to":"agent名|orchestrator|user","text":"留言内容（≤2000字）"}]}',
+    '工具纪律：write_doc/send_message 的产出不计入 changes；实现了接口就必须同步 write_doc 更新 API_CONTRACT，下游节点以文档为准。',
     `轮次预算：当前第 ${round + 1}/${maxRounds} 轮，剩余 ${roundsLeft} 轮工具调用机会。${roundsLeft <= 1 ? '这是最后的侦查机会——本轮结束必须给出最终 JSON 结果。' : '合理规划：先侦查后执行，避免无目的的重复读取。'}`,
   ].join('\n');
 
@@ -101,9 +106,10 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '  "status": "success" | "failed",        // 必填',
     '  "summary": "做了什么 + 对全局目标的贡献",  // 必填，非空字符串',
     '  "verification": "验证方式与结果（运行了什么命令/逐项核对了什么；分析型任务写核对的证据）", // 必填',
-    '  "changes": ["文件路径: 改动说明"],        // 字符串数组',
+    '  "changes": ["文件路径: 改动说明"],        // 字符串数组，必须如实列出全部写入/修改的文件',
     '  "errors": ["错误说明"],                  // 字符串数组',
     '  "files": [{"path":"相对路径","content":"完整文件内容"}],  // 对象数组，content 必须是完整可落盘内容',
+    '  "edits": [{"path":"已有文件相对路径","find":"要替换的原文（精确唯一）","replace":"替换后的文本"}],  // 对已有文件的小改动优先用 edits（省 token）；find 必须与文件现有内容精确匹配',
     '  "commands": ["要执行的命令"]             // 字符串数组，在沙箱中执行（仅限白名单命令）',
     '}',
     '高频错误（每次输出前自查）：',
@@ -111,6 +117,8 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '- summary/verification 留空或写 TODO 占位（禁止）',
     '- files[].content 只给片段不给完整文件内容（禁止）',
     '- 编造没有验证过的 changes（禁止）',
+    '- changes 漏报实际写入/修改的文件（系统会核对申报与实际写入，漏报会被标记）',
+    '- 测试栈与项目技术栈不符：JS/TS 项目（package.json）用 vitest/jest/node --test，Python 项目才用 pytest',
     '分析/调查类任务：结论写进 summary（要详细），files/commands 留空数组，verification 写你核对了哪些证据。',
   ].join('\n');
 
@@ -168,6 +176,14 @@ export function validateAgentResult(parsed: unknown): AgentResultViolations {
     } else {
       const badFile = r.files.findIndex((f: any) => !f || typeof f !== 'object' || typeof f.path !== 'string' || typeof f.content !== 'string');
       if (badFile >= 0) violations.push(`files[${badFile}] 必须是 {"path":"相对路径","content":"完整文件内容"}，content 不能缺失或只给片段`);
+    }
+  }
+  if (r.edits !== undefined) {
+    if (!Array.isArray(r.edits)) {
+      violations.push('edits 必须是数组');
+    } else {
+      const badEdit = r.edits.findIndex((e: any) => !e || typeof e !== 'object' || typeof e.path !== 'string' || typeof e.find !== 'string' || typeof e.replace !== 'string');
+      if (badEdit >= 0) violations.push(`edits[${badEdit}] 必须是 {"path":"已有文件路径","find":"要替换的原文","replace":"替换后的文本"}`);
     }
   }
   return { ok: violations.length === 0, violations };

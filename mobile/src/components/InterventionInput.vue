@@ -12,6 +12,11 @@ const sending = ref(false);
 /** only live tasks accept interventions (backend enforces the same list) */
 const RUNNING = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'];
 const canSend = computed(() => !props.taskStatus || RUNNING.includes(props.taskStatus));
+const hint = computed(() =>
+  props.taskStatus === 'clarifying'
+    ? '需求澄清中——回答澄清问题后即可介入'
+    : `任务已结束（${props.taskStatus || '?'}）——重启任务后才能发送介入指示`
+);
 
 async function send() {
   const message = draft.value.trim();
@@ -43,7 +48,7 @@ async function send() {
       />
       <button class="iv-send" :disabled="!draft.trim() || sending" @click="send">{{ sending ? '…' : '发送' }}</button>
     </template>
-    <div v-else class="iv-hint">任务已结束（{{ taskStatus }}）——执行中的任务才能发送介入指示</div>
+    <div v-else class="iv-hint">{{ hint }}</div>
   </div>
 </template>
 

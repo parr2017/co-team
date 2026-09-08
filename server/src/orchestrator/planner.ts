@@ -34,6 +34,7 @@ const GRANULARITY_RULES = [
   '3. 中等复杂度的需求至少 4-6 个节点；每个开发节点之后应紧跟对应的测试或验证节点',
   '4. 节点命名格式「动作 + 对象」，例如：实现用户注册接口 /api/register',
   '5. 每个节点给出 agent 分配理由 reason（一句话，中文），说明为什么这个 agent 适合',
+  '6. 输出预算规则：预计单节点产出超过 3 个文件或约 300 行代码时，必须再拆分——每个节点的产出要能在一次回复内完整写完（含测试与说明）',
 ].join('\n');
 
 const SKILL_RULES = [
@@ -208,7 +209,7 @@ async function llmPlan(request: string, pool: ModelPool, router: Router, model: 
     const resp = await chat(model, [
       { role: 'system', content: 'You are a task planner. Use ONLY the given agent names. Output valid JSON only.' },
       { role: 'user', content: buildPlanMessages(request, available, agentDesc, memory, previousPlan, feedbacks, level, knowledge) },
-    ], 8192);
+    ]);
     pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
     const graph = extractJson(stripCodeFence(resp.content));
     return normalizePlan(graph, available, skillMap);

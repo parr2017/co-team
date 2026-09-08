@@ -58,7 +58,6 @@ export async function discoverAgents(agentsDir: string): Promise<AgentPlugin[]> 
       description: cfg.description || '',
       tags: cfg.tags || [],
       modelOverride: cfg.model_override ?? null,
-      maxTokens: cfg.max_tokens ?? 8192,
       timeout: cfg.timeout ?? 300,
       prompt,
       handler,
@@ -77,7 +76,6 @@ export function toAgentInfo(p: AgentPlugin): AgentInfo {
     description: p.description,
     tags: p.tags,
     modelOverride: p.modelOverride,
-    maxTokens: p.maxTokens,
     timeout: p.timeout,
   };
 }

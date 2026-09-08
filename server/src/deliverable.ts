@@ -19,6 +19,8 @@ export function buildDeliverableReport(taskId: string, node: TaskNode): string {
   const errors: string[] = result.errors || (node.error ? [node.error] : []);
   const model = result.model || '—';
   const tokens = result.tokens || 0;
+  const docUpdates: { type: string; version: number }[] = result.doc_updates || [];
+  const unreported: string[] = (result as any).unreported_files || [];
 
   return [
     `# 节点交付报告：${node.name}`,
@@ -41,6 +43,8 @@ export function buildDeliverableReport(taskId: string, node: TaskNode): string {
     '',
     '## 变更清单',
     changes.length ? changes.map((c) => '- ' + c).join('\n') : '（无文件变更——分析/调查类任务）',
+    ...(docUpdates.length ? ['', '## 协同文档更新', ...docUpdates.map((u) => `- docs/${u.type}.md → v${u.version}`)] : []),
+    ...(unreported.length ? ['', '> ⚠ 以下文件实际已写入但模型未申报（D2 申报纪律），请人工确认：', ...unreported.map((u) => `- ${u}`)] : []),
     '',
     '## 验证方式与结果',
     result.verification || '⚠ 未提供验证信息',

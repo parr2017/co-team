@@ -72,6 +72,8 @@ export interface AgentResult {
   verification?: string;
   /** structured test-fix report (improvement 8 / R9) */
   report?: TestFixReport;
+  /** SSOT docs this node updated via write_doc (improvement #4 behavioral contract) */
+  doc_updates?: { type: string; version: number }[];
 }
 
 export interface TaskNode {
@@ -135,6 +137,8 @@ export interface TaskGraph {
   execution_policy?: { level: string; whitelist_commands?: string[] };
   /** task-level default for the per-node pre-execution clarification gate */
   node_clarify?: ClarifyMode;
+  /** sandbox dir the task is (or was) executing in — powers the live output view (A1) */
+  sandbox_path?: string;
 }
 
 export interface EventEnvelope {
@@ -153,6 +157,10 @@ export interface ModelConfig {
   priority?: number;
   tags?: string[];
   cost_per_1k?: number;
+  /** 单次生成输出 token 上限（推理模型的思考 token 也计入）。属模型能力，不随 agent 配置 */
+  max_tokens?: number;
+  /** 模型上下文窗口（prompt 与输出共享），供上下文分级裁剪/扩容使用 */
+  context_length?: number;
   /** optional capability roles: 'chat' (default) and/or 'embedding' (knowledge RAG) */
   roles?: string[];
 }
@@ -183,7 +191,6 @@ export interface AgentInfo {
   description: string;
   tags: string[];
   modelOverride: string | null;
-  maxTokens: number;
   timeout: number;
 }
 

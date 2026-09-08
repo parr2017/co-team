@@ -135,6 +135,91 @@ export async function listTaskBranches(workspace: string): Promise<{ name: strin
   }
 }
 
+/** A3: pick the workspace repo's main branch ('main' preferred, then 'master', then current). */
+export async function detectMainBranch(workspace: string): Promise<string> {
+  const g = git(workspace);
+  const branches = await g.branchLocal().catch(() => null);
+  if (!branches) return 'main';
+  if (branches.all.includes('main')) return 'main';
+  if (branches.all.includes('master')) return 'master';
+  return branches.current || 'main';
+}
+
+export interface TaskMergeResult {
+  ok: boolean;
+  target: string;
+  taskBranch: string;
+  commit: string | null;
+  conflicts: string[];
+  message: string;
+}
+
+/**
+ * A3 验收合并闭环: merge a task's deliverable branch into the repo's main branch.
+ * dryRun performs a real merge WITHOUT committing and aborts it, so the user can
+ * preview conflicts before committing to the merge. Refuses to touch a dirty
+ * worktree (tracked modifications) so user edits are never clobbered.
+ */
+export async function mergeTaskBranch(workspace: string, taskBranch: string, targetBranch?: string, dryRun = false): Promise<TaskMergeResult> {
+  const g = git(workspace);
+  const result: TaskMergeResult = { ok: false, target: targetBranch || '', taskBranch, commit: null, conflicts: [], message: '' };
+  const branches = await g.branchLocal().catch(() => null);
+  if (!branches) { result.message = '工作区不是 git 仓库'; return result; }
+  if (!branches.all.includes(taskBranch)) { result.message = `任务分支不存在: ${taskBranch}`; return result; }
+  const target = targetBranch || (await detectMainBranch(workspace));
+  result.target = target;
+  if (target === taskBranch) { result.message = '任务分支与目标分支相同，无需合并'; return result; }
+  if (!branches.all.includes(target)) { result.message = `目标分支不存在: ${target}`; return result; }
+
+  const status = await g.status();
+  const dirtyTracked = status.modified.length + status.created.length + status.deleted.length + status.staged.length;
+  if (dirtyTracked > 0) {
+    result.message = `工作区有 ${dirtyTracked} 个未提交改动，为保护你的修改已拒绝合并——请先提交或暂存（git stash）`;
+    return result;
+  }
+
+  try {
+    await g.checkout(target);
+  } catch (e) {
+    result.message = `切换到 ${target} 失败: ${String(e).slice(0, 120)}`;
+    return result;
+  }
+
+  try {
+    if (dryRun) {
+      await g.merge([taskBranch, '--no-ff', '--no-commit', '-m', `coteam: dry-run merge ${taskBranch}`]);
+      const st = await g.status();
+      if (st.conflicted.length) {
+        result.conflicts = st.conflicted;
+        result.message = `试运行发现冲突（${st.conflicted.length} 个文件），未做任何改动`;
+      } else {
+        result.ok = true;
+        result.message = `试运行通过：${taskBranch} 可无冲突合并到 ${target}（已还原，未落盘）`;
+      }
+      await g.merge(['--abort']).catch(() => {});
+      await g.checkout(taskBranch).catch(() => {});
+      return result;
+    }
+    await g.merge([taskBranch, '--no-ff', '-m', `coteam: merge ${taskBranch} into ${target}`]);
+    const st = await g.status();
+    if (st.conflicted.length) {
+      result.conflicts = st.conflicted;
+      await g.merge(['--abort']).catch(() => {});
+      result.message = `合并存在冲突（${st.conflicted.length} 个文件），已自动中止`;
+      return result;
+    }
+    const head = await g.log({ maxCount: 1 }).catch(() => null);
+    result.ok = true;
+    result.commit = head?.latest?.hash?.slice(0, 8) ?? null;
+    result.message = `已合并 ${taskBranch} → ${target}（${result.commit ?? 'no commit'}）`;
+    return result;
+  } catch (e) {
+    await g.merge(['--abort']).catch(() => {});
+    result.message = `合并失败: ${String(e).slice(0, 160)}`;
+    return result;
+  }
+}
+
 export async function commitChanges(workspace: string, message: string, paths: string[]): Promise<string | null> {
   return commitOnBranch(workspace, message, paths);
 }
@@ -189,7 +274,10 @@ export async function syncToWorkspace(sandbox: string, workspace: string, branch
     });
     void branch;
     return true;
-  } catch {
+  } catch (e) {
+    // a silent false previously made the orchestrator report success while the
+    // deliverables stayed trapped in the sandbox — surface the cause for the log
+    console.error('[git] syncToWorkspace failed:', String((e as Error)?.message || e));
     return false;
   }
 }

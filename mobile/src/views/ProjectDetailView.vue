@@ -13,6 +13,8 @@ const { onEvent } = useDashboard();
 const projectId = computed(() => String(route.params.id));
 const projectTasks = ref<TaskGraph[]>([]);
 const projectName = ref('');
+const projectKnowledge = ref<{ id: string; title: string; source: string; tags: string[]; content: string; updated_at: string }[]>([]);
+const expOpen = ref(false);
 const loading = ref(true);
 const error = ref('');
 let unsub: (() => void) | undefined;
@@ -26,9 +28,14 @@ async function load() {
     projectTasks.value = d.tasks || [];
   } catch (e: any) {
     error.value = e.message || '加载失败';
-  } finally {
-    loading.value = false;
   }
+  try {
+    const k = await api.listKnowledge({ category: 'project', project_id: projectId.value });
+    projectKnowledge.value = k.entries || [];
+  } catch {
+    projectKnowledge.value = [];
+  }
+  loading.value = false;
 }
 
 onMounted(() => {
@@ -149,7 +156,7 @@ function goCreate() {
       <div class="wx-caption">项目任务</div>
       <div class="wx-group task-group">
         <div v-if="!sorted.length" class="t-empty">暂无任务，点右上角 + 下发</div>
-        <div v-for="t in sorted" :key="t.task_id" class="session" @click="openTask(t)">
+          <div v-for="t in sorted" :key="t.task_id" class="session" @click="openTask(t)">
           <div class="s-avatar">
             <AgentAvatar :name="avatarAgent(t)" :size="44" />
           </div>
@@ -164,6 +171,19 @@ function goCreate() {
               <span v-else-if="['planned', 'clarifying'].includes(t.status)" class="s-tag wait">待处理</span>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div class="wx-caption">项目经验 · 知识库 ({{ projectKnowledge.length }})</div>
+      <div class="wx-group exp-group">
+        <div v-if="!projectKnowledge.length" class="t-empty">暂无条目 — 群组讨论经验与任务复盘会自动沉淀到这里</div>
+        <div v-for="e in projectKnowledge" :key="e.id" class="exp-item" @click="expOpen = !expOpen">
+          <div class="s-line1">
+            <span class="exp-title">{{ e.title }}</span>
+            <span class="s-time">{{ (e.updated_at || '').slice(5, 10) }}</span>
+          </div>
+          <div v-if="e.tags?.length" class="exp-tags"><span v-for="tg in e.tags.slice(0, 4)" :key="tg" class="exp-tag">{{ tg }}</span></div>
+          <div v-if="expOpen" class="exp-body">{{ e.content.slice(0, 500) }}{{ e.content.length > 500 ? '…' : '' }}</div>
         </div>
       </div>
     </div>
@@ -227,4 +247,13 @@ function goCreate() {
 .err-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 72px 0; }
 .err-text { font-size: 14px; color: var(--text-2); }
 .err-btn { margin-top: 12px; max-width: 180px; }
+
+/* 项目经验（知识库条目） */
+.exp-group { padding: 0 16px; }
+.exp-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.exp-item:last-child { border-bottom: none; }
+.exp-title { font-size: 15px; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exp-tags { display: flex; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
+.exp-tag { font-size: 10px; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(34, 211, 238, 0.3); border-radius: 4px; padding: 0 5px; }
+.exp-body { margin-top: 6px; font-size: 13px; color: var(--text-2); line-height: 1.6; white-space: pre-wrap; }
 </style>
