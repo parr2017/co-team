@@ -21,6 +21,15 @@
         <div class="m-label">总成本</div>
       </div>
     </div>
+    <div class="metrics-summary" v-if="metrics?.quality">
+      <div class="metric-row metric-quality-title">质量闭环</div>
+      <div class="metric-row"><span>缺陷总数 / 已闭环</span><b>{{ metrics.quality.defects_total }} / {{ metrics.quality.defects_closed }}</b></div>
+      <div class="metric-row"><span>缺陷闭环率</span><b>{{ Math.round(metrics.quality.defect_close_rate * 100) }}%</b></div>
+      <div class="metric-row"><span>平均修复轮次</span><b>{{ metrics.quality.fix_rounds_avg }}</b></div>
+      <div class="metric-row"><span>测试通过率（有报告节点）</span><b>{{ Math.round(metrics.quality.test_pass_rate * 100) }}%</b></div>
+      <div class="metric-row"><span>交付一致率</span><b>{{ metrics.quality.delivery_checked_nodes ? Math.round(metrics.quality.delivery_consistent_rate * 100) + '%' : '—' }}</b></div>
+    </div>
+    <div ref="trendChartEl" class="chart chart-tall"></div>
     <div class="charts-row">
       <div ref="agentChartEl" class="chart"></div>
       <div ref="costChartEl" class="chart"></div>
@@ -31,24 +40,32 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import * as echarts from 'echarts';
-import { api, type MetricsResponse } from '../api';
+import { api, type MetricsResponse, type TrendPoint } from '../api';
 import { useTheme } from '../composables/useTheme';
 
 const metrics = ref<MetricsResponse | null>(null);
+const trend = ref<TrendPoint[]>([]);
 const { theme, cssVar } = useTheme();
 const agentChartEl = ref<HTMLElement>();
 const costChartEl = ref<HTMLElement>();
+const trendChartEl = ref<HTMLElement>();
 let agentChart: echarts.ECharts | null = null;
 let costChart: echarts.ECharts | null = null;
+let trendChart: echarts.ECharts | null = null;
 let timer: number | undefined;
 
 async function refresh() {
   try {
     metrics.value = await api.metrics();
-    renderCharts();
   } catch {
     /* ignore */
   }
+  try {
+    trend.value = (await api.metricsTrend(14)).trend;
+  } catch {
+    /* ignore */
+  }
+  renderCharts();
 }
 
 function renderCharts() {
@@ -96,6 +113,25 @@ function renderCharts() {
         : [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无 Token 消耗记录', fill: c.text3, fontSize: 12 } }],
     });
   }
+  if (trendChartEl.value) {
+    trendChart ||= echarts.init(trendChartEl.value);
+    trendChart.setOption({
+      title: { text: '质量趋势（近 14 天）', textStyle: { color: c.text2, fontSize: 12 } },
+      grid: { left: 40, right: 40, top: 30, bottom: 40 },
+      legend: { textStyle: { color: c.text3, fontSize: 10 }, top: 26 },
+      xAxis: { type: 'category', data: trend.value.map((t) => t.date.slice(5)), axisLabel: { color: c.text3, fontSize: 10 } },
+      yAxis: [
+        { type: 'value', axisLabel: { color: c.text3 }, splitLine: { lineStyle: { color: c.border } } },
+        { type: 'value', min: 0, max: 1, axisLabel: { color: c.text3, formatter: (v: number) => Math.round(v * 100) + '%' }, splitLine: { show: false } },
+      ],
+      series: [
+        { name: '任务数', type: 'bar', data: trend.value.map((t) => t.tasks), itemStyle: { color: c.accent } },
+        { name: '缺陷数', type: 'bar', data: trend.value.map((t) => t.defects_total), itemStyle: { color: c.red } },
+        { name: '成功率', type: 'line', yAxisIndex: 1, data: trend.value.map((t) => t.success_rate), itemStyle: { color: c.green }, smooth: true },
+      ],
+      tooltip: { trigger: 'axis' },
+    });
+  }
 }
 
 onMounted(() => {
@@ -116,6 +152,7 @@ onUnmounted(() => {
 function onResize() {
   agentChart?.resize();
   costChart?.resize();
+  trendChart?.resize();
 }
 defineExpose({ refresh });
 </script>
@@ -128,7 +165,12 @@ defineExpose({ refresh });
 .m-label { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
 .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .chart { height: 170px; min-width: 0; }
+.chart-tall { height: 200px; }
 .section-head { margin-bottom: 10px; }
+.metrics-summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 10px; }
+.metric-row { display: flex; justify-content: space-between; padding: 2px 0; }
+.metric-row b { color: var(--ct-text); }
+.metric-quality-title { margin-top: 6px; color: var(--ct-accent); font-weight: 600; }
 @media (max-width: 900px) {
   .charts-row { grid-template-columns: 1fr; }
 }

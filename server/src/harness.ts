@@ -58,6 +58,7 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '3. 边界纪律：只操作工作目录内的文件；需要工作区之外的资源时，status=failed 并说明缺什么。',
     '4. 诚实汇报：禁止编造测试结果或"应该能跑"的结论；验证过什么就写什么，没验证就明说未验证。',
     '5. 不确定就上报：信息不足、权限不够、方向存疑时，status=failed 并在 error 中写出你需要人类补充什么——禁止假装成功。',
+    '6. 自修改纪律：当工作目录就是 Co_team 系统本身时属于系统自修改——改动执行设施（server/src/ 下的 harness/skills/deliverable/orchestrator）、技能库（skills/）或 Agent 定义（agents/）必须逐个如实列入 changes，禁止谎报或遗漏；系统会强制运行本仓库测试并对元设施变更要求人工审批。',
   ].join('\n');
 
   const ctxSections = [
@@ -110,7 +111,8 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '  "errors": ["错误说明"],                  // 字符串数组',
     '  "files": [{"path":"相对路径","content":"完整文件内容"}],  // 对象数组，content 必须是完整可落盘内容',
     '  "edits": [{"path":"已有文件相对路径","find":"要替换的原文（精确唯一）","replace":"替换后的文本"}],  // 对已有文件的小改动优先用 edits（省 token）；find 必须与文件现有内容精确匹配',
-    '  "commands": ["要执行的命令"]             // 字符串数组，在沙箱中执行（仅限白名单命令）',
+    '  "commands": ["要执行的命令"],             // 字符串数组，在沙箱中执行（仅限白名单命令）',
+    '  "defects": [{"title":"缺陷标题","detail":"具体描述与复现条件","severity":"low|medium|high"}]  // 发现但本次未修复的问题（已修复的写 errors，潜在风险/技术债写 defects）',
     '}',
     '高频错误（每次输出前自查）：',
     '- 把 JSON 包进 ```json 代码栅栏（禁止）',
@@ -184,6 +186,16 @@ export function validateAgentResult(parsed: unknown): AgentResultViolations {
     } else {
       const badEdit = r.edits.findIndex((e: any) => !e || typeof e !== 'object' || typeof e.path !== 'string' || typeof e.find !== 'string' || typeof e.replace !== 'string');
       if (badEdit >= 0) violations.push(`edits[${badEdit}] 必须是 {"path":"已有文件路径","find":"要替换的原文","replace":"替换后的文本"}`);
+    }
+  }
+  if (r.defects !== undefined) {
+    if (!Array.isArray(r.defects)) {
+      violations.push('defects 必须是数组');
+    } else {
+      const bad = r.defects.findIndex((d: any) => !d || typeof d !== 'object' || typeof d.title !== 'string' || !d.title.trim() || typeof d.detail !== 'string' || !d.detail.trim());
+      if (bad >= 0) violations.push(`defects[${bad}] 必须是 {"title":"非空标题","detail":"非空描述","severity":"low|medium|high"(可选)}`);
+      const badSev = r.defects.findIndex((d: any) => d && d.severity !== undefined && !['low', 'medium', 'high'].includes(d.severity));
+      if (badSev >= 0) violations.push(`defects[${badSev}].severity 只能是 low / medium / high`);
     }
   }
   return { ok: violations.length === 0, violations };

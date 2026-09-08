@@ -115,6 +115,7 @@ async function main(): Promise<void> {
     maxFixRounds: config.orchestrator.max_fix_rounds,
     modelWaitTimeoutSec: config.orchestrator.model_wait_timeout_sec,
     nodeClarify: config.orchestrator.node_clarify,
+    selfModGate: config.orchestrator.self_mod_gate,
   });
 
   await orchestrator.loadAgents();

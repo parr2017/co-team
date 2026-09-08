@@ -52,6 +52,20 @@ orchestrator:
   model_wait_timeout_sec: 120
   # 实施前澄清全局默认：off（关闭）/ brief（实施简报+确认，推荐）/ confirm（逐步确认）
   node_clarify: off
+  # P0-1 自修改门禁：workspace 指向 co-team 本仓库的任务（自指任务）
+  #  - 节点完成前强制运行 test_command，失败进入修复循环，超 max_fix_rounds 判节点失败
+  #  - 节点改动触及 meta_paths 中的元设施路径时挂起等待人工审批
+  self_mod_gate:
+    enabled: true
+    test_command: npm test
+    timeout_sec: 600
+    meta_paths:
+      - server/src/harness.ts
+      - server/src/skills.ts
+      - server/src/deliverable.ts
+      - server/src/orchestrator/
+      - skills/
+      - agents/
 knowledge:
   dir: ./data/knowledge
   # RAG 语义检索：指向模型池中支持 /v1/embeddings 的条目；未启用时回退关键词检索

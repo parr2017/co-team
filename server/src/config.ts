@@ -17,7 +17,27 @@ export interface OrchestrationConfig {
   model_wait_timeout_sec?: number;
   /** feature: 实施前澄清 — global default clarify gate: off | brief | confirm */
   node_clarify?: 'off' | 'brief' | 'confirm';
+  /** P0-1 self-modification gate: self-referential tasks (workspace = co-team itself)
+   *  must pass the repo's own test suite, and meta-facility edits need human approval */
+  self_mod_gate?: SelfModGateConfig;
 }
+
+export interface SelfModGateConfig {
+  enabled: boolean;
+  test_command: string;
+  /** path prefixes (repo-relative, /-separated) whose modification counts as meta-facility change */
+  meta_paths: string[];
+  timeout_sec?: number;
+}
+
+export const DEFAULT_META_PATHS = [
+  'server/src/harness.ts',
+  'server/src/skills.ts',
+  'server/src/deliverable.ts',
+  'server/src/orchestrator/',
+  'skills/',
+  'agents/',
+];
 
 export interface AppConfig {
   agents_dir: string;
@@ -77,6 +97,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       model_wait_timeout_sec: raw.orchestrator?.model_wait_timeout_sec ?? 120,
       // feature: 实施前澄清 — off by default; 'brief' | 'confirm' turn the gate on globally
       node_clarify: ['off', 'brief', 'confirm'].includes(raw.orchestrator?.node_clarify) ? raw.orchestrator.node_clarify : 'off',
+      self_mod_gate: {
+        enabled: raw.orchestrator?.self_mod_gate?.enabled ?? true,
+        test_command: raw.orchestrator?.self_mod_gate?.test_command || 'npm test',
+        meta_paths: raw.orchestrator?.self_mod_gate?.meta_paths || DEFAULT_META_PATHS,
+        timeout_sec: raw.orchestrator?.self_mod_gate?.timeout_sec ?? 600,
+      },
     },
     permissions: raw.permissions || {},
     redis: raw.redis || { host: '127.0.0.1', port: 6379, db: 0 },

@@ -162,6 +162,18 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
     >
       <div class="deliverable-md md" v-html="md(deliverableView?.markdown || '')"></div>
       <template #footer>
+        <div v-if="deliverableView?.defects?.length" class="defect-convert">
+          <span class="mono conv-label">转修复任务：</span>
+          <el-button
+            v-for="(d, i) in deliverableView.defects"
+            :key="i"
+            size="small"
+            type="primary"
+            plain
+            :loading="converting === i"
+            @click="convertDefect(i)"
+          >{{ d.title }}</el-button>
+        </div>
         <el-button size="small" @click="copyDeliverable">复制 Markdown</el-button>
       </template>
     </el-dialog>
@@ -170,6 +182,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
+import { ElMessage } from 'element-plus';
 import { marked } from 'marked';
 import { api, type JournalEntry } from '../api';
 import { onEvent } from '../composables/useDashboard';
@@ -223,7 +236,7 @@ const renderItems = computed<RenderItem[]>(() => {
   return out;
 });
 
-const deliverableView = ref<{ title: string; markdown: string } | null>(null);
+const deliverableView = ref<{ title: string; markdown: string; nodeId?: string; defects?: { title: string; detail: string; severity?: string }[] } | null>(null);
 const deliverableOpen = computed({
   get: () => deliverableView.value !== null,
   set: (v: boolean) => { if (!v) deliverableView.value = null; },
@@ -231,14 +244,33 @@ const deliverableOpen = computed({
 function copyDeliverable() {
   if (deliverableView.value) void navigator.clipboard?.writeText(deliverableView.value.markdown);
 }
+// P0-2: convert a defect from the open deliverable into a fix task
+const converting = ref<number | null>(null);
+async function convertDefect(defectIndex: number) {
+  const view = deliverableView.value;
+  if (!view?.nodeId) return;
+  converting.value = defectIndex;
+  try {
+    const r = await api.convertDefect(props.taskId, view.nodeId, defectIndex, false);
+    if (r.status === 'needs_clarification') {
+      ElMessage.warning(`修复任务 ${r.fix_task_id} 已创建，等待需求澄清后执行`);
+    } else {
+      ElMessage.success(`修复任务 ${r.fix_task_id} 已创建（回链至「${view.title}」）`);
+    }
+  } catch (e: any) {
+    ElMessage.error(`转化失败: ${e.message || e}`);
+  } finally {
+    converting.value = null;
+  }
+}
 function openDeliverable(entry: JournalEntry) {
   const md = entry.meta?.markdown;
   if (md) {
-    deliverableView.value = { title: '交付成果 · ' + (entry.node_name || entry.node_id), markdown: md };
+    deliverableView.value = { title: '交付成果 · ' + (entry.node_name || entry.node_id), markdown: md, nodeId: entry.node_id, defects: entry.meta?.defects || [] };
   } else {
     // journal cap may have evicted the body — fetch on demand
     void api.getDeliverable(props.taskId, entry.node_id).then((d) => {
-      deliverableView.value = { title: '交付成果 · ' + (d.node_name || entry.node_id), markdown: d.markdown };
+      deliverableView.value = { title: '交付成果 · ' + (d.node_name || entry.node_id), markdown: d.markdown, nodeId: entry.node_id, defects: d.defects || [] };
     }).catch(() => {});
   }
 }
@@ -445,6 +477,8 @@ html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575;
 .dc-sub { font-size: 11px; color: var(--ct-text3); }
 .dc-arrow { margin-left: auto; color: var(--ct-text3); font-size: 18px; }
 .deliverable-md { max-height: 62vh; overflow-y: auto; }
+.defect-convert { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.conv-label { font-size: 11px; color: var(--ct-text3); }
 .deliverable-md :deep(h1) { font-size: 17px; margin: 4px 0 10px; }
 .deliverable-md :deep(h2) { font-size: 14px; margin: 14px 0 6px; border-bottom: 1px solid var(--ct-border); padding-bottom: 4px; }
 .deliverable-md :deep(table) { border-collapse: collapse; margin: 8px 0; }
