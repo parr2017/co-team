@@ -3,7 +3,8 @@ import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showFailToast, showToast } from 'vant';
 import { api } from '../api';
-import type { FsListing, ProjectSummary } from '../api';
+import type { ProjectSummary } from '../api';
+import DirPicker from '../components/DirPicker.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -15,6 +16,7 @@ const mainModel = ref('');
 const models = ref<{ name: string }[]>([]);
 const submitting = ref(false);
 const simpleMode = ref(false);
+const allowSelfRef = ref(false);
 
 // project binding (task can be dispatched into a project)
 const projects = ref<ProjectSummary[]>([]);
@@ -76,12 +78,6 @@ function onProjectChosen(id: string) {
 const showPicker = ref(false);
 const showModelPicker = ref(false);
 const showProjectPicker = ref(false);
-const fsLoading = ref(false);
-const fsPath = ref('');
-const fsParent = ref<string | null>(null);
-const fsDirs = ref<FsListing['dirs']>([]);
-const fsShortcuts = ref<FsListing['shortcuts']>([]);
-const breadcrumbs = ref<string[]>([]);
 
 // Vant 4 picker options must be { text, value } objects — the Vant 3 `[{ values: [...] }]`
 // shape renders a single blank row (the "agent dropdown is blank" bug)
@@ -127,46 +123,6 @@ function onModelConfirm({ selectedOptions }: { selectedOptions: { text: string; 
   showModelPicker.value = false;
 }
 
-async function openPicker() {
-  showPicker.value = true;
-  await loadFs('');
-}
-
-async function loadFs(p: string, crumb?: string) {
-  fsLoading.value = true;
-  try {
-    const d = await api.fsList(p);
-    fsPath.value = d.path;
-    fsParent.value = d.parent;
-    fsDirs.value = d.dirs;
-    fsShortcuts.value = d.shortcuts || [];
-    if (crumb) breadcrumbs.value.push(crumb);
-  } catch (e: any) {
-    showFailToast(e.message || '读取目录失败');
-  } finally {
-    fsLoading.value = false;
-  }
-}
-
-function enterDir(dir: { name: string; path: string }) {
-  void loadFs(dir.path, dir.name);
-}
-
-function goUp() {
-  const crumbs = breadcrumbs.value;
-  crumbs.pop();
-  void loadFs(fsParent.value || '');
-}
-
-function chooseCurrent() {
-  if (!fsPath.value) {
-    showFailToast('请先进入一个具体目录');
-    return;
-  }
-  workspace.value = fsPath.value;
-  showPicker.value = false;
-}
-
 const LEVELS = [
   { value: 'light', label: '轻量', hint: '改注释/小配置级' },
   { value: 'standard', label: '标准', hint: '常规功能开发' },
@@ -187,6 +143,7 @@ async function submit() {
       main_model_id: mainModel.value || undefined,
       project_id: projectId.value || undefined,
       profile: simpleMode.value ? 'simple' : undefined,
+      allow_self_ref: allowSelfRef.value || undefined,
     });
     if (r.status === 'needs_clarification') {
       showToast('需求需澄清');
@@ -235,7 +192,7 @@ async function submit() {
           <van-icon v-if="projectsReady && !projectsFailed" name="arrow" size="14" color="#b2b2b2" />
           <van-loading v-else size="14" />
         </div>
-        <div class="wx-cell link" @click="openPicker">
+        <div class="wx-cell link" @click="showPicker = true">
           <van-icon name="folder-o" size="20" color="#07c160" />
           <span class="cell-label">工作区目录</span>
           <span class="cell-value">{{ workspace || (projectId ? '跟随项目' : '点击选择') }}</span>
@@ -275,6 +232,16 @@ async function submit() {
         </div>
       </div>
 
+      <!-- 自指任务（工作区在 co-team 内时必开） -->
+      <div v-if="!simpleMode" class="wx-caption">高级</div>
+      <div v-if="!simpleMode" class="wx-group">
+        <div class="wx-cell link" @click="allowSelfRef = !allowSelfRef">
+          <span class="cell-label">自指任务</span>
+          <span class="cell-value">co-team 开发 co-team：隔离克隆执行，不碰主副本</span>
+          <van-icon v-if="allowSelfRef" name="success" size="18" color="#07c160" />
+        </div>
+      </div>
+
       <div class="submit">
         <button class="wx-btn" :disabled="submitting" @click="submit">{{ submitting ? '提交中…' : '提交任务' }}</button>
       </div>
@@ -300,41 +267,8 @@ async function submit() {
       />
     </van-popup>
 
-    <!-- 目录级联选择：微信分组列表 -->
-    <van-popup v-model:show="showPicker" position="bottom" :style="{ height: '70%' }" round>
-      <div class="fs-picker">
-        <div class="fs-head">
-          <span class="fs-title">选择目录</span>
-          <span class="fs-use" @click="chooseCurrent">使用当前目录</span>
-        </div>
-        <div v-if="fsPath" class="fs-path">{{ fsPath }}</div>
-        <div v-if="fsParent" class="wx-cell link fs-up" @click="goUp">
-          <van-icon name="arrow-up" size="16" color="#07c160" />
-          <span class="cell-label">返回上级</span>
-        </div>
-        <van-loading v-if="fsLoading" class="fs-loading" />
-        <div v-else class="fs-list">
-          <div class="wx-group fs-inline-group">
-            <div v-for="s in fsShortcuts" :key="s.path" class="wx-cell link" @click="loadFs(s.path)">
-              <van-icon name="star-o" size="18" color="#fa9d3b" />
-              <span class="cell-label">{{ s.name }}</span>
-            </div>
-            <div
-              v-for="d in fsDirs"
-              :key="d.path"
-              class="wx-cell link"
-              :class="{ chosen: d.path === fsPath }"
-              @click="enterDir(d)"
-            >
-              <van-icon name="folder-o" size="18" color="#07c160" />
-              <span class="cell-label">{{ d.name }}</span>
-              <van-icon v-if="d.path === fsPath" name="success" size="16" color="#07c160" />
-            </div>
-          </div>
-          <div v-if="!fsDirs.length && !fsShortcuts.length" class="fs-empty">无子目录</div>
-        </div>
-      </div>
-    </van-popup>
+    <!-- 目录级联选择：共享组件 -->
+    <DirPicker v-model:show="showPicker" @pick="workspace = $event" />
   </div>
 </template>
 
@@ -355,16 +289,4 @@ async function submit() {
 .wx-cell.chosen { background: var(--panel-2); }
 
 .submit { margin: 28px 16px 0; }
-
-/* fs picker */
-.fs-picker { height: 100%; display: flex; flex-direction: column; padding: 14px 0 0; background: var(--bg); }
-.fs-head { display: flex; justify-content: space-between; align-items: center; padding: 0 16px 10px; }
-.fs-title { font-size: 17px; font-weight: 600; color: var(--text); }
-.fs-use { font-size: 15px; color: var(--accent); }
-.fs-path { font-size: 12px; color: var(--wx-blue); padding: 0 16px 8px; word-break: break-all; }
-.fs-up { margin: 0 12px; }
-.fs-loading { margin: 20px auto; }
-.fs-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 14px; }
-.fs-inline-group { margin: 0 12px; }
-.fs-empty { text-align: center; color: var(--text-3); padding: 30px 0; }
 </style>

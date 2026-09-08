@@ -49,6 +49,7 @@ import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../h
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
 import { PROJECT_ROOT, DEFAULT_META_PATHS, type SelfModGateConfig } from '../config';
+import { prepareSelfdevClone } from '../workspace';
 import { sampleTaskRun } from '../metrics';
 
 /** persisted clarification-loop state (task:clarify:* bus key) */
@@ -83,6 +84,8 @@ export interface OrchestratorOptions {
   skillsGlobalDir?: string;
   /** P0-1 self-modification gate config (defaults to enabled with DEFAULT_META_PATHS) */
   selfModGate?: SelfModGateConfig;
+  /** 项目治理：自指任务的隔离克隆根目录所在配置（缺省则自指任务不隔离） */
+  projects?: { root: string; selfdev_root: string };
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -154,6 +157,7 @@ export class Orchestrator {
   private agentsDir: string;
   private skillsGlobalDir: string;
   private selfModGate: SelfModGateConfig;
+  private projects?: { root: string; selfdev_root: string };
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
@@ -172,6 +176,7 @@ export class Orchestrator {
     this.maxFixRounds = opts.maxFixRounds ?? MAX_FIX_ROUNDS;
     this.modelWaitTimeoutMs = Math.max(0, (opts.modelWaitTimeoutSec ?? 120) * 1000);
     this.nodeClarify = opts.nodeClarify ?? 'off';
+    this.projects = opts.projects;
     this.selfModGate = opts.selfModGate || {
       enabled: true,
       test_command: 'npm test',
@@ -260,7 +265,7 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; planAsync?: boolean; skipClarification?: boolean }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; planAsync?: boolean; skipClarification?: boolean; allowSelfRef?: boolean }
   ): Promise<{ taskId: string; graph: PlannedGraph; needsClarification?: boolean; questions?: string[]; summary?: string; level?: TaskLevel }> {
     this.logger.info('Creating task', { description, workspace, projectId, planAsync: opts?.planAsync === true });
 
@@ -285,6 +290,7 @@ export class Orchestrator {
         project_id: projectId,
         level,
         main_model_id: mainModelId,
+        self_ref: opts?.allowSelfRef,
       });
       void this.assessThenPlan(taskId, description, workspace, projectId, {
         level,
@@ -312,6 +318,7 @@ export class Orchestrator {
         workspace,
         status: 'clarifying',
         project_id: projectId,
+        self_ref: opts?.allowSelfRef,
       });
       await busSet(`task:clarify:${taskId}`, {
         rounds: 1,
@@ -335,6 +342,7 @@ export class Orchestrator {
       mainModelId,
       executionPolicy: opts?.executionPolicy,
       nodeClarify: opts?.nodeClarify,
+      selfRef: opts?.allowSelfRef,
     });
     return { taskId, graph: planned.graph, level: planned.level };
   }
@@ -345,7 +353,7 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId: string | undefined,
-    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode }
+    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; selfRef?: boolean }
   ): Promise<{ graph: PlannedGraph; level: TaskLevel }> {
     // project mode: agents get up to speed from the project's accumulated memory
     let requestWithContext = description;
@@ -381,6 +389,7 @@ export class Orchestrator {
       main_model_id: opts.mainModelId,
       execution_policy: opts.executionPolicy?.level || opts.executionPolicy?.whitelist_commands ? { level: opts.executionPolicy!.level || 'approve_required', whitelist_commands: opts.executionPolicy!.whitelist_commands } : undefined,
       node_clarify: opts.nodeClarify,
+      self_ref: opts.selfRef,
     });
     return { graph: planned, level: opts.level };
   }
@@ -675,7 +684,24 @@ export class Orchestrator {
     for (const node of graph.nodes) {
       if (node.status !== 'completed' && node.status !== 'cancelled') node.status = 'pending';
     }
-    graph.workspace = workspace;
+    // 自指任务物理隔离：在 projects.selfdev_root/<taskId> 的本地克隆中执行，
+    // co-team 主副本的 HEAD/分支/工作树零触碰；成果留在克隆里由人审阅并回
+    let execWorkspace = workspace;
+    if (graph.self_ref && this.projects) {
+      try {
+        execWorkspace = await prepareSelfdevClone(taskId, this.projects.selfdev_root, PROJECT_ROOT);
+        graph.selfdev_path = execWorkspace;
+        this.logger.info('self-ref task isolated in local clone', { taskId, clone: execWorkspace });
+      } catch (e) {
+        const msg = `自指任务隔离克隆失败: ${String((e as Error)?.message || e)}`;
+        this.logger.error(msg, { taskId });
+        graph.status = 'failed';
+        await persistGraph(graph);
+        await emitProgress('execute_failed', { task_id: taskId, completed: 0, total: graph.nodes.length, status: 'failed', error: msg });
+        return { status: 'error', message: msg };
+      }
+    }
+    graph.workspace = execWorkspace;
     graph.status = 'running';
     await persistGraph(graph);
     await emitProgress('execute_start', { task_id: taskId, workspace, total_nodes: graph.nodes.length });
@@ -1018,6 +1044,7 @@ export class Orchestrator {
 
   /** Is this task pointing at the co-team codebase itself? */
   private isSelfRef(graph: TaskGraph): boolean {
+    if (graph.self_ref === true) return true;
     try {
       const ws = path.resolve(graph.workspace || '');
       return ws.toLowerCase() === PROJECT_ROOT.toLowerCase();
@@ -2386,14 +2413,21 @@ export class Orchestrator {
   private async gitCommit(taskId: string, workspace: string, changes: string[], message?: string): Promise<{ branch: string; commit: string | null } | null> {
     if (!(await gitTool.isGitRepo(workspace))) return null;
     const branch = `coteam/task-${taskId}`;
-    const branches = await simpleGit({ baseDir: workspace }).branchLocal().catch(() => null);
+    const g = simpleGit({ baseDir: workspace });
+    const branches = await g.branchLocal().catch(() => null);
     if (!branches) return null;
+    // remember where the user's working copy was: checkoutLocalBranch switches HEAD, and
+    // leaving it on the task branch silently absorbed later human/agent commits (2026-09-08)
+    const original = branches.current || (await g.revparse(['--abbrev-ref', 'HEAD']).catch(() => '')) || '';
     if (!branches.all.includes(branch)) {
-      try { await simpleGit({ baseDir: workspace }).checkoutLocalBranch(branch); } catch { return null; }
+      try { await g.checkoutLocalBranch(branch); } catch { return null; }
     } else {
-      try { await simpleGit({ baseDir: workspace }).checkout(branch); } catch { return null; }
+      try { await g.checkout(branch); } catch { return null; }
     }
     const commit = await gitTool.commitOnBranch(workspace, message || `coteam: task ${taskId} auto-commit`, changes);
+    if (original && original !== branch) {
+      await g.checkout(original).catch((e) => this.logger.warn('gitCommit: failed to restore HEAD', { workspace, original, error: String(e) }));
+    }
     return { branch, commit };
   }
 

@@ -314,7 +314,7 @@ export const api = {
   replan: (id: string, feedback: string) => post(`/api/tasks/${id}/replan`, { feedback }),
   interveneTask: (id: string, message: string) =>
     post<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${id}/intervene`, { message }),
-  createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string; profile?: 'simple' | 'expert' }) =>
+  createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string; profile?: 'simple' | 'expert'; allow_self_ref?: boolean }) =>
     post<{ status: 'created' | 'needs_clarification' | 'pending'; task_id: string; questions?: string[]; summary?: string; graph?: TaskGraph }>('/api/tasks', payload.profile === 'simple'
       ? { ...payload, auto_run: true, plan_async: true, skip_clarification: true }
       : { ...payload, auto_run: false, plan_async: true }),
@@ -342,8 +342,9 @@ export const api = {
   // ---------- projects ----------
   listProjects: () => request<{ projects: ProjectSummary[] }>('/api/projects'),
   getProject: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
-  createProject: (payload: { name: string; workspace: string; description?: string }) =>
+  createProject: (payload: { name: string; workspace?: string; description?: string; scaffold?: boolean; allow_self_ref?: boolean }) =>
     post<{ status: string; project_id: string }>('/api/projects', payload),
+  projectsRoot: () => request<{ root: string; selfdev_root: string }>('/api/projects/root'),
   listProjectTasks: async (projectId: string, page = 1, pageSize = 50): Promise<{ tasks: TaskGraph[]; total: number; page: number; pageSize: number }> => {
     const sp = new URLSearchParams({ page: String(page), pageSize: String(pageSize), project_id: projectId });
     const d = await request<{ tasks: Record<string, any>[]; total: number; page: number; pageSize: number }>(`/api/tasks?${sp}`);

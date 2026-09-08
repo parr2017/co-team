@@ -86,7 +86,8 @@ knowledge:
 #   encrypt_key: ""
 permissions:
   # 命令执行分级：plan_only（只出方案不写代码）/ readonly（只读）/
-  # approve_required（白名单外命令需人工审批，默认）/ whitelist_auto（白名单自动，其余拒绝）/ full（完全控制）
+  # approve_required（白名单外命令需人工审批，默认）/ whitelist_auto（白名单自动，其余拒绝）/
+  # full（项目目录内完全控制——目录监狱对所有级别生效：命令中的越界绝对路径/`..` 一律拒绝）
   level: approve_required
   whitelist_commands:
     - python
@@ -106,6 +107,11 @@ permissions:
 daily_report:
   enabled: false
   hour: 9
+# 项目治理：项目拥有独立目录+独立 git 仓库；任务 workspace 落在其他仓库（含 co-team）
+# 工作树内会被拒绝；自指任务（co-team 开发 co-team）在 selfdev_root 的本地克隆中隔离执行
+projects:
+  root: ./../projects        # 缺省 = co-team 仓库同级的 projects 目录；新建项目默认 <root>/<项目名slug>
+  # selfdev_root: <root>/co-team-selfdev   # 缺省即如此，可覆盖
 redis:
   db: 0
   host: 127.0.0.1

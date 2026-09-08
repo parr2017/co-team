@@ -59,45 +59,31 @@
         </el-select>
         <span class="opt-hint">每个步骤实施前先给简报，经你确认再动手</span>
       </div>
+      <div class="opt">
+        <el-checkbox v-model="allowSelfRef">自指任务（co-team 开发 co-team）</el-checkbox>
+        <span class="opt-hint">工作区在 co-team 内时必勾：任务在隔离克隆中执行，不碰主副本</span>
+      </div>
     </div>
     <div class="form-hint">{{ hint }}</div>
 
-    <el-dialog v-model="pickerVisible" title="选择工作目录" width="620px">
-      <div class="fs-path">
-        <el-input v-model="fsInput" placeholder="输入路径后回车直接跳转" @keydown.enter="loadFs(fsInput)" />
-        <el-button @click="loadFs(listing?.parent || '')">上级</el-button>
-        <el-button @click="loadFs('')">根</el-button>
-      </div>
-      <div class="fs-list">
-        <div v-if="!listing" class="fs-empty">加载中...</div>
-        <template v-else>
-          <div v-for="s in listing.shortcuts" :key="s.path" class="fs-row shortcut" @click="loadFs(s.path)"><span class="fs-ico">⌂</span> {{ s.name }} <span class="fs-sub">{{ s.path }}</span></div>
-          <div v-if="!listing.dirs.length && !listing.shortcuts.length" class="fs-empty">空目录</div>
-          <div v-for="d in listing.dirs" :key="d.path" class="fs-row" @click="loadFs(d.path)"><span class="fs-ico">▸</span> {{ d.name }}</div>
-        </template>
-      </div>
-      <template #footer>
-        <el-button @click="pickerVisible = false">取消</el-button>
-        <el-button type="primary" @click="pick">选择当前目录</el-button>
-      </template>
-    </el-dialog>
+    <DirPickerDialog v-model:show="pickerVisible" :start-path="workspace" @pick="workspace = $event" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { api, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type FsListing } from '../api';
+import { api, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS } from '../api';
 import { useDashboard } from '../composables/useDashboard';
+import DirPickerDialog from './DirPickerDialog.vue';
 
 const description = ref('');
 const workspace = ref('');
 const submitting = ref(false);
 const hint = ref('');
 const pickerVisible = ref(false);
+const allowSelfRef = ref(false);
 const emit = defineEmits<{ (e: 'planned', taskId: string): void; (e: 'needs-clarify', taskId: string, questions: string[], summary?: string): void }>();
-const listing = ref<FsListing | null>(null);
-const fsInput = ref('');
 
 // live stage feedback while the (synchronous) create request is in flight
 const { createStage } = useDashboard();
@@ -138,35 +124,8 @@ onMounted(() => void loadModels());
 
 const ABSOLUTE = /^[a-zA-Z]:[\\/]/;
 
-async function loadFs(path: string) {
-  try {
-    listing.value = await api.fsList(path || '');
-    fsInput.value = listing.value.path || '';
-  } catch (e: any) {
-    ElMessage.error(e.message);
-  }
-}
-
 function openPicker() {
-  const cur = workspace.value.trim();
-  const isAbsolute = /^[a-zA-Z]:[\\/]/.test(cur) || cur.startsWith('/');
   pickerVisible.value = true;
-  void loadFs(cur && isAbsolute ? cur : '');
-}
-
-function fsGo(path: string) {
-  void loadFs(path);
-}
-
-function fsUp() {
-  if (!listing.value?.path) return;
-  const trimmed = listing.value.path.replace(/[\\/][^\\/]+[\\/]?$/, '');
-  void loadFs(trimmed);
-}
-
-function pick() {
-  if (listing.value?.path) workspace.value = listing.value.path;
-  pickerVisible.value = false;
 }
 
 async function submit() {
@@ -189,6 +148,7 @@ async function submit() {
       executionPolicy: policy.value ? { level: policy.value } : undefined,
       nodeClarify: nodeClarify.value === 'off' ? undefined : nodeClarify.value,
       profile: simpleMode.value ? 'simple' : undefined,
+      allowSelfRef: allowSelfRef.value || undefined,
     });
     if (d.status === 'needs_clarification') {
       hint.value = `[?] 需求不够清晰，请回答澄清问题: ${d.task_id}`;
@@ -226,13 +186,4 @@ async function submit() {
 .model-opt .dot.off { background: var(--ct-red); }
 .model-hint { font-size: 10px; color: var(--ct-text3); }
 .form-hint { font-size: 12px; color: var(--ct-text3); margin-top: 8px; min-height: 16px; }
-.fs-path { display: flex; gap: 8px; margin-bottom: 12px; }
-.fs-list { max-height: 320px; overflow-y: auto; background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 8px; }
-.fs-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--el-border-color); cursor: pointer; font-size: 13px; }
-.fs-row:hover { background: var(--ct-panel2); }
-.fs-row.shortcut { color: var(--ct-text2); }
-.fs-ico { color: var(--ct-text3); flex-shrink: 0; }
-.fs-row .fs-sub { margin-left: 0; }
-.fs-sub { color: var(--ct-text3); font-size: 11px; }
-.fs-empty { padding: 24px; text-align: center; color: var(--ct-text3); font-size: 12px; }
 </style>

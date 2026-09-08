@@ -55,6 +55,13 @@ export interface AppConfig {
   };
   /** custom grading keywords (improvement 7 / R6), appended to built-in rules */
   grading?: { heavy?: string[]; light?: string[] };
+  /** 项目治理：所有项目拥有独立目录 + 独立 git 仓库，任务操作被限制在项目目录内 */
+  projects?: {
+    /** 项目根目录；新建项目缺省工作区 = <root>/<slug(name)> */
+    root: string;
+    /** 自指任务（用 co-team 开发 co-team）的隔离克隆根目录 = <selfdev_root>/<taskId> */
+    selfdev_root: string;
+  };
   /** feature: 每日问题报告 — disabled by default; only reports when explicitly enabled */
   daily_report?: { enabled: boolean; hour: number };
   /** feishu bot (event subscription mode); secrets come from COTEAM_FEISHU_* env vars */
@@ -114,6 +121,13 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       stale_days: raw.knowledge?.stale_days ?? 90,
     },
     grading: raw.grading || undefined,
+    // 项目治理：默认项目根 = co-team 仓库同级的 projects 目录（config.yaml 可覆盖）
+    projects: {
+      root: path.isAbsolute(raw.projects?.root || '') ? raw.projects.root : path.resolve(root, '..', raw.projects?.root || 'projects'),
+      selfdev_root: path.isAbsolute(raw.projects?.selfdev_root || '')
+        ? raw.projects.selfdev_root
+        : path.join(path.isAbsolute(raw.projects?.root || '') ? raw.projects.root : path.resolve(root, '..', raw.projects?.root || 'projects'), 'co-team-selfdev'),
+    },
     daily_report: {
       // feature: 每日问题报告 — 默认关闭，界面开关打开后才会触发
       enabled: raw.daily_report?.enabled === true,

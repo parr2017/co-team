@@ -11,7 +11,7 @@ export async function saveTaskGraph(
   edges: [string, string][],
   meta?: {
     description?: string; workspace?: string; status?: string; project_id?: string; level?: TaskLevel; main_model_id?: string;
-    execution_policy?: { level: string; whitelist_commands?: string[] }; node_clarify?: string;
+    execution_policy?: { level: string; whitelist_commands?: string[] }; node_clarify?: string; self_ref?: boolean;
   }
 ): Promise<void> {
   const existing = await getTaskGraph(taskId);
@@ -27,6 +27,7 @@ export async function saveTaskGraph(
     main_model_id: meta?.main_model_id ?? existing?.main_model_id ?? undefined,
     execution_policy: meta?.execution_policy ?? existing?.execution_policy ?? undefined,
     node_clarify: (meta?.node_clarify as TaskGraph['node_clarify']) ?? existing?.node_clarify ?? undefined,
+    self_ref: meta?.self_ref ?? existing?.self_ref ?? undefined,
     created_at: existing?.created_at ?? new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

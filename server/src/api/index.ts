@@ -14,10 +14,12 @@ import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
 import { mergeTaskBranch } from '../git';
 import { DiscussionError } from '../discussion';
+import { WorkspaceError, assertStandaloneWorkspace, slugifyProjectName, prepareSelfdevClone, removeSelfdev } from '../workspace';
 import { getDocRegistry } from '../ssot';
 import { listFiles, readFile } from '../tools';
 import { isIgnoredRelPath } from '../sandbox';
 import type { AppConfig, OrchestrationConfig } from '../config';
+import { PROJECT_ROOT } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
 import type { FeishuHandler } from '../feishu/webhook';
 import { getLogger } from '../logger';
@@ -80,8 +82,8 @@ export function createApi(ctx: ApiContext): Hono {
   // a time, different projects run concurrently, failures block the lane until resumed
 
   app.onError((err, c) => {
-    // DiscussionError carries its own HTTP status (409 busy / 400 validation / ...)
-    const status = err instanceof HttpError || err instanceof DiscussionError ? err.status : 500;
+    // DiscussionError/WorkspaceError carry their own HTTP status (409 busy / 400 validation / ...)
+    const status = err instanceof HttpError || err instanceof DiscussionError || err instanceof WorkspaceError ? err.status : 500;
     logger.error('API error', { error: err.message, status, stack: err.stack });
     return c.json({ detail: err.message }, status as any);
   });
@@ -106,10 +108,21 @@ export function createApi(ctx: ApiContext): Hono {
 
   // ---------- projects ----------
 
+  /** 项目治理：根目录 + slug 建议，供双端 UI 预填 */
+  app.get('/api/projects/root', async (c) => {
+    const p = ctx.config.projects;
+    return c.json({ root: p?.root || path.resolve(PROJECT_ROOT, '..', 'projects'), selfdev_root: p?.selfdev_root || '' });
+  });
+
   app.post('/api/projects', async (c) => {
-    const body = await readJsonAuto<{ name?: string; workspace?: string; description?: string; scaffold?: boolean }>(c);
-    if (!body.name || !body.workspace) throw new HttpError(400, 'name and workspace are required');
-    const workspace = validateWorkspace(body.workspace);
+    const body = await readJsonAuto<{ name?: string; workspace?: string; description?: string; scaffold?: boolean; allow_self_ref?: boolean }>(c);
+    if (!body.name) throw new HttpError(400, 'name is required');
+    // 缺省工作区 = projects.root/<slug(name)>：项目天然拥有独立目录
+    const rawWs = (body.workspace || '').trim() || path.join(ctx.config.projects?.root || path.resolve(PROJECT_ROOT, '..', 'projects'), slugifyProjectName(body.name));
+    const workspace = await assertStandaloneWorkspace(validateWorkspace(rawWs), {
+      allowSelfRef: body.allow_self_ref === true,
+      projectRoot: PROJECT_ROOT,
+    });
     const id = Math.random().toString(36).slice(2, 10);
     const { saveProject } = await import('../store');
     await saveProject({ id, name: body.name, workspace, description: body.description, created_at: new Date().toISOString() });
@@ -178,10 +191,15 @@ export function createApi(ctx: ApiContext): Hono {
       execution_policy?: { level?: string; whitelist_commands?: string[] }; node_clarify?: string;
       profile?: 'simple' | 'expert';
       fix_for?: { task_id?: string; node_id?: string };
+      allow_self_ref?: boolean;
     }>(c);
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
-    const workspace = validateWorkspace(body.workspace || '');
+    // 任务工作区同样受治理：不得落在 co-team 仓库内（除非显式自指），不得嵌套在其他仓库
+    const workspace = await assertStandaloneWorkspace(validateWorkspace(body.workspace || ''), {
+      allowSelfRef: body.allow_self_ref === true,
+      projectRoot: PROJECT_ROOT,
+    });
     // A4 模式档位: simple mode bundles completion-first defaults so non-experts just
     // submit a description — clarification skipped, no per-node brief gate, safe
     // whitelist auto-exec, auto-run after planning.
@@ -209,6 +227,7 @@ export function createApi(ctx: ApiContext): Hono {
       nodeClarify: (body.node_clarify ?? (simpleMode ? 'off' : undefined)) as any,
       planAsync: body.plan_async === true,
       skipClarification: simpleMode || body.skip_clarification === true,
+      allowSelfRef: body.allow_self_ref === true,
     });
 
     // P0-2: defect-fix backlink — a task created to fix a defect links to its source node
@@ -453,7 +472,8 @@ export function createApi(ctx: ApiContext): Hono {
     const approvals = (await busGet<string[]>(`task:approvals:${taskId}`)) || [];
     if (!approvals.includes(nodeId)) approvals.push(nodeId);
     await busSet(`task:approvals:${taskId}`, approvals);
-    const ws = graph.workspace || '.';
+    // 空 workspace 不再兜底成 '.'（服务进程 CWD=co-team，会把任务 git 操作落进自身仓库）
+    const ws = validateWorkspace(graph.workspace || '');
     await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, ws);
     return c.json({ status: 'approved', task_id: taskId, node_id: nodeId });
   });
@@ -467,7 +487,7 @@ export function createApi(ctx: ApiContext): Hono {
       const result = await ctx.orchestrator.clarifyNode(taskId, nodeId, body);
       const graph = await getTaskGraph(taskId);
       if (result.status === 'pending' && graph) {
-        await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, graph.workspace || '.');
+        await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, validateWorkspace(graph.workspace || ''));
       }
       return c.json({ task_id: taskId, node_id: nodeId, ...result });
     } catch (e: any) {
@@ -604,6 +624,16 @@ export function createApi(ctx: ApiContext): Hono {
     await busDel(`task:goal:${taskId}`);
     await busDel(`ssot:docs:${taskId}`);
     return c.json({ status: 'deleted', task_id: taskId });
+  });
+
+  // 自指任务的隔离克隆：任务删除后由人显式清理（保留期内可审阅/并回成果）
+  app.delete('/api/tasks/:taskId/selfdev', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    if (!graph.selfdev_path) throw new HttpError(400, '该任务没有隔离克隆');
+    removeSelfdev(graph.selfdev_path);
+    return c.json({ status: 'removed', path: graph.selfdev_path });
   });
 
   app.get('/api/tasks', async (c) => {
@@ -980,6 +1010,9 @@ export function createApi(ctx: ApiContext): Hono {
     }>(c);
     const target = body.target === 'new' || body.target === 'existing' ? body.target : null;
     if (!target) throw new HttpError(400, "target must be 'new' | 'existing'");
+    if (target === 'new' && body.workspace) {
+      await assertStandaloneWorkspace(validateWorkspace(body.workspace), { allowSelfRef: false, projectRoot: PROJECT_ROOT });
+    }
     const result = await convertToProject(discDeps(), c.req.param('id'), { ...body, target }, validateWorkspace);
     return c.json({ status: 'converted', ...result });
   });

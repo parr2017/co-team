@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { canExecute, executeCommand, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
+import { assertWithinJail, jailViolationMessage } from './workspace';
 import { writeKnowledge } from './knowledge';
 import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
 import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agentMessages';
@@ -252,6 +253,11 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
 
   const commandResults: CommandResult[] = (output.commands || []).map((c: string) => {
     const command = String(c);
+    // 目录监狱预检：越界命令直接拒绝，不进待审批队列（人不应被要求批准越狱操作）
+    const jail = assertWithinJail(command, workspace);
+    if (!jail.ok) {
+      return { command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, workspace) };
+    }
     if (policy.level === 'full' || canExecute(policy, command)) return executeCommand(command, workspace, policy);
     if (policy.level === 'approve_required') {
       // park the command for human approval — the orchestrator blocks node completion on it

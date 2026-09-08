@@ -116,6 +116,7 @@ async function main(): Promise<void> {
     modelWaitTimeoutSec: config.orchestrator.model_wait_timeout_sec,
     nodeClarify: config.orchestrator.node_clarify,
     selfModGate: config.orchestrator.self_mod_gate,
+    projects: config.projects,
   });
 
   await orchestrator.loadAgents();
@@ -131,6 +132,13 @@ async function main(): Promise<void> {
   // 群组讨论：上一进程死在轮次中会遗留 busy/stop 锁（无属主，TTL 内会卡住讨论）——启动即清
   const { clearStaleDiscussionLocks } = await import('./discussion');
   await clearStaleDiscussionLocks(logger);
+
+  // 任务 git 落点治理：上一进程把项目仓库 HEAD 切到 coteam/task-* 后未回切的，启动时清扫
+  // （分支无独有提交才回切；有独有提交保留并告警，绝不自动丢人工作）
+  const { restoreStaleTaskHeads } = await import('./workspace');
+  const heads = await restoreStaleTaskHeads(logger);
+  if (heads.restored.length) logger.info('Startup sweep: stale task HEADs restored', { restored: heads.restored });
+  if (heads.held.length) logger.warn('Startup sweep: task branches with unmerged commits held', { held: heads.held });
 
   // improvement 7 (R6): project-specific grading keywords from config.yaml
   if (config.grading) {

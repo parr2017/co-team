@@ -14,6 +14,14 @@
 - 提交信息沿用中文 conventional commit 风格（`feat:` / `fix:` / `docs:`）。
 - 改动涉及 orchestrator/harness/deliverable/api 等核心文件时，提交前跑全量测试与三端构建。
 
+## 任务 git 落点与目录边界（2026-09-08 治理）
+
+- 项目必须拥有**独立目录 + 独立 git 仓库**：新建项目缺省落在 `projects.root`（配置，缺省 `D:\pxx\projects`）下的 `<项目名slug>` 目录并自动 git init；workspace 位于其他仓库（含 co-team 自身）工作树内会被 API 拒绝（400）。
+- **自指任务**（用 co-team 开发 co-team）必须显式 `allow_self_ref`，执行被隔离到 `projects.selfdev_root/<taskId>` 的本地克隆，co-team 主副本的 HEAD/分支/工作树零触碰；成果留在克隆里由人审阅并回。
+- **目录监狱**：任务命令中出现的越界绝对路径 / `..` 逃逸一律拒绝执行（所有权限级别生效，`full` 仅指目录内完全控制）；产物与日志一律写项目目录内。
+- `gitCommit` 在任务分支提交后必须回切原 HEAD；服务启动时 `restoreStaleTaskHeads` 清扫遗留 HEAD（有独有提交则保留告警）。
+- 存量清理脚本：`scripts/cleanup-workspace-legacy.mjs`（dry-run 默认，`--apply` 执行）。
+
 ## 其他约定
 
 - 开发/测试/构建遵循 `DEVELOPMENT_STYLE.md` 与 CONTRIBUTING.md。

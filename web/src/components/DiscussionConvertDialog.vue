@@ -13,7 +13,11 @@
           <el-input v-model="name" :placeholder="disc?.title || '例如：会员系统'" />
         </el-form-item>
         <el-form-item label="工作区路径">
-          <el-input v-model="workspace" placeholder="绝对路径，例如 D:\projects\member-system" />
+          <el-input v-model="workspace" placeholder="绝对路径，例如 D:\projects\member-system" style="width: 100%">
+            <template #append>
+              <el-button @click="dirPickerVisible = true">选择目录</el-button>
+            </template>
+          </el-input>
         </el-form-item>
         <el-form-item label="初始化">
           <el-checkbox v-model="scaffold">标准脚手架（docs/src/tests/config + 文档 + git）</el-checkbox>
@@ -39,6 +43,8 @@
       <el-button size="small" @click="visible = false">取消</el-button>
       <el-button size="small" type="primary" :loading="busy" @click="doConvert">转为项目开发</el-button>
     </template>
+
+    <DirPickerDialog v-model:show="dirPickerVisible" :start-path="workspace" title="选择工作区目录" @pick="workspace = $event" />
   </el-dialog>
 </template>
 
@@ -47,6 +53,7 @@ import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { api, type ProjectSummary } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
+import DirPickerDialog from './DirPickerDialog.vue';
 
 const props = defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'converted', payload: { project_id: string; task_id: string }): void }>();
@@ -62,7 +69,9 @@ const scaffold = ref(true);
 const projectId = ref('');
 const autoRun = ref(false);
 const busy = ref(false);
+const dirPickerVisible = ref(false);
 const projects = ref<ProjectSummary[]>([]);
+const projectsRootPath = ref('');
 
 watch(visible, async (v) => {
   if (v && !projects.value.length) {
@@ -75,6 +84,14 @@ watch(visible, async (v) => {
     projectId.value = disc.value.project_id;
   }
   if (v && !name.value && disc.value) name.value = disc.value.title;
+  // 新建项目：预填 <projects.root>/<方案标题 slug>，用户可改
+  if (v && !workspace.value && !projectsRootPath.value) {
+    try {
+      projectsRootPath.value = (await api.projectsRoot()).root;
+      const slug = (disc.value?.title || '').trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project';
+      workspace.value = `${projectsRootPath.value.replace(/[\\/]$/, '')}\\${slug}`;
+    } catch { /* 拿不到就手填 */ }
+  }
 });
 
 async function doConvert() {

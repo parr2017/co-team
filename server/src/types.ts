@@ -152,6 +152,10 @@ export interface TaskGraph {
   node_clarify?: ClarifyMode;
   /** sandbox dir the task is (or was) executing in — powers the live output view (A1) */
   sandbox_path?: string;
+  /** 自指任务（用 co-team 开发 co-team）：执行被隔离到 projects.selfdev_root 的本地克隆 */
+  self_ref?: boolean;
+  /** 隔离克隆的实际工作目录（execute 时写入；主副本零触碰） */
+  selfdev_path?: string;
   /** P0-2 backlink: this task was created to fix a defect found in task_id/node_id */
   fix_for?: { task_id: string; node_id: string };
 }

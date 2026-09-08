@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
+import { assertWithinJail, jailViolationMessage } from './workspace';
 
 /** Command execution levels (feature: 命令执行分级), from most to least restrictive. */
 export type PermissionLevel = 'plan_only' | 'readonly' | 'approve_required' | 'whitelist_auto' | 'full';
@@ -133,6 +134,11 @@ export function executeCommand(command: string, cwd: string, policy: PermissionP
   if (!canExecute(policy, command)) {
     return { command, allowed: false, returncode: -1, stdout: '', stderr: 'command not in whitelist' };
   }
+  // 目录监狱：命令里的绝对路径/`..` 逃逸一律拒绝——与权限级别无关（full = 目录内完全控制）
+  const jail = assertWithinJail(command, cwd);
+  if (!jail.ok) {
+    return { command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, cwd) };
+  }
   const timeout = (timeoutSec ?? policy.maxTimeSec) * 1000;
   try {
     const proc = spawnSync(command, {
@@ -172,6 +178,12 @@ export function executeCommandAsync(
   return new Promise((resolve) => {
     if (!canExecute(policy, command)) {
       resolve({ command, allowed: false, returncode: -1, stdout: '', stderr: 'command not in whitelist' });
+      return;
+    }
+    // 目录监狱（同 executeCommand）：越界命令不执行
+    const jail = assertWithinJail(command, cwd);
+    if (!jail.ok) {
+      resolve({ command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, cwd) });
       return;
     }
 

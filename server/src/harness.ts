@@ -97,6 +97,7 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     'Agent 间留言（必要时）：需要提醒/询问其他 Agent、主 Agent 或用户时发送留言，收件方在它下次执行时会收到:',
     ' {"tool_calls":[{"tool":"send_message","to":"agent名|orchestrator|user","text":"留言内容（≤2000字）"}]}',
     '工具纪律：write_doc/send_message 的产出不计入 changes；实现了接口就必须同步 write_doc 更新 API_CONTRACT，下游节点以文档为准。',
+    '目录边界（强制）：一切文件与命令只允许作用于项目工作目录内——命令中出现工作目录之外的绝对路径或 `..` 逃逸会被系统直接拒绝执行；产物与日志一律写项目目录内的相对路径。',
     `轮次预算：当前第 ${round + 1}/${maxRounds} 轮，剩余 ${roundsLeft} 轮工具调用机会。${roundsLeft <= 1 ? '这是最后的侦查机会——本轮结束必须给出最终 JSON 结果。' : '合理规划：先侦查后执行，避免无目的的重复读取。'}`,
   ].join('\n');
 

@@ -423,7 +423,7 @@ export const PERMISSION_LEVEL_LABELS: Record<string, string> = {
   readonly: '只读',
   approve_required: '改动需审批',
   whitelist_auto: '白名单自动',
-  full: '完全控制',
+  full: '目录内完全控制',
 };
 
 /** 群组沟通：多 agent + 用户的自主讨论 → 方案 → 转项目（服务端 discussion.ts 的镜像） */
@@ -477,7 +477,7 @@ export const api = {
     workspace: string,
     autoRun = true,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string }; nodeClarify?: string; profile?: 'simple' | 'expert' }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string }; nodeClarify?: string; profile?: 'simple' | 'expert'; allowSelfRef?: boolean }
   ) =>
     request<{ task_id: string; status?: string; questions?: string[]; summary?: string; level?: string; graph?: TaskGraph }>('/api/tasks', {
       method: 'POST',
@@ -492,6 +492,7 @@ export const api = {
         execution_policy: opts?.executionPolicy,
         node_clarify: opts?.nodeClarify,
         profile: opts?.profile,
+        allow_self_ref: opts?.allowSelfRef,
       }),
     }),
   clarifyTask: (id: string, payload: { answers?: ClarifyAnswer[]; confirm?: boolean; text?: string }) =>
@@ -556,8 +557,9 @@ export const api = {
   nodeDiff: (taskId: string, nodeId: string) =>
     request<NodeDiffResponse>(`/api/tasks/${taskId}/nodes/${nodeId}/diff`),
   roadmap: () => request<{ content: string; updated_at: string }>('/api/system/roadmap'),
-  createProject: (name: string, workspace: string, description?: string, scaffold = false) =>
-    request<{ project_id: string; scaffold?: { dirs: string[]; files: string[]; git_initialized: boolean } | null }>('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, workspace, description, scaffold }) }),
+  createProject: (payload: { name: string; workspace?: string; description?: string; scaffold?: boolean; allow_self_ref?: boolean }) =>
+    request<{ project_id: string; scaffold?: { dirs: string[]; files: string[]; git_initialized: boolean } | null }>('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  projectsRoot: () => request<{ root: string; selfdev_root: string }>('/api/projects/root'),
   listProjects: () => request<{ projects: ProjectSummary[] }>('/api/projects'),
   getProject: (id: string) => request<ProjectDetail & { id: string }>(`/api/projects/${id}`),
   addProjectMemory: (id: string, text: string) =>

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import { showToast } from 'vant';
 import { api } from '../api';
 import type { ProjectSummary } from '../api';
+import DirPicker from '../components/DirPicker.vue';
 
 defineOptions({ name: 'ProjectsView' });
 
@@ -38,25 +39,42 @@ function open(p: ProjectSummary) {
 // ---------- 新建项目（POST /api/projects） ----------
 
 const showCreate = ref(false);
+const showDir = ref(false);
 const creating = ref(false);
-const form = ref({ name: '', workspace: '', description: '' });
+const projectsRootPath = ref('');
+let wsTouched: boolean = false;
+const form = ref({ name: '', workspace: '', description: '', allow_self_ref: false });
 
-function openCreate() {
-  form.value = { name: '', workspace: '', description: '' };
+function prefillWorkspace() {
+  if (wsTouched || !projectsRootPath.value) return;
+  const slug = (form.value.name || '').trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project';
+  form.value.workspace = `${projectsRootPath.value.replace(/[\\/]$/, '')}\\${slug}`;
+}
+function markWorkspaceTouched() {
+  wsTouched = true;
+}
+
+async function openCreate() {
+  wsTouched = false;
+  form.value = { name: '', workspace: '', description: '', allow_self_ref: false };
   showCreate.value = true;
+  if (!projectsRootPath.value) {
+    try { projectsRootPath.value = (await api.projectsRoot()).root; } catch { /* 拿不到就手填 */ }
+  }
 }
 
 async function submitCreate() {
-  if (!form.value.name.trim() || !form.value.workspace.trim()) {
-    showToast('请填写项目名称和工作区路径');
+  if (!form.value.name.trim()) {
+    showToast('请填写项目名称');
     return;
   }
   creating.value = true;
   try {
     await api.createProject({
       name: form.value.name.trim(),
-      workspace: form.value.workspace.trim(),
+      workspace: form.value.workspace.trim() || undefined,
       description: form.value.description.trim() || undefined,
+      allow_self_ref: form.value.allow_self_ref || undefined,
     });
     showCreate.value = false;
     showToast('项目已创建');
@@ -127,18 +145,31 @@ async function submitCreate() {
 
     <van-popup v-model:show="showCreate" position="bottom" round class="create-pop" :style="{ background: 'var(--panel)' }">
       <div class="create-head">新建项目</div>
-      <van-field v-model="form.name" label="名称" placeholder="如 accountapp" class="create-field" />
-      <van-field v-model="form.workspace" label="工作区" placeholder="如 D:\pxx\my-app" class="create-field" />
+      <van-field v-model="form.name" label="名称" placeholder="如 accountapp" class="create-field" @update:model-value="prefillWorkspace" />
+      <van-field v-model="form.workspace" label="工作区" placeholder="留空 = 项目根目录下自动建独立目录" class="create-field" @update:model-value="markWorkspaceTouched">
+        <template #button><span class="pick-dir" @click="showDir = true">选择</span></template>
+      </van-field>
+      <div v-if="projectsRootPath" class="ws-hint">项目根：{{ projectsRootPath }}（独立目录+独立仓库，任务操作仅限该目录）</div>
+      <van-field label="自指任务" class="create-field">
+        <template #input>
+          <van-switch v-model="form.allow_self_ref" size="18" />
+          <span class="self-ref-hint">允许工作区在 co-team 内（隔离克隆执行）</span>
+        </template>
+      </van-field>
       <van-field v-model="form.description" label="描述" type="textarea" rows="2" autosize placeholder="一句话说明项目用途（可选）" class="create-field" />
       <div class="create-actions">
         <van-button size="small" plain @click="showCreate = false">取消</van-button>
         <van-button size="small" type="primary" :loading="creating" @click="submitCreate">创建</van-button>
       </div>
     </van-popup>
+
+    <DirPicker v-model:show="showDir" title="选择工作区目录" @pick="form.workspace = $event" />
   </div>
 </template>
 
 <style scoped>
+.ws-hint { font-size: 10px; color: var(--text-3); padding: 2px 16px 8px; }
+.self-ref-hint { font-size: 11px; color: var(--text-3); margin-left: 8px; }
 .page { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 .pull-wrap { flex: 1; min-height: 0; overflow: hidden; }
 .pull { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
@@ -184,5 +215,6 @@ async function submitCreate() {
 
 .create-head { padding: 16px 16px 6px; font-size: 16px; font-weight: 600; color: var(--text); }
 .create-field { background: transparent; }
+.pick-dir { font-size: 13px; color: var(--accent); padding: 2px 8px; border: 1px solid var(--panel-2); border-radius: 4px; background: var(--panel-2); }
 .create-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); }
 </style>

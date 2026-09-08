@@ -7,6 +7,7 @@ import { api } from '../api';
 import type { ProjectSummary, DiscussionMessage } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
 import AgentAvatar from '../components/AgentAvatar.vue';
+import DirPicker from '../components/DirPicker.vue';
 
 defineOptions({ name: 'DiscussionDetailView' });
 
@@ -149,6 +150,7 @@ async function saveEdit() {
 // ---------- 转项目弹层 ----------
 const showConvert = ref(false);
 const showCvProject = ref(false);
+const showCvDir = ref(false);
 const converting = ref(false);
 const projects = ref<ProjectSummary[]>([]);
 const cv = ref({ target: 'new' as 'new' | 'existing', name: '', workspace: '', scaffold: true, project_id: '', auto_run: false });
@@ -156,6 +158,14 @@ async function openConvert() {
   const bound = current.value?.project_id || '';
   cv.value = { target: bound ? 'existing' : 'new', name: current.value?.title || '', workspace: '', scaffold: true, project_id: bound, auto_run: false };
   try { projects.value = (await api.listProjects()).projects || []; } catch { /* ignore */ }
+  // 新建项目：预填 <projects.root>/<标题 slug>，用户可改
+  if (!bound) {
+    try {
+      const r = await api.projectsRoot();
+      const slug = (current.value?.title || '').trim().replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project';
+      cv.value.workspace = `${(r.root || '').replace(/[\\/]$/, '')}\\${slug}`;
+    } catch { /* 拿不到就手填 */ }
+  }
   showConvert.value = true;
 }
 async function doConvert() {
@@ -287,7 +297,9 @@ const showExp = ref(false);
         </van-radio-group>
         <template v-if="cv.target === 'new'">
           <van-field v-model="cv.name" label="项目名称" placeholder="例如：会员系统" />
-          <van-field v-model="cv.workspace" label="工作区" placeholder="绝对路径，如 D:\projects\member" />
+          <van-field v-model="cv.workspace" label="工作区" placeholder="绝对路径，或点「选择」浏览">
+            <template #button><span class="pick-dir" @click="showCvDir = true">选择</span></template>
+          </van-field>
           <van-field label="初始化"><template #input><van-checkbox v-model="cv.scaffold">标准脚手架（目录+文档+git）</van-checkbox></template></van-field>
         </template>
         <van-field v-else label="项目" readonly is-link :model-value="projects.find(p => p.id === cv.project_id)?.name || '选择项目'" @click="showCvProject = true" />
@@ -303,6 +315,7 @@ const showExp = ref(false);
         @cancel="showCvProject = false"
       />
     </van-popup>
+    <DirPicker v-model:show="showCvDir" title="选择工作区目录" @pick="cv.workspace = $event" />
 
     <!-- 沉淀经验弹层 -->
     <van-popup v-model:show="showExp" position="bottom" round :style="{ maxHeight: '70%' }">
@@ -320,7 +333,9 @@ const showExp = ref(false);
 </template>
 
 <style scoped>
-.disc-detail { display: flex; flex-direction: column; height: 100vh; background: #f7f8fa; }
+/* 用 100%（根容器为 100dvh）而非 100vh：后者按工具栏隐藏的大视口计算，
+   浏览器地址栏展开时底部输入区与操作行会被顶出可视区且无法滚动（遮挡 BUG） */
+.disc-detail { display: flex; flex-direction: column; height: 100%; background: #f7f8fa; }
 .nav-op { font-size: 12px; color: #1989fa; }
 .stream { flex: 1; overflow-y: auto; padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 10px; }
 .center-tip { text-align: center; color: #969799; font-size: 12px; padding: 40px 20px; line-height: 1.8; }
@@ -350,7 +365,7 @@ const showExp = ref(false);
 @keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
 .typing-label { font-size: 10px; color: #969799; margin-left: 4px; }
 .pending-bar { margin: 0 10px 4px; font-size: 11px; color: #ff976a; border: 1px dashed #ff976a; border-radius: 6px; padding: 4px 8px; }
-.input-zone { background: #fff; border-top: 1px solid #ebedf0; padding: 6px 8px 8px; }
+.input-zone { background: #fff; border-top: 1px solid #ebedf0; padding: 6px 8px calc(8px + env(safe-area-inset-bottom)); }
 .chips-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 4px; }
 .chip-label { font-size: 10px; color: #969799; }
 .mention-chip { font-size: 11px; color: #1989fa; border: 1px solid #d4e6ff; border-radius: 10px; padding: 1px 8px; background: #f4f8ff; }
@@ -359,7 +374,8 @@ const showExp = ref(false);
 .op-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 .op-row :deep(.van-radio) { margin-right: 8px; }
 .ops { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
-.sheet { padding: 14px 16px 20px; overflow-y: auto; height: 100%; }
+.sheet { padding: 14px 16px calc(20px + env(safe-area-inset-bottom)); overflow-y: auto; height: 100%; }
+.pick-dir { font-size: 13px; color: #1989fa; padding: 2px 8px; border: 1px solid #d4e6ff; border-radius: 4px; background: #f4f8ff; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .sheet-title { font-size: 15px; font-weight: 700; }
 .sheet-op { font-size: 12px; color: #1989fa; }
