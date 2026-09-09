@@ -77,7 +77,7 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     `1. 理解：先用只读工具侦查现场（list_files/read_file/grep），确认任务涉及的真实代码，禁止跳过侦查直接写。`,
     `2. 规划：在心里列出改动步骤与影响面（无需输出计划，直接进入执行）。`,
     `3. 执行：以最小变更产出 files/commands。`,
-    `4. 验证：能运行验证就运行（commands），不能就逐项核对产出与任务要求的对应关系。`,
+    `4. 验证：验收点清单优先——把任务描述与全局目标中的每个显式要求（函数名、交互闭环、"二次确认""导出""环形图"这类词）逐条列成清单，每条都必须有**真实执行过的证据**（命令 + 输出、npm test、实际打开页面/接口确认）；只读代码"看起来对"不构成验证，验证类节点尤其禁止以代码走查代替运行。清单中任何一条拿不出证据 → status=failed 或如实写进 defects。`,
     `5. 汇报：summary 必须包含——做了什么、对全局目标的贡献、验证方式与结果（verification 字段）。`,
   ].join('\n');
 
@@ -124,6 +124,7 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '- 编造没有验证过的 changes（禁止）',
     '- changes 漏报实际写入/修改的文件（系统会核对申报与实际写入，漏报会被标记）',
     '- 测试栈与项目技术栈不符：JS/TS 项目（package.json）用 vitest/jest/node --test，Python 项目才用 pytest',
+    '- 用"代码看起来正确/逻辑上应该能跑"代替真实运行证据（禁止）——页面白屏、导入方式不匹配（default vs 具名）、未使用的幻觉 import 这类问题只有实际运行/打开才会暴露，验证节点必须实际运行',
     '分析/调查类任务：结论写进 summary（要详细），files/commands 留空数组，verification 写你核对了哪些证据。',
   ].join('\n');
 
