@@ -133,6 +133,8 @@ const MAX_ROUND_SPEAKERS = 3;
 /** 流式 delta 节流 */
 const DELTA_MIN_CHARS = 6;
 const DELTA_MIN_MS = 150;
+/** 承诺式收尾检测（p65y6inq 教训："正式启动 UI 开发任务"后 0 工具调用掉球） */
+const COMMITMENT_RE = /(?:正式启动|立即启动|马上开始|即刻下发|现在开始|接下来我将|下一步我|我将采取|分[二三四五]步|我将分|马上执行|立即执行)/;
 
 // ---------- discussion-level configuration (config.yaml `discussion:`) ----------
 
@@ -398,6 +400,7 @@ function speakerSystemPrompt(projectCtx: string): string {
 小改代码（单轮 ≤${WRITE_BUDGET_FILES} 个文件、合计 ≤${WRITE_BUDGET_LINES} 行，写前自动 git checkpoint 可回滚）：
  {"tool":"write_file","path":"相对路径","content":"完整新内容"} | {"tool":"edit_file","path":"相对路径","find":"原文片段","replace":"替换片段"}
 知识沉淀： {"tool":"write_knowledge","category":"general-tech|project","title":"标题","content":"内容"}
+转项目开发（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）： {"tool":"convert_to_project","auto_run":true}
 
 ## 输出契约（最终消息必须是纯 JSON，禁止 markdown 代码栅栏）
 两种形态二选一：
@@ -407,6 +410,7 @@ B 发言时：  {"speak": true|false, "reply": "发言内容（≤300字）", "e
 ## 行动优先（重要）
 - 侦查只是手段：如果你的回合里还有该动手的主动作（装依赖/启动/修改/重启），不要以"下一步我将…"的口头承诺收尾——直接用形态 A 把它做完再汇报。
 - 迭代预算有限：第一批工具就把最关键的侦查+主动作一起发出（如 npm install + exec_background），减少往返。
+- 用户已拍板同意转任务的（如回复"是的/转吧/同意"），直接调用 convert_to_project 完成转换，**绝不允许只口头宣布"正式启动任务"而不调工具**——那等于什么都没发生。
 
 ${projectCtx}`;
 }
@@ -473,6 +477,10 @@ interface TurnOutcome {
   asked: boolean;
   silent: boolean;
   failed?: string;
+  /** 本轮是否真实执行过工具（承诺跟进判定依据） */
+  toolUsed: boolean;
+  /** 发言正文（承诺式收尾检测用） */
+  text?: string;
 }
 
 interface WriteBudget {
@@ -600,8 +608,30 @@ async function runSpeakerToolCalls(
         } else {
           results.push({ tool: 'edit_file', ok: false, error: (failures[0] || '编辑未命中') });
         }
+      } else if (name === 'convert_to_project' || name === 'convert_task') {
+        // 用户已拍板的大改动：agent 自己走完 方案收敛→转任务→入队，不再"口头宣布正式启动"后掉球
+        if (!disc.project_id) {
+          results.push({ tool: 'convert_to_project', ok: false, error: '本讨论未绑定项目目录，无法转任务；需要新建项目的请让用户在界面「转为项目开发」操作（需要选目录）' });
+          continue;
+        }
+        const live = await getDiscussion(disc.id);
+        if (!live || live.status === 'converted') {
+          results.push({ tool: 'convert_to_project', ok: false, error: '讨论已转项目或已不存在' });
+          continue;
+        }
+        try {
+          if (!live.scheme.trim()) await generateScheme(deps, disc.id);
+          const autoRun = call.auto_run !== false;
+          const res = await convertToProject(deps, disc.id, { target: 'existing', project_id: disc.project_id, auto_run: autoRun }, (w) => w);
+          results.push({
+            tool: 'convert_to_project', ok: true, task_id: res.task_id, project_id: res.project_id, auto_run: autoRun,
+            note: '开发任务已创建' + (autoRun ? '并入队执行' : '待规划评审') + '；讨论已封存，后续沟通走任务介入通道。请在发言里向用户汇报任务 id。',
+          });
+        } catch (e: any) {
+          results.push({ tool: 'convert_to_project', ok: false, error: String(e?.message || e).slice(0, 300) });
+        }
       } else {
-        results.push({ tool: name, ok: false, error: `群内不允许的工具: ${name}（大改动请转项目任务）` });
+        results.push({ tool: name, ok: false, error: `群内不允许的工具: ${name}（大改动请用 convert_to_project 转项目任务）` });
       }
     } catch (e: any) {
       // 软错误回喂纪律：一次工具异常绝不炸毁整次发言
@@ -640,6 +670,7 @@ function toolActivityLine(calls: Record<string, any>[], results: unknown[]): str
     else if (t === 'write_file') segs.push(r.ok ? `写入 ${r.path}${r.checkpoint ? `（checkpoint ${r.checkpoint}）` : ''}` : `写 ${calls[i].path} 失败`);
     else if (t === 'edit_file') segs.push(r.ok ? `修改 ${r.path}${r.checkpoint ? `（checkpoint ${r.checkpoint}）` : ''}` : `改 ${calls[i].path} 失败`);
     else if (t === 'write_knowledge') segs.push(r.ok ? '沉淀知识' : '沉淀知识失败');
+    else if (t === 'convert_to_project' || t === 'convert_task') segs.push(r.ok ? `转项目开发任务 ${r.task_id}${r.auto_run ? '（已入队）' : ''}` : '转任务失败');
     else segs.push(t);
   }
   const more = calls.length > 4 ? ` 等 ${calls.length} 项` : '';
@@ -665,7 +696,7 @@ async function runSpeakerTurn(
   const entry = pickModel(deps, agent);
   if (!entry) {
     deps.logger.warn('discussion round: no model available for agent, skipped', { discId: disc.id, agent });
-    return { spoke: false, asked: false, silent: true, failed: '无可用模型' };
+    return { spoke: false, asked: false, silent: true, failed: '无可用模型', toolUsed: false };
   }
   const sys = speakerSystemPrompt(projectCtx);
   const convo: { role: string; content: string }[] = [
@@ -676,6 +707,7 @@ async function runSpeakerTurn(
 
   const budget: WriteBudget = { files: new Set(), lines: 0, checkpointed: false };
   let parsed: Record<string, any> | null = null;
+  let toolUsed = false;
 
   for (let iter = 0; iter < MAX_TOOL_ITER; iter++) {
     const last = iter === MAX_TOOL_ITER - 1;
@@ -703,7 +735,7 @@ async function runSpeakerTurn(
     } catch (e) {
       const reason = String((e as Error)?.message || e);
       void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
-      return { spoke: false, asked: false, silent: true, failed: reason };
+      return { spoke: false, asked: false, silent: true, failed: reason, toolUsed };
     }
     parsed = extractJson(res.content);
     let calls: Record<string, any>[] = Array.isArray(parsed?.tool_calls) ? parsed.tool_calls.filter((c: any) => c && typeof c.tool === 'string') : [];
@@ -712,6 +744,7 @@ async function runSpeakerTurn(
     }
     if (calls.length && !last) {
       void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
+      toolUsed = true;
       const results = await runSpeakerToolCalls(deps, disc, agent, calls, budget);
       const line = toolActivityLine(calls, results);
       await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true });
@@ -731,9 +764,9 @@ async function runSpeakerTurn(
     if (forced) {
       // 被点名者的诚实告知直接以发言形态出现（不再叠加失败 notice）
       await appendMessage(disc.id, { id: newId(), from: agent, text: '（被点名发言但输出无法解析，本轮未能给出观点）', ts: new Date().toISOString(), round });
-      return { spoke: true, asked: false, silent: false };
+      return { spoke: true, asked: false, silent: false, toolUsed };
     }
-    return { spoke: false, asked: false, silent: true, failed: '输出无法解析' };
+    return { spoke: false, asked: false, silent: true, failed: '输出无法解析', toolUsed };
   }
   // forced speakers must speak: a weak model returning speak:false is nudged once
   if (forced && parsed.speak !== true) {
@@ -742,13 +775,13 @@ async function runSpeakerTurn(
     if (retry) parsed = extractJson(retry.content) || parsed;
   }
   if (parsed.speak !== true) {
-    return { spoke: false, asked: false, silent: true };
+    return { spoke: false, asked: false, silent: true, toolUsed };
   }
   const reply = String(parsed.reply || '').trim().slice(0, MAX_MESSAGE_LENGTH);
   const askUser = String(parsed.ask_user || '').trim();
   const experience = String(parsed.experience || '').trim();
   if (!reply && !askUser) {
-    return { spoke: false, asked: false, silent: true };
+    return { spoke: false, asked: false, silent: true, toolUsed };
   }
   const msg: DiscussionMessage = {
     id: newId(),
@@ -769,9 +802,9 @@ async function runSpeakerTurn(
     await emitProgress('discussion_ask_user', { discussion_id: disc.id, agent, question: askUser, round });
     const { notify } = await import('./notify');
     notify('discussion_ask_user', { discussion_id: disc.id }, `[Co-Team] 群组讨论「${disc.title}」中 ${agent} 需要你拍板：${askUser.slice(0, 80)}`);
-    return { spoke: true, asked: true, silent: false };
+    return { spoke: true, asked: true, silent: false, toolUsed, text: msg.text };
   }
-  return { spoke: true, asked: false, silent: false };
+  return { spoke: true, asked: false, silent: false, toolUsed, text: msg.text };
 }
 
 // ---------- speaker router ----------
@@ -837,6 +870,8 @@ export interface RoundResult {
   all_silent?: boolean;
   /** a user message arrived mid-round: remaining speakers were cut */
   interrupted_by_user?: boolean;
+  /** speakers that promised action without executing any tool this round */
+  commitments?: string[];
 }
 
 /**
@@ -862,11 +897,15 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
   const speakers: string[] = [];
   const silent: string[] = [];
   const asked: string[] = [];
+  const commitments: string[] = [];
   let interrupted = false;
 
   for (const agent of route.speakers) {
     if (await busGet(stopKey(discId))) break;
-    if (!(await getDiscussion(discId))) break;
+    {
+      const live = await getDiscussion(discId);
+      if (!live || live.status === 'converted') break; // 转任务后讨论即封存，剩余成员不再发言
+    }
     const forced = opts?.forced?.includes(agent) === true;
     // re-read fresh transcript each speaker (later speakers see earlier replies)
     const fresh = await getMessages(discId);
@@ -888,11 +927,18 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
     }
     if (out.spoke) speakers.push(agent);
     if (out.asked) asked.push(agent);
+    // 承诺式收尾检测：说了"正式启动/接下来我将…"却没调用任何工具 → 记名，由响应循环追问一轮
+    if (out.spoke && !out.toolUsed && out.text && COMMITMENT_RE.test(out.text)) commitments.push(agent);
   }
 
   const stopped = await busGet(stopKey(discId));
-  disc.updated_at = new Date().toISOString();
-  await saveDiscussion(disc);
+  // 轮末 touch 必须基于最新状态重读：轮中 convert_to_project 可能已改写 status/task_id，
+  // 用轮初的 stale 对象整键覆盖会把"已转项目"打回 discussing（lost update 实测教训）
+  const liveAtEnd = await getDiscussion(discId);
+  if (liveAtEnd) {
+    liveAtEnd.updated_at = new Date().toISOString();
+    await saveDiscussion(liveAtEnd);
+  }
   await emitProgress('discussion_round', {
     discussion_id: discId, round, phase: 'end', speakers, silent, asked_user: asked,
     interrupted_by_user: interrupted && !stopped,
@@ -902,6 +948,7 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
     all_silent: speakers.length === 0 && !interrupted && !stopped,
     interrupted_by_user: interrupted && !stopped,
     latest_user_mentions: interrupted ? lastUserMentions(await getMessages(discId)) : undefined,
+    commitments: commitments.length ? commitments : undefined,
   };
 }
 
@@ -965,10 +1012,20 @@ export async function runResponseLoop(deps: DiscussionDeps, discId: string, opts
         await emitProgress('discussion_status', { discussion_id: discId, waiting_user: true });
         break;
       }
+      {
+        const liveNow = await getDiscussion(discId);
+        if (!liveNow || liveNow.status === 'converted') break; // 转任务成功，讨论封存
+      }
       if (res.interrupted_by_user) {
         // 用户中途补充了新指示：立即以最新指示重新路由下一轮
         forced = res.latest_user_mentions?.length ? res.latest_user_mentions : undefined;
         interruptNote = '# 注意\n用户在上一轮中途补充了新指示（见讨论记录最后一条用户消息），本轮必须优先回应它。\n\n';
+        continue;
+      }
+      if (res.commitments?.length) {
+        // 承诺跟进：只点名承诺者，本轮必须兑现动作或如实说明做不到——不许再空口承诺
+        forced = res.commitments;
+        interruptNote = '# 追问\n你上一轮承诺了行动（见讨论记录你的最后一条发言）却没有调用任何工具，等于什么都没发生。本轮必须：能做的直接用形态 A 执行（大改动且用户已同意转任务就调 convert_to_project）；做不到的如实说明原因并给出用户可操作的下一步。禁止再次只口头承诺。\n\n';
         continue;
       }
       if (res.all_silent) {

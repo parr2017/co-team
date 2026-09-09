@@ -530,6 +530,58 @@ describe('auto mode loop', () => {
   });
 });
 
+describe('convert_to_project tool (agent 自己转任务)', () => {
+  it('bound discussion: scheme auto-generated, task created, discussion sealed', async () => {
+    await mkProject();
+    const createCalls: any[] = [];
+    (deps.orchestrator as any).createTask = async (description: string, workspace: string, projectId?: string, opts?: any) => {
+      createCalls.push({ description, workspace, projectId, opts });
+      const { saveTaskGraph } = await import('../src/store');
+      await saveTaskGraph('tk-cv', [], [], { description, workspace, status: 'pending', project_id: projectId });
+      return { taskId: 'tk-cv', graph: { nodes: [], edges: [], summary: '' }, level: 'standard' };
+    };
+    const d = await mkDiscussion(['dev'], { project_id: 'p1' });
+    await postUserMessage(deps, d.id, 'UI 是占位符，补全四页面并对接 dataService');
+    // 第一轮垫一条实质发言（generateScheme 要求 ≥2 条实质消息）
+    h.speaker = () => okContent('UI 层缺失，建议转任务补全');
+    await runDiscussionRound(deps, d.id);
+    h.speaker = async (_sys, user) => {
+      if (user.includes('工具执行结果')) return okContent('已转开发任务 tk-cv，UI 补全由执行团队接手');
+      return JSON.stringify({ tool_calls: [{ tool: 'convert_to_project', auto_run: true }] });
+    };
+    await runDiscussionRound(deps, d.id);
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0].opts.skipClarification).toBe(true);
+    const disc = await getDiscussion(d.id);
+    expect(disc!.status).toBe('converted');
+    expect(disc!.task_id).toBe('tk-cv');
+    const msgs = await getMessages(d.id);
+    expect(msgs.some((m) => m.tool && m.text.includes('转项目开发任务 tk-cv'))).toBe(true);
+    expect(plainAgentMsgs(msgs, 'dev').at(-1)!.text).toContain('tk-cv');
+    // 封存后不能再发言
+    await expect(runDiscussionRound(deps, d.id)).rejects.toThrow(/转为项目/);
+  });
+});
+
+describe('commitment follow-up (承诺式收尾自动追问)', () => {
+  it('speaker that promises action without tools gets a forced follow-up round', async () => {
+    const d = await mkDiscussion(['dev']);
+    let calls = 0;
+    h.speaker = (_sys, user) => {
+      calls += 1;
+      if (calls === 1) return okContent('收到，我正式启动 UI 开发任务，分四步补全页面。');
+      expect(user).toContain('追问');
+      return okContent('如实说明：补全四页面超出群内小改预算，请在界面点「转为项目开发」入队执行。');
+    };
+    await runResponseLoop(deps, d.id, { forced: undefined, auto: false });
+    expect(calls).toBe(2);
+    const msgs = await getMessages(d.id);
+    expect(plainAgentMsgs(msgs, 'dev').length).toBe(2);
+    // 第二轮只点名承诺者（mention-only 路由，不再问路由器）
+    expect(h.lastRouterCalls).toHaveLength(1);
+  });
+});
+
 describe('scheme generation & editing', () => {
   it('refuses to converge on <2 substantive messages', async () => {
     const d = await mkDiscussion(['dev']);
