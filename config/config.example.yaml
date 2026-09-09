@@ -3,6 +3,8 @@ dashboard:
   host: 0.0.0.0
   port: 8855
 model_pool:
+  # 混合推理模型（Qwen3 系）可加 chat_template_kwargs: {enable_thinking: false} 关闭思考——
+  # E17 实测思考可耗尽整个输出预算导致正文空假性失败；编排/结构化输出场景关闭更稳
   - api_key: sk_your_api_key_here
     base_url: https://tokenrhythm.studio/v1
     concurrency: 4

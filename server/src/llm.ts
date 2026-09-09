@@ -154,6 +154,8 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
         temperature,
         stream: true,
         stream_options: { include_usage: true },
+        // vLLM 扩展透传（如 enable_thinking:false 关闭 Qwen3 思考，E17）
+        ...(entry.chat_template_kwargs ? { chat_template_kwargs: entry.chat_template_kwargs } : {}),
       },
       { signal: effectiveSignal },
     );
@@ -216,6 +218,7 @@ async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: str
         messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         max_tokens: maxTokens,
         temperature,
+        ...(entry.chat_template_kwargs ? { chat_template_kwargs: entry.chat_template_kwargs } : {}),
       },
       { signal },
     );

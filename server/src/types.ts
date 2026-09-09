@@ -182,6 +182,9 @@ export interface ModelConfig {
   context_length?: number;
   /** optional capability roles: 'chat' (default) and/or 'embedding' (knowledge RAG) */
   roles?: string[];
+  /** vLLM 扩展：透传给 chat template 的参数（如 {enable_thinking:false} 关闭 Qwen3 思考——
+   *  E17 实测：混合推理模型思考可耗尽整个输出预算致正文空，交互/结构化输出场景关闭更优） */
+  chat_template_kwargs?: Record<string, unknown>;
 }
 
 export interface AgentConversationRound {
