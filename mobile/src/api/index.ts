@@ -181,6 +181,32 @@ export interface DiscussionMessage {
   round?: number;
   mentioned?: string[];
   needs_user?: boolean;
+  /** system 消息渲染形态：notice 轻灰提示 / card 居中卡片 */
+  kind?: 'notice' | 'card';
+  /** agent 工具活动行（🔧 折叠展示） */
+  tool?: boolean;
+  /** 用户消息引用的另一条消息 id */
+  reply_to?: string;
+  /** emoji 回应：emoji -> 回应者列表 */
+  reactions?: Record<string, string[]>;
+}
+
+/** 发用户消息：text 可空但需 react_to；reply_to 做引用回复 */
+export interface PostDiscussionPayload {
+  text?: string;
+  reply_to?: string;
+  react_to?: string;
+  emoji?: string;
+}
+
+/** 群成员资料（署名拟人化：中文角色 + 稳定配色依据） */
+export interface AgentInfo {
+  name: string;
+  role: string;
+  description: string;
+  tags: string[];
+  modelOverride: string | null;
+  timeout: number;
 }
 
 export interface Discussion {
@@ -202,6 +228,8 @@ export interface Discussion {
 
 export interface DiscussionDetail extends Discussion {
   messages: DiscussionMessage[];
+  /** 打开时是否有一轮在飞（UI 恢复 busy 状态用） */
+  busy?: boolean;
 }
 
 export interface ConvertDiscussionPayload {
@@ -310,6 +338,8 @@ export const api = {
     const d = await request<{ agents: { name: string }[] }>('/api/agents');
     return (d.agents || []).map((a) => a.name);
   },
+  /** 群成员资料卡用：完整 agent 信息 */
+  listAgentInfos: () => request<{ agents: AgentInfo[] }>('/api/agents'),
   executeTask: (id: string) => post(`/api/tasks/${id}/execute`),
   replan: (id: string, feedback: string) => post(`/api/tasks/${id}/replan`, { feedback }),
   interveneTask: (id: string, message: string) =>
@@ -358,8 +388,8 @@ export const api = {
   updateDiscussion: (id: string, patch: { mode?: 'manual' | 'auto'; title?: string; scheme?: string }) =>
     request<{ status: string; discussion: Discussion }>(`/api/discussions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   deleteDiscussion: (id: string) => request(`/api/discussions/${id}`, { method: 'DELETE' }),
-  postDiscussionMessage: (id: string, text: string) =>
-    post<{ status: string; message: DiscussionMessage; responding: string[] | null }>(`/api/discussions/${id}/messages`, { text }),
+  postDiscussionMessage: (id: string, payload: PostDiscussionPayload) =>
+    post<{ status: string; message: DiscussionMessage | null; queued?: boolean; responding: string[] | string | null }>(`/api/discussions/${id}/messages`, payload),
   discussionRound: (id: string) => post<{ status: string }>(`/api/discussions/${id}/round`),
   discussionStop: (id: string) => post<{ status: string }>(`/api/discussions/${id}/stop`),
   generateScheme: (id: string) => post<{ status: string; discussion: Discussion }>(`/api/discussions/${id}/scheme`),

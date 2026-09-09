@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showToast } from 'vant';
 import { marked } from 'marked';
 import { api } from '../api';
 import type { ProjectSummary, DiscussionMessage } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
+import { agentColor } from '../utils/agentColor';
 import AgentAvatar from '../components/AgentAvatar.vue';
 import DirPicker from '../components/DirPicker.vue';
 
@@ -13,7 +14,7 @@ defineOptions({ name: 'DiscussionDetailView' });
 
 const route = useRoute();
 const router = useRouter();
-const { current, experiences, busy, thinking, open, send, round, stop, generateScheme, saveScheme, setMode, convert } = useDiscussion();
+const { current, experiences, roles, busy, thinking, activity, streams, open, send, react, round, stop, generateScheme, saveScheme, setMode, convert } = useDiscussion();
 
 const discId = computed(() => String(route.params.id));
 const draft = ref('');
@@ -22,36 +23,73 @@ const wrapEl = ref<HTMLElement | null>(null);
 
 const members = computed(() => current.value?.members || []);
 const status = computed(() => current.value?.status || 'discussing');
+const converted = computed(() => status.value === 'converted');
 const pendingUser = computed(() => !!current.value?.pending_user);
-const schemeReady = computed(() => !!current.value?.scheme?.trim());
+const anyStreaming = computed(() => Object.keys(streams).length > 0);
 
-// ---------- 消息流渲染（微信气泡语言，与 ChatStream 同构） ----------
+function roleOf(name: string): string {
+  if (name === 'user') return '我';
+  return roles.value[name] || name;
+}
+function agentStreaming(agent: string): boolean {
+  return Object.values(streams).some((s) => s.agent === agent);
+}
 
-const TIME_GAP_MS = 5 * 60 * 1000;
-type ChatItem = { t: 'time'; label: string } | { t: 'system' | 'user' | 'agent'; m: DiscussionMessage; answered?: boolean };
+// ---------- 消息行模型（与 web DiscussionChat 同构：分组/系统卡片/工具条/引用） ----------
 
-const items = computed<ChatItem[]>(() => {
+const GROUP_GAP_MS = 3 * 60 * 1000;
+const TIME_GAP_MS = 10 * 60 * 1000;
+type ChatRow = { type: 'chat'; m: DiscussionMessage; side: 'me' | 'them'; head: boolean; tail: boolean; answered?: boolean; quote?: { who: string; text: string } };
+type Row =
+  | { type: 'time'; label: string }
+  | { type: 'sys'; m: DiscussionMessage }
+  | { type: 'tool'; m: DiscussionMessage }
+  | ChatRow;
+
+const rows = computed<Row[]>(() => {
   const msgs = current.value?.messages || [];
   const lastUserIdx = msgs.map((m) => m.from).lastIndexOf('user');
-  const out: ChatItem[] = [];
+  const byId = new Map(msgs.map((m) => [m.id, m]));
+  const tsOf = (m: DiscussionMessage) => (m.ts ? new Date(m.ts.replace(' ', 'T')).getTime() : 0);
+  const out: Row[] = [];
   let lastTs = 0;
+  let prevChat: ChatRow | null = null;
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
-    const ts = m.ts ? new Date(m.ts.replace(' ', 'T')).getTime() : 0;
-    if (ts - lastTs > TIME_GAP_MS) out.push({ t: 'time', label: fmtTime(m.ts) });
+    const ts = tsOf(m);
+    if (ts - lastTs > TIME_GAP_MS) { out.push({ type: 'time', label: fmtTime(m.ts) }); prevChat = null; }
     lastTs = ts || lastTs;
-    const t = m.from === 'user' ? 'user' : m.from === 'system' ? 'system' : 'agent';
-    out.push({ t, m, answered: !!m.needs_user && lastUserIdx > i });
+    if (m.from === 'system') { out.push({ type: 'sys', m }); prevChat = null; continue; }
+    if (m.tool) { out.push({ type: 'tool', m }); continue; }
+    const side: 'me' | 'them' = m.from === 'user' ? 'me' : 'them';
+    const head = !prevChat || prevChat.m.from !== m.from || ts - tsOf(prevChat.m) > GROUP_GAP_MS;
+    const row: ChatRow = {
+      type: 'chat', m, side, head, tail: false,
+      answered: !!m.needs_user && lastUserIdx > i,
+      quote: m.reply_to ? quoteOf(byId.get(m.reply_to)) : undefined,
+    };
+    if (prevChat) prevChat.tail = !head;
+    out.push(row);
+    prevChat = row;
   }
+  if (prevChat) prevChat.tail = true;
   return out;
 });
+
+function quoteOf(src?: DiscussionMessage) {
+  if (!src) return undefined;
+  return { who: src.from === 'user' ? '我' : roleOf(src.from), text: src.text.slice(0, 40) };
+}
 
 function fmtTime(ts: string): string {
   if (!ts) return '';
   const d = new Date(ts.replace(' ', 'T'));
-  const now = new Date();
   const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return d.toDateString() === now.toDateString() ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+}
+
+function hasReactions(m: DiscussionMessage): boolean {
+  return !!m.reactions && Object.keys(m.reactions).length > 0;
 }
 
 function md(text: string): string {
@@ -60,41 +98,7 @@ function md(text: string): string {
   return html.replace(/@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '<span class="mention">@$1</span>');
 }
 
-async function sendNow() {
-  const text = draft.value.trim();
-  if (!text) return;
-  try {
-    await send(text);
-    draft.value = '';
-    stickToBottom.value = true;
-    await nextTick();
-    scrollToBottom(true);
-  } catch (e: any) {
-    showToast(String(e?.message || e));
-  }
-}
-
-function insertMention(name: string) {
-  draft.value = (draft.value + (draft.value && !draft.value.endsWith(' ') ? ' ' : '') + `@${name} `).slice(0, 4000);
-}
-
-async function doRound() {
-  try { await round(); } catch (e: any) { showToast(String(e?.message || e)); }
-}
-async function doStop() { await stop(); }
-
-async function doGenScheme() {
-  schemeLoading.value = true;
-  try {
-    await generateScheme();
-    showScheme.value = true;
-  } catch (e: any) {
-    showToast(String(e?.message || e));
-  } finally {
-    schemeLoading.value = false;
-  }
-}
-
+// ---------- 滚动 ----------
 function onScroll() {
   const el = wrapEl.value;
   if (!el) return;
@@ -105,32 +109,128 @@ function scrollToBottom(force = false) {
   if (!el || (!force && !stickToBottom.value)) return;
   el.scrollTop = el.scrollHeight;
 }
-
-watch(
-  () => [current.value?.id, current.value?.messages.length, thinking.value],
-  () => void nextTick(() => scrollToBottom())
-);
-
+watch(() => [current.value?.messages.length, Object.keys(streams).length, thinking.value], () => void nextTick(() => scrollToBottom()));
 onMounted(() => {
   void open(discId.value);
+  void nextTick(() => scrollToBottom(true));
 });
 
-// ---------- 模式切换 ----------
-const mode = ref<'manual' | 'auto'>('manual');
-watch(() => [current.value?.id, current.value?.mode] as const, () => { mode.value = current.value?.mode || 'manual'; }, { immediate: true });
-async function onModeChange(v: any) {
+// ---------- 发送 / 插话 ----------
+async function sendNow() {
+  const text = draft.value.trim();
+  if (!text) return;
   try {
-    await setMode(v === 'auto' ? 'auto' : 'manual');
-    showToast(v === 'auto' ? '自动模式：成员最多自由讨论 3 轮' : '手动模式：你驱动每轮');
+    await send(text, replyTo.value ? { reply_to: replyTo.value } : undefined);
+    draft.value = '';
+    replyTo.value = null;
+    stickToBottom.value = true;
+    await nextTick();
+    scrollToBottom(true);
   } catch (e: any) {
-    mode.value = current.value?.mode || 'manual';
+    showToast(String(e?.message || e));
+  }
+}
+
+const replyTo = ref<string | null>(null);
+const replyPreview = computed(() => {
+  const src = (current.value?.messages || []).find((x) => x.id === replyTo.value);
+  return src ? `${roleOf(src.from)}：${src.text.slice(0, 24)}` : '';
+});
+
+async function onReact(m: DiscussionMessage, emoji: string) {
+  if (m.reactions?.[emoji]?.includes('user')) { showToast('已经回应过了'); return; }
+  try { await react(m.id, emoji); } catch (e: any) { showToast(String(e?.message || e)); }
+}
+
+// ---------- 长按气泡动作面板 ----------
+const msgSheet = reactive({ show: false, msg: null as DiscussionMessage | null });
+let lpTimer: ReturnType<typeof setTimeout> | null = null;
+function lpStart(m: DiscussionMessage) {
+  lpTimer = setTimeout(() => {
+    msgSheet.msg = m;
+    msgSheet.show = true;
+  }, 500);
+}
+function lpCancel() {
+  if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+}
+/** Vant action-sheet 的 select 事件参数是 action 对象（含 name），不是字符串 */
+function msgSheetSelect(action: any) {
+  const name = String(action?.name || '');
+  const m = msgSheet.msg;
+  msgSheet.show = false;
+  if (!m || !name) return;
+  if (name === 'reply') {
+    replyTo.value = m.id;
+  } else if (name === 'copy') {
+    void navigator.clipboard?.writeText(m.text).then(() => showToast('已复制'));
+  } else if (name.startsWith('react:')) {
+    void onReact(m, name.slice(6));
+  }
+}
+const msgActions = computed(() => {
+  const m = msgSheet.msg;
+  return [
+    { name: 'reply', text: '↩ 引用回复' },
+    { name: 'react:👍', text: m?.reactions?.['👍'] ? '👍 已回应' : '👍 同意' },
+    { name: 'react:✅', text: m?.reactions?.['✅'] ? '✅ 已回应' : '✅ 收到/已解决' },
+    { name: 'react:👀', text: m?.reactions?.['👀'] ? '👀 已回应' : '👀 在看' },
+    { name: 'copy', text: '⧉ 复制' },
+  ];
+});
+
+// ---------- @点名 ----------
+const mentionSheet = ref(false);
+const mentionActions = computed(() => members.value.map((m) => ({ name: m, text: `@${m}（${roleOf(m)}）` })));
+function pickMention(action: any) {
+  const name = String(action?.name || '');
+  mentionSheet.value = false;
+  if (!name) return;
+  draft.value = (draft.value + (draft.value && !draft.value.endsWith(' ') ? ' ' : '') + `@${name} `).slice(0, 4000);
+}
+
+// ---------- 成员资料 ----------
+const memberSheet = ref(false);
+
+// ---------- 导航右侧操作（popover） ----------
+const showOps = ref(false);
+const opsActions = computed(() => {
+  const list: { text: string }[] = [];
+  list.push(busy.value ? { text: '⏹ 打断并停止' } : { text: '▶ 让成员继续' });
+  list.push(current.value?.mode === 'auto' ? { text: '🔁 切到手动模式' } : { text: '🔁 切到自动模式' });
+  list.push({ text: current.value?.scheme ? `📄 查看方案 v${current.value.scheme_version}` : '📄 生成方案' });
+  list.push({ text: converted.value ? '🚀 查看开发任务' : '🚀 转为项目开发' });
+  list.push({ text: `💡 沉淀经验${experiences.value.length ? ` (${experiences.value.length})` : ''}` });
+  list.push({ text: '👥 群成员' });
+  return list;
+});
+async function onOpsSelect(_action: any, { index }: { index: number }) {
+  showOps.value = false;
+  const list: { text: string }[] = opsActions.value;
+  const label = list[index]?.text || '';
+  try {
+    if (label.includes('打断并停止')) await stop();
+    else if (label.includes('让成员继续')) await round();
+    else if (label.includes('切到手动')) await setMode('manual');
+    else if (label.includes('切到自动')) await setMode('auto');
+    else if (label.includes('生成方案')) {
+      genLoading.value = true;
+      await generateScheme();
+      genLoading.value = false;
+      showScheme.value = true;
+    } else if (label.includes('查看方案')) showScheme.value = true;
+    else if (label.includes('查看开发任务')) router.push(`/task/${current.value!.task_id}`);
+    else if (label.includes('转为项目开发')) await openConvert();
+    else if (label.includes('沉淀经验')) showExp.value = true;
+    else if (label.includes('群成员')) memberSheet.value = true;
+  } catch (e: any) {
     showToast(String(e?.message || e));
   }
 }
 
 // ---------- 方案弹层 ----------
 const showScheme = ref(false);
-const schemeLoading = ref(false);
+const genLoading = ref(false);
 const schemeEditing = ref(false);
 const schemeBuffer = ref('');
 function startEdit() {
@@ -158,7 +258,6 @@ async function openConvert() {
   const bound = current.value?.project_id || '';
   cv.value = { target: bound ? 'existing' : 'new', name: current.value?.title || '', workspace: '', scaffold: true, project_id: bound, auto_run: false };
   try { projects.value = (await api.listProjects()).projects || []; } catch { /* ignore */ }
-  // 新建项目：预填 <projects.root>/<标题 slug>，用户可改
   if (!bound) {
     try {
       const r = await api.projectsRoot();
@@ -197,70 +296,140 @@ const showExp = ref(false);
 
 <template>
   <div class="disc-detail">
-    <van-nav-bar :title="current ? `${current.title}(${current.members.length})` : '群组讨论'" left-arrow fixed placeholder @click-left="router.back()">
+    <van-nav-bar left-arrow fixed placeholder @click-left="router.back()">
+      <template #title>
+        <div class="nav-title">{{ current?.title || '群组讨论' }}</div>
+        <div class="nav-sub">{{ current ? `${members.length} 人群聊 · ${current.scheme ? `方案 v${current.scheme_version}` : (current.project_id ? '已绑定项目，可动手' : '未绑定项目')} · ${current.mode === 'auto' ? '自动' : '手动'}` : '' }}</div>
+      </template>
       <template #right>
-        <span class="nav-op" @click="showExp = true">经验{{ experiences.length ? ` ${experiences.length}` : '' }}</span>
+        <span class="nav-avs">
+          <AgentAvatar v-for="m in members.slice(0, 4)" :key="m" :name="m" :size="22" class="nav-av" :title="roleOf(m)" @click="memberSheet = true" />
+        </span>
+        <van-popover v-model:show="showOps" :actions="opsActions" placement="bottom-end" @select="onOpsSelect">
+          <template #reference><van-icon name="ellipsis" class="nav-op" /></template>
+        </van-popover>
       </template>
     </van-nav-bar>
 
     <div ref="wrapEl" class="stream" @scroll="onScroll">
       <div v-if="!current" class="center-tip">加载中…</div>
-      <div v-else-if="!items.length" class="center-tip">还没有讨论内容<br />发一条消息，或点「继续讨论」让成员开场</div>
+      <div v-else-if="!rows.length" class="center-tip">还没有聊天内容<br />发一条消息——成员谁有话说谁上</div>
 
-      <template v-for="(item, i) in items" :key="i">
-        <div v-if="item.t === 'time'" class="time-divider">{{ item.label }}</div>
-        <div v-else-if="item.t === 'system'" class="sys-row"><span>{{ item.m.text }}</span></div>
-        <div v-else-if="item.t === 'user'" class="row me">
-          <div class="me-col"><div class="bubble me-b">{{ item.m.text }}</div></div>
-          <AgentAvatar name="master" :size="34" class="av" />
+      <template v-for="(row, i) in rows" :key="row.type === 'time' ? `t${i}${row.label}` : row.type === 'sys' || row.type === 'tool' ? `${row.type}${row.m.id}` : row.m.id">
+        <div v-if="row.type === 'time'" class="time-divider">{{ row.label }}</div>
+
+        <div v-else-if="row.type === 'sys'" class="sys-row">
+          <div v-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
+          <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
+          <span v-else class="sys-text">{{ row.m.text }}</span>
         </div>
-        <div v-else class="row them">
-          <AgentAvatar :name="item.m.from" :size="34" class="av" />
-          <div class="them-col">
-            <div class="who">{{ item.m.from }}</div>
-            <div :class="['bubble', 'them-b', { ask: item.m.needs_user, answered: item.m.needs_user && item.answered }]">
-              <div v-if="item.m.needs_user" class="ask-tag">{{ item.answered ? '@你 已回复' : '@你 待拍板' }}</div>
-              <div class="b-text" v-html="md(item.m.text)"></div>
+
+        <div v-else-if="row.type === 'tool'" class="tool-row">
+          <span class="tool-text">{{ row.m.text }}</span>
+        </div>
+
+        <div v-else class="row" :class="[row.side, { grouped: !row.head }]">
+          <div v-if="row.side === 'them'" class="av-slot">
+            <AgentAvatar v-if="row.head" :name="row.m.from" :size="32" @click="memberSheet = true" />
+          </div>
+          <div class="col" :class="row.side === 'me' ? 'col-me' : 'col-them'">
+            <div v-if="row.head && row.side === 'them'" class="who">
+              <span class="who-role" :style="{ color: row.side === 'them' ? agentColor(row.m.from) : undefined }">{{ roleOf(row.m.from) }}</span>
+              <span v-if="row.m.needs_user" class="ask-tag" :class="{ answered: row.answered }">{{ row.answered ? '已回复' : '待你拍板' }}</span>
+            </div>
+            <div
+              class="bubble"
+              :class="{ ask: row.m.needs_user, answered: row.m.needs_user && row.answered, 'me-b': row.side === 'me', 'them-b': row.side === 'them' }"
+              @touchstart="lpStart(row.m)"
+              @touchend="lpCancel"
+              @touchmove="lpCancel"
+              @contextmenu.prevent="lpCancel(); msgSheet.msg = row.m; msgSheet.show = true"
+            >
+              <div v-if="row.quote" class="quote-bar">↩ {{ row.quote.who }}：{{ row.quote.text }}</div>
+              <div class="b-text" v-html="md(row.m.text)"></div>
+            </div>
+            <span v-if="row.tail" class="tail-ts">{{ fmtTime(row.m.ts) }}</span>
+            <div v-if="hasReactions(row.m)" class="reactions">
+              <button
+                v-for="(users, emo) in row.m.reactions"
+                :key="emo"
+                class="react-chip"
+                :class="{ mine: users.includes('user') }"
+                @click="onReact(row.m, String(emo))"
+              >{{ emo }} {{ users.length }}</button>
             </div>
           </div>
         </div>
       </template>
 
-      <div v-if="thinking" class="row them">
-        <AgentAvatar :name="thinking" :size="34" class="av" />
-        <div class="them-col">
-          <div class="who">{{ thinking }}</div>
-          <div class="bubble them-b typing-b"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="typing-label">正在思考是否发言…</span></div>
+      <!-- 流式发言气泡 -->
+      <div v-for="(s, sid) in streams" :key="sid" class="row them">
+        <div class="av-slot"><AgentAvatar :name="s.agent" :size="32" /></div>
+        <div class="col col-them">
+          <div class="who"><span class="who-role" :style="{ color: agentColor(s.agent) }">{{ roleOf(s.agent) }}</span></div>
+          <div class="bubble them-b"><span class="b-text">{{ s.text }}</span><span class="caret"></span></div>
+        </div>
+      </div>
+
+      <div v-if="thinking === 'router' && !anyStreaming" class="router-hint">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span> 正在看消息，决定谁来回复…
+      </div>
+      <div v-else-if="thinking && thinking !== 'router' && !agentStreaming(thinking)" class="row them">
+        <div class="av-slot"><AgentAvatar :name="thinking" :size="32" active /></div>
+        <div class="col col-them">
+          <div class="bubble them-b typing-b">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="typing-label">{{ activity === 'tool' ? '正在动手执行…' : activity === 'tool_followup' ? '正在看执行结果…' : '正在输入…' }}</span>
+          </div>
         </div>
       </div>
     </div>
 
     <div v-if="pendingUser" class="pending-bar">有成员需要你拍板，回复一条消息即可继续</div>
 
+    <!-- 底部输入：微信式常驻一条，操作收进右上菜单 -->
     <div class="input-zone">
-      <div v-if="members.length" class="chips-row">
-        <span class="chip-label">@点名：</span>
-        <span v-for="m in members" :key="m" class="mention-chip" @click="insertMention(m)">@{{ m }}</span>
+      <div v-if="replyTo" class="reply-bar">
+        <span>↩ 回复「{{ replyPreview }}」</span>
+        <span class="rb-x" @click="replyTo = null">×</span>
       </div>
       <div class="input-row">
-        <van-field v-model="draft" type="textarea" rows="1" autosize max-length="4000" placeholder="可 @agent 指定发言，也可补充或修正方向" />
-        <van-button type="primary" size="small" :disabled="!draft.trim() || status === 'converted'" @click="sendNow">发送</van-button>
-      </div>
-      <div class="op-row">
-        <van-radio-group v-model="mode" direction="horizontal" @change="onModeChange">
-          <van-radio name="manual" :disabled="busy">手动</van-radio>
-          <van-radio name="auto" :disabled="busy">自动</van-radio>
-        </van-radio-group>
-        <div class="ops">
-          <van-button v-if="busy" size="mini" type="warning" plain @click="doStop">停止</van-button>
-          <van-button v-else size="mini" plain :disabled="status === 'converted'" @click="doRound">继续讨论</van-button>
-          <van-button size="mini" plain :loading="schemeLoading" :disabled="status === 'converted'" @click="doGenScheme">生成方案</van-button>
-          <van-button v-if="status !== 'converted'" size="mini" type="success" :disabled="!schemeReady" @click="openConvert">转项目</van-button>
-          <van-button v-else size="mini" type="primary" plain @click="router.push(`/task/${current!.task_id}`)">查看任务 ›</van-button>
-          <van-button size="mini" plain :disabled="!current?.scheme" @click="showScheme = true">方案{{ current?.scheme_version ? ` v${current.scheme_version}` : '' }}</van-button>
-        </div>
+        <span class="at-btn" @click="mentionSheet = true">＠</span>
+        <van-field
+          v-model="draft"
+          type="textarea"
+          rows="1"
+          autosize
+          max-length="4000"
+          :placeholder="busy ? '成员在忙，插话即刻受理' : '说点什么…（@成员点名，或让它动手）'"
+          class="input-field"
+          @keydown.enter.exact.prevent="sendNow"
+        />
+        <van-button class="send-btn" round type="primary" size="small" :disabled="!draft.trim() || converted" @click="sendNow">
+          {{ busy ? '插话' : '发送' }}
+        </van-button>
       </div>
     </div>
+
+    <!-- 长按/右键动作 -->
+    <van-action-sheet v-model:show="msgSheet.show" :actions="msgActions" title="消息操作" close-on-click-action cancel-text="取消" @select="msgSheetSelect" />
+
+    <!-- @点名选择 -->
+    <van-action-sheet v-model:show="mentionSheet" :actions="mentionActions" title="点名成员（只唤被点名者）" cancel-text="取消" close-on-click-action @select="pickMention" />
+
+    <!-- 群成员 -->
+    <van-popup v-model:show="memberSheet" position="bottom" round :style="{ maxHeight: '60%' }">
+      <div class="sheet">
+        <div class="sheet-head"><span class="sheet-title">群成员</span><span class="sheet-op" @click="memberSheet = false">关闭</span></div>
+        <div v-for="m in members" :key="m" class="member-row">
+          <AgentAvatar :name="m" :size="36" />
+          <div class="member-info">
+            <div class="member-role" :style="{ color: agentColor(m) }">{{ roleOf(m) }}</div>
+            <div class="member-id">{{ m }}</div>
+          </div>
+        </div>
+      </div>
+    </van-popup>
 
     <!-- 方案弹层 -->
     <van-popup v-model:show="showScheme" position="bottom" round :style="{ height: '80%' }">
@@ -269,7 +438,7 @@ const showExp = ref(false);
           <span class="sheet-title">项目规划方案 · v{{ current?.scheme_version || 0 }}</span>
           <span class="sheet-op" @click="showScheme = false">关闭</span>
         </div>
-        <div v-if="!current?.scheme" class="center-tip">方案尚未生成——讨论后点「生成方案」</div>
+        <div v-if="!current?.scheme" class="center-tip">方案尚未生成——点右上菜单「生成方案」</div>
         <template v-else>
           <div v-if="!schemeEditing" class="scheme-md" v-html="md(current.scheme)"></div>
           <van-field v-else v-model="schemeBuffer" type="textarea" rows="18" autosize />
@@ -280,7 +449,7 @@ const showExp = ref(false);
             </template>
             <template v-else>
               <van-button size="small" @click="startEdit">人工编辑</van-button>
-              <van-button size="small" type="primary" @click="doGenScheme">重新生成</van-button>
+              <van-button size="small" type="primary" :loading="genLoading" @click="generateScheme().then(() => showToast('方案已重新生成'))">重新生成</van-button>
             </template>
           </div>
         </template>
@@ -333,47 +502,81 @@ const showExp = ref(false);
 </template>
 
 <style scoped>
-/* 用 100%（根容器为 100dvh）而非 100vh：后者按工具栏隐藏的大视口计算，
-   浏览器地址栏展开时底部输入区与操作行会被顶出可视区且无法滚动（遮挡 BUG） */
-.disc-detail { display: flex; flex-direction: column; height: 100%; background: #f7f8fa; }
-.nav-op { font-size: 12px; color: #1989fa; }
-.stream { flex: 1; overflow-y: auto; padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 10px; }
+/* 用 100%（根容器为 100dvh）而非 100vh：地址栏展开时遮挡历史教训 */
+.disc-detail { display: flex; flex-direction: column; height: 100%; background: #f2f3f5; }
+.nav-title { font-size: 15px; font-weight: 700; max-width: 56vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-sub { font-size: 10px; color: #969799; font-weight: 400; margin-top: 1px; }
+.nav-op { font-size: 20px; color: #323233; margin-left: 10px; }
+.nav-avs { display: inline-flex; }
+.nav-av { margin-left: -6px; border: 1.5px solid #fff; border-radius: 6px; }
+.nav-av:first-child { margin-left: 0; }
+
+.stream { flex: 1; overflow-y: auto; padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 2px; }
 .center-tip { text-align: center; color: #969799; font-size: 12px; padding: 40px 20px; line-height: 1.8; }
-.time-divider { align-self: center; font-size: 10px; color: #969799; background: #ebedf0; border-radius: 4px; padding: 2px 8px; }
-.sys-row { display: flex; justify-content: center; }
-.sys-row span { font-size: 10px; color: #969799; background: #ebedf0; border-radius: 4px; padding: 2px 10px; max-width: 88%; text-align: center; }
-.row { display: flex; gap: 8px; }
+.time-divider { text-align: center; font-size: 10px; color: #b8bbbd; margin: 10px 0 4px; }
+
+.sys-row { display: flex; justify-content: center; margin: 4px 0; }
+.sys-text { font-size: 10px; color: #969799; background: rgba(0, 0, 0, 0.05); border-radius: 10px; padding: 3px 10px; max-width: 88%; text-align: center; }
+.sys-notice { font-size: 10px; color: #b0b2b4; font-style: italic; text-align: center; max-width: 88%; }
+.sys-card { font-size: 12px; color: #323233; background: #fff; border: 1px solid #ebedf0; border-radius: 12px; padding: 9px 14px; max-width: 86%; text-align: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05); }
+
+.tool-row { display: flex; padding-left: 40px; margin: 1px 0; }
+.tool-text { font-size: 10px; color: #8a8f94; background: #ebedf0; border-radius: 6px; padding: 2px 8px; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.row { display: flex; gap: 7px; }
 .row.me { justify-content: flex-end; }
-.them-col { display: flex; flex-direction: column; align-items: flex-start; max-width: 78%; min-width: 0; }
-.me-col { display: flex; flex-direction: column; align-items: flex-end; max-width: 78%; }
-.who { font-size: 10px; color: #969799; margin: 0 2px 2px; }
-.bubble { padding: 8px 11px; border-radius: 9px; font-size: 14px; line-height: 1.55; word-break: break-word; }
-.me-b { background: #95ec69; color: #0b2e13; border-top-right-radius: 2px; }
-.them-b { background: #fff; border: 1px solid #ebedf0; border-top-left-radius: 2px; color: #323233; }
-.b-text :deep(.mention) { color: #1989fa; background: #ecf5ff; border-radius: 3px; padding: 0 3px; font-weight: 600; }
-.b-text :deep(code) { font-size: 12px; background: #f7f8fa; border-radius: 3px; padding: 0 3px; }
-.b-text :deep(p) { margin: 0 0 4px; }
-.b-text :deep(p:last-child) { margin: 0; }
-.b-text :deep(ul), .b-text :deep(ol) { margin: 2px 0; padding-left: 16px; }
+.row:not(.grouped) { margin-top: 8px; }
+.av-slot { width: 32px; flex-shrink: 0; }
+.col { display: flex; flex-direction: column; max-width: 78%; min-width: 0; }
+.col-them { align-items: flex-start; }
+.col-me { align-items: flex-end; }
+.who { display: flex; align-items: baseline; gap: 6px; margin: 0 2px 3px; }
+.who-role { font-size: 12px; font-weight: 600; color: #646566; }
+.ask-tag { font-size: 9px; color: #fff; background: #ff976a; border-radius: 4px; padding: 1px 5px; }
+.ask-tag.answered { background: #c8c9cc; }
+
+.bubble { padding: 9px 12px; border-radius: 15px; font-size: 15px; line-height: 1.55; word-break: break-word; position: relative; }
+.me-b { background: #95ec69; color: #0b2e13; border-top-right-radius: 5px; }
+.them-b { background: #fff; border: 1px solid #ebedf0; border-top-left-radius: 5px; color: #323233; }
 .them-b.ask { border: 1.5px solid #ff976a; }
-.ask-tag { display: inline-block; font-size: 10px; color: #fff; background: #ff976a; border-radius: 3px; padding: 0 5px; margin-bottom: 4px; }
-.them-b.answered .ask-tag { background: #c8c9cc; }
+.them-b.answered { border: 1px solid #ebedf0; }
+.b-text :deep(.mention) { color: #1989fa; background: #ecf5ff; border-radius: 3px; padding: 0 3px; font-weight: 600; }
+.b-text :deep(code) { font-size: 12px; background: rgba(125, 125, 125, 0.12); border-radius: 3px; padding: 0 3px; }
+.b-text :deep(p) { margin: 0 0 4px; }
+.b-text :deep(p:last-child) { margin-bottom: 0; }
+.b-text :deep(ul), .b-text :deep(ol) { margin: 2px 0; padding-left: 16px; }
+.quote-bar { font-size: 11px; opacity: 0.7; border-left: 2px solid currentColor; padding: 1px 0 1px 6px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.tail-ts { font-size: 9px; color: #b8bbbd; margin: 2px 3px 0; }
+
+.reactions { display: flex; gap: 4px; margin: 3px 2px 0; flex-wrap: wrap; }
+.react-chip { font-size: 12px; background: #fff; border: 1px solid #ebedf0; border-radius: 10px; padding: 1px 8px; color: #323233; }
+.react-chip.mine { border-color: #1989fa; background: #ecf5ff; }
+
+.router-hint { align-self: center; font-size: 11px; color: #969799; display: flex; align-items: center; gap: 4px; margin: 8px 0; }
 .typing-b { display: flex; align-items: center; gap: 3px; }
 .dot { width: 5px; height: 5px; border-radius: 50%; background: #c8c9cc; animation: bob 1.2s infinite; }
 .dot:nth-child(2) { animation-delay: 0.15s; }
 .dot:nth-child(3) { animation-delay: 0.3s; }
 @keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
 .typing-label { font-size: 10px; color: #969799; margin-left: 4px; }
-.pending-bar { margin: 0 10px 4px; font-size: 11px; color: #ff976a; border: 1px dashed #ff976a; border-radius: 6px; padding: 4px 8px; }
-.input-zone { background: #fff; border-top: 1px solid #ebedf0; padding: 6px 8px calc(8px + env(safe-area-inset-bottom)); }
-.chips-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 4px; }
-.chip-label { font-size: 10px; color: #969799; }
-.mention-chip { font-size: 11px; color: #1989fa; border: 1px solid #d4e6ff; border-radius: 10px; padding: 1px 8px; background: #f4f8ff; }
-.input-row { display: flex; gap: 6px; align-items: flex-end; }
-.input-row :deep(.van-field) { flex: 1; background: #f7f8fa; border-radius: 6px; padding: 4px 8px; }
-.op-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
-.op-row :deep(.van-radio) { margin-right: 8px; }
-.ops { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+.caret { display: inline-block; width: 2px; height: 14px; background: #1989fa; margin-left: 2px; vertical-align: text-bottom; animation: blink 0.9s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.pending-bar { margin: 0 10px 4px; font-size: 11px; color: #ff976a; border: 1px dashed #ff976a; border-radius: 8px; padding: 4px 8px; background: #fff; }
+
+.input-zone { background: #f7f8fa; border-top: 1px solid #ebedf0; padding: 6px 8px calc(8px + env(safe-area-inset-bottom)); }
+.reply-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: #969799; background: #fff; border: 1px solid #ebedf0; border-radius: 8px; padding: 4px 8px; margin-bottom: 5px; }
+.rb-x { font-size: 16px; padding: 0 6px; color: #c8c9cc; }
+.input-row { display: flex; gap: 7px; align-items: flex-end; }
+.at-btn { width: 34px; height: 34px; border-radius: 50%; background: #fff; border: 1px solid #ebedf0; color: #1989fa; font-size: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.input-field { flex: 1; background: #fff; border-radius: 18px; padding: 4px 12px; }
+.input-field :deep(.van-field__body) { padding: 2px 0; }
+.send-btn { flex-shrink: 0; height: 34px; }
+
+.member-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #f2f3f5; }
+.member-role { font-size: 14px; font-weight: 600; }
+.member-id { font-size: 11px; color: #969799; }
+
 .sheet { padding: 14px 16px calc(20px + env(safe-area-inset-bottom)); overflow-y: auto; height: 100%; }
 .pick-dir { font-size: 13px; color: #1989fa; padding: 2px 8px; border: 1px solid #d4e6ff; border-radius: 4px; background: #f4f8ff; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }

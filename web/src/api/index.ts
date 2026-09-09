@@ -439,6 +439,22 @@ export interface DiscussionMessage {
   round?: number;
   mentioned?: string[];
   needs_user?: boolean;
+  /** system 消息渲染形态：notice 轻灰提示 / card 居中卡片 */
+  kind?: 'notice' | 'card';
+  /** agent 工具活动行（🔧 折叠展示） */
+  tool?: boolean;
+  /** 用户消息引用的另一条消息 id */
+  reply_to?: string;
+  /** emoji 回应：emoji -> 回应者列表 */
+  reactions?: Record<string, string[]>;
+}
+
+/** 发用户消息：text 可空但需 react_to；reply_to 做引用回复 */
+export interface PostDiscussionPayload {
+  text?: string;
+  reply_to?: string;
+  react_to?: string;
+  emoji?: string;
 }
 
 export interface Discussion {
@@ -460,6 +476,8 @@ export interface Discussion {
 
 export interface DiscussionDetail extends Discussion {
   messages: DiscussionMessage[];
+  /** 打开时是否有一轮在飞（UI 恢复 busy 状态用） */
+  busy?: boolean;
 }
 
 export interface ConvertDiscussionPayload {
@@ -674,8 +692,8 @@ export const api = {
   updateDiscussion: (id: string, patch: { mode?: DiscussionMode; title?: string; scheme?: string }) =>
     request<{ status: string; discussion: Discussion }>(`/api/discussions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   deleteDiscussion: (id: string) => request(`/api/discussions/${id}`, { method: 'DELETE' }),
-  postDiscussionMessage: (id: string, text: string) =>
-    request<{ status: string; message: DiscussionMessage; responding: string[] | null }>(`/api/discussions/${id}/messages`, {
+  postDiscussionMessage: (id: string, payload: PostDiscussionPayload) =>
+    request<{ status: string; message: DiscussionMessage | null; queued?: boolean; responding: string[] | string | null }>(`/api/discussions/${id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
     }),
   discussionRound: (id: string) => request<{ status: string }>(`/api/discussions/${id}/round`, { method: 'POST' }),

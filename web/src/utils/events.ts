@@ -125,15 +125,26 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
     case 'doc_updated':
       return { text: `文档更新${p.path ? ` — ${CLIP(p.path, 60)}` : ''}`, level: 'info', category: 'system', noisy: false };
 
-    // ---- 群组沟通（讨论 → 方案 → 转项目 → 经验沉淀）----
+    // ---- 群组沟通（引擎 v2：路由 → 工具/发言 → 方案 → 转项目 → 经验沉淀）----
     case 'discussion_started':
       return { text: `群组讨论「${CLIP(p.title, 30)}」开始 · 成员：${(p.members || []).join('、')}`, level: 'accent', category: 'system', noisy: false };
     case 'discussion_message': {
+      if (p.message?.tool) return { text: CLIP(p.message?.text, 80), level: 'info', category: 'system', noisy: true };
       const from = p.message?.from === 'user' ? '用户' : p.message?.from;
       return { text: `${from}：${CLIP(p.message?.text, 60)}`, level: 'info', category: 'system', noisy: true };
     }
+    case 'discussion_message_delta':
+      return { text: `${p.agent || ''} 正在输入…`, level: 'info', category: 'system', noisy: true };
+    case 'discussion_tool': {
+      const c = (p.calls || [])[0] || {};
+      return { text: `🔧 ${p.agent || '成员'} ${c.tool || ''}${c.command ? ` ${CLIP(c.command, 40)}` : c.path ? ` ${c.path}` : ''}`, level: 'info', category: 'system', noisy: true };
+    }
+    case 'discussion_reacted':
+      return { text: `回应了成员发言 ${p.emoji || ''}`, level: 'info', category: 'system', noisy: true };
     case 'discussion_round':
-      return { text: `第 ${p.round ?? '?'} 轮讨论完成${Array.isArray(p.speakers) && p.speakers.length ? ` · 发言：${p.speakers.join('、')}` : ' · 全员沉默'}`, level: 'info', category: 'system', noisy: true };
+      if (p.phase === 'router') return { text: `决定由 ${(p.speakers || []).join('、') || '无人'} 回复`, level: 'info', category: 'system', noisy: true };
+      if (p.phase !== 'end') return { text: `${p.agent || ''} 正在处理…`, level: 'info', category: 'system', noisy: true };
+      return { text: `本轮完成${Array.isArray(p.speakers) && p.speakers.length ? ` · 发言：${p.speakers.join('、')}` : ' · 暂无新发言'}${p.interrupted_by_user ? ' · 已被你的新消息打断' : ''}`, level: 'info', category: 'system', noisy: true };
     case 'discussion_ask_user':
       return { text: `${p.agent || '成员'}需要你拍板：${CLIP(p.question, 60)}`, level: 'accent', category: 'system', noisy: false };
     case 'discussion_scheme_updated':

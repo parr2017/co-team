@@ -1,75 +1,135 @@
 <template>
   <div class="disc-chat">
     <div ref="wrapEl" class="stream" @scroll="onScroll">
-      <div v-if="!items.length" class="empty mono">还没有讨论内容——发一条消息，或点「继续讨论」让成员先开个场</div>
+      <div v-if="!rows.length" class="empty">
+        还没有聊天内容——发一条消息试试。成员会像真实同事一样：谁有话说谁上，能动手就直接动手。
+      </div>
 
-      <template v-for="(item, i) in items" :key="i">
-        <div v-if="item.t === 'time'" class="time-divider mono">{{ item.label }}</div>
+      <template v-for="(row, i) in rows" :key="rowKey(row, i)">
+        <div v-if="row.type === 'time'" class="time-divider">{{ row.label }}</div>
 
-        <!-- 系统消息：居中灰字（轮次结算 / 点名 / 方案 / 转项目 / 沉默提示） -->
-        <div v-else-if="item.t === 'system'" class="sys-row"><span class="sys-text mono">{{ item.m.text }}</span></div>
+        <!-- 未读分隔线（滚离底部期间到达的新消息起点） -->
+        <div v-else-if="row.type === 'unread'" class="unread-divider"><span>{{ newBelow > 0 ? `${newBelow} 条新消息` : '新消息' }}</span></div>
 
-        <!-- 用户发言：右侧绿气泡（微信“我”的心智），补充与方向性修正都从这里进 -->
-        <div v-else-if="item.t === 'user'" class="row me">
-          <div class="me-col">
-            <div class="bubble me-b"><div class="b-text md" v-html="md(item.m.text)"></div></div>
-          </div>
-          <AgentAvatar name="master" :size="36" title="我" class="me-av" />
+        <!-- 系统：普通小灰条 / notice 更淡 / card 居中卡片 -->
+        <div v-else-if="row.type === 'sys'" class="sys-row">
+          <div v-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
+          <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
+          <span v-else class="sys-text">{{ row.m.text }}</span>
         </div>
 
-        <!-- agent 发言：左侧气泡 + 头像；ask_user 高亮 + 待拍板/已回复标签 -->
-        <div v-else class="row them">
-          <div class="them-col">
-            <div class="who-name mono">{{ item.m.from }}</div>
-            <div class="bubble them-b" :class="{ ask: item.m.needs_user, answered: item.m.needs_user && item.answered }">
-              <div v-if="item.m.needs_user" class="ask-tag mono">{{ item.answered ? '@你 已回复' : '@你 待拍板' }}</div>
-              <div class="b-text md" v-html="md(item.m.text)"></div>
+        <!-- 工具活动行：🔧 灰条（对齐气泡列，不抢对话视觉） -->
+        <div v-else-if="row.type === 'tool'" class="tool-row">
+          <span class="tool-text mono">{{ row.m.text }}</span>
+        </div>
+
+        <!-- 聊天气泡（用户右 / agent 左；同发送者连续消息分组，仅首条显示头像与名字） -->
+        <div v-else class="row" :class="[row.side, { grouped: !row.head }]">
+          <!-- 群聊惯例：自己的消息不带头像（微信式） -->
+          <div v-if="row.side === 'them'" class="av-slot">
+            <AgentAvatar
+              v-if="row.head"
+              :name="row.m.from"
+              :size="34"
+              class="av-click"
+              :title="roleOf(row.m.from) + ' · ' + row.m.from"
+              @click="emit('member-info', row.m.from)"
+            />
+          </div>
+          <div class="col" :class="row.side === 'me' ? 'col-me' : 'col-them'">
+            <div v-if="row.head && row.side === 'them'" class="who">
+              <span class="who-role" :style="{ color: row.side === 'them' ? agentColor(row.m.from) : undefined }">{{ roleOf(row.m.from) }}</span>
+              <span class="who-id mono">{{ row.m.from }}</span>
+              <span v-if="row.m.needs_user" class="ask-tag" :class="{ answered: row.answered }">{{ row.answered ? '@你 已回复' : '@你 待拍板' }}</span>
+            </div>
+            <div class="bubble" :class="{ ask: row.m.needs_user, answered: row.m.needs_user && row.answered, 'me-b': row.side === 'me', 'them-b': row.side === 'them' }">
+              <div v-if="row.quote" class="quote-bar mono" :title="row.quote.text">↩ {{ row.quote.who }}：{{ row.quote.text }}</div>
+              <div class="b-text md" v-html="md(row.m.text)"></div>
+              <span class="hover-ts mono">{{ fmtHM(row.m.ts) }}</span>
+            </div>
+            <span v-if="row.tail" class="tail-ts mono">{{ fmtHM(row.m.ts) }}</span>
+            <!-- emoji 回应聚合 -->
+            <div v-if="hasReactions(row.m)" class="reactions">
+              <button
+                v-for="(users, emo) in row.m.reactions"
+                :key="emo"
+                class="react-chip"
+                :class="{ mine: users.includes('user') }"
+                @click="onReact(row.m, String(emo))"
+              >{{ emo }} <span>{{ users.length }}</span></button>
+            </div>
+            <!-- 悬停动作条 -->
+            <div class="hover-actions" :class="row.side === 'me' ? 'ha-left' : 'ha-right'">
+              <button class="ha-btn" title="回应 👍" @click="onReact(row.m, '👍')">👍</button>
+              <button class="ha-btn" title="引用回复" @click="startReply(row.m)">↩</button>
+              <button class="ha-btn" title="复制" @click="copyText(row.m.text)">⧉</button>
             </div>
           </div>
-          <AgentAvatar :name="item.m.from" :size="36" class="av" />
         </div>
       </template>
 
-      <!-- 打字指示器：当前被唤起的成员 -->
-      <div v-if="thinking" class="row them">
-        <div class="them-col">
-          <div class="who-name mono">{{ thinking }}</div>
-          <div class="bubble them-b typing-b"><span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span><span class="typing-label mono">正在思考是否发言…</span></div>
+      <!-- 流式发言中的气泡（未定稿的实时内容） -->
+      <div v-for="(s, sid) in streams" :key="sid" class="row them streaming">
+        <div class="av-slot"><AgentAvatar :name="s.agent" :size="34" /></div>
+        <div class="col col-them">
+          <div class="who"><span class="who-role" :style="{ color: agentColor(s.agent) }">{{ roleOf(s.agent) }}</span><span class="who-id mono">{{ s.agent }}</span></div>
+          <div class="bubble them-b"><span class="b-text">{{ s.text }}</span><span class="caret"></span></div>
         </div>
-        <AgentAvatar :name="thinking" :size="36" class="av" />
+      </div>
+
+      <!-- 路由器决策中（"谁来回"的调度感，代替旧的全员排队） -->
+      <div v-if="thinking === 'router' && !anyStreaming" class="router-hint mono">
+        <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span> 正在看消息，决定谁来回复…
+      </div>
+
+      <!-- 成员打字/动手指示器（该成员已有流式气泡时不重复显示） -->
+      <div v-else-if="thinking && thinking !== 'router' && !agentStreaming(thinking)" class="row them">
+        <div class="av-slot"><AgentAvatar :name="thinking" :size="34" active /></div>
+        <div class="col col-them">
+          <div class="bubble them-b typing-b">
+            <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span>
+            <span class="typing-label">{{ activity === 'tool' ? '正在动手执行…' : activity === 'tool_followup' ? '正在看执行结果…' : '正在输入…' }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- 待拍板提示条 -->
-    <div v-if="pendingUser" class="pending-bar mono">有成员提出了需要你拍板的问题，回复一条消息即可继续（自动讨论会暂停等待）</div>
+    <!-- 新消息胶囊（滚离底部时出现） -->
+    <transition name="fade">
+      <button v-if="!stick && newBelow > 0" class="new-pill mono" @click="scrollToBottom(true)">↓ {{ newBelow }} 条新消息</button>
+    </transition>
+
+    <div v-if="pendingUser" class="pending-bar">有成员提出了需要你拍板的问题，回复一条消息即可继续</div>
 
     <div class="input-zone">
+      <div v-if="replyTo" class="reply-bar mono">
+        <span>↩ 回复「{{ replyPreview }}」</span>
+        <button class="rb-x" @click="replyTo = null">×</button>
+      </div>
       <div class="chips-row" v-if="members.length">
-        <span class="chip-label mono">@点名（点击插入）：</span>
-        <button v-for="m in members" :key="m" class="mention-chip mono" :disabled="status === 'converted'" @click="insertMention(m)">@{{ m }}</button>
+        <span class="chip-label mono">@点名（只唤被点名者）：</span>
+        <button v-for="m in members" :key="m" class="mention-chip mono" :disabled="converted" @click="insertMention(m)">@{{ m }}</button>
       </div>
       <el-input
+        ref="inputEl"
         v-model="draft"
         type="textarea"
         :rows="2"
         resize="none"
-        :disabled="status === 'converted'"
-        placeholder="可 @agent 指定发言（@dev 怎么看）；也可随时补充信息或做方向性修正，你的发言对全体成员有约束力"
+        :disabled="converted"
+        :placeholder="busy ? '成员正在处理——插话会即刻受理，当前发言告一段落后优先回应你' : '像群里聊天一样说：可 @成员、可让它动手（如：@launcher 把服务跑起来）、可打断'"
         @keydown.enter.exact.prevent="sendNow"
       />
       <div class="op-row">
-        <el-radio-group v-model="mode" size="small" :disabled="busy || status === 'converted'" @change="onModeChange">
+        <el-radio-group v-model="mode" size="small" :disabled="converted" @change="onModeChange">
           <el-radio-button value="manual">手动</el-radio-button>
           <el-radio-button value="auto">自动</el-radio-button>
         </el-radio-group>
-        <span class="mode-hint mono">{{ mode === 'auto' ? '自动：发一条消息，成员最多自由讨论 3 轮' : '手动：每条消息触发一轮，可点继续讨论' }}</span>
+        <span class="mode-hint mono">{{ mode === 'auto' ? '自动：一条消息驱动多轮，直到成员收敛或你插话' : '手动：你一句它一句，插话即刻受理' }}</span>
         <div class="ops">
-          <el-button v-if="busy" size="small" type="warning" plain @click="stop">停止讨论</el-button>
-          <el-button v-else size="small" :disabled="status === 'converted'" @click="moreRound">继续讨论</el-button>
-          <el-button size="small" :loading="genLoading" :disabled="status === 'converted'" @click="emit('gen-scheme')">生成方案</el-button>
-          <el-button v-if="status !== 'converted'" size="small" type="success" :disabled="!schemeReady" @click="emit('convert')">转为项目开发</el-button>
-          <el-button v-else size="small" @click="emit('open-task')">查看开发任务 ›</el-button>
-          <el-button size="small" type="primary" :disabled="!draft.trim() || status === 'converted'" @click="sendNow">发送</el-button>
+          <el-button v-if="busy" size="small" type="warning" plain @click="stop">打断并停止</el-button>
+          <el-button v-else size="small" :disabled="converted" @click="moreRound">让成员继续</el-button>
+          <el-button size="small" type="primary" :disabled="!draft.trim() || converted" @click="sendNow">{{ busy ? '插话' : '发送' }}</el-button>
         </div>
       </div>
     </div>
@@ -82,52 +142,108 @@ import { ElMessage } from 'element-plus';
 import { marked } from 'marked';
 import type { DiscussionMessage } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
+import { agentColor } from '../utils/agentColor';
 import AgentAvatar from './AgentAvatar.vue';
 
-const emit = defineEmits<{ (e: 'gen-scheme'): void; (e: 'convert'): void; (e: 'open-task'): void }>();
+const emit = defineEmits<{ (e: 'member-info', agent: string): void }>();
 
-const { current, busy, thinking, send, round, stop, setMode } = useDiscussion();
+const { current, busy, thinking, activity, streams, send, react, round, stop, setMode, roles } = useDiscussion();
 
 const members = computed(() => current.value?.members || []);
-const status = computed(() => current.value?.status || 'discussing');
+const converted = computed(() => (current.value?.status || 'discussing') === 'converted');
 const pendingUser = computed(() => !!current.value?.pending_user);
-const schemeReady = computed(() => !!current.value?.scheme?.trim());
+const anyStreaming = computed(() => Object.keys(streams).length > 0);
 const draft = ref('');
-const genLoading = ref(false);
-const mode = ref<'manual' | 'auto'>('manual');
 const wrapEl = ref<HTMLElement | null>(null);
+const inputEl = ref<{ focus: () => void } | null>(null);
 let stickToBottom = true;
+const stick = ref(true);
+const newBelow = ref(0);
+const unreadStartId = ref<string | null>(null);
+const replyTo = ref<string | null>(null);
 
-type ChatItem =
-  | { t: 'time'; label: string }
-  | { t: 'system' | 'user' | 'agent'; m: DiscussionMessage; answered?: boolean };
+function agentStreaming(agent: string): boolean {
+  return Object.values(streams).some((s) => s.agent === agent);
+}
 
-const TIME_GAP_MS = 5 * 60 * 1000;
+function roleOf(name: string): string {
+  if (name === 'user') return '我';
+  return roles.value[name] || name;
+}
 
-/** 微信式时间省略 + ask_user 消息的「已回复」派生（最后一条 ask_user 之后是否有用户消息） */
-const items = computed<ChatItem[]>(() => {
+// ---------- 行模型：分组 / 系统 / 工具 / 时间 / 未读 ----------
+type ChatRow = { type: 'chat'; m: DiscussionMessage; side: 'me' | 'them'; head: boolean; tail: boolean; answered?: boolean; quote?: { who: string; text: string } };
+type Row =
+  | { type: 'time'; label: string }
+  | { type: 'unread' }
+  | { type: 'sys'; m: DiscussionMessage }
+  | { type: 'tool'; m: DiscussionMessage }
+  | ChatRow;
+
+const GROUP_GAP_MS = 3 * 60 * 1000;
+const TIME_GAP_MS = 10 * 60 * 1000;
+
+const rows = computed<Row[]>(() => {
   const msgs = current.value?.messages || [];
   const lastUserIdx = msgs.map((m) => m.from).lastIndexOf('user');
-  const out: ChatItem[] = [];
+  const byId = new Map(msgs.map((m) => [m.id, m]));
+  const tsOf = (m: DiscussionMessage) => (m.ts ? new Date(m.ts.replace(' ', 'T')).getTime() : 0);
+
+  const out: Row[] = [];
   let lastTs = 0;
+  let prevChat: ChatRow | null = null;
+  let pendingUnread = !!unreadStartId.value && msgs.some((m) => m.id === unreadStartId.value);
+
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
-    const ts = m.ts ? new Date(m.ts.replace(' ', 'T')).getTime() : 0;
-    if (ts - lastTs > TIME_GAP_MS) out.push({ t: 'time', label: fmtFull(m.ts) });
+    const ts = tsOf(m);
+    if (ts - lastTs > TIME_GAP_MS) { out.push({ type: 'time', label: fmtFull(m.ts) }); prevChat = null; }
     lastTs = ts || lastTs;
-    const t = m.from === 'user' ? 'user' : m.from === 'system' ? 'system' : 'agent';
-    out.push({ t, m, answered: !!m.needs_user && lastUserIdx > i });
+    if (pendingUnread && m.id === unreadStartId.value) { out.push({ type: 'unread' }); pendingUnread = false; }
+    if (m.from === 'system') { out.push({ type: 'sys', m }); prevChat = null; continue; }
+    if (m.tool) { out.push({ type: 'tool', m }); continue; } // 工具行不打断分组节奏
+
+    const side: 'me' | 'them' = m.from === 'user' ? 'me' : 'them';
+    const head = !prevChat || prevChat.m.from !== m.from || ts - tsOf(prevChat.m) > GROUP_GAP_MS;
+    const row: ChatRow = {
+      type: 'chat', m, side, head, tail: false,
+      answered: !!m.needs_user && lastUserIdx > i,
+      quote: m.reply_to ? quoteOf(byId.get(m.reply_to)) : undefined,
+    };
+    if (prevChat) prevChat.tail = !head; // 上一组到此为止 → 上一条是组尾
+    out.push(row);
+    prevChat = row;
   }
+  if (prevChat) prevChat.tail = true;
   return out;
 });
+
+function quoteOf(src?: DiscussionMessage) {
+  if (!src) return undefined;
+  return { who: src.from === 'user' ? '我' : roleOf(src.from), text: src.text.slice(0, 60) };
+}
+
+function rowKey(row: Row, i: number): string {
+  if (row.type === 'time') return `t${i}${row.label}`;
+  if (row.type === 'unread') return 'unread';
+  return `${row.type}:${row.m.id}`;
+}
+
+function hasReactions(m: DiscussionMessage): boolean {
+  return !!m.reactions && Object.keys(m.reactions).length > 0;
+}
+
+function fmtHM(ts: string): string {
+  if (!ts) return '';
+  const d = new Date(ts.replace(' ', 'T'));
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 
 function fmtFull(ts: string): string {
   if (!ts) return '';
   const d = new Date(ts.replace(' ', 'T'));
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  if (sameDay) return hm;
+  const hm = fmtHM(ts);
+  if (d.toDateString() === new Date().toDateString()) return hm;
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
@@ -139,12 +255,14 @@ function md(text: string): string {
   return html.replace(/@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '<span class="mention">@$1</span>');
 }
 
+// ---------- 交互 ----------
 async function sendNow() {
   const text = draft.value.trim();
   if (!text) return;
   try {
-    await send(text);
+    await send(text, replyTo.value ? { reply_to: replyTo.value } : undefined);
     draft.value = '';
+    replyTo.value = null;
     await nextTick();
     scrollToBottom(true);
   } catch (e: any) {
@@ -156,68 +274,152 @@ async function moreRound() {
   await round();
 }
 
+async function onReact(m: DiscussionMessage, emoji: string) {
+  if (m.reactions?.[emoji]?.includes('user')) return;
+  await react(m.id, emoji).catch(() => undefined);
+}
+
+function startReply(m: DiscussionMessage) {
+  replyTo.value = m.id;
+  void nextTick(() => inputEl.value?.focus());
+}
+
+const replyPreview = computed(() => {
+  const src = (current.value?.messages || []).find((x) => x.id === replyTo.value);
+  return src ? `${roleOf(src.from)}：${src.text.slice(0, 40)}` : '';
+});
+
+function copyText(text: string) {
+  void navigator.clipboard?.writeText(text).then(
+    () => ElMessage.success('已复制'),
+    () => undefined
+  );
+}
+
 async function onModeChange(v: any) {
   await setMode(v === 'auto' ? 'auto' : 'manual');
-  ElMessage.success(v === 'auto' ? '已切到自动模式：下次发言起成员自动多轮讨论' : '已切到手动模式');
+  ElMessage.success(v === 'auto' ? '已切到自动模式：一条消息驱动多轮' : '已切到手动模式');
 }
 
 function insertMention(name: string) {
   draft.value = (draft.value + (draft.value && !draft.value.endsWith(' ') ? ' ' : '') + `@${name} `).slice(0, 4000);
+  void nextTick(() => inputEl.value?.focus());
 }
 
+// ---------- 滚动 / 未读 ----------
 function onScroll() {
   const el = wrapEl.value;
   if (!el) return;
   stickToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  stick.value = stickToBottom;
+  if (stickToBottom) {
+    newBelow.value = 0;
+    if (unreadStartId.value) {
+      const msgs = current.value?.messages || [];
+      const idx = msgs.findIndex((m) => m.id === unreadStartId.value);
+      if (idx < 0 || msgs.length - idx <= 2) unreadStartId.value = null;
+    }
+  }
 }
 
 function scrollToBottom(force = false) {
   const el = wrapEl.value;
   if (!el || (!force && !stickToBottom)) return;
   el.scrollTop = el.scrollHeight;
+  newBelow.value = 0;
 }
 
 watch(
-  () => [current.value?.id, current.value?.messages.length, thinking.value],
+  () => current.value?.messages.length ?? 0,
+  (len, old) => {
+    if (typeof old === 'number' && len > old && !stickToBottom) newBelow.value += len - old;
+    void nextTick(() => scrollToBottom());
+  }
+);
+
+watch(
+  () => Object.keys(streams).length,
   () => void nextTick(() => scrollToBottom())
 );
+
+watch(() => [thinking.value, activity.value] as const, () => void nextTick(() => scrollToBottom()));
+
+// 切换讨论：重置未读锚点（打开时最后一条之后到达的都算新）
 watch(() => current.value?.id, (id) => {
-  if (id) {
-    mode.value = current.value?.mode || 'manual';
-    stickToBottom = true;
-    void nextTick(() => scrollToBottom(true));
-  }
+  if (!id) return;
+  const msgs = current.value?.messages || [];
+  unreadStartId.value = msgs.length ? msgs[msgs.length - 1].id : null;
+  replyTo.value = null;
+  stickToBottom = true;
+  void nextTick(() => scrollToBottom(true));
 });
 </script>
 
 <style scoped>
-.disc-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--ct-bg); }
-.stream { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px 8px; overflow-y: auto; }
-.empty { color: var(--ct-text3); text-align: center; padding: 40px 20px; font-size: 12px; }
+.disc-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--ct-bg); position: relative; }
+.stream { flex: 1; display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; overflow-y: auto; }
+.empty { color: var(--ct-text3); text-align: center; padding: 48px 24px; font-size: 12px; line-height: 2; }
 
-.time-divider { text-align: center; font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 4px; padding: 3px 10px; align-self: center; margin: 6px 0 2px; }
+.time-divider { text-align: center; font-size: 10px; color: var(--ct-text3); margin: 10px 0 6px; opacity: 0.85; }
 
-.row { display: flex; gap: 10px; }
+.unread-divider { display: flex; align-items: center; gap: 8px; margin: 8px 0; color: #e5484d; font-size: 10px; }
+.unread-divider::before, .unread-divider::after { content: ''; flex: 1; height: 1px; background: rgba(229, 72, 77, 0.35); }
+
+/* ---------- 系统形态 ---------- */
+.sys-row { display: flex; justify-content: center; margin: 4px 0; }
+.sys-text { font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 10px; padding: 3px 12px; max-width: 85%; text-align: center; }
+.sys-notice { font-size: 10px; color: var(--ct-text3); font-style: italic; opacity: 0.8; }
+.sys-card { font-size: 12px; color: var(--ct-text); background: var(--ct-panel); border: 1px solid var(--ct-border2); border-radius: 10px; padding: 8px 16px; max-width: 80%; text-align: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04); }
+
+/* ---------- 工具活动行 ---------- */
+.tool-row { display: flex; padding-left: 44px; margin: 1px 0; }
+.tool-text { font-size: 10px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 6px; padding: 2px 8px; max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 气泡行 ---------- */
+.row { display: flex; gap: 8px; position: relative; }
 .row.them { justify-content: flex-start; }
 .row.me { justify-content: flex-end; }
-.them-col { display: flex; flex-direction: column; align-items: flex-start; max-width: 75%; min-width: 0; }
-.me-col { display: flex; flex-direction: column; align-items: flex-end; max-width: 75%; min-width: 0; }
-.who-name { font-size: 10px; color: var(--ct-text3); margin: 0 2px 3px; }
+.row:not(.grouped) { margin-top: 8px; }
+.av-slot { width: 34px; flex-shrink: 0; }
+.av-click { cursor: pointer; }
+.col { display: flex; flex-direction: column; max-width: min(72%, 620px); min-width: 0; position: relative; }
+.col-them { align-items: flex-start; }
+.col-me { align-items: flex-end; }
 
-.bubble { padding: 9px 12px; border-radius: 10px; font-size: 13px; background: var(--ct-panel); border: 1px solid var(--ct-border); position: relative; }
-.them-b { border-top-left-radius: 2px; }
-.them-b::before { content: ''; position: absolute; top: 0; left: -7px; border: 4px solid transparent; border-top-color: var(--ct-border); border-right-color: var(--ct-border); }
-.me-b { background: #95ec69; border: none; border-top-right-radius: 2px; color: #0b2e13; }
+.who { display: flex; align-items: baseline; gap: 6px; margin: 0 2px 3px; }
+.who-role { font-size: 12px; font-weight: 600; }
+.who-id { font-size: 10px; color: var(--ct-text3); }
+.ask-tag { font-size: 10px; color: #fff; background: var(--ct-accent); border-radius: 4px; padding: 1px 6px; }
+.ask-tag.answered { background: var(--ct-text3); }
+
+.bubble { padding: 9px 12px; border-radius: 14px; font-size: 13px; position: relative; line-height: 1.65; }
+.them-b { background: var(--ct-panel); border: 1px solid var(--ct-border); border-top-left-radius: 4px; }
+.me-b { background: #95ec69; border-top-right-radius: 4px; color: #0b2e13; }
 html.dark .me-b { background: #3eb575; color: #eafff1; }
-.me-b::before { content: ''; position: absolute; top: 0; right: -7px; border: 4px solid transparent; border-top-color: #95ec69; border-left-color: #95ec69; }
-html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575; }
-
-/* ask_user：accent 高亮边框 + 待拍板标签；用户回复后降为已回复灰标签 */
 .them-b.ask { border-color: var(--ct-accent); box-shadow: 0 0 0 1px var(--ct-accent); }
-.ask-tag { align-self: flex-start; font-size: 10px; color: #fff; background: var(--ct-accent); border-radius: 3px; padding: 1px 6px; margin-bottom: 5px; }
-.them-b.answered .ask-tag { background: var(--ct-text3); }
+.them-b.answered { border-color: var(--ct-border); box-shadow: none; }
 
-.b-text { word-break: break-word; color: var(--ct-text); line-height: 1.65; }
+.hover-ts { position: absolute; top: -14px; right: 4px; font-size: 9px; color: var(--ct-text3); opacity: 0; transition: opacity 0.15s; pointer-events: none; }
+.row.me .hover-ts { right: auto; left: 4px; }
+.row:hover .hover-ts { opacity: 1; }
+.tail-ts { font-size: 9px; color: var(--ct-text3); margin: 2px 4px 0; }
+
+.quote-bar { font-size: 10px; opacity: 0.75; border-left: 2px solid currentColor; padding: 2px 0 2px 6px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+.reactions { display: flex; gap: 4px; margin: 3px 2px 0; flex-wrap: wrap; }
+.react-chip { font-size: 11px; background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 10px; padding: 0 7px; cursor: pointer; color: var(--ct-text); }
+.react-chip.mine { border-color: var(--ct-accent); background: var(--ct-panel); }
+
+.hover-actions { position: absolute; top: 14px; display: none; gap: 2px; z-index: 2; }
+.ha-right { left: calc(100% + 8px); }
+.ha-left { right: calc(100% + 8px); }
+.row:hover .hover-actions { display: flex; }
+.row.streaming .hover-actions { display: none !important; }
+.ha-btn { border: 1px solid var(--ct-border); background: var(--ct-panel); border-radius: 6px; font-size: 11px; padding: 1px 6px; cursor: pointer; color: var(--ct-text3); }
+.ha-btn:hover { color: var(--ct-text); border-color: var(--ct-border2); }
+
+.b-text { word-break: break-word; color: var(--ct-text); }
+.me-b .b-text { color: inherit; }
 .b-text :deep(p) { margin: 0 0 6px; }
 .b-text :deep(p:last-child) { margin-bottom: 0; }
 .b-text :deep(code) { font-family: var(--ct-mono); font-size: 11px; background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 3px; padding: 0 4px; }
@@ -225,19 +427,29 @@ html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575;
 .b-text :deep(strong) { font-weight: 600; }
 .b-text :deep(.mention) { color: var(--ct-accent); background: var(--ct-panel2); border-radius: 3px; padding: 0 3px; font-weight: 600; }
 
-.sys-row { display: flex; justify-content: center; margin: 2px 0; }
-.sys-text { font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 4px; padding: 2px 12px; max-width: 85%; text-align: center; }
-
+/* ---------- 流式/打字状态 ---------- */
+.row.streaming .bubble { opacity: 0.92; }
+.caret { display: inline-block; width: 2px; height: 14px; background: var(--ct-accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 0.9s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.router-hint { align-self: center; font-size: 11px; color: var(--ct-text3); display: flex; align-items: center; gap: 4px; margin: 8px 0; }
 .typing-b { display: flex; align-items: center; gap: 4px; }
-.dot-t { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-text3); animation: bob 1.2s infinite; }
+.dot-t { width: 5px; height: 5px; border-radius: 50%; background: var(--ct-text3); animation: bob 1.2s infinite; }
 .dot-t:nth-child(2) { animation-delay: 0.15s; }
 .dot-t:nth-child(3) { animation-delay: 0.3s; }
 @keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
 .typing-label { font-size: 10px; color: var(--ct-text3); margin-left: 6px; }
 
-.pending-bar { margin: 0 8px 6px; font-size: 11px; color: var(--ct-accent); border: 1px dashed var(--ct-accent); border-radius: 6px; padding: 5px 10px; }
+/* ---------- 新消息胶囊 ---------- */
+.new-pill { position: absolute; right: 16px; bottom: 150px; z-index: 5; border: 1px solid var(--ct-border2); background: var(--ct-panel); color: var(--ct-accent); border-radius: 14px; font-size: 11px; padding: 4px 12px; cursor: pointer; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12); }
+.fade-enter-active, .fade-leave-active { transition: opacity 0.18s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 
+.pending-bar { margin: 0 10px 6px; font-size: 11px; color: var(--ct-accent); border: 1px dashed var(--ct-accent); border-radius: 8px; padding: 5px 10px; }
+
+/* ---------- 输入区 ---------- */
 .input-zone { border-top: 1px solid var(--ct-border); background: var(--ct-panel); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.reply-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ct-text3); background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 8px; padding: 4px 8px; }
+.rb-x { border: none; background: none; color: var(--ct-text3); font-size: 14px; cursor: pointer; }
 .chips-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .chip-label { font-size: 10px; color: var(--ct-text3); }
 .mention-chip { font-size: 11px; color: var(--ct-accent); background: var(--ct-bg); border: 1px solid var(--ct-border2); border-radius: 10px; padding: 1px 8px; cursor: pointer; }
@@ -246,4 +458,5 @@ html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575;
 .op-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mode-hint { font-size: 10px; color: var(--ct-text3); }
 .ops { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.mono { font-family: var(--ct-mono); }
 </style>

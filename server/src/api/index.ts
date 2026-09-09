@@ -949,11 +949,12 @@ export function createApi(ctx: ApiContext): Hono {
   });
 
   app.get('/api/discussions/:id', async (c) => {
-    const { getDiscussion, getMessages, hasPendingUserQuestion } = await import('../discussion');
+    // busy 一并返回：重进页面/新设备打开在飞讨论时，UI 立刻恢复"成员处理中"状态
+    const { getDiscussion, getMessages, hasPendingUserQuestion, isDiscussionBusy } = await import('../discussion');
     const d = await getDiscussion(c.req.param('id'));
     if (!d) throw new HttpError(404, 'discussion not found');
-    const msgs = await getMessages(d.id);
-    return c.json({ ...d, messages: msgs, pending_user: hasPendingUserQuestion(msgs) });
+    const msgs = await getMessages(c.req.param('id'));
+    return c.json({ ...d, messages: msgs, pending_user: hasPendingUserQuestion(msgs), busy: await isDiscussionBusy(c.req.param('id')) });
   });
 
   app.put('/api/discussions/:id', async (c) => {
@@ -971,22 +972,35 @@ export function createApi(ctx: ApiContext): Hono {
   });
 
   app.post('/api/discussions/:id/messages', async (c) => {
+    // 引擎 v2：用户消息不再被 busy 拒收（409 废除）——随时入库；在飞的响应循环
+    // 会在每位发言者之间检查新消息并重新路由（轮内真打断）。
     const { postUserMessage, getDiscussion, triggerRound, isDiscussionBusy } = await import('../discussion');
     const id = c.req.param('id');
-    if (await isDiscussionBusy(id)) throw new HttpError(409, '该讨论有一轮正在进行，请稍候');
-    const body = await readJsonAuto<{ text?: string }>(c);
-    const { message, mentioned } = await postUserMessage(discDeps(), id, body.text || '');
+    const body = await readJsonAuto<{ text?: string; reply_to?: string; react_to?: string; emoji?: string }>(c);
+    const { message, mentioned } = await postUserMessage(discDeps(), id, body.text || '', {
+      reply_to: body.reply_to, react_to: body.react_to, emoji: body.emoji,
+    });
     const disc = await getDiscussion(id);
-    if (disc) triggerRound(discDeps(), disc, mentioned);
-    return c.json({ status: 'accepted', message, responding: mentioned.length ? mentioned : null });
+    const busy = await isDiscussionBusy(id);
+    if (disc && message && !busy) triggerRound(discDeps(), disc, mentioned);
+    return c.json({
+      status: 'accepted',
+      message,
+      // queued=true：一轮在飞，新消息由在飞循环消化（无需等待，也不会丢）
+      queued: !!message && busy,
+      responding: !busy && message ? (mentioned.length ? mentioned : 'auto') : null,
+    });
   });
 
   app.post('/api/discussions/:id/round', async (c) => {
-    const { getDiscussion, runDiscussionRound, isDiscussionBusy } = await import('../discussion');
+    // 「继续讨论」按钮：走统一响应循环（自动模式多轮/手动模式一轮），
+    // 循环内会消化期间到达的用户消息（drain），不再有触发后失联的问题。
+    const { getDiscussion, triggerRound, isDiscussionBusy } = await import('../discussion');
     const id = c.req.param('id');
     if (await isDiscussionBusy(id)) throw new HttpError(409, '该讨论有一轮正在进行，请稍候');
-    if (!(await getDiscussion(id))) throw new HttpError(404, 'discussion not found');
-    void runDiscussionRound(discDeps(), id).catch(() => undefined);
+    const disc = await getDiscussion(id);
+    if (!disc) throw new HttpError(404, 'discussion not found');
+    triggerRound(discDeps(), disc, []);
     return c.json({ status: 'accepted' });
   });
 

@@ -95,12 +95,14 @@ function getClient(entry: ModelEntry): OpenAI {
  * `wallclockCapMs` (6th arg) overrides the cap for this call only. Note the semantic
  * change: agent.yaml `timeout` no longer flows in here — it became a node-level budget
  * enforced by the orchestrator between rounds.
+ * `onDelta` (7th arg) receives raw content deltas as they arrive (streaming mode only;
+ * the non-streaming path cannot report progress). Consumers must treat it as best-effort.
  */
-export async function chat(entry: ModelEntry, messages: { role: string; content: string }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number): Promise<LlmResponse> {
+export async function chat(entry: ModelEntry, messages: { role: string; content: string }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void): Promise<LlmResponse> {
   const client = getClient(entry);
   // 输出上限是模型属性（model_pool 的 max_tokens），调用方不传即取模型配置
   const cap = maxTokens ?? entry.max_tokens ?? 128000;
-  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs);
+  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta);
   return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs);
 }
 
@@ -128,7 +130,7 @@ function startWatchdog(
   }, every);
 }
 
-async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number): Promise<LlmResponse> {
+async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void): Promise<LlmResponse> {
   const startedAt = Date.now();
   const controller = new AbortController();
   const effectiveSignal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
@@ -162,7 +164,12 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
         firstTokenMs = Date.now() - startedAt;
       }
       const choice = chunk.choices?.[0];
-      if (choice?.delta?.content) content += choice.delta.content;
+      if (choice?.delta?.content) {
+        content += choice.delta.content;
+        if (onDelta) {
+          try { onDelta(choice.delta.content); } catch { /* delta consumers never break the stream */ }
+        }
+      }
       if (choice?.finish_reason) finishReason = choice.finish_reason;
       if (chunk.usage) {
         promptTokens = chunk.usage.prompt_tokens ?? 0;

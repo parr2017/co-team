@@ -148,8 +148,10 @@ async function main(): Promise<void> {
   const interrupted = await orchestrator.sweepInterruptedTasks();
   if (interrupted.length) logger.warn('Startup sweep: interrupted tasks marked failed', { tasks: interrupted });
 
-  // 群组讨论：上一进程死在轮次中会遗留 busy/stop 锁（无属主，TTL 内会卡住讨论）——启动即清
-  const { clearStaleDiscussionLocks } = await import('./discussion');
+  // 群组讨论：引擎 v2 配置（组内执行策略/轮数上限/背景注入预算）+ 上一进程死在轮次中
+  // 会遗留 busy/stop 锁（无属主，TTL 内会卡住讨论）——启动即清
+  const { clearStaleDiscussionLocks, configureDiscussion, resumeOrphanedDiscussions } = await import('./discussion');
+  configureDiscussion(config.discussion);
   await clearStaleDiscussionLocks(logger);
 
   // 任务 git 落点治理：上一进程把项目仓库 HEAD 切到 coteam/task-* 后未回切的，启动时清扫
@@ -174,6 +176,9 @@ async function main(): Promise<void> {
   // failures block the lane until the user resumes it
   const taskQueue = new TaskQueueManager(orchestrator, modelPool);
   logger.info('Task queue initialized (one running task per project)');
+
+  // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
+  await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger });
 
   // improvement 5 (R5): periodic scan nudges tasks stuck in 'clarifying' (once per task)
   startClarifyTimeoutScanner({ timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });

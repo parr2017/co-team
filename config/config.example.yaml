@@ -90,6 +90,17 @@ context:
   max_prompt_tokens: 16000          # prompt 估算超线触发断崖折叠（每尝试至多一次）
   workspace_tree_max_chars: 1500    # 文件树注入预算
   goal_max_chars: 1500              # 全局目标注入上限（超出截断并指向 GLOBAL_GOAL.md）
+# 群组讨论引擎 v2（2026-09-09）：群内成员可直接读项目文件、执行命令、小改代码并重启验证。
+# 所有工具受目录监狱约束（越界绝对路径/.. 一律拒绝）；改动超过小改预算（3 文件/80 行）会被
+# 引导走「生成方案 → 转项目开发」。0l7ybpte 实测教训：口头承诺杀不死问题，工具结果才是汇报依据。
+discussion:
+  # 群内执行/写文件的权限闸门（语义同 permissions，缺省 full = 项目目录内完全控制；
+  # 收紧为 whitelist_auto 时按 whitelist_commands 的 bin 名单放行，readonly 只留侦查）
+  permissions:
+    level: full
+    # whitelist_commands: [npm, node, git, netstat]
+  max_rounds: 3                     # 一条用户消息最多驱动的讨论轮数（含轮内插话重启）
+  project_context_char_cap: 24000   # 项目背景+全量经验注入的字符预算（超出按最旧经验省略并显式标注）
 knowledge:
   dir: ./data/knowledge
   # RAG 语义检索：指向模型池中支持 /v1/embeddings 的条目；未启用时回退关键词检索

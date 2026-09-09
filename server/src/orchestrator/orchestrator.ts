@@ -206,6 +206,11 @@ export class Orchestrator {
   router: Router;
   private pool: ModelPool | null;
   private policy: PermissionPolicy;
+
+  /** 全局执行策略（群组讨论引擎复用时读取；监狱与分级闸门的依据） */
+  get permissionPolicy(): PermissionPolicy {
+    return this.policy;
+  }
   private maxRetries: number;
   private sandboxEnabled: boolean;
   private gitEnabled: boolean;

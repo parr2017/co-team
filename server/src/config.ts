@@ -64,6 +64,12 @@ export interface AppConfig {
   };
   /** feature: 每日问题报告 — disabled by default; only reports when explicitly enabled */
   daily_report?: { enabled: boolean; hour: number };
+  /** 群组讨论引擎 v2：组内工具执行策略（缺省=项目目录监狱内完全控制）、每触发轮数上限、全量背景注入预算 */
+  discussion?: {
+    permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number };
+    max_rounds?: number;
+    project_context_char_cap?: number;
+  };
   /** 2026-09-09 超时语义重做：时长本身不判死——只有确定性死亡/静默超线/人工判定才是失败 */
   llm?: LlmTimeoutConfig;
   /** 上下文预算（缓存优先裁剪）：估算 prompt 超线触发一次性断崖折叠 */
@@ -189,6 +195,11 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       // feature: 每日问题报告 — 默认关闭，界面开关打开后才会触发
       enabled: raw.daily_report?.enabled === true,
       hour: Number.isFinite(raw.daily_report?.hour) ? Math.min(23, Math.max(0, Number(raw.daily_report.hour))) : 9,
+    },
+    discussion: {
+      permissions: raw.discussion?.permissions || undefined,
+      max_rounds: raw.discussion?.max_rounds,
+      project_context_char_cap: raw.discussion?.project_context_char_cap,
     },
     llm: {
       // 2026-09-09 超时语义重做：秒数可带小数（便于测试调小阈值）；负数按缺省，0 为显式关闭

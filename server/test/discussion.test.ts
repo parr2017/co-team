@@ -4,13 +4,17 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 // Mocked LLM behaviors, switched per test. Markers match discussion.ts system prompts:
-// speaker=「项目规划群组讨论」, moderator=「判断讨论是否还有必要」, scheme=「收敛为一份结构化」。
+// speaker=「项目规划群组讨论」, moderator=「判断讨论是否还有必要」, router=「群聊调度路由器」,
+// scheme=「收敛为一份结构化」。发言者身份现在在 user 消息里（共享 system 前缀换缓存）。
 const h = vi.hoisted(() => ({
   speaker: null as null | ((sys: string, user: string) => string | Promise<string>),
   moderatorContinue: false,
+  /** null → router returns all members (legacy behavior); 'throw' → router failure fallback test */
+  routerSpeakers: null as null | string[] | 'throw',
   schemeText: '',
   lastSchemeUser: '',
-  lastSpeakerCalls: [] as { agent: string; user: string }[],
+  lastSpeakerCalls: [] as { agent: string; sys: string; user: string }[],
+  lastRouterCalls: [] as { user: string }[],
 }));
 
 vi.mock('../src/llm', async (importOriginal) => {
@@ -20,18 +24,25 @@ vi.mock('../src/llm', async (importOriginal) => {
     ...actual,
     chat: async (_entry: any, messages: { role: string; content: string }[]) => {
       const sys = messages.find((m) => m.role === 'system')?.content || '';
-      const user = messages.find((m) => m.role === 'user')?.content || '';
+      const userAll = messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n\n');
       if (sys.includes('判断讨论是否还有必要')) return ok(JSON.stringify({ continue: h.moderatorContinue, reason: 'test' }));
+      if (sys.includes('群聊调度路由器')) {
+        h.lastRouterCalls.push({ user: userAll });
+        if (h.routerSpeakers === 'throw') throw new Error('router down');
+        const m = sys.match(/可选成员：([^\n]+)/);
+        const all = m ? m[1].split('、').map((s) => s.trim()).filter(Boolean) : [];
+        return ok(JSON.stringify({ speakers: h.routerSpeakers ?? all, reason: 'test' }));
+      }
       if (sys.includes('收敛为一份结构化')) {
-        h.lastSchemeUser = user;
+        h.lastSchemeUser = userAll;
         return ok(h.schemeText || '# 项目规划方案：demo\n## 背景与目标\nx\n## 待定事项\n无');
       }
       if (sys.includes('项目规划群组讨论')) {
-        const m = sys.match(/你是群组讨论中的「(.+?)」Agent/);
+        const m = userAll.match(/你是群组讨论中的「(.+?)」Agent/);
         const agent = m ? m[1] : '?';
-        h.lastSpeakerCalls.push({ agent, user });
+        h.lastSpeakerCalls.push({ agent, sys, user: userAll });
         if (!h.speaker) return ok(JSON.stringify({ speak: false }));
-        return ok(await h.speaker(sys, user));
+        return ok(await h.speaker(sys, userAll));
       }
       if (sys.includes('task planner')) {
         return ok(JSON.stringify({ nodes: [{ id: '1', name: '实现方案', agent: 'dev', complexity: 'normal', goal_link: '按方案实现' }], edges: [], summary: 'plan' }));
@@ -44,12 +55,12 @@ vi.mock('../src/llm', async (importOriginal) => {
 import { initBus, closeBus, getBus, busSet } from '../src/bus';
 import { ModelPool } from '../src/scheduler';
 import { Orchestrator } from '../src/orchestrator/orchestrator';
-import { getProject, getProjectMemory, getAgentMemory, saveProject } from '../src/store';
-import { listKnowledge } from '../src/knowledge';
+import { getProject, getProjectMemory, getAgentMemory, saveProject, addProjectMemory } from '../src/store';
+import { listKnowledge, writeKnowledge } from '../src/knowledge';
 import {
   createDiscussion, DiscussionError, parseMentions, hasPendingUserQuestion, unansweredQuestions,
-  getDiscussion, getMessages, runDiscussionRound, runAutoDiscussion, generateScheme, updateDiscussion,
-  convertToProject, postUserMessage, isDiscussionBusy,
+  getDiscussion, getMessages, runDiscussionRound, runAutoDiscussion, runResponseLoop, generateScheme, updateDiscussion,
+  convertToProject, postUserMessage, isDiscussionBusy, extractReplyStreaming,
 } from '../src/discussion';
 import type { DiscussionMessage } from '../src/discussion';
 
@@ -66,7 +77,7 @@ beforeEach(async () => {
   for (const name of ['dev', 'test', 'deploy']) {
     const d = path.join(tmp, name);
     fs.mkdirSync(d, { recursive: true });
-    fs.writeFileSync(path.join(d, 'agent.yaml'), `name: ${name}\ntags: [code]\nrole: ${name}\n`);
+    fs.writeFileSync(path.join(d, 'agent.yaml'), `name: ${name}\ntags: [code]\nrole: ${name === 'dev' ? '开发工程师' : name === 'deploy' ? '发布工程师' : name}\n`);
     fs.writeFileSync(path.join(d, 'prompt.md'), `${name} 的专业指令`);
   }
   process.env.COTEAM_KNOWLEDGE_DIR = path.join(tmp, 'kb');
@@ -75,9 +86,11 @@ beforeEach(async () => {
   getBus().subscribe('coteam:dashboard', (m: any) => capturedEvents.push(m));
   h.speaker = null;
   h.moderatorContinue = false;
+  h.routerSpeakers = null;
   h.schemeText = '';
   h.lastSchemeUser = '';
   h.lastSpeakerCalls = [];
+  h.lastRouterCalls = [];
   const pool = new ModelPool([{ name: 'fake-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
   const orchestrator = new Orchestrator({
     agentsDir: tmp, modelPool: pool, policy: { whitelistCommands: null, maxTimeSec: 10 },
@@ -96,11 +109,21 @@ afterEach(() => {
   delete process.env.COTEAM_KNOWLEDGE_DIR;
 });
 
-async function mkDiscussion(members = ['dev', 'test']) {
-  return createDiscussion(deps, { title: 'demo 规划', members });
+async function mkDiscussion(members = ['dev', 'test'], extra: { project_id?: string } = {}) {
+  return createDiscussion(deps, { title: 'demo 规划', members, ...extra });
+}
+
+/** a saved project whose workspace is a real temp dir (for tool/exec tests) */
+async function mkProject(id = 'p1') {
+  const ws = path.join(tmp, id);
+  fs.mkdirSync(ws, { recursive: true });
+  fs.writeFileSync(path.join(ws, 'package.json'), JSON.stringify({ name: id, scripts: { dev: 'echo serve' } }));
+  await saveProject({ id, name: `项目${id}`, workspace: ws, description: '演示项目', created_at: new Date().toISOString() });
+  return ws;
 }
 
 const nonSystem = (ms: DiscussionMessage[]) => ms.filter((m) => m.from !== 'system');
+const plainAgentMsgs = (ms: DiscussionMessage[], agent: string) => ms.filter((m) => m.from === agent && !m.tool);
 
 describe('parseMentions', () => {
   it('collects valid mentions in order, dedupes, flags invalid ones', () => {
@@ -123,6 +146,23 @@ describe('pending user question derivation', () => {
   });
 });
 
+describe('extractReplyStreaming', () => {
+  it('extracts the reply field incrementally, decoding escapes; null before the key appears', () => {
+    expect(extractReplyStreaming('{"speak": tr')).toBeNull();
+    expect(extractReplyStreaming('{"speak": true, "rep')).toBeNull();
+    let r = extractReplyStreaming('{"speak": true, "reply": "你好');
+    expect(r).toEqual({ value: '你好', done: false });
+    r = extractReplyStreaming('{"speak": true, "reply": "你好\\n世界"}');
+    expect(r).toEqual({ value: '你好\n世界', done: true });
+    r = extractReplyStreaming('{"speak": true, "reply": "带\\"引号\\"和\\\\反斜杠"}');
+    expect(r!.value).toBe('带"引号"和\\反斜杠');
+    r = extractReplyStreaming('{"speak": true, "reply": "\\u4e2d');
+    expect(r).toEqual({ value: '中', done: false });
+    // tool-call shape has no reply key at all
+    expect(extractReplyStreaming('{"tool_calls":[{"tool":"exec","command":"ls"}]}')).toBeNull();
+  });
+});
+
 describe('discussion lifecycle', () => {
   it('rejects unknown members and empty rosters', async () => {
     await expect(createDiscussion(deps, { title: 'x', members: ['ghost'] })).rejects.toBeInstanceOf(DiscussionError);
@@ -139,29 +179,165 @@ describe('discussion lifecycle', () => {
     expect(capturedEvents.some((e) => e.type === 'discussion_started' && e.payload.discussion_id === d.id)).toBe(true);
   });
 
-  it('user message: invalid @ is a 400 listing valid members; valid @ appends a mention note', async () => {
+  it('user message: invalid @ is a 400 listing valid members; mention no longer spams a system note', async () => {
     const d = await mkDiscussion();
     await expect(postUserMessage(deps, d.id, '@nobody 看')).rejects.toThrow(/有效成员：dev、test/);
     const { mentioned } = await postUserMessage(deps, d.id, '@dev 先看方案');
     expect(mentioned).toEqual(['dev']);
     const msgs = await getMessages(d.id);
-    expect(msgs.some((m) => m.from === 'system' && m.text.includes('用户点名 dev'))).toBe(true);
+    expect(msgs.some((m) => m.from === 'system' && m.text.includes('点名'))).toBe(false);
+    expect(msgs.find((m) => m.from === 'user')!.mentioned).toEqual(['dev']);
+  });
+
+  it('reply_to attaches a quote; unknown reply_to is a 400', async () => {
+    const d = await mkDiscussion(['dev']);
+    const { message } = await postUserMessage(deps, d.id, '第一条');
+    const { message: second } = await postUserMessage(deps, d.id, '回复它', { reply_to: message!.id });
+    expect(second!.reply_to).toBe(message!.id);
+    await expect(postUserMessage(deps, d.id, 'x', { reply_to: 'ghost' })).rejects.toThrow(/不存在/);
+  });
+
+  it('emoji reaction mutates the target message without appending one', async () => {
+    const d = await mkDiscussion(['dev']);
+    h.speaker = () => okContent('dev 的观点');
+    await runDiscussionRound(deps, d.id);
+    const before = await getMessages(d.id);
+    const target = before.find((m) => m.from === 'dev')!;
+    const { message } = await postUserMessage(deps, d.id, '', { react_to: target.id, emoji: '👍' });
+    expect(message).toBeNull();
+    const after = await getMessages(d.id);
+    expect(after.find((m) => m.id === target.id)!.reactions).toEqual({ '👍': ['user'] });
+    expect(after.length).toBe(before.length); // reaction mutates in place, no new message
+    expect(capturedEvents.some((e) => e.type === 'discussion_reacted' && e.payload.message_id === target.id)).toBe(true);
+    await expect(postUserMessage(deps, d.id, '')).rejects.toThrow(/required/);
   });
 });
 
-describe('round engine: self-decided speaking', () => {
-  it('irrelevant agents stay silent; speakers, silent list and system tally are recorded', async () => {
+describe('router: dynamic speakers replace full rotation', () => {
+  it('only router-picked members are invoked; unpicked ones never get a call', async () => {
     const d = await mkDiscussion();
-    h.speaker = (sys) => (sys.includes('「dev」') ? okContent('建议用 TypeScript 重写', { experience: 'TS 项目禁用 pytest，错栈会空转修复循环' }) : JSON.stringify({ speak: false }));
+    h.routerSpeakers = ['test'];
+    h.speaker = () => okContent('我有新想法');
+    const res = await runDiscussionRound(deps, d.id);
+    expect(res.speakers).toEqual(['test']);
+    expect(h.lastSpeakerCalls.map((c) => c.agent)).toEqual(['test']);
+    expect(h.lastRouterCalls).toHaveLength(1);
+  });
+
+  it('@-mention is a mention-only round (others cannot chime in; router not even consulted)', async () => {
+    const d = await mkDiscussion();
+    h.speaker = () => okContent('都会说');
+    const { mentioned } = await postUserMessage(deps, d.id, '@dev 你来，其他人不要发言');
+    const res = await runDiscussionRound(deps, d.id, { forced: mentioned });
+    expect(res.speakers).toEqual(['dev']);
+    expect(h.lastSpeakerCalls.map((c) => c.agent)).toEqual(['dev']);
+    expect(h.lastRouterCalls).toHaveLength(0);
+  });
+
+  it('empty router selection converges the round as all_silent (no wasted LLM trips)', async () => {
+    const d = await mkDiscussion();
+    h.routerSpeakers = [];
+    const res = await runDiscussionRound(deps, d.id);
+    expect(res.all_silent).toBe(true);
+    expect(h.lastSpeakerCalls).toHaveLength(0);
+  });
+
+  it('router failure falls back to the legacy full rotation', async () => {
+    const d = await mkDiscussion();
+    h.routerSpeakers = 'throw';
+    h.speaker = () => okContent('回退轮也照说');
+    const res = await runDiscussionRound(deps, d.id);
+    expect(res.speakers.sort()).toEqual(['dev', 'test']);
+    expect((await getMessages(d.id)).at(-1)!.from).toBe('test');
+  });
+});
+
+describe('round engine: speak-or-silent with real tools', () => {
+  it('irrelevant agents stay silent; NO per-round tally stamp is written anymore', async () => {
+    const d = await mkDiscussion();
+    h.speaker = (sys, user) => (user.includes('「dev」') ? okContent('建议用 TypeScript 重写', { experience: 'TS 项目禁用 pytest，错栈会空转修复循环' }) : JSON.stringify({ speak: false }));
     const res = await runDiscussionRound(deps, d.id);
     expect(res.speakers).toEqual(['dev']);
     expect(res.silent).toEqual(['test']);
     const msgs = await getMessages(d.id);
     expect(msgs.find((m) => m.from === 'dev')!.text).toContain('TypeScript');
-    expect(msgs[msgs.length - 1]).toMatchObject({ from: 'system', text: '第 1 轮 · 发言：dev · 未发言：test' });
+    expect(msgs.some((m) => m.from === 'system' && /^第 \d+ 轮/.test(m.text))).toBe(false);
   });
 
-  it('deposits experiences to the project knowledge base with discussion source attribution', async () => {
+  it('exec + write_file tool round: results execute for real, activity line lands in the transcript', async () => {
+    const ws = await mkProject();
+    const d = await mkDiscussion(['dev'], { project_id: 'p1' });
+    h.speaker = (_sys, user) => {
+      if (user.includes('工具执行结果')) return okContent('已核实：echo 输出 hello；a.txt 已写入 3 行');
+      return JSON.stringify({ tool_calls: [
+        { tool: 'exec', command: 'echo hello' },
+        { tool: 'write_file', path: 'a.txt', content: 'x\ny\nz' },
+      ] });
+    };
+    const res = await runDiscussionRound(deps, d.id);
+    expect(res.speakers).toEqual(['dev']);
+    expect(fs.existsSync(path.join(ws, 'a.txt'))).toBe(true);
+    const msgs = await getMessages(d.id);
+    const toolLine = msgs.find((m) => m.tool);
+    expect(toolLine).toBeTruthy();
+    expect(toolLine!.text).toContain('🔧');
+    expect(toolLine!.text).toContain('exit 0');
+    expect(toolLine!.text).toContain('写入 a.txt');
+    const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
+    expect((evt!.payload.results as any[])[0]).toMatchObject({ tool: 'exec', returncode: 0 });
+    expect((evt!.payload.results as any[])[1]).toMatchObject({ tool: 'write_file', ok: true });
+    expect(plainAgentMsgs(msgs, 'dev').at(-1)!.text).toContain('已核实');
+  });
+
+  it('small-change budget: 4th file in one turn is refused with a convert-to-task hint', async () => {
+    const ws = await mkProject();
+    const d = await mkDiscussion(['dev'], { project_id: 'p1' });
+    h.speaker = (_sys, user) => {
+      if (user.includes('工具执行结果')) return okContent('预算内改了 3 个文件，第 4 个转任务');
+      return JSON.stringify({ tool_calls: [
+        { tool: 'write_file', path: 'f1.txt', content: 'a' },
+        { tool: 'write_file', path: 'f2.txt', content: 'b' },
+        { tool: 'write_file', path: 'f3.txt', content: 'c' },
+        { tool: 'write_file', path: 'f4.txt', content: 'd' },
+      ] });
+    };
+    await runDiscussionRound(deps, d.id);
+    expect(fs.existsSync(path.join(ws, 'f3.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(ws, 'f4.txt'))).toBe(false);
+    const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
+    expect(String((evt!.payload.results as any[])[3].error)).toContain('转项目');
+  });
+
+  it('jail: outside paths and traversal are refused outright', async () => {
+    const ws = await mkProject();
+    const d = await mkDiscussion(['dev'], { project_id: 'p1' });
+    h.speaker = (_sys, user) => {
+      if (user.includes('工具执行结果')) return okContent('越界操作被拒绝，如实汇报');
+      return JSON.stringify({ tool_calls: [
+        { tool: 'write_file', path: '../evil.txt', content: 'x' },
+        { tool: 'exec', command: `type ${path.join(os.tmpdir(), 'secret.txt')}` },
+      ] });
+    };
+    await runDiscussionRound(deps, d.id);
+    expect(fs.existsSync(path.join(tmp, 'evil.txt'))).toBe(false);
+    const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
+    expect(String((evt!.payload.results as any[])[0].error)).toContain('相对路径');
+    expect(String((evt!.payload.results as any[])[1].error)).toContain('路径越界');
+    void ws;
+  });
+
+  it('unbound discussion: tools return guidance, no filesystem access', async () => {
+    const d = await mkDiscussion(['dev']);
+    h.speaker = (_sys, user) => {
+      if (user.includes('工具执行结果')) return okContent('未绑定项目，动不了手，建议挂接项目');
+      return JSON.stringify({ tool_calls: [{ tool: 'exec', command: 'echo hi' }] });
+    };
+    await runDiscussionRound(deps, d.id);
+    const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
+    expect(String((evt!.payload.results as any[])[0].error)).toContain('未绑定项目');
+  });
+
+  it('deposits experiences to the knowledge base with discussion source attribution', async () => {
     const d = await mkDiscussion(['dev']);
     h.speaker = () => okContent('发言', { experience: '沙箱重启后不含旧产出，续跑需恢复工作区' });
     await runDiscussionRound(deps, d.id);
@@ -171,6 +347,16 @@ describe('round engine: self-decided speaking', () => {
     expect(entries[0].tags).toContain('群组讨论');
     expect((await getAgentMemory('dev', 5)).some((m) => m.includes('沙箱重启'))).toBe(true);
     expect(capturedEvents.some((e) => e.type === 'discussion_experience')).toBe(true);
+  });
+
+  it('same experience stated twice in one discussion is not re-deposited (dedup)', async () => {
+    const d = await mkDiscussion(['dev']);
+    h.speaker = () => okContent('发言', { experience: 'UniApp H5 首次冷启动需要编译预热，健康检查阈值应放宽' });
+    await runDiscussionRound(deps, d.id);
+    await runDiscussionRound(deps, d.id);
+    await runDiscussionRound(deps, d.id);
+    const entries = listKnowledge({}).filter((e) => e.source === `discussion:${d.id}`);
+    expect(entries).toHaveLength(1);
   });
 
   it('ask_user marks the message, raises discussion_ask_user and stays pending until the user replies', async () => {
@@ -189,28 +375,30 @@ describe('round engine: self-decided speaking', () => {
 
   it('@-forced agent must speak even when it first chose silence (one nudge retry)', async () => {
     const d = await mkDiscussion();
-    h.speaker = (sys, user) => {
-      if (!sys.includes('「dev」')) return JSON.stringify({ speak: false });
+    h.speaker = (_sys, user) => {
+      if (!user.includes('「dev」')) return JSON.stringify({ speak: false });
       if (user.includes('必须给出实质性发言')) return okContent('被点名后给出的实质观点');
       return JSON.stringify({ speak: false });
     };
     const { mentioned } = await postUserMessage(deps, d.id, '@dev 你怎么看');
     const res = await runDiscussionRound(deps, d.id, { forced: mentioned });
     expect(res.speakers).toContain('dev');
-    expect((await getMessages(d.id)).find((m) => m.from === 'dev')!.text).toContain('被点名后');
+    expect(plainAgentMsgs(await getMessages(d.id), 'dev').at(-1)!.text).toContain('被点名后');
     expect(h.lastSpeakerCalls.filter((c) => c.agent === 'dev').length).toBe(2);
   });
 
-  it('a failed LLM call degrades to honest silence, never a fabricated reply', async () => {
+  it('a failed LLM call is surfaced as a visible notice (honest silence, never a fabricated reply)', async () => {
     const d = await mkDiscussion();
-    h.speaker = (sys) => {
-      if (sys.includes('「test」')) throw new Error('upstream 504');
+    h.speaker = (_sys, user) => {
+      if (user.includes('「test」')) throw new Error('upstream 504');
       return okContent('正常发言');
     };
     const res = await runDiscussionRound(deps, d.id);
     expect(res.speakers).toEqual(['dev']);
     expect(res.silent).toEqual(['test']);
     expect(nonSystem(await getMessages(d.id)).some((m) => m.from === 'test')).toBe(false);
+    const msgs = await getMessages(d.id);
+    expect(msgs.some((m) => m.from === 'system' && m.kind === 'notice' && m.text.includes('「test」本轮发言未完成') && m.text.includes('upstream 504'))).toBe(true);
   });
 
   it('busy lock rejects a concurrent round with 409 (held lock + in-flight round)', async () => {
@@ -232,12 +420,64 @@ describe('round engine: self-decided speaking', () => {
     expect(await isDiscussionBusy(d.id)).toBe(false);
   });
 
-  it('unparseable forced output gets an honest notice, not a made-up answer', async () => {
+  it('unparseable forced output gets an honest in-chat notice, not a made-up answer', async () => {
     const d = await mkDiscussion(['dev']);
     h.speaker = () => '这里不是 JSON';
     const res = await runDiscussionRound(deps, d.id, { forced: ['dev'] });
-    expect(res.speakers).not.toContain('dev');
     expect((await getMessages(d.id)).some((m) => m.from === 'dev' && m.text.includes('无法解析'))).toBe(true);
+    expect(res.asked_user).toEqual([]);
+  });
+});
+
+describe('mid-round interruption (真打断)', () => {
+  it('a user message posted while a speaker is busy cuts the remaining speakers and re-routes', async () => {
+    const d = await mkDiscussion(['dev', 'test']);
+    h.routerSpeakers = ['dev', 'test'];
+    let devSaid = false;
+    h.speaker = async (_sys, user) => {
+      if (user.includes('「dev」')) {
+        if (!devSaid) {
+          devSaid = true;
+          // 用户中途插话（API 层不再 409，直接入库）
+          await postUserMessage(deps, d.id, '@test 直接回答端口问题');
+          return okContent('dev 的开场');
+        }
+        return okContent('dev 第二轮');
+      }
+      return okContent('test 的补充');
+    };
+    // manual mode trigger loop: round 1 interrupted before test speaks → round 2 mentions test only
+    await runResponseLoop(deps, d.id, { forced: undefined, auto: false });
+    const msgs = await getMessages(d.id);
+    const testMsgs = plainAgentMsgs(msgs, 'test');
+    // test 没在被打断的那一轮开口，且新指示点名它后开口
+    expect(testMsgs.length).toBeGreaterThan(0);
+    expect(testMsgs.every((m) => (m.round || 0) >= 2)).toBe(true);
+    // mention-only routing on the follow-up round
+    expect(h.lastSpeakerCalls.filter((c) => c.agent === 'dev').length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('project context injection (全量背景+经验静态前缀)', () => {
+  it('binds real workspace path + ALL memories/knowledge into a shared static prefix', async () => {
+    const ws = await mkProject();
+    for (let i = 1; i <= 12; i++) await addProjectMemory('p1', `项目约定第${i}条：编号规范 v${i}`);
+    writeKnowledge({ title: '部署端口纪律', content: 'accountapp 必须跑在 5123', category: 'project', project_id: 'p1', source: 'test' });
+    writeKnowledge({ title: '包管理器选择', content: '禁用 yarn，只用 npm', category: 'project', project_id: 'p1', source: 'test' });
+    const d = await mkDiscussion(['dev', 'test'], { project_id: 'p1' });
+    h.speaker = () => okContent('收到背景');
+    await runDiscussionRound(deps, d.id);
+    const sys = h.lastSpeakerCalls[0].sys;
+    expect(sys).toContain(ws);                        // 真实绝对路径（禁编造的锚点）
+    expect(sys).toContain('部署端口纪律');             // 知识库全量而非 top-3
+    expect(sys).toContain('包管理器选择');
+    for (let i = 1; i <= 12; i++) expect(sys).toContain(`编号规范 v${i}`); // 记忆全量而非 10 条
+    expect(sys).toContain('npm run dev');             // package.json scripts
+    // 静态前缀：同轮不同成员的 system 消息逐字一致（前缀缓存的前提）
+    expect(h.lastSpeakerCalls[1].sys).toBe(sys);
+    // 身份在 user 消息里（成员间唯一分叉点，位于共享前缀之后）
+    expect(h.lastSpeakerCalls[0].user).toContain('「dev」');
+    expect(h.lastSpeakerCalls[1].user).toContain('「test」');
   });
 });
 
@@ -247,12 +487,12 @@ describe('auto mode loop', () => {
     h.speaker = () => okContent('观点');
     h.moderatorContinue = false;
     await runAutoDiscussion(deps, d1.id);
-    expect((await getMessages(d1.id)).filter((m) => m.from === 'dev').length).toBe(1);
+    expect(plainAgentMsgs(await getMessages(d1.id), 'dev').length).toBe(1);
 
     const d2 = await mkDiscussion(['dev']);
     h.moderatorContinue = true;
     await runAutoDiscussion(deps, d2.id);
-    expect((await getMessages(d2.id)).filter((m) => m.from === 'dev').length).toBe(3);
+    expect(plainAgentMsgs(await getMessages(d2.id), 'dev').length).toBe(3);
   });
 
   it('all-silent round terminates the loop with a hint', async () => {
@@ -260,7 +500,7 @@ describe('auto mode loop', () => {
     h.speaker = () => JSON.stringify({ speak: false });
     await runAutoDiscussion(deps, d.id);
     const msgs = await getMessages(d.id);
-    expect(msgs.some((m) => m.from === 'system' && m.text.includes('全员沉默'))).toBe(true);
+    expect(msgs.some((m) => m.from === 'system' && m.text.includes('暂无新进展'))).toBe(true);
     expect(nonSystem(msgs).filter((m) => m.from !== 'user')).toHaveLength(0);
   });
 
@@ -270,7 +510,7 @@ describe('auto mode loop', () => {
     h.moderatorContinue = true;
     await runAutoDiscussion(deps, d.id);
     const msgs = await getMessages(d.id);
-    expect(nonSystem(msgs).filter((m) => m.from === 'dev').length).toBe(1);
+    expect(plainAgentMsgs(msgs, 'dev').length).toBe(1);
     expect(msgs.some((m) => m.from === 'system' && m.text.includes('等待你的回答'))).toBe(true);
     // user answers → the next manual/auto trigger can continue
     await postUserMessage(deps, d.id, '选 A');
@@ -279,16 +519,14 @@ describe('auto mode loop', () => {
 
   it('stop flag breaks the loop between rounds', async () => {
     const d = await mkDiscussion(['dev']);
-    let calls = 0;
     h.speaker = () => {
-      calls += 1;
       // request stop during round 1 → loop must not start round 2
       void busSet(`discussion:${d.id}:stop`, 1);
       return okContent('继续');
     };
     h.moderatorContinue = true;
     await runAutoDiscussion(deps, d.id);
-    expect(nonSystem(await getMessages(d.id)).filter((m) => m.from === 'dev').length).toBe(1);
+    expect(plainAgentMsgs(await getMessages(d.id), 'dev').length).toBe(1);
   });
 });
 
