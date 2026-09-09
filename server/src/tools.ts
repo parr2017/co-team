@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { spawn } from 'node:child_process';
 import { canExecute, executeCommand, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { writeKnowledge } from './knowledge';
@@ -217,10 +218,114 @@ export function gitDiff(workspace: string): { ok: boolean; diff?: string; error?
   }
 }
 
+// ---------- check_page：headless 渲染验证（前端交付的"眼睛"） ----------
+// 动机（jr3gdkxq 质检）：SPA 页面 JS 运行时崩溃时 curl 仍返回 200 + 正常 <title>，
+// 命令级验证物理上看不见渲染缺陷——验证节点的天花板必须抬到"真实渲染文本"。
+// 实现走系统 Chrome/Edge 的 --dump-dom（零新依赖），仅允许 localhost（dev server 场景，
+// 兼防 SSRF/外联）。
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
+
+export function findHeadlessBrowser(): string | null {
+  const cands: string[] = [];
+  if (process.env.COTEAM_BROWSER_PATH) cands.push(process.env.COTEAM_BROWSER_PATH);
+  if (process.platform === 'win32') {
+    const roots = [process.env['PROGRAMFILES'], process.env['PROGRAMFILES(X86)'], process.env['LOCALAPPDATA']]
+      .filter((x): x is string => !!x);
+    for (const root of roots) {
+      cands.push(path.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+      cands.push(path.join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
+    }
+  } else if (process.platform === 'darwin') {
+    cands.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+    cands.push('/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge');
+    cands.push('/Applications/Chromium.app/Contents/MacOS/Chromium');
+  } else {
+    cands.push('/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/microsoft-edge');
+  }
+  return cands.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || null;
+}
+
+function dumpDomWith(browser: string, url: string, headlessFlag: string, budgetMs: number, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let killed = false;
+    const proc = spawn(browser, [headlessFlag, '--disable-gpu', '--no-first-run', '--disable-extensions', `--virtual-time-budget=${budgetMs}`, '--dump-dom', url], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => { killed = true; try { proc.kill(); } catch { /* gone */ } }, timeoutMs);
+    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code: killed ? -1 : (code ?? -1), stdout, stderr });
+    });
+    proc.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: -2, stdout: '', stderr: String(e?.message || e) });
+    });
+  });
+}
+
+export interface CheckPageResult {
+  ok: boolean;
+  url?: string;
+  title?: string;
+  /** 渲染后的可见文本（去 script/style/标签，压空白） */
+  textLength?: number;
+  textSample?: string;
+  /** expect 里没出现在渲染结果中的片段 */
+  missing?: string[];
+  error?: string;
+}
+
+/**
+ * headless 渲染 url 并返回可见文本；expect 中每个片段都必须出现在渲染结果里。
+ * 仅允许 http(s)://localhost 系（开发服务器验证场景）。
+ */
+export async function checkPage(rawUrl: string, expect?: string[], timeoutSec = 60): Promise<CheckPageResult> {
+  let u: URL;
+  try { u = new URL(rawUrl); } catch { return { ok: false, error: `URL 无效: ${rawUrl}` }; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, error: '仅支持 http(s)' };
+  if (!LOCAL_HOSTS.has(u.hostname)) return { ok: false, error: 'check_page 仅允许 localhost 地址（开发服务器验证）' };
+  const browser = findHeadlessBrowser();
+  if (!browser) return { ok: false, error: '未找到 Chrome/Edge（可设 COTEAM_BROWSER_PATH 指向浏览器可执行文件）' };
+  const budgetMs = Math.min(20_000, Math.max(3_000, Math.floor(timeoutSec * 1000 / 3)));
+  // Chrome 132+ 移除了旧 headless；老版本/Edge 可能不认 --headless=new——先新后旧各试一次
+  let r = await dumpDomWith(browser, rawUrl, '--headless=new', budgetMs, timeoutSec * 1000);
+  if (r.code !== 0 || !r.stdout.trim()) {
+    const r2 = await dumpDomWith(browser, rawUrl, '--headless', budgetMs, timeoutSec * 1000);
+    if (r2.stdout.trim()) r = r2;
+  }
+  if (!r.stdout.trim()) {
+    return { ok: false, error: `渲染失败（exit ${r.code}）：${(r.stderr || '无输出').slice(-300)}` };
+  }
+  const dom = r.stdout;
+  const title = /<title[^>]*>([^<]*)<\/title>/i.exec(dom)?.[1]?.trim() ?? '';
+  const text = dom
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const missing = (expect || []).map(String).filter((t) => t && !text.includes(t) && !dom.includes(t));
+  return {
+    ok: text.length > 0 && missing.length === 0,
+    url: rawUrl,
+    title,
+    textLength: text.length,
+    textSample: text.slice(0, 600),
+    missing,
+  };
+}
+
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[] }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -256,6 +361,11 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
       results.push({ tool: 'git_log', ...gitLog(workspace) });
     } else if (name === 'git_diff') {
       results.push({ tool: 'git_diff', ...gitDiff(workspace) });
+    } else if (name === 'check_page') {
+      // 渲染级验证：前端交付的验收必须走它（curl 看不见 JS 崩溃）
+      const url = String(call.url || call.path || '');
+      const expect = Array.isArray(call.expect) ? call.expect.map(String) : (call.expect ? [String(call.expect)] : undefined);
+      results.push({ tool: 'check_page', ...(await checkPage(url, expect)) });
     } else if (name === 'write_knowledge') {
       if (!knowledgeCtx) {
         results.push({ tool: 'write_knowledge', ok: false, error: 'knowledge deposit not available in this context' });

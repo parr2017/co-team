@@ -31,7 +31,7 @@ import type { TaskQueueManager } from './taskQueue';
 import type { Logger } from './logger';
 import { writeKnowledge, relevantKnowledge, listKnowledge } from './knowledge';
 import { scaffoldProject, initGitOnly } from './scaffold';
-import { applyToolCalls, applyEdits } from './tools';
+import { applyToolCalls, applyEdits, checkPage } from './tools';
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { spawn } from 'node:child_process';
@@ -395,6 +395,8 @@ function speakerSystemPrompt(projectCtx: string): string {
  {"tool":"list_files"} | {"tool":"read_file","path":"相对路径"} | {"tool":"read_dir","path":"目录/"} | {"tool":"grep","pattern":"正则","path":"可选子路径"} | {"tool":"git_log"} | {"tool":"git_diff"}
 执行命令（同步等待 ≤${EXEC_TIMEOUT_SEC}s：装依赖、build、查端口、健康检查）：
  {"tool":"exec","command":"npm install"}
+渲染级验证（前端页面验收必须用它——curl 200 看不见 JS 崩溃；expect 全部命中才算通过）：
+ {"tool":"check_page","url":"http://localhost:5123/","expect":["页面应有的文本"]}
 长驻服务（后台启动，返回 pid 与日志路径，随后可 exec 查端口 / read_file 看日志）：
  {"tool":"exec_background","command":"npm run dev"}   停止进程： {"tool":"kill_process","pid":12345}
 小改代码（单轮 ≤${WRITE_BUDGET_FILES} 个文件、合计 ≤${WRITE_BUDGET_LINES} 行，写前自动 git checkpoint 可回滚）：
@@ -516,13 +518,24 @@ async function runSpeakerToolCalls(
   const proj = disc.project_id ? await getProject(disc.project_id) : null;
   const ws = proj?.workspace || '';
 
-  const roSet = new Set(['list_files', 'read_file', 'read_dir', 'grep', 'git_log', 'git_diff', 'write_knowledge']);
+  const roSet = new Set(['list_files', 'read_file', 'read_dir', 'grep', 'git_log', 'git_diff', 'write_knowledge', 'check_page']);
   const roCalls = calls.filter((c) => roSet.has(String(c.tool || '').toLowerCase()));
-  const roResults = roCalls.length
-    ? ws
-      ? await applyToolCalls(ws, roCalls as any, { agent, project_id: disc.project_id })
-      : roCalls.map((c) => ({ tool: c.tool, ok: false, error: '本讨论未绑定项目目录，无法读写执行；请建议用户先挂接项目' }))
-    : [];
+  // check_page 不碰文件系统（只渲染 localhost），未绑定项目也可用；其余只读工具需要工作目录
+  const roNeedsWs = roCalls.filter((c) => String(c.tool || '').toLowerCase() !== 'check_page');
+  let roResults: unknown[] = [];
+  if (roCalls.length) {
+    if (roNeedsWs.length === 0 || ws) {
+      roResults = await applyToolCalls(ws, roCalls as any, { agent, project_id: disc.project_id });
+    } else {
+      for (const c of roCalls) {
+        if (String(c.tool || '').toLowerCase() === 'check_page') {
+          roResults.push({ tool: 'check_page', ...(await checkPage(String(c.url || ''), Array.isArray(c.expect) ? c.expect.map(String) : undefined)) });
+        } else {
+          roResults.push({ tool: c.tool, ok: false, error: '本讨论未绑定项目目录，无法读写执行；请建议用户先挂接项目' });
+        }
+      }
+    }
+  }
   let roIdx = 0;
 
   for (const call of calls) {

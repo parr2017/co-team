@@ -5,6 +5,7 @@ import type { ModelPool, ModelEntry } from '../scheduler';
 import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
 import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
+import { runPostMergeAcceptance } from './acceptance';
 import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens } from '../tools';
 import type { KnowledgeToolContext } from '../tools';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
@@ -863,12 +864,27 @@ export class Orchestrator {
             } else {
               result.merged_files = mergeChanges(sandbox, workspace);
             }
+            // post-merge acceptance：合并后的真实工作区跑项目自身测试套件——每个节点
+            // 验证自己的切片 ≠ 整体能跑（jr3gdkxq：验证节点全绿但页面全崩的根因补闸）
+            const acc = await runPostMergeAcceptance(workspace);
+            result.acceptance = acc;
+            if (acc.status === 'failed') {
+              throw new Error(`post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`);
+            }
+            if (acc.status === 'no-test-command') {
+              this.logger.warn('post-merge acceptance: no test command found', { taskId, workspace });
+            } else {
+              this.logger.info('post-merge acceptance passed', { taskId, command: acc.command });
+            }
           } catch (mergeError) {
             // a failed merge must NOT be reported as success — the work never reached the workspace
             this.logger.error('Failed to merge sandbox changes into workspace', { taskId, error: String(mergeError) });
+            const accFail = String(mergeError).startsWith('post-merge acceptance');
             result = {
               status: 'failed',
-              error: `Failed to merge changes into workspace: ${String(mergeError).slice(0, 300)}`,
+              error: accFail
+                ? String(mergeError).slice(0, 900)
+                : `Failed to merge changes into workspace: ${String(mergeError).slice(0, 300)}`,
               changes: result.changes || [],
             };
           }
@@ -923,6 +939,15 @@ export class Orchestrator {
               this.logger.warn('Sandbox cleanup failed (non-fatal)', { taskId, error: String(cleanupError) });
             }
           }
+        }
+      } else if (result?.status === 'success') {
+        // 非沙箱模式（产物直接写在工作区）：同样过合并后全量验收闸
+        const acc = await runPostMergeAcceptance(workspace);
+        result.acceptance = acc;
+        if (acc.status === 'failed') {
+          result = { status: 'failed', error: `post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`, changes: result.changes || [] };
+        } else if (acc.status === 'no-test-command') {
+          this.logger.warn('post-merge acceptance: no test command found', { taskId, workspace });
         }
       }
     }

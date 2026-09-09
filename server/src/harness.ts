@@ -77,7 +77,7 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     `1. 理解：先用只读工具侦查现场（list_files/read_file/grep），确认任务涉及的真实代码，禁止跳过侦查直接写。`,
     `2. 规划：在心里列出改动步骤与影响面（无需输出计划，直接进入执行）。`,
     `3. 执行：以最小变更产出 files/commands。`,
-    `4. 验证：验收点清单优先——把任务描述与全局目标中的每个显式要求（函数名、交互闭环、"二次确认""导出""环形图"这类词）逐条列成清单，每条都必须有**真实执行过的证据**（命令 + 输出、npm test、实际打开页面/接口确认）；只读代码"看起来对"不构成验证，验证类节点尤其禁止以代码走查代替运行。清单中任何一条拿不出证据 → status=failed 或如实写进 defects。`,
+    `4. 验证：验收点清单优先——把任务描述与全局目标中的每个显式要求（函数名、交互闭环、"二次确认""导出""环形图"这类词）逐条列成清单，每条都必须有**真实执行过的证据**（命令 + 输出、npm test、实际打开页面/接口确认）；只读代码"看起来对"不构成验证，验证类节点尤其禁止以代码走查代替运行。涉及前端页面/HTTP 服务时，验证必须包含 check_page 实际渲染确认（起服务 → 渲染 → expect 命中），HTTP 200 与 <title> 不算——SPA 的 JS 崩溃在 HTML 层不可见。清单中任何一条拿不出证据 → status=failed 或如实写进 defects。`,
     `5. 汇报：summary 必须包含——做了什么、对全局目标的贡献、验证方式与结果（verification 字段）。`,
   ].join('\n');
 
@@ -90,6 +90,9 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
     ' {"tool_calls":[{"tool":"git_log"}]}',
     ' {"tool_calls":[{"tool":"git_diff"}]}',
+    '渲染级验证（前端/页面/Web 服务的交付验收必须用它，curl 看不见 JS 运行时崩溃）:',
+    ' {"tool_calls":[{"tool":"check_page","url":"http://localhost:<端口>/","expect":["页面渲染后应出现的文本1","文本2"]}]}',
+    '（headless 浏览器渲染 URL，expect 全部命中才 ok；仅允许 localhost 地址，需先起服务）',
     '技能正文按需拉取：下方"已装载技能"只有索引，与任务相关的技能必须先拉正文再动工（可与侦查合并同一轮）:',
     ' {"tool_calls":[{"tool":"load_skill","name":"技能名"}]}',
     '经验沉淀（推荐）：遇到通用经验/项目踩坑时主动调用知识写入工具:',
