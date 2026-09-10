@@ -2532,6 +2532,13 @@ export class Orchestrator {
           // harness schema gate: the final JSON must satisfy the output contract;
           // violations feed a surgical repair round instead of vague retries
           const check = validateAgentResult(parsed);
+          // 插话回应义务门（g6704zpm 实证：review 节点用 send_message 回答却没走 reply_to_user，
+          // 用户等十分钟觉得"没人理我"）——本轮消费过用户插话，最终输出必须直接回应；
+          // prompt 里的义务没有闸门就只是建议。
+          if (consumedForAttempt.length && !String(parsed.reply_to_user || '').trim()) {
+            check.violations.push(`缺少 reply_to_user：本轮你消费了 ${consumedForAttempt.length} 条用户插话（${consumedForAttempt.map((m) => m.message.slice(0, 50)).join(' / ')}），必须在 reply_to_user 字段逐条直接回应（结论/进度/做不做），summary 不能替代`);
+            check.ok = false;
+          }
           if (!check.ok) {
             roundEntry.parse_error = 'schema violations: ' + check.violations.join('; ');
             record.rounds.push(roundEntry);
@@ -2721,6 +2728,17 @@ export class Orchestrator {
 
       if (parsed!.status !== 'success') {
         record.error = (parsed!.errors || []).join('; ') || parsed!.summary || 'agent reported failure';
+        // 失败申报里的插话回应同样上屏——用户有权在坏消息时也知道"我的话被听见了"
+        const failReply = String((parsed as Record<string, any>).reply_to_user || '').trim();
+        if (failReply) {
+          await appendJournal(taskId, plugin.name, {
+            role: 'agent', kind: 'message',
+            text: failReply.slice(0, 2000),
+            ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name,
+            meta: { to: 'user', direct: true, round: record.rounds.length, text: failReply.slice(0, 2000) },
+          });
+          await emitProgress('agent_message', { task_id: taskId, node_id: node.id, agent: plugin.name, kind: 'message', to: 'user', direct: true });
+        }
         await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: record.tokens });
         await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
         return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };

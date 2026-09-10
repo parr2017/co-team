@@ -9,7 +9,7 @@ import * as path from 'node:path';
 const seenMessages: { role: string; content: string }[][] = [];
 type Behavior = ((messages: { role: string; content: string }[]) => { content: string } | Promise<{ content: string }>) | undefined;
 const behaviors: Behavior[] = [];
-const okFinal = { content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['x.txt: ok'], errors: [] }) };
+const okFinal = { content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['x.txt: ok'], errors: [], reply_to_user: '你的两条指示已落实：TypeScript strict 已开启，边界用例已覆盖' }) };
 vi.mock('../src/llm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm')>();
   return {
@@ -300,11 +300,34 @@ describe('group-chat batch 1', () => {
     expect(capturedEvents.some((e) => e.type === 'intervention_deferred')).toBe(true);
   });
 
-  it('interventions are re-queued when the attempt fails — model trouble never swallows user words', async () => {
-    await saveTaskGraph('t-fail', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp, status: 'running' });
+  it('gate: consumed intervention without reply_to_user is bounced by a repair round until answered', async () => {
+    await saveTaskGraph('t-gate', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp, status: 'running' });
+    await pushIntervention('t-gate', '进度如何？');
+    behaviors.push(
+      // 第一次最终输出：干活了但没回应插话 → 义务门必须拦下
+      () => ({ content: JSON.stringify({ status: 'success', summary: 'done', verification: 'v', changes: ['x.txt: ok'] }) }),
+      // 修正轮：补上 reply_to_user
+      () => ({ content: JSON.stringify({ status: 'success', summary: 'done', verification: 'v', changes: ['x.txt: ok'], reply_to_user: '已完成数据层，正在接页面，预计还需两节点' }) }),
+    );
+    const graph = (await getTaskGraph('t-gate')) as TaskGraph;
+    await (orchestrator as any).runGraph('t-gate', graph, tmp);
+
+    const journals = await getTaskJournals('t-gate');
+    const dev = journals['dev'] || [];
+    // 契约违规气泡点名 reply_to_user 义务
+    expect(dev.some((e) => e.kind === 'error' && String(e.text).includes('reply_to_user'))).toBe(true);
+    // 修正后 direct 气泡落群
+    const direct = dev.find((e) => e.kind === 'message' && (e.meta as any)?.direct);
+    expect(direct).toBeTruthy();
+    expect(direct!.text).toContain('已完成数据层');
+    const after = (await getTaskGraph('t-gate')) as TaskGraph;
+    expect(after.nodes[0].status).toBe('completed');
+  });
+
+  it('interventions are re-queued when the attempt fails — model trouble never swallows user words', async () => {    await saveTaskGraph('t-fail', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp, status: 'running' });
     await pushIntervention('t-fail', '别动数据库配置');
-    // 所有尝试都失败（maxRetries=1 → 两次 attempt，每次都消费再回队）
-    const failContent = { content: JSON.stringify({ status: 'failed', summary: 'x', verification: 'v', errors: ['缺权限'] }) };
+    // 所有尝试都失败（maxRetries=1 → 两次 attempt，每次都消费再回队）；失败申报也如实回应插话（义务门语义）
+    const failContent = { content: JSON.stringify({ status: 'failed', summary: 'x', verification: 'v', errors: ['缺权限'], reply_to_user: '无法继续：缺权限，需要人工补充' }) };
     behaviors.push(() => failContent, () => failContent, () => failContent, () => failContent);
     const graph = (await getTaskGraph('t-fail')) as TaskGraph;
     await (orchestrator as any).runGraph('t-fail', graph, tmp);
