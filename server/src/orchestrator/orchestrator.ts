@@ -107,6 +107,14 @@ export const PRECONDITION_PREFIX = '[precondition]';
 export const SYSTEM_DEFECT_RE = /\bENOTDIR\b|\bEISDIR\b|\bEROFS\b|\bEDQUOT\b|\bENOSPC\b|\bEMFILE\b/i;
 /** 模型明确申报的前置缺失（"缺源码/文件不在本沙箱"）：换模型没用，直接转人工 */
 export const PRECONDITION_FAIL_RE = /缺少(项目)?源代码|文件不在本沙箱|前序节点产出的?代码不在|missing source( files)?|无 package\.json/i;
+/**
+ * M1（2y3tuote 实证）：模型申报"契约 v1/v2 不一致、需要补充信息、拿不到文件"这类**合法阻塞**
+ * 是对环境的正确发现——换模型只会让每个模型把同一问题重新发现一遍（node2 十分钟烧 6 模型）。
+ * 命中即停阶梯、不记模型健康度，由 executeNode 的 needs_human 分支收尾。
+ */
+export const LEGIT_BLOCKER_RE = /\[blocker\]|需要人类|需要人工|需要.{0,8}补充|信息不足|无法获得|未获得|缺少.{0,8}(信息|权限|证据)|上游.*(声明|实际).*(不符|不一致)|cannot proceed|need human/i;
+/** M3：429/503/rate limit 是容量信号不是能力失败——退避重试同模型，不记健康度不烧链 */
+export const CAPACITY_RE = /429|503|rate.?limit|too many requests|tpm|rpm|quota/i;
 
 /**
  * 断崖压缩：把最早的完整工具轮次折叠为一条确定性摘要（纯函数、不经 LLM、
@@ -811,6 +819,21 @@ export class Orchestrator {
     if (this.branchWorkflow && this.gitEnabled) {
       // baseline snapshot: all agent branches start from here
       await gitTool.ensureBase(sandbox).catch(() => {});
+      // M6（2y3tuote 两次 merge 假冲突实证）：重跑时 completed 节点的 branch 指向上一次
+      // 已销毁的沙箱——新沙箱里不存在，merge 必炸。自愈：分支不在即视为产物已落工作区，清空。
+      const branchList = await simpleGit({ baseDir: sandbox }).branchLocal().catch(() => null);
+      if (branchList) {
+        let staleCleared = false;
+        for (const n of graph.nodes) {
+          if (n.status === 'completed' && n.branch && !branchList.all.includes(n.branch)) {
+            this.logger.info('stale node branch from a previous sandbox — cleared', { taskId, nodeId: n.id, branch: n.branch });
+            n.branch = '';
+            n.branch_base = '';
+            staleCleared = true;
+          }
+        }
+        if (staleCleared) await persistGraph(graph);
+      }
     }
 
     // improvement 9: global goal — one shared target every agent must serve
@@ -1729,8 +1752,17 @@ export class Orchestrator {
     if (pendingCommands.length) await this.registerPendingCommands(taskId, node, pendingCommands);
     await saveDeliverable(taskId, node).catch(() => {});
     if (useBranch && node.branch) {
-      const commit = await gitTool.commitOnBranch(sandbox, `coteam: ${node.name}${escalated ? ' (escalated)' : ''}`, result.changes || []).catch(() => null);
+      // M2：全量提交节点工作树（不再依赖模型申报的 changes——漏报是常态，产物丢失才是灾难）
+      const commit = await gitTool.commitAllOnBranch(sandbox, `coteam: ${node.name}${escalated ? ' (escalated)' : ''}`).catch(() => null);
       if (commit && node.result) (node.result as AgentResult).git_commit = { branch: node.branch, commit };
+    } else if (useBranch && !node.branch) {
+      // 分支缺失（创建失败）兜底：产物直提 base，绝不留在工作树等下一个节点 checkout 冲掉
+      const docPaths = (((result as Record<string, any>).doc_updates || []) as { type: string }[]).map((u) => `docs/${u.type}.md`);
+      if ((result.changes || []).length || docPaths.length) {
+        await gitTool
+          .commitChanges(sandbox, `coteam: ${node.name} (branchless fallback)`, [...(result.changes || []), ...docPaths])
+          .catch(() => null);
+      }
     }
     await this.captureNodeDiff(taskId, node, sandbox);
     await persistGraph(graph);
@@ -2055,6 +2087,7 @@ export class Orchestrator {
     // SAME model once with the failure text as feedback before burning the fallback chain
     const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
     const sameModelRetries = new Map<string, number>();
+    const capacityRetries = new Map<string, number>();
     for (let ci = 0; ci < chain.length; ci++) {
       const entry = chain[ci];
       // Check for cancellation before trying each model in fallback chain
@@ -2096,7 +2129,15 @@ export class Orchestrator {
           this.logger.warn('Precondition failure — stopping ladder, going straight to human', { taskId, nodeId: node.id, model: entry.name, error: lastErr });
           return { status: 'failed', error: `${PRECONDITION_PREFIX} ${lastErr}`, tokens: result.tokens };
         }
+        if (LEGIT_BLOCKER_RE.test(lastErr)) {
+          this.logger.warn('Legitimate blocker reported by model — stopping ladder (environment issue, not model failure)', { taskId, nodeId: node.id, model: entry.name, error: lastErr.slice(0, 120) });
+          return { status: 'failed', error: lastErr, tokens: result.tokens };
+        }
         this.logger.warn('Model returned failure, trying next', { taskId, nodeId: node.id, agent: plugin.name, model: entry.name, error: lastErr });
+        // M4：思考耗尽（finish=length 正文空）是该模型的稳定特性而非偶发内容坏——
+        // 计入健康度，让 effectivePriority 把它软沉底（2y3tuote：sensenova/glm 十次耗尽
+        // 因走 content 路径从不记账，每个节点继续首撞）。
+        if (/输出预算耗尽|finish_reason=length/.test(lastErr)) this.pool.markFailure(entry);
         const retried = sameModelRetries.get(entry.name) ?? 0;
         if (CONTENT_FAIL_RE.test(lastErr) && retried < 1) {
           sameModelRetries.set(entry.name, retried + 1);
@@ -2114,6 +2155,20 @@ export class Orchestrator {
         if (SYSTEM_DEFECT_RE.test(lastErr)) {
           this.logger.error('System defect (harness/env), NOT counting model health', { taskId, nodeId: node.id, model: entry.name, error: lastErr });
           return { status: 'failed', error: `${ENV_DEFECT_PREFIX} ${lastErr}` };
+        }
+        // M3：限流类错误退避重试同模型（tpm 窗口分钟级自愈），不记模型失败不烧链
+        if (CAPACITY_RE.test(lastErr)) {
+          const capTried = capacityRetries.get(entry.name) ?? 0;
+          if (capTried < 2) {
+            capacityRetries.set(entry.name, capTried + 1);
+            const backoffMs = 20_000 * (capTried + 1);
+            this.logger.warn('Model capacity limited (429) — backing off same model, health untouched', { taskId, nodeId: node.id, model: entry.name, backoff_sec: backoffMs / 1000, attempt: capTried + 1 });
+            await new Promise((r) => setTimeout(r, backoffMs));
+            ci--; // 重试同一模型
+            continue;
+          }
+          this.logger.warn('Model capacity limit persists after backoffs — skipping without health penalty', { taskId, nodeId: node.id, model: entry.name });
+          continue; // 跳过该模型但不 markFailure：容量≠无能
         }
         this.logger.error('Agent dispatch failed', {
           taskId,

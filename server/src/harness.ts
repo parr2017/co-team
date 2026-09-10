@@ -86,6 +86,7 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '只读侦查工具（返回 JSON 时附带 tool_calls 字段），单轮可合并多个调用，全部放进同一个 tool_calls 数组:',
     ' {"tool_calls":[{"tool":"list_files"}]}',
     ' {"tool_calls":[{"tool":"read_file","path":"src/main.py"}]}',
+    ' {"tool_calls":[{"tool":"read_file","path":"src/big.py","line_start":120,"line_end":320}]}  // 大文件按行范围续读（先 grep 定位行号）',
     ' {"tool_calls":[{"tool":"grep","pattern":"正则表达式","path":"src/"}]}',
     ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
     ' {"tool_calls":[{"tool":"git_log"}]}',

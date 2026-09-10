@@ -104,20 +104,36 @@ export function listFiles(workspace: string, limit = 200): string[] {
   return out;
 }
 
-export function readFile(workspace: string, filePath: string): { ok: boolean; path: string; content?: string; error?: string; truncated?: boolean } {
+export function readFile(workspace: string, filePath: string, lineStart?: number, lineEnd?: number): { ok: boolean; path: string; content?: string; error?: string; truncated?: boolean; total_lines?: number } {
   const base = path.resolve(workspace);
   const target = path.resolve(base, filePath);
   if (!target.startsWith(base)) return { ok: false, path: filePath, error: 'path outside workspace' };
   if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return { ok: false, path: filePath, error: `file not found: ${filePath}` };
   const stat = fs.statSync(target);
+  // M5（2y3tuote 实证）：行范围读取——大文件节点 5 轮工具预算 × 16k 截断拼不出完整现场，
+  // 模型被迫盲写或上报"缺少文件内容"；给精确续读能力（先 grep 定行号，再按段读）。
+  if (lineStart && lineStart > 0) {
+    const all = fs.readFileSync(target, 'utf-8').split('\n');
+    const from = Math.max(1, Math.floor(lineStart));
+    const to = Math.min(all.length, Math.max(from, Math.floor(lineEnd || from + 400)));
+    const seg = all.slice(from - 1, to).join('\n');
+    const clipped = seg.length > MAX_READ_CHARS ? seg.slice(0, MAX_READ_CHARS) : seg;
+    return {
+      ok: true, path: filePath, total_lines: all.length,
+      content: `${clipped}\n（${filePath} 第 ${from}-${from + clipped.split('\n').length - 1} 行，共 ${all.length} 行${clipped.length < seg.length ? '，本段也被截——用 line_end 缩小范围' : to < all.length ? `，续读用 {"path":"${filePath}","line_start":${to + 1}}` : '，已到文件尾'}）`,
+      truncated: to < all.length || clipped.length < seg.length,
+    };
+  }
   if (stat.size > MAX_FILE_BYTES) {
     // 大文件不再是死路：仍给开头预算内的内容 + 指引（旧行为直接报错逼模型盲改）
     const head = fs.readFileSync(target, 'utf-8').slice(0, MAX_READ_CHARS);
-    return { ok: true, path: filePath, content: `${head}\n…(文件共 ${stat.size} 字节，仅注入前 ${MAX_READ_CHARS} 字符；用 grep 定位后编辑，或用 edits 做精确替换)`, truncated: true };
+    const headLines = head.split('\n').length;
+    return { ok: true, path: filePath, content: `${head}\n…(文件共 ${stat.size} 字节，仅注入前 ${MAX_READ_CHARS} 字符；用 grep 定位行号后按行范围续读：{"path":"${filePath}","line_start":${headLines + 1},"line_end":${headLines * 2}}，或用 edits 做精确替换)`, truncated: true };
   }
   const text = fs.readFileSync(target, 'utf-8');
   if (text.length > MAX_READ_CHARS) {
-    return { ok: true, path: filePath, content: `${text.slice(0, MAX_READ_CHARS)}\n…(文件共 ${text.length} 字符，已截断注入；用 grep 定位后编辑，或用 edits 做精确替换)`, truncated: true };
+    const cutLines = text.slice(0, MAX_READ_CHARS).split('\n').length;
+    return { ok: true, path: filePath, total_lines: text.split('\n').length, content: `${text.slice(0, MAX_READ_CHARS)}\n…(文件共 ${text.length} 字符，已截断注入；续读：{"path":"${filePath}","line_start":${cutLines + 1}}，或先 grep 定位再按行范围读)`, truncated: true };
   }
   return { ok: true, path: filePath, content: text };
 }
@@ -325,7 +341,7 @@ export async function checkPage(rawUrl: string, expect?: string[], timeoutSec = 
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[] }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -352,7 +368,9 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
         results.push({ tool: 'load_skill', ok: true, name: skill.name, description: skill.description, body });
       }
     } else if (name === 'read_file' || name === 'read') {
-      results.push({ tool: 'read_file', ...readFile(workspace, call.path || '') });
+      const ls = Number(call.line_start ?? (call as any).lineStart);
+      const le = Number(call.line_end ?? (call as any).lineEnd);
+      results.push({ tool: 'read_file', ...readFile(workspace, call.path || '', Number.isFinite(ls) && ls > 0 ? ls : undefined, Number.isFinite(le) && le > 0 ? le : undefined) });
     } else if (name === 'read_dir' || name === 'readdir') {
       results.push({ tool: 'read_dir', ...readDir(workspace, call.path || '') });
     } else if (name === 'grep' || name === 'search') {

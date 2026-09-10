@@ -147,9 +147,18 @@ export class ModelPool {
     m.slowCount += 1;
   }
 
-  /** 选择/降级链排序用的有效优先级：每段连续慢成功降一级 */
+  /**
+   * 选择/降级链排序用的有效优先级：慢成功降一级；失败降两级且 30 分钟线性回血。
+   * M4（2y3tuote 实证）：此前失败只进 cooldown，冷却一过坏模型立刻弹回链首——
+   * 33 次失败没有改变过任何一次首撞顺序。冷却是硬闸，这是软序。
+   */
   effectivePriority(m: ModelEntry): number {
-    return m.priority + m.slowCount;
+    let failPenalty = 0;
+    if (m.failCount > 0 && m.lastFailureAt) {
+      const decay = Math.max(0.25, 1 - (Date.now() - m.lastFailureAt) / (30 * 60_000));
+      failPenalty = Math.round(m.failCount * 2 * decay);
+    }
+    return m.priority + m.slowCount + failPenalty;
   }
 
   recordUsage(modelName: string, promptTokens: number, completionTokens: number): void {

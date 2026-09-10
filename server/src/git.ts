@@ -88,6 +88,26 @@ export async function commitOnBranch(workspace: string, message: string, paths: 
   }
 }
 
+/**
+ * M2（2y3tuote 实证）：节点分支上的全量提交。
+ * 依赖模型申报的 changes 做提交会系统性漏产物——"Delivery consistency flagged unreported"
+ * 在本次几乎每个节点都出现，node1 写了契约 v2 但申报缺漏 → 未提交 → node2 分支拉出旧 v1
+ * → review 节点连烧 6 个模型报同一个正确 blocker。节点分支是节点私有工作区，
+ * 工作树脏状态即产物：提交以 add -A 为准，changes 申报保留用于审计标记。
+ */
+export async function commitAllOnBranch(workspace: string, message: string): Promise<string | null> {
+  const g = git(workspace);
+  try {
+    await g.add(['-A']);
+    const status = await g.status();
+    if (status.staged.length === 0) return null;
+    const commit = await g.commit(message);
+    return commit.commit;
+  } catch {
+    return null;
+  }
+}
+
 export interface MergeResult {
   merged: string[];
   conflicts: string[];
