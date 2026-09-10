@@ -228,6 +228,7 @@ export function createApi(ctx: ApiContext): Hono {
       planAsync: body.plan_async === true,
       skipClarification: simpleMode || body.skip_clarification === true,
       allowSelfRef: body.allow_self_ref === true,
+      autoRun: body.auto_run === true || (simpleMode && body.auto_run !== false),
     });
 
     // P0-2: defect-fix backlink — a task created to fix a defect links to its source node
@@ -1126,6 +1127,11 @@ export function createApi(ctx: ApiContext): Hono {
     for (const m of pool) {
       if (!m.name || !m.api_key || !m.base_url) throw new HttpError(400, 'each model needs name, api_key and base_url');
     }
+    const names = new Set<string>();
+    for (const m of pool) {
+      if (names.has(m.name)) throw new HttpError(400, `duplicate model name: ${m.name} (name is the pool's unique key)`);
+      names.add(m.name);
+    }
     saveModelPool(pool);
     ctx.config.model_pool = pool;
     ctx.modelPool.replaceModels(pool);
@@ -1170,6 +1176,19 @@ export function createApi(ctx: ApiContext): Hono {
         error: String(e.message || e).slice(0, 300),
         latency_ms: Date.now() - start,
       }, 400);
+    }
+  });
+
+  // 模型池服务分组：拉取某个 base_url + api_key 上游实际可用的模型列表（OpenAI 兼容 GET /models）
+  app.post('/api/config/upstream-models', async (c) => {
+    const { listUpstreamModels } = await import('../llm');
+    const body = await c.req.json<{ api_key?: string; base_url?: string }>();
+    if (!body.base_url || !body.api_key) throw new HttpError(400, 'base_url and api_key are required');
+    try {
+      const models = await listUpstreamModels(body.api_key, body.base_url);
+      return c.json({ ok: true, models });
+    } catch (e: any) {
+      return c.json({ ok: false, error: String(e.message || e).slice(0, 300) }, 400);
     }
   });
 

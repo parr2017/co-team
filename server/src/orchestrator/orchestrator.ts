@@ -230,6 +230,8 @@ export class Orchestrator {
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
+  /** plan_async+auto_run：后台规划落到 planned 后的入队钩子（index.ts 装配 taskQueue.enqueue） */
+  onTaskPlanned: ((taskId: string, projectId: string | null, workspace: string) => void) | null = null;
 
   constructor(opts: OrchestratorOptions) {
     this.plugins = new Map();
@@ -337,7 +339,7 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; planAsync?: boolean; skipClarification?: boolean; allowSelfRef?: boolean }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; planAsync?: boolean; skipClarification?: boolean; allowSelfRef?: boolean; autoRun?: boolean }
   ): Promise<{ taskId: string; graph: PlannedGraph; needsClarification?: boolean; questions?: string[]; summary?: string; level?: TaskLevel }> {
     this.logger.info('Creating task', { description, workspace, projectId, planAsync: opts?.planAsync === true });
 
@@ -370,6 +372,9 @@ export class Orchestrator {
         executionPolicy: opts?.executionPolicy,
         nodeClarify: opts?.nodeClarify,
         skipClarification: opts?.skipClarification,
+        // E20：plan_async + auto_run 组合此前被路由 early-return 吞掉——autoRun 随
+        // 后台规划链传递，planned 落地后经 onTaskPlanned 钩子入队
+        autoRun: opts?.autoRun,
       });
       return { taskId, graph: { nodes: [], edges: [], summary: '' } as PlannedGraph, level };
     }
@@ -559,7 +564,7 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId: string | undefined,
-    opts: { level: TaskLevel; mainModelId?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; skipClarification?: boolean }
+    opts: { level: TaskLevel; mainModelId?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; skipClarification?: boolean; autoRun?: boolean }
   ): Promise<void> {
     try {
       await emitProgress('task_creating', { stage: 'assessing', task_id: taskId, description: description.slice(0, 80) });
@@ -626,13 +631,14 @@ export class Orchestrator {
     description: string,
     workspace: string,
     projectId: string | undefined,
-    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode }
+    opts: { level: TaskLevel; mainModelId?: string; clarifyContext?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: ClarifyMode; autoRun?: boolean }
   ): Promise<void> {
     try {
       if (await isCancelled(taskId)) return;
       await emitProgress('task_creating', { stage: 'planning', task_id: taskId, description: description.slice(0, 80) });
       await this.planAndSave(taskId, description, workspace, projectId, opts);
       this.logger.info('Background planning finished', { taskId });
+      if (opts.autoRun) this.onTaskPlanned?.(taskId, projectId ?? null, workspace);
     } catch (e) {
       await this.failGraph(taskId, e);
     }
@@ -752,9 +758,11 @@ export class Orchestrator {
     await clearCancelled(taskId);
     clearProgressThrottle(taskId);
 
-    // reset non-completed nodes so re-runs (after approval) resume cleanly
+    // reset non-completed nodes so re-runs (after approval) resume cleanly.
+    // E22：cancelled 也必须重置——"upstream failed 的连带取消"在上游修复重跑后应当续跑；
+    // 排除它会让重跑只补 failed 节点、下游永远躺在 cancelled，最后拼出假 success（2y3tuote 实证）。
     for (const node of graph.nodes) {
-      if (node.status !== 'completed' && node.status !== 'cancelled') node.status = 'pending';
+      if (node.status !== 'completed') node.status = 'pending';
     }
     // 自指任务物理隔离：在 projects.selfdev_root/<taskId> 的本地克隆中执行，
     // co-team 主副本的 HEAD/分支/工作树零触碰；成果留在克隆里由人审阅并回
@@ -1101,6 +1109,18 @@ export class Orchestrator {
     }
 
     const completed = graph.nodes.filter((n) => n.status === 'completed');
+    // E21 guard：存在被取消的节点（upstream failed 连带）绝不是成功——完成数 ≠ 全部数时
+    // 报 success 会把半截交付伪装成完整交付（2y3tuote：10/15 完成、merge 被取消仍 success）
+    const cancelledNodes = graph.nodes.filter((n) => n.status === 'cancelled');
+    if (cancelledNodes.length) {
+      return {
+        status: 'failed',
+        error: `${cancelledNodes.length} 个节点未完成（上游失败被取消）：${cancelledNodes.map((n) => `${n.id}(${n.name})`).join('、')}`,
+        completed: completed.length,
+        total: graph.nodes.length,
+        changes: this.collectChanges(graph.nodes),
+      };
+    }
     return {
       status: 'success',
       completed: completed.length,
@@ -2590,6 +2610,10 @@ export class Orchestrator {
           const est = estimateTokens(JSON.stringify(messages));
           if (est > this.contextCfg.max_prompt_tokens && foldMessagesInto(messages)) {
             foldedOnce = true;
+            // 折叠与去重指针的一致性：旧 tool_result 正文已被折叠摘要取代，指向它们的
+            // "结果从略"指针成为死链——模型会永远拿不到文件内容（2y3tuote 节点 10 实测：
+            // qwen3.8-flash 报"read_file 被 harness 去重未返回正文"三连败）。折叠即失效。
+            seenToolCalls.clear();
             record.folded_at_round = round + 1;
             this.logger.warn('Prompt folded (cliff compaction)', {
               taskId, nodeId: node.id, model: entry.name, round: round + 1,

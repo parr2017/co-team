@@ -92,6 +92,19 @@ function getClient(entry: ModelEntry): OpenAI {
 }
 
 /**
+ * 模型池 UI 的服务发现：向 OpenAI 兼容端点拉一次 `GET /models`，
+ * 返回该 base_url + api_key 下可用的模型 id 列表（升序、去重）。
+ * 不进 clientCache——发现请求是一次性的，且超时策略与生成调用完全不同。
+ */
+export async function listUpstreamModels(apiKey: string, baseUrl: string): Promise<string[]> {
+  const client = new OpenAI({ apiKey, baseURL: baseUrl.replace(/\/+$/, ''), timeout: 20_000, maxRetries: 0 });
+  const res = await client.models.list();
+  const names = new Set<string>();
+  for (const m of res.data) if (m && typeof m.id === 'string' && m.id) names.add(m.id);
+  return [...names].sort();
+}
+
+/**
  * `wallclockCapMs` (6th arg) overrides the cap for this call only. Note the semantic
  * change: agent.yaml `timeout` no longer flows in here — it became a node-level budget
  * enforced by the orchestrator between rounds.

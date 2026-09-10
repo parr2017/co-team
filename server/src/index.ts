@@ -177,6 +177,13 @@ async function main(): Promise<void> {
   const taskQueue = new TaskQueueManager(orchestrator, modelPool);
   logger.info('Task queue initialized (one running task per project)');
 
+  // E20：plan_async + auto_run 的入队补链——后台规划落到 planned 即入队（此前被路由 early-return 吞掉）
+  orchestrator.onTaskPlanned = (taskId, projectId, workspace) => {
+    void taskQueue.enqueue(taskId, projectId, workspace).catch((e) =>
+      logger.warn('auto-run enqueue after planning failed', { taskId, error: String(e) })
+    );
+  };
+
   // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
   await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger });
 

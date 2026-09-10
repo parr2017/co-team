@@ -301,6 +301,10 @@ export interface ModelConfig {
   professional_weight?: number;
   cost_per_1k?: number;
   tags?: string[];
+  /** capability roles: 'chat' (default) and/or 'embedding' */
+  roles?: string[];
+  /** vLLM 透传参数（如 {enable_thinking:false}）——设置界面不编辑，保存时原样带回 */
+  chat_template_kwargs?: Record<string, unknown>;
 }
 
 export interface AgentDefinition {
@@ -681,6 +685,12 @@ export const api = {
     request<{ ok: boolean; latency_ms: number; response_preview?: string; error?: string }>(
       '/api/config/model-pool/test',
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(model) }
+    ),
+  // 模型池服务分组：拉取某个 base_url + api_key 上游实际可用的模型列表
+  upstreamModels: (base_url: string, api_key: string) =>
+    request<{ ok: boolean; models?: string[]; error?: string }>(
+      '/api/config/upstream-models',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base_url, api_key }) }
     ),
   reloadAgents: () => request('/api/agents/reload', { method: 'POST' }),
   // ---------- 群组沟通 ----------
