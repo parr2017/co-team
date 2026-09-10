@@ -29,6 +29,7 @@ import {
   isCancelled,
   listTaskGraphs,
   persistGraph,
+  pushIntervention,
   recordAgentTask,
   saveNodeDiff,
   saveTaskGraph,
@@ -115,6 +116,17 @@ export const PRECONDITION_FAIL_RE = /缺少(项目)?源代码|文件不在本沙
 export const LEGIT_BLOCKER_RE = /\[blocker\]|需要人类|需要人工|需要.{0,8}补充|信息不足|无法获得|未获得|缺少.{0,8}(信息|权限|证据)|上游.*(声明|实际).*(不符|不一致)|cannot proceed|need human/i;
 /** M3：429/503/rate limit 是容量信号不是能力失败——退避重试同模型，不记健康度不烧链 */
 export const CAPACITY_RE = /429|503|rate.?limit|too many requests|tpm|rpm|quota/i;
+/**
+ * 群聊化（批次一）：用户插话的三分支处理模板——attempt 开头与工具轮之间两处注入共用，
+ * 语义单点。纪律与讨论引擎同源：引擎只陈述事实（送达/接力/重放），agent 态度只能来自模型输出；
+ * 先核实再决定跳过/执行/接力，禁止未核实空口应承。
+ */
+export const INTERVENE_TEMPLATE =
+  '## 用户插话（先对照现场核实，再逐条选一支处理；本轮最终输出必须包含 reply_to_user 直接回应用户）\n' +
+  '① 已实现/已完成：不要重复劳动——reply_to_user 给出证据（文件:行 或 节点名）并说明跳过；\n' +
+  '② 未实现且属于本节点范围：纳入本轮实现，reply_to_user 汇报结果；\n' +
+  '③ 未实现且不归本节点管：把该条原文列入 intervene_defer 数组（引擎会接力给后续节点），reply_to_user 如实说明已接力。\n' +
+  '禁止：未核实就应承、宣称做过但拿不出证据。';
 
 /**
  * 断崖压缩：把最早的完整工具轮次折叠为一条确定性摘要（纯函数、不经 LLM、
@@ -2296,11 +2308,11 @@ export class Orchestrator {
       lastError,
     });
 
-    // improvement 6 (R1): message-style intervention — pending user messages are
-    // consumed right before the userMsg is built and injected as a must-respond block
+    // improvement 6 (R1) + 群聊化：pending 用户消息在 userMsg 构建前消费，
+    // 以三分支模板注入（核实→跳过/执行/接力，强制 reply_to_user 回应）
     const interventions = await consumeInterventions(taskId);
     const interveneBlock = interventions.length
-      ? `\n\n## 用户介入指示（必须响应，并在汇报中说明如何落实）\n${interventions.map((m, i) => `${i + 1}. ${m.message}`).join('\n')}`
+      ? `\n\n${INTERVENE_TEMPLATE}\n${interventions.map((m, i) => `${i + 1}. ${m.message}`).join('\n')}`
       : '';
 
     // improvement #4 (C4): deferred agent-to-agent messages consumed here so the
@@ -2383,16 +2395,20 @@ export class Orchestrator {
       role: 'master', kind: 'brief', text: userMsg, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name,
     });
     // war-room journal: trace which interventions were injected into this node
+    // 送达回执只陈述事实（送达/轮次），不替 agent 表态——真实性纪律
+    const consumedForAttempt: { message: string }[] = [...interventions];
+    let attemptSucceeded = false;
     if (interventions.length) {
       await appendJournal(taskId, plugin.name, {
         role: 'master',
         kind: 'intervene',
-        text: `介入消息已注入节点 ${node.name}（${interventions.length} 条，Agent 将在本轮响应）`,
+        text: `已送达节点 ${node.name}（第 1 轮注入，${interventions.length} 条）`,
         ts: new Date().toISOString(),
         node_id: node.id,
         node_name: node.name,
-        meta: { interventions: interventions.map((m) => m.message) },
+        meta: { delivered: { node_id: node.id, round: 1 }, interventions: interventions.map((m) => m.message) },
       });
+      await emitProgress('intervention_injected', { task_id: taskId, node_id: node.id, agent: plugin.name, count: interventions.length, round: 1 });
       this.logger.info('User interventions injected into agent round', { taskId, nodeId: node.id, agent: plugin.name, count: interventions.length });
     }
     await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: '接收任务简报', model: entry.name });
@@ -2658,6 +2674,22 @@ export class Orchestrator {
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
         await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
 
+        // 群聊化 A1：工具轮之间检查用户新插话——执行中可被对话（三分支模板，强制回应）。
+        // 插话是低频人为事件，当次尝试前缀缓存作废可接受；其余时刻严格 append-only。
+        const midInterventions = await consumeInterventions(taskId);
+        if (midInterventions.length) {
+          messages.push({ role: 'user', content: `${INTERVENE_TEMPLATE}\n${midInterventions.map((m, i) => `${i + 1}. ${m.message}`).join('\n')}` });
+          consumedForAttempt.push(...midInterventions);
+          await appendJournal(taskId, plugin.name, {
+            role: 'master', kind: 'intervene',
+            text: `已送达节点 ${node.name}（第 ${round + 2} 轮注入，${midInterventions.length} 条）`,
+            ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+            meta: { delivered: { node_id: node.id, round: round + 2 }, interventions: midInterventions.map((m) => m.message) },
+          });
+          await emitProgress('intervention_injected', { task_id: taskId, node_id: node.id, agent: plugin.name, count: midInterventions.length, round: round + 2 });
+          this.logger.info('mid-round intervention injected', { taskId, nodeId: node.id, round: round + 2, count: midInterventions.length });
+        }
+
         // 断崖压缩（缓存优先：循环内其余时刻严格 append-only）：估算超硬预算才折叠，
         // 折叠是确定性的纯函数、每尝试至多一次——一次 prefill 重置换后续全部小 prompt。
         // 折叠真正发生才置位（历史不足一轮时继续观察后续轮次）
@@ -2693,6 +2725,33 @@ export class Orchestrator {
       result.model = entry.name;
       if (docUpdates.length) result.doc_updates = docUpdates;
 
+      // 群聊化 A2：reply_to_user 是模型真实输出 → direct 回复气泡（前端带"回复你"角标）；
+      // intervene_defer 声明的条目回队接力给后续节点——消息不黑洞
+      const replyToUser = String((result as Record<string, any>).reply_to_user || '').trim();
+      const deferItems = Array.isArray((result as Record<string, any>).intervene_defer)
+        ? ((result as Record<string, any>).intervene_defer as unknown[]).map(String).filter((x) => x.trim())
+        : [];
+      if (replyToUser) {
+        await appendJournal(taskId, plugin.name, {
+          role: 'agent', kind: 'message',
+          text: replyToUser.slice(0, 2000),
+          ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name,
+          meta: { to: 'user', direct: true, round: record.rounds.length, text: replyToUser.slice(0, 2000) },
+        });
+        await emitProgress('agent_message', { task_id: taskId, node_id: node.id, agent: plugin.name, kind: 'message', to: 'user', direct: true });
+      }
+      if (deferItems.length) {
+        for (const d of deferItems) await pushIntervention(taskId, `（接力：${node.name} 判定超出其范围）${d}`);
+        await appendJournal(taskId, plugin.name, {
+          role: 'master', kind: 'intervene',
+          text: `↻ ${deferItems.length} 条插话已接力到后续节点（${node.name} 申报超出范围）`,
+          ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+          meta: { deferred: deferItems },
+        });
+        await emitProgress('intervention_deferred', { task_id: taskId, node_id: node.id, agent: plugin.name, count: deferItems.length });
+      }
+      attemptSucceeded = true;
+
       // session continuity: remember this exchange for the agent's next node in this task
       await busSet(sessionKey, [...priorSession, { role: 'user', content: userMsg }, { role: 'assistant', content }].slice(-20));
 
@@ -2712,6 +2771,14 @@ export class Orchestrator {
     } finally {
       record.duration_sec = Math.round((Date.now() - startedAt) / 100) / 10;
       await saveConversation(taskId, node.id, record);
+      // 群聊化 A4：本次尝试未成功（失败/异常/取消）→ 已消费的插话回队——
+      // 换模型、重试都不吞用户的话；成功时不回队（模型已真实回应）
+      if (!attemptSucceeded && consumedForAttempt.length) {
+        for (const m of consumedForAttempt) {
+          await pushIntervention(taskId, `（重放：上一轮尝试未完成）${m.message}`).catch(() => undefined);
+        }
+        this.logger.warn('interventions re-queued after unsuccessful attempt', { taskId, nodeId: node.id, count: consumedForAttempt.length });
+      }
     }
   }
 

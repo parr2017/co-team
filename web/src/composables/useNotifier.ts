@@ -62,6 +62,8 @@ export function useNotifier() {
     const p: Record<string, any> = msg.payload || {};
     if (msg.type === 'discussion_ask_user') fire('讨论待你拍板', `${p.agent || ''}：${String(p.question || '').slice(0, 60)}`);
     else if (msg.type === 'discussion_converted') fire('方案已转项目开发', `项目 ${p.project_id} · 任务 ${p.task_id}`);
+    // 群聊化：任务执行中 agent 对你的插话作出直接回应 → 值得打断（送达回执不弹，防打扰）
+    else if (msg.type === 'agent_message' && p.direct && p.to === 'user') fire(`${p.agent} 回复了你`, '到作战室查看回应');
   });
 
   return { enabled, setEnabled };

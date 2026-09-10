@@ -4,19 +4,21 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 // stub the LLM so the real callAgent runs; captured messages let tests assert
-// what the agent actually received (interventions ride inside the userMsg)
+// what the agent actually received (interventions ride inside the userMsg).
+// behaviors 队列驱动：每次 chat 调用依次弹出对应脚本（缺省=直接成功），可注入 mid-round 副作用
 const seenMessages: { role: string; content: string }[][] = [];
+type Behavior = ((messages: { role: string; content: string }[]) => { content: string } | Promise<{ content: string }>) | undefined;
+const behaviors: Behavior[] = [];
+const okFinal = { content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['x.txt: ok'], errors: [] }) };
 vi.mock('../src/llm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm')>();
   return {
     ...actual,
     chat: async (_entry: any, messages: { role: string; content: string }[]) => {
       seenMessages.push(messages.map((m) => ({ ...m })));
-      return {
-        content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['x.txt: ok'], errors: [] }),
-        promptTokens: 3,
-        completionTokens: 4,
-      };
+      const b = behaviors.shift();
+      const r = b ? await b(messages) : okFinal;
+      return { content: r.content, promptTokens: 3, completionTokens: 4 };
     },
   };
 });
@@ -50,6 +52,7 @@ beforeEach(async () => {
   fs.writeFileSync(path.join(devDir, 'agent.yaml'), 'name: dev\ntags: [code]\nrole: 开发\n');
   await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
   seenMessages.length = 0;
+  behaviors.length = 0;
   capturedEvents = [];
   getBus().subscribe('coteam:dashboard', (msg: any) => capturedEvents.push(msg));
   const pool = new ModelPool([{ name: 'fake-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
@@ -110,7 +113,7 @@ describe('intervention injection (real callAgent via runGraph)', () => {
     // the agent received both interventions inside the userMsg
     const userContents = seenMessages.flat().filter((m) => m.role === 'user').map((m) => m.content);
     const allUser = userContents.join('\n');
-    expect(allUser).toContain('用户介入指示');
+    expect(allUser).toContain('用户插话');
     expect(allUser).toContain('请务必使用 TypeScript strict 模式');
     expect(allUser).toContain('补充：必须覆盖边界情况');
 
@@ -124,10 +127,14 @@ describe('intervention injection (real callAgent via runGraph)', () => {
     expect(trace).toBeTruthy();
     expect(trace!.text).toContain('n1');
     expect(trace!.meta?.interventions).toContain('请务必使用 TypeScript strict 模式');
+    // 送达回执只陈述事实（群聊化纪律：不替 agent 表态）
+    expect(trace!.text).toContain('已送达');
+    expect(trace!.meta?.delivered).toBeTruthy();
+    expect(capturedEvents.some((e) => e.type === 'intervention_injected' && e.payload.task_id === 't-inj')).toBe(true);
 
     // the brief (master briefing) contains the intervention block too
     const brief = devJournal.find((e) => e.kind === 'brief');
-    expect(brief!.text).toContain('用户介入指示');
+    expect(brief!.text).toContain('用户插话');
 
     // node completed through the normal pipeline
     const after = (await getTaskGraph('t-inj')) as TaskGraph;
@@ -142,7 +149,7 @@ describe('intervention injection (real callAgent via runGraph)', () => {
     await (orchestrator as any).runGraph('t-noinj', graph, tmp);
 
     const allUser = seenMessages.flat().filter((m) => m.role === 'user').map((m) => m.content).join('\n');
-    expect(allUser).not.toContain('用户介入指示');
+    expect(allUser).not.toContain('用户插话');
 
     const journals = await getTaskJournals('t-noinj');
     expect((journals['dev'] || []).some((e) => e.kind === 'intervene')).toBe(false);
@@ -228,5 +235,84 @@ describe('intervention API (POST /api/tasks/:taskId/intervene)', () => {
       body: JSON.stringify({ message: 'hello' }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------- 群聊化批次一：轮间注入 / 真实回应 / 接力 / 不吞话 ----------
+
+describe('group-chat batch 1', () => {
+  it('interventions arriving mid-round are injected between tool rounds with a delivery ack', async () => {
+    await saveTaskGraph('t-mid', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp, status: 'running' });
+    behaviors.push(
+      // 第 1 轮：请求工具调用；执行中用户插话（attempt 开头已消费过，这条只能被轮间检查捞到）
+      async () => {
+        await pushIntervention('t-mid', '执行中插话：记得加错误处理');
+        return { content: JSON.stringify({ tool_calls: [{ tool: 'read_file', path: 'nothing.txt' }] }) };
+      },
+      () => okFinal,
+    );
+    const graph = (await getTaskGraph('t-mid')) as TaskGraph;
+    await (orchestrator as any).runGraph('t-mid', graph, tmp);
+
+    // 第二次 chat 调用的最后一条 user 消息 = 工具结果 + 插话块
+    const secondCall = seenMessages[1];
+    expect(secondCall).toBeTruthy();
+    const lastUser = [...secondCall].reverse().find((m) => m.role === 'user')!;
+    expect(lastUser.content).toContain('用户插话');
+    expect(lastUser.content).toContain('记得加错误处理');
+    expect(lastUser.content).toContain('reply_to_user');
+
+    // 送达回执：第 2 轮注入的灰条事实陈述 + 事件
+    const journals = await getTaskJournals('t-mid');
+    const ack = (journals['dev'] || []).find((e) => e.kind === 'intervene' && (e.meta as any)?.delivered?.round === 2);
+    expect(ack).toBeTruthy();
+    expect(ack!.text).toContain('已送达');
+    expect(ack!.text).not.toContain('收到');
+    expect(capturedEvents.some((e) => e.type === 'intervention_injected' && (e.payload as any).round === 2)).toBe(true);
+  });
+
+  it('reply_to_user lands as a direct bubble; intervene_defer re-queues for later nodes', async () => {
+    await saveTaskGraph('t-reply', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp, status: 'running' });
+    await pushIntervention('t-reply', '加个导出按钮');
+    await pushIntervention('t-reply', '这个数据模型该改');
+    behaviors.push(() => ({
+      content: JSON.stringify({
+        status: 'success', summary: 'ok', verification: 'v', changes: [],
+        reply_to_user: '导出按钮本轮已加上；数据模型改动超出本节点范围，已接力',
+        intervene_defer: ['这个数据模型该改'],
+      }),
+    }));
+    const graph = (await getTaskGraph('t-reply')) as TaskGraph;
+    await (orchestrator as any).runGraph('t-reply', graph, tmp);
+
+    const journals = await getTaskJournals('t-reply');
+    const direct = (journals['dev'] || []).find((e) => e.kind === 'message' && (e.meta as any)?.direct);
+    expect(direct).toBeTruthy();
+    expect(direct!.text).toContain('导出按钮');
+    expect((direct!.meta as any).to).toBe('user');
+    expect(capturedEvents.some((e) => e.type === 'agent_message' && (e.payload as any).direct === true)).toBe(true);
+
+    // defer 条目回队接力 + 「↻」灰条 + 事件
+    const q = await consumeInterventions('t-reply');
+    expect(q.some((m) => m.message.includes('接力') && m.message.includes('这个数据模型该改'))).toBe(true);
+    const relay = (journals['dev'] || []).find((e) => (e.meta as any)?.deferred);
+    expect(relay).toBeTruthy();
+    expect(capturedEvents.some((e) => e.type === 'intervention_deferred')).toBe(true);
+  });
+
+  it('interventions are re-queued when the attempt fails — model trouble never swallows user words', async () => {
+    await saveTaskGraph('t-fail', [makeNode('n1', 'dev')], [], { description: 'x', workspace: tmp, status: 'running' });
+    await pushIntervention('t-fail', '别动数据库配置');
+    // 所有尝试都失败（maxRetries=1 → 两次 attempt，每次都消费再回队）
+    const failContent = { content: JSON.stringify({ status: 'failed', summary: 'x', verification: 'v', errors: ['缺权限'] }) };
+    behaviors.push(() => failContent, () => failContent, () => failContent, () => failContent);
+    const graph = (await getTaskGraph('t-fail')) as TaskGraph;
+    await (orchestrator as any).runGraph('t-fail', graph, tmp);
+
+    const after = (await getTaskGraph('t-fail')) as TaskGraph;
+    expect(after.nodes[0].status).toBe('failed');
+    const q = await consumeInterventions('t-fail');
+    expect(q.length).toBeGreaterThan(0);
+    expect(q.some((m) => m.message.includes('重放') && m.message.includes('别动数据库配置'))).toBe(true);
   });
 });

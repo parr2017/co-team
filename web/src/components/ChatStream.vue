@@ -12,7 +12,13 @@
         <span v-for="m in item.models" :key="m" class="nd-model mono">{{ m }}</span>
       </div>
 
-      <!-- 用户介入：右侧绿色气泡（微信群聊"我"的心智） -->
+      <!-- 用户介入：右侧绿色气泡（微信群聊"我"的心智）；送达回执/接力为居中灰条（引擎只陈述事实） -->
+      <div v-else-if="item.t === 'intervene' && item.entry.meta?.delivered" class="sys-row">
+        <span class="sys-text mono ack">✓ {{ item.entry.text }}</span>
+      </div>
+      <div v-else-if="item.t === 'intervene' && item.entry.meta?.deferred" class="sys-row">
+        <span class="sys-text mono relay">↻ {{ item.entry.text }}</span>
+      </div>
       <div v-else-if="item.t === 'intervene'" class="row me">
         <div class="me-col">
           <div class="bubble me-b">
@@ -97,11 +103,14 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <AgentAvatar :name="item.agent" :size="36" class="av" />
       </div>
 
-      <!-- Agent 留言（send_message，延迟派发）：左侧气泡，标注收件人 -->
+      <!-- Agent 留言（send_message，延迟派发）：左侧气泡，标注收件人；direct=对用户插话的直接回应 -->
       <div v-else-if="item.t === 'message'" class="row them">
         <div class="them-col">
-          <div class="who-name mono">{{ item.agent }}<template v-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template></div>
-          <div class="bubble them-b">
+          <div class="who-name mono">
+            {{ item.agent }}<template v-if="item.entry.meta?.direct"> · {{ item.entry.node_name }}<template v-if="item.entry.meta?.round"> · 第 {{ item.entry.meta.round }} 轮</template></template><template v-else-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template>
+            <span v-if="item.entry.meta?.direct" class="direct-tag mono">回复你</span>
+          </div>
+          <div class="bubble them-b" :class="{ direct: item.entry.meta?.direct }">
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
         </div>
@@ -487,6 +496,11 @@ html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575;
 /* 居中灰色系统消息（工具动作行） */
 .sys-row { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 2px 0; }
 .sys-text { font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 4px; padding: 2px 12px; max-width: 80%; text-align: center; }
+/* 群聊化：送达回执/接力灰条 + direct 回复气泡强调 */
+.sys-text.ack { color: #178a3e; background: rgba(23, 138, 62, 0.08); border: 1px solid rgba(23, 138, 62, 0.25); }
+.sys-text.relay { color: #b8860b; background: rgba(184, 134, 11, 0.08); border: 1px solid rgba(184, 134, 11, 0.25); }
+.direct-tag { font-size: 9px; color: #fff; background: var(--ct-accent); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+.bubble.them-b.direct { border-color: var(--ct-accent); box-shadow: 0 0 0 1px rgba(24, 144, 255, 0.25); }
 .sys-meta { font-size: 9px; color: var(--ct-text3); }
 
 /* typing */

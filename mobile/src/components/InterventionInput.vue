@@ -14,8 +14,8 @@ const RUNNING = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'
 const canSend = computed(() => !props.taskStatus || RUNNING.includes(props.taskStatus));
 const hint = computed(() =>
   props.taskStatus === 'clarifying'
-    ? '需求澄清中——回答澄清问题后即可介入'
-    : `任务已结束（${props.taskStatus || '?'}）——重启任务后才能发送介入指示`
+    ? '需求澄清中——回答澄清问题后即可对话'
+    : `任务已结束（${props.taskStatus || '?'}）——重启任务后才能发消息`
 );
 
 async function send() {
@@ -42,7 +42,7 @@ async function send() {
         v-model="draft"
         class="iv-input"
         type="text"
-        placeholder="发送介入指示，Agent 下一轮响应…"
+        placeholder="问进度、提醒、提想法——成员会回应"
         :disabled="sending"
         @keydown.enter.prevent="send"
       />

@@ -191,7 +191,13 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
 
       <div v-else-if="item.t === 'node'" class="node-divider">{{ item.name }}</div>
 
-      <!-- 用户介入：右侧绿色气泡 -->
+      <!-- 用户介入：右侧绿色气泡；送达回执/接力为居中灰条（引擎只陈述事实） -->
+      <div v-else-if="item.t === 'intervene' && item.entry.meta?.delivered" class="sys-row">
+        <span class="sys-text ack">✓ {{ item.entry.text }}</span>
+      </div>
+      <div v-else-if="item.t === 'intervene' && item.entry.meta?.deferred" class="sys-row">
+        <span class="sys-text relay">↻ {{ item.entry.text }}</span>
+      </div>
       <div v-else-if="item.t === 'intervene'" class="row me">
         <div class="me-col">
           <div class="bubble me-b">
@@ -276,12 +282,15 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         </div>
       </div>
 
-      <!-- Agent 留言（send_message，延迟派发）：左侧气泡，标注收件人 -->
+      <!-- Agent 留言（send_message，延迟派发）：左侧气泡；direct=对用户插话的直接回应（角标+署名） -->
       <div v-else-if="item.t === 'message'" class="row them">
         <AgentAvatar :name="item.agent" :size="36" />
         <div class="them-col">
-          <div class="who-name">{{ item.agent }}<template v-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template></div>
-          <div class="bubble them-b">
+          <div class="who-name">
+            {{ item.agent }}<template v-if="item.entry.meta?.direct"> · {{ item.entry.node_name }}<template v-if="item.entry.meta?.round"> · 第 {{ item.entry.meta.round }} 轮</template></template><template v-else-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template>
+            <span v-if="item.entry.meta?.direct" class="direct-tag">回复你</span>
+          </div>
+          <div class="bubble them-b" :class="{ direct: item.entry.meta?.direct }">
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
         </div>
@@ -410,6 +419,11 @@ details summary { font-size: 12px; color: var(--text-3); }
   padding: 2px 12px; max-width: 86%; text-align: center;
 }
 .sys-meta { font-size: 10px; color: rgba(255, 255, 255, 0.55); }
+/* 群聊化：送达回执/接力灰条 + direct 回复气泡强调 */
+.sys-text.ack { background: rgba(7, 193, 96, 0.85); }
+.sys-text.relay { background: rgba(184, 134, 11, 0.85); }
+.direct-tag { font-size: 10px; color: #fff; background: var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+.bubble.them-b.direct { border: 1px solid var(--accent); box-shadow: 0 0 0 1px rgba(25, 137, 250, 0.25); }
 
 .typing-b { display: flex; align-items: center; gap: 4px; }
 .dot-t { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: bob 1.2s infinite; }

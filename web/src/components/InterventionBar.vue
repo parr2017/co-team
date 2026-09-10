@@ -1,14 +1,15 @@
 <template>
   <div class="intervention-bar">
-    <input
+    <textarea
       v-model="draft"
       class="iv-input"
-      type="text"
+      rows="1"
       :placeholder="placeholder"
       :disabled="sending"
-      @keydown.enter.prevent="send"
-      @keyup.enter.prevent="send"
-    />
+      @keydown.enter.exact.prevent="send"
+      @input="autoGrow"
+      ref="taEl"
+    ></textarea>
     <button class="iv-send mono" :disabled="!draft.trim() || sending" @click="send">发送</button>
   </div>
 </template>
@@ -23,26 +24,36 @@ const emit = defineEmits<{ (e: 'sent'): void }>();
 
 const draft = ref('');
 const sending = ref(false);
+const taEl = ref<HTMLTextAreaElement | null>(null);
 
-const placeholder = '向 Agent 发送介入指示，将在其下一轮对话注入…';
+const placeholder = '问进度、提醒、或提新想法——运行中的成员会回应（Enter 发送，Shift+Enter 换行）';
 
 const RUNNING = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'];
+
+function autoGrow() {
+  const el = taEl.value;
+  if (el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(96, el.scrollHeight) + 'px';
+  }
+}
 
 async function send() {
   const message = draft.value.trim();
   if (!message || sending.value) return;
   if (props.taskStatus && !RUNNING.includes(props.taskStatus)) {
-    ElMessage.warning(`任务当前状态为 ${props.taskStatus}，不是执行中，介入消息不会被消费`);
+    ElMessage.warning(`任务当前状态为 ${props.taskStatus}，不是执行中，消息不会被消费`);
     return;
   }
   sending.value = true;
   try {
     const r = await api.interveneTask(props.taskId, message);
     draft.value = '';
-    ElMessage.success(r.note || '将在 Agent 下一轮对话注入');
+    if (taEl.value) taEl.value.style.height = 'auto';
+    ElMessage.success(r.note || '已送达执行中的成员');
     emit('sent');
   } catch (e: any) {
-    ElMessage.error(e.message || '介入发送失败');
+    ElMessage.error(e.message || '发送失败');
   } finally {
     sending.value = false;
   }
@@ -50,18 +61,21 @@ async function send() {
 </script>
 
 <style scoped>
-.intervention-bar { display: flex; align-items: center; gap: 8px; padding: 8px 4px 4px; }
+.intervention-bar { display: flex; align-items: flex-end; gap: 8px; padding: 8px 4px 4px; }
 .iv-input {
   flex: 1;
   min-width: 0;
-  height: 34px;
-  padding: 0 12px;
+  min-height: 34px;
+  padding: 7px 12px;
   border: 1px solid var(--ct-border2);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--ct-panel);
   color: var(--ct-text);
   font-size: 13px;
+  line-height: 1.5;
   outline: none;
+  resize: none;
+  font-family: inherit;
 }
 .iv-input:focus { border-color: var(--ct-accent); }
 .iv-input:disabled { opacity: 0.6; }
@@ -69,7 +83,7 @@ async function send() {
   height: 34px;
   padding: 0 18px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #95ec69;
   color: #0b2e13;
   font-size: 13px;

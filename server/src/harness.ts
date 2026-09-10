@@ -120,6 +120,8 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '  "edits": [{"path":"已有文件相对路径","find":"要替换的原文（精确唯一）","replace":"替换后的文本"}],  // 对已有文件的小改动优先用 edits（省 token）；find 必须与文件现有内容精确匹配',
     '  "commands": ["要执行的命令"],             // 字符串数组，在沙箱中执行（仅限白名单命令）',
     '  "defects": [{"title":"缺陷标题","detail":"具体描述与复现条件","severity":"low|medium|high"}]  // 发现但本次未修复的问题（已修复的写 errors，潜在风险/技术债写 defects）',
+    '  "reply_to_user": "对用户插话/提问的直接回应",  // 本轮收到用户插话时必填（见"用户插话"块）；平时可省略',
+    '  "intervene_defer": ["插话原文…"],             // 判定超出本节点范围的插话列入此数组——引擎会接力给后续节点，不许静默丢弃',
     '}',
     '高频错误（每次输出前自查）：',
     '- 把 JSON 包进 ```json 代码栅栏（禁止）',
