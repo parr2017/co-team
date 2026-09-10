@@ -2232,7 +2232,9 @@ export class Orchestrator {
     const context = await this.upstreamContext(taskId, node);
     // B3a/B3b: recon rounds and visible file list scale with node complexity —
     // complex nodes get more tool rounds and a wider view of the workspace.
-    const maxRounds = node.complexity === 'complex' ? 8 : node.complexity === 'simple' ? 3 : 5;
+    // 轮次预算（g6704zpm 实证上调）：分段读取大文件等"合并侦查"要消耗轮次，
+    // 旧值 5 让实现节点"读完没空写"——模型被迫在证据不足时盲写或上报
+    const maxRounds = node.complexity === 'complex' ? 12 : node.complexity === 'simple' ? 4 : 8;
     // 缓存优先裁剪：预算内的确定性目录树替代 flat 全量清单（同树同字节，前缀可缓存）
     const workspaceFiles = renderWorkspaceTree(workspace, this.contextCfg.workspace_tree_max_chars);
     // i6efv5h2 复盘：max_tokens 不再无脑取模型上限（128000）——超大输出预算让本地
@@ -2670,7 +2672,14 @@ export class Orchestrator {
         await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, tool_calls: toolCalls });
         await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'round', text: `请求读取工具: ${toolCalls.map((t: any) => t.tool + (t.path ? ':' + t.path : '')).join(', ')}`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
         messages.push({ role: 'assistant', content });
-        messages.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results).slice(0, 8000)}\n\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/${maxRounds} 轮完成，剩余 ${maxRounds - 1 - round} 轮——规划好是否还需要侦查）` });
+        // 工具结果总预算（g6704zpm 节点5 实证修复）：旧值 8000 与单文件读取预算 16000 矛盾——
+        // 一轮合并读 3 个大文件必然被总预算掐断，模型被迫反复重读直到轮次耗尽。
+        // 24000 ≈ 6k token，对 128k 上下文模型合理；截断时明示丢了哪条、如何精确续读。
+        const resultsJson = JSON.stringify(results);
+        const resultsNote = resultsJson.length > 24000
+          ? `（注意：本批 ${results.length} 项结果共 ${resultsJson.length} 字符被截断到 24000，尾部条目可能不完整——缺失部分用 read_file 行范围或 grep 精确重取，别整文件重读）`
+          : '';
+        messages.push({ role: 'user', content: `工具执行结果：\n${resultsJson.slice(0, 24000)}\n${resultsNote}\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/${maxRounds} 轮完成，剩余 ${maxRounds - 1 - round} 轮——还需要的侦查请合并：同一轮 tool_calls 数组里放多个 read_file/grep 调用一次拿全，大文件分段读尤其如此，别把轮次耗在单发读取上）` });
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
         await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
 
