@@ -144,6 +144,18 @@ async function main(): Promise<void> {
     agents: [...orchestrator.plugins.keys()]
   });
 
+  // M3 主 agent 监督者：事件驱动 + 心跳的有边界处置（可经 orchestrator.supervisor.enabled 关闭）
+  if (config.orchestrator.supervisor?.enabled !== false) {
+    const { Supervisor } = await import('./orchestrator/supervisor');
+    const supervisor = new Supervisor({
+      pool: modelPool,
+      heartbeatSec: config.orchestrator.supervisor?.heartbeat_sec ?? 600,
+      minIntervalSec: config.orchestrator.supervisor?.min_interval_sec ?? 120,
+      availableAgents: () => [...orchestrator.plugins.keys()],
+    });
+    supervisor.start();
+  }
+
   // E7: tasks still 'running' at boot have no executor behind them (the previous
   // process died mid-dispatch) — mark them failed so they never zombie.
   const interrupted = await orchestrator.sweepInterruptedTasks();

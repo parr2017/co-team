@@ -234,6 +234,25 @@
             </div>
 
             <div class="mg-card">
+              <div class="mg-title mono">SUPERVISOR · 监督者提案（待批准）</div>
+              <div class="mg-body">
+                <template v-if="(proposals || []).filter((p) => p.status === 'pending').length">
+                  <div v-for="p in proposals.filter((p) => p.status === 'pending')" :key="p.id" class="mg-line proposal-row">
+                    <div class="proposal-info">
+                      <el-tag size="small" type="warning" class="mono">{{ p.type }}</el-tag>
+                      <span class="mono">{{ p.reason || p.type }}</span>
+                    </div>
+                    <div class="proposal-actions">
+                      <el-button size="small" type="primary" :loading="deciding === p.id" @click="decideProposal(p.id, true)">批准</el-button>
+                      <el-button size="small" :loading="deciding === p.id" @click="decideProposal(p.id, false)">拒绝</el-button>
+                    </div>
+                  </div>
+                </template>
+                <div v-else class="mg-empty mono">暂无待批准提案（监督者只在发现卡点时提案）</div>
+              </div>
+            </div>
+
+            <div class="mg-card">
               <div class="mg-title mono">EXECUTION POLICY · 执行策略（命令执行分级）</div>
               <div class="mg-body mg-row">
                 <el-select v-model="policyLevel" size="small" style="width: 200px" @change="savePolicy">
@@ -818,6 +837,28 @@ function fmtTime(ts: string): string {
   }
 }
 
+// M3 监督者提案
+const proposals = ref<any[]>([]);
+const deciding = ref('');
+async function loadProposals() {
+  try {
+    proposals.value = (await api.listProposals(props.taskId)).proposals || [];
+  } catch { /* ignore */ }
+}
+async function decideProposal(proposalId: string, approved: boolean) {
+  deciding.value = proposalId;
+  try {
+    await api.decideProposal(props.taskId, proposalId, approved);
+    ElMessage.success(approved ? '提案已批准并执行' : '提案已拒绝');
+    await loadProposals();
+    await refresh();
+  } catch (e: any) {
+    ElMessage.error(e.message || '操作失败');
+  } finally {
+    deciding.value = '';
+  }
+}
+
 async function onOpen() {
   tab.value = 'warroom';
   wrView.value = 'chat';
@@ -830,6 +871,7 @@ async function onOpen() {
   archShowNoisy.value = false;
   archLimit.value = 500;
   await refresh();
+  void loadProposals();
   await refreshManage();
   void loadModels();
   void loadAgentOptions();
@@ -935,6 +977,9 @@ onUnmounted(() => window.clearInterval(pollTimer));
 /* ---- 节点详情 ---- */
 .node-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .agent-swap { width: 110px; margin-left: auto; }
+.proposal-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.proposal-info { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.proposal-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .n-status { font-size: 11px; font-weight: 600; flex-shrink: 0; }
 .n-status.completed { color: var(--ct-green); }
 .n-status.failed { color: var(--ct-red); }

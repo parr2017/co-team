@@ -10,7 +10,7 @@ import { ModelPool } from '../scheduler';
 import type { TaskQueueManager, QueueSnapshot } from '../taskQueue';
 import { busGet, busKeys, busSet, busDel, getBus } from '../bus';
 import { listAsks, resolveAsk } from '../askGate';
-import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask, listProjects } from '../store';
+import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask, listProjects, appendJournal, emitProgress } from '../store';
 import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
 import { mergeTaskBranch } from '../git';
@@ -485,6 +485,102 @@ export function createApi(ctx: ApiContext): Hono {
   app.get('/api/tasks/:taskId/asks', async (c) => {
     const taskId = c.req.param('taskId');
     return c.json({ asks: await listAsks(taskId) });
+  });
+
+  // ---------- M3 监督者提案：列表与批准/拒绝（批准后执行改图） ----------
+
+  app.get('/api/tasks/:taskId/proposals', async (c) => {
+    const taskId = c.req.param('taskId');
+    const proposals = await busGet<any[]>(`task:proposals:${taskId}`);
+    return c.json({ proposals: proposals || [] });
+  });
+
+  app.post('/api/tasks/:taskId/proposals/:proposalId/decide', async (c) => {
+    const taskId = c.req.param('taskId');
+    const proposalId = c.req.param('proposalId');
+    const body = await c.req.json<{ approved?: boolean }>();
+    const approved = body.approved === true;
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const key = `task:proposals:${taskId}`;
+    const proposals = (await busGet<any[]>(key)) || [];
+    const proposal = proposals.find((x) => x.id === proposalId);
+    if (!proposal) throw new HttpError(404, 'proposal not found');
+    if (proposal.status !== 'pending') throw new HttpError(400, `proposal already ${proposal.status}`);
+    proposal.decided_at = new Date().toISOString();
+    if (!approved) {
+      proposal.status = 'rejected';
+      await busSet(key, proposals);
+      await appendJournal(taskId, 'orchestrator', {
+        role: 'master', kind: 'round',
+        text: `监督者提案已拒绝：${proposal.reason || proposal.type}`,
+        ts: new Date().toISOString(), node_id: '', node_name: '',
+        meta: { supervisor: true, proposal_id: proposalId, decision: 'rejected' },
+      });
+      return c.json({ ok: true, status: 'rejected' });
+    }
+    proposal.status = 'approved';
+    try {
+      if (proposal.type === 'retry_failed') {
+        const node = graph.nodes.find((n: any) => n.id === proposal.node_id);
+        if (!node) throw new Error(`节点 ${proposal.node_id} 不存在`);
+        if (node.status !== 'failed') throw new Error(`节点状态为 ${node.status}，仅 failed 节点可重试`);
+        node.status = 'pending';
+        node.error = '';
+        node.needs_human = false;
+        await persistGraph(graph);
+        await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, graph.workspace);
+      } else if (proposal.type === 'cancel_subtree') {
+        const node = graph.nodes.find((n: any) => n.id === proposal.node_id);
+        if (!node) throw new Error(`节点 ${proposal.node_id} 不存在`);
+        if (!['pending', 'failed', 'waiting_approval', 'waiting_clarify'].includes(node.status)) {
+          throw new Error(`节点状态为 ${node.status}，不可取消`);
+        }
+        node.status = 'cancelled';
+        node.error = '监督者提案批准：取消';
+        // 连带取消全部 pending 下游（BFS）
+        const upstream = new Map<string, string[]>();
+        for (const n of graph.nodes) upstream.set(n.id, []);
+        for (const [src, dst] of graph.edges) upstream.get(dst)?.push(src);
+        let changed = true;
+        const cancelled = new Set([node.id]);
+        while (changed) {
+          changed = false;
+          for (const n of graph.nodes) {
+            if (n.status === 'pending' && (upstream.get(n.id) || []).some((d) => cancelled.has(d))) {
+              n.status = 'cancelled';
+              n.error = '上游被取消（监督者提案）';
+              cancelled.add(n.id);
+              changed = true;
+            }
+          }
+        }
+        await persistGraph(graph);
+      } else if (proposal.type === 'insert_node') {
+        await ctx.orchestrator.addNode(taskId, {
+          name: String(proposal.new_node?.name || '监督者插入节点'),
+          agent: String(proposal.new_node?.agent || ''),
+          afterNodeId: String(proposal.after_node_id || graph.nodes[0]?.id || ''),
+        });
+      } else {
+        throw new Error(`未知提案类型 ${proposal.type}`);
+      }
+      proposal.status = 'executed';
+      await busSet(key, proposals);
+      await appendJournal(taskId, 'orchestrator', {
+        role: 'master', kind: 'round',
+        text: `监督者提案已批准并执行：${proposal.reason || proposal.type}`,
+        ts: new Date().toISOString(), node_id: '', node_name: '',
+        meta: { supervisor: true, proposal_id: proposalId, decision: 'executed' },
+      });
+      await emitProgress('supervisor_proposal_executed', { task_id: taskId, proposal_id: proposalId, type: proposal.type });
+      return c.json({ ok: true, status: 'executed' });
+    } catch (e: any) {
+      proposal.status = 'failed';
+      proposal.exec_error = String(e?.message || e).slice(0, 300);
+      await busSet(key, proposals);
+      throw new HttpError(400, proposal.exec_error);
+    }
   });
 
   app.post('/api/tasks/:taskId/approve/:nodeId', async (c) => {

@@ -23,6 +23,28 @@ const selectedAgent = ref('');
 const selectedNodeId = ref('');
 const events = ref<EventEnvelope[]>([]);
 const loadFailed = ref(false);
+// M3 监督者提案
+const proposals = ref<any[]>([]);
+const deciding = ref('');
+const pendingProposals = computed(() => proposals.value.filter((p) => p.status === 'pending'));
+async function loadProposals() {
+  try {
+    proposals.value = (await api.listProposals(taskId.value)).proposals || [];
+  } catch { /* ignore */ }
+}
+async function decideProposal(proposalId: string, approved: boolean) {
+  deciding.value = proposalId;
+  try {
+    await api.decideProposal(taskId.value, proposalId, approved);
+    showToast(approved ? '提案已批准并执行' : '提案已拒绝');
+    await loadProposals();
+    await refresh();
+  } catch (e: any) {
+    showToast(e?.message || '操作失败');
+  } finally {
+    deciding.value = '';
+  }
+}
 const notFound = ref(false);
 let pollTimer: number | undefined;
 let unsub: (() => void) | undefined;
@@ -224,6 +246,7 @@ async function refresh() {
     return; // no point fetching events for a dead task
   }
   await fetchSingleTask(taskId.value);
+  void loadProposals();
   try {
     const ev = await api.taskEvents(taskId.value);
     events.value = ev.events;
@@ -408,6 +431,19 @@ function nodeIcon(status: string): string {
                 <span class="prog-label">{{ statusText(task.status) }}</span>
                 <div class="prog-track"><div class="prog-fill" :style="{ width: progressPct + '%' }"></div></div>
                 <span class="prog-num">{{ progressPct }}%</span>
+              </div>
+            </div>
+
+            <div v-if="pendingProposals.length" class="wx-group">
+              <div class="wx-cell">
+                <div class="sup-title">监督者提案 · 待批准</div>
+                <div v-for="p in pendingProposals" :key="p.id" class="sup-row">
+                  <span class="sup-reason">{{ p.reason || p.type }}</span>
+                  <div class="sup-actions">
+                    <van-button size="small" round type="primary" :loading="deciding === p.id" @click="decideProposal(p.id, true)">批准</van-button>
+                    <van-button size="small" round :loading="deciding === p.id" @click="decideProposal(p.id, false)">拒绝</van-button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -674,6 +710,12 @@ function nodeIcon(status: string): string {
 .ss-state.completed, .ss-state.success { color: var(--green); }
 .ss-state.failed { color: var(--red); }
 .ss-state.waiting_approval { color: var(--accent); }
+
+/* M3 监督者提案 */
+.sup-title { font-size: 12px; font-weight: 600; color: #fa8c16; margin-bottom: 6px; }
+.sup-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; }
+.sup-reason { font-size: 12px; flex: 1; min-width: 0; }
+.sup-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .ss-count { font-size: 11px; color: var(--text-3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .ss-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
 .ss-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, #22d3ee, #0369a1); transition: width 0.5s ease; }

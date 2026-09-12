@@ -22,6 +22,12 @@ export interface OrchestrationConfig {
   self_mod_gate?: SelfModGateConfig;
   /** M2 全员实时问答：阻塞式 ask 等待回答的超时秒数（缺省 900） */
   ask_timeout_sec?: number;
+  /** M3 监督者：事件驱动 + 周期心跳的有边界处置 */
+  supervisor?: {
+    enabled?: boolean;
+    heartbeat_sec?: number;
+    min_interval_sec?: number;
+  };
 }
 
 export interface SelfModGateConfig {
@@ -171,6 +177,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       node_clarify: ['off', 'brief', 'confirm'].includes(raw.orchestrator?.node_clarify) ? raw.orchestrator.node_clarify : 'off',
       // M2 全员实时问答：阻塞式 ask 等待回答的超时
       ask_timeout_sec: raw.orchestrator?.ask_timeout_sec ?? 900,
+      // M3 监督者
+      supervisor: {
+        enabled: raw.orchestrator?.supervisor?.enabled ?? true,
+        heartbeat_sec: raw.orchestrator?.supervisor?.heartbeat_sec ?? 600,
+        min_interval_sec: raw.orchestrator?.supervisor?.min_interval_sec ?? 120,
+      },
       self_mod_gate: {
         enabled: raw.orchestrator?.self_mod_gate?.enabled ?? true,
         test_command: raw.orchestrator?.self_mod_gate?.test_command || 'npm test',

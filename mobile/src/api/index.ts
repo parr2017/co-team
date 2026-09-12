@@ -347,6 +347,11 @@ export const api = {
   // M2 全员实时问答：回答 agent 的阻塞式提问
   answerAsk: (id: string, askId: string, answer: string) =>
     post<{ ok: boolean; ask_id: string }>(`/api/tasks/${id}/asks/${askId}/answer`, { answer }),
+  // M3 监督者提案
+  listProposals: (id: string) =>
+    request<{ proposals: any[] }>(`/api/tasks/${id}/proposals`),
+  decideProposal: (id: string, proposalId: string, approved: boolean) =>
+    post<{ ok: boolean; status: string }>(`/api/tasks/${id}/proposals/${proposalId}/decide`, { approved }),
   createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string; profile?: 'simple' | 'expert'; allow_self_ref?: boolean }) =>
     post<{ status: 'created' | 'needs_clarification' | 'pending'; task_id: string; questions?: string[]; summary?: string; graph?: TaskGraph }>('/api/tasks', payload.profile === 'simple'
       ? { ...payload, auto_run: true, plan_async: true, skip_clarification: true }

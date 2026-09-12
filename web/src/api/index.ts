@@ -677,6 +677,15 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answer }),
     }),
+  // M3 监督者提案
+  listProposals: (taskId: string) =>
+    request<{ proposals: { id: string; type: string; reason?: string; status: string; node_id?: string; new_node?: { name: string; agent: string } }[] }>(`/api/tasks/${taskId}/proposals`),
+  decideProposal: (taskId: string, proposalId: string, approved: boolean) =>
+    request<{ ok: boolean; status: string }>(`/api/tasks/${taskId}/proposals/${proposalId}/decide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    }),
   taskLogs: (id: string) => request<{ task_id: string; logs: Record<string, AgentConversation[]> }>(`/api/tasks/${id}/logs`),
   listAgents: () => request<{ agents: AgentInfo[] }>('/api/agents'),
   agentDefinitions: () => request<{ agents: AgentDefinition[] }>('/api/agents/definitions'),
