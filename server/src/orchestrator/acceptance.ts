@@ -140,6 +140,11 @@ export interface ChecklistAuditItem extends ChecklistItem {
  *  铁律：每项只有"执行且附机器证据"或"显式降级留痕"两种终态，绝不静默跳过。 */
 export async function runChecklistAudit(workspace: string, checklist: ChecklistItem[], timeoutSec = 240): Promise<{ items: ChecklistAuditItem[]; ranAny: boolean }> {
   const profile = detectProjectProfile(workspace);
+  // M5.2 修正（派生任务 5wkawk89 实证）：测试基建先于判定——node_modules 缺失或过期
+  // （任务中途新增依赖，如 playwright）会让机审以"基建失败"误判为红灯。判定前先确保依赖就绪。
+  if (fs.existsSync(path.join(workspace, 'package.json'))) {
+    await runCommand('npm install --no-audit --no-fund --loglevel=error', workspace, 300).catch(() => ({ exitCode: -1, tail: '' }));
+  }
   const items: ChecklistAuditItem[] = [];
   let ranAny = false;
   for (const item of checklist) {
