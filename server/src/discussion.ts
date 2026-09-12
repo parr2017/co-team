@@ -6,9 +6,9 @@
  *   真正有新东西可说的成员，不再全员按固定顺序串行点名；@点名时只跑被点名者。
  * - 轮内真打断：用户消息随时入库（不再 409 拒收），当前发言者说完即发现新指示、
  *   终止本轮剩余成员并以新消息重新路由。
- * - 组内长手：成员可直接读项目文件、执行命令、启动/停止服务、做小范围代码修改
- *   （单轮 ≤3 文件 / ≤80 行，写前 git checkpoint）并重启验证——"启动项目"这类
- *   诉求在群内闭环，超预算的改动才转任务。工具过程落进讨论流（可折叠活动条），
+ * - 组内长手（M11 收敛）：成员可读项目文件、执行命令、启动/停止服务、渲染验证——
+ *   即"运行、部署、调试、查明报错"；**不允许修改代码**（write_file/edit_file 已移除，
+ *   调用即拒并引导 convert_to_project）。工具过程落进讨论流（可折叠活动条），
  *   过程可见即幻觉可审计。
  * - 项目全量背景注入：绑定项目的讨论把项目路径、脚本、全部项目记忆与知识库条目
  *   作为所有成员共享的静态前缀（保推理服务前缀缓存），杜绝"编造路径"。
@@ -31,7 +31,7 @@ import type { TaskQueueManager } from './taskQueue';
 import type { Logger } from './logger';
 import { writeKnowledge, relevantKnowledge, listKnowledge } from './knowledge';
 import { scaffoldProject, initGitOnly } from './scaffold';
-import { applyToolCalls, applyEdits, checkPage } from './tools';
+import { applyToolCalls, checkPage } from './tools';
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { discussionTaskDigest } from './discussionBridge';
@@ -131,9 +131,6 @@ const MAX_TOOL_ITER = 5;
 /** 群内同步命令的超时（秒）；长驻服务用 exec_background */
 const EXEC_TIMEOUT_SEC = 90;
 /** 小改预算：单轮发言写 ≤N 文件、合计 ≤M 行，超出引导转任务 */
-const WRITE_BUDGET_FILES = 3;
-const WRITE_BUDGET_LINES = 80;
-const WRITE_MAX_FILE_CHARS = 6000;
 /** 路由器单轮最多选出的发言者 */
 const MAX_ROUND_SPEAKERS = 3;
 /** 流式 delta 节流 */
@@ -400,6 +397,7 @@ function speakerSystemPrompt(projectCtx: string): string {
 3. 发言 ≤300 字，给观点、论据、可执行建议；可以直接质疑或补充其他成员，但保持专业克制。
 4. 经验沉淀：陈述通用经验/踩坑/决策理由时写进 experience 字段（自动入库）；或用 write_knowledge 工具显式沉淀。
 5. 需要用户拍板的事项（方向取舍、资源投入、重大分歧）放进 ask_user 字段；普通疑问不要打扰用户。
+6. 禁止修改代码：你没有 write_file/edit_file——你的职责是运行、部署、调试、查明报错原因；任何需要改代码的事项用 convert_to_project 转任务。
 
 ## 真实性纪律（最高优先）
 - 任何"已完成/已执行/已修改/已启动"的表述，必须由本轮 tool_calls 的真实结果支撑。没有执行过的事，绝不宣称执行过。
@@ -415,8 +413,7 @@ function speakerSystemPrompt(projectCtx: string): string {
  {"tool":"check_page","url":"http://localhost:5123/","expect":["页面应有的文本"]}
 长驻服务（后台启动，返回 pid 与日志路径，随后可 exec 查端口 / read_file 看日志）：
  {"tool":"exec_background","command":"npm run dev"}   停止进程： {"tool":"kill_process","pid":12345}
-小改代码（单轮 ≤${WRITE_BUDGET_FILES} 个文件、合计 ≤${WRITE_BUDGET_LINES} 行，写前自动 git checkpoint 可回滚）：
- {"tool":"write_file","path":"相对路径","content":"完整新内容"} | {"tool":"edit_file","path":"相对路径","find":"原文片段","replace":"替换片段"}
+禁止修改代码：群聊没有 write_file/edit_file，任何改代码的请求一律 {"tool":"convert_to_project"} 转任务（这是修改代码的唯一出路）
 知识沉淀： {"tool":"write_knowledge","category":"general-tech|project","title":"标题","content":"内容"}
 转项目开发（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）： {"tool":"convert_to_project","auto_run":true}
 
@@ -501,34 +498,12 @@ interface TurnOutcome {
   text?: string;
 }
 
-interface WriteBudget {
-  files: Set<string>;
-  lines: number;
-  checkpointed: boolean;
-  checkpoint?: string;
-}
-
-/** git checkpoint before the first write of a speaker turn; returns short hash.
- *  注意：Windows shell 是 cmd.exe，不支持 `||`——三步各自执行，容错非零退出。 */
-async function gitCheckpoint(ws: string, discId: string, agent: string): Promise<string> {
-  const full: PermissionPolicy = { level: 'full', whitelistCommands: null, maxTimeSec: 30 };
-  try {
-    await executeCommandAsync('git add -A', ws, full, 20);
-    await executeCommandAsync(`git commit -m "coteam: discussion ${discId} pre-write checkpoint (${agent})"`, ws, full, 20);
-    const head = await executeCommandAsync('git rev-parse --short HEAD', ws, full, 15);
-    return head.returncode === 0 ? head.stdout.trim() : '';
-  } catch {
-    return '';
-  }
-}
-
 /** Run one batch of the speaker's tool calls; returns per-call result summaries. */
 async function runSpeakerToolCalls(
   deps: DiscussionDeps,
   disc: Discussion,
   agent: string,
   calls: Record<string, any>[],
-  budget: WriteBudget,
 ): Promise<unknown[]> {
   const results: unknown[] = [];
   const proj = disc.project_id ? await getProject(disc.project_id) : null;
@@ -604,40 +579,10 @@ async function runSpeakerToolCalls(
           try { process.kill(pid); results.push({ tool: 'kill_process', ok: true, pid }); }
           catch (e: any) { results.push({ tool: 'kill_process', ok: false, pid, error: String(e?.message || e) }); }
         }
-      } else if (name === 'write_file') {
-        const rel = String(call.path || '').trim();
-        if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) { results.push({ tool: 'write_file', ok: false, error: 'path 必须是项目目录内的相对路径' }); continue; }
-        const content = Array.isArray(call.content) ? call.content.join('\n') : String(call.content ?? '');
-        if (!content.trim()) { results.push({ tool: 'write_file', ok: false, error: 'content 不能为空' }); continue; }
-        if (content.length > WRITE_MAX_FILE_CHARS) { results.push({ tool: 'write_file', ok: false, error: `单文件超 ${WRITE_MAX_FILE_CHARS} 字符，属大改动，请转任务` }); continue; }
-        const block = checkWriteBudget(budget, rel, content.split('\n').length);
-        if (block) { results.push({ tool: 'write_file', ok: false, error: block }); continue; }
-        await ensureCheckpoint(deps, disc, agent, ws, budget);
-        try {
-          fs.mkdirSync(path.dirname(path.resolve(ws, rel)), { recursive: true });
-          fs.writeFileSync(path.resolve(ws, rel), content, 'utf-8');
-          budget.files.add(rel);
-          budget.lines += content.split('\n').length;
-          results.push({ tool: 'write_file', ok: true, path: rel, bytes: content.length, checkpoint: budget.checkpoint });
-        } catch (e: any) {
-          results.push({ tool: 'write_file', ok: false, error: String(e?.message || e).slice(0, 200) });
-        }
-      } else if (name === 'edit_file') {
-        const rel = String(call.path || '').trim();
-        if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) { results.push({ tool: 'edit_file', ok: false, error: 'path 必须是项目目录内的相对路径' }); continue; }
-        const rep = String(call.replace ?? '');
-        const block = checkWriteBudget(budget, rel, rep.split('\n').length);
-        if (block) { results.push({ tool: 'edit_file', ok: false, error: block }); continue; }
-        await ensureCheckpoint(deps, disc, agent, ws, budget);
-        const { edited, failures } = applyEdits(ws, [{ path: rel, find: String(call.find ?? ''), replace: rep }]);
-        if (edited.length) {
-          budget.files.add(rel);
-          budget.lines += rep.split('\n').length;
-          results.push({ tool: 'edit_file', ok: true, path: rel, checkpoint: budget.checkpoint });
-        } else {
-          results.push({ tool: 'edit_file', ok: false, error: (failures[0] || '编辑未命中') });
-        }
-      } else if (name === 'convert_to_project' || name === 'convert_task') {
+      } else if (name === 'write_file' || name === 'edit_file') {
+        // M11 群聊禁改代码（用户拍板）：群聊只做运行/部署/调试/查报错，改代码一律转任务
+        results.push({ tool: name, ok: false, error: '群聊不允许修改代码——请用 convert_to_project 把改动转成开发任务执行' });
+            } else if (name === 'convert_to_project' || name === 'convert_task') {
         // 用户已拍板的大改动：agent 自己走完 方案收敛→转任务→入队，不再"口头宣布正式启动"后掉球
         if (!disc.project_id) {
           results.push({ tool: 'convert_to_project', ok: false, error: '本讨论未绑定项目目录，无法转任务；需要新建项目的请让用户在界面「转为项目开发」操作（需要选目录）' });
@@ -670,23 +615,6 @@ async function runSpeakerToolCalls(
   return results;
 }
 
-function checkWriteBudget(budget: WriteBudget, rel: string, newLines: number): string | null {
-  if (!budget.files.has(rel) && budget.files.size >= WRITE_BUDGET_FILES) {
-    return `单轮最多小改 ${WRITE_BUDGET_FILES} 个文件，改动范围超出群内小改范畴——请建议用户生成方案并转项目开发任务`;
-  }
-  if (budget.lines + newLines > WRITE_BUDGET_LINES) {
-    return `单轮小改预算（≤${WRITE_BUDGET_LINES} 行）已用完——剩余改动请转项目开发任务`;
-  }
-  return null;
-}
-
-async function ensureCheckpoint(deps: DiscussionDeps, disc: Discussion, agent: string, ws: string, budget: WriteBudget): Promise<void> {
-  if (budget.checkpointed) return;
-  budget.checkpointed = true;
-  budget.checkpoint = await gitCheckpoint(ws, disc.id, agent);
-  void deps;
-}
-
 /** one tool activity line per batch, persisted into the transcript for auditability */
 function toolActivityLine(calls: Record<string, any>[], results: unknown[]): string {
   const segs: string[] = [];
@@ -696,8 +624,7 @@ function toolActivityLine(calls: Record<string, any>[], results: unknown[]): str
     if (t === 'exec' || t === 'exec_command' || t === 'run_command') segs.push(`exec「${String(calls[i].command || '').slice(0, 60)}」exit ${r.returncode ?? '?'}`);
     else if (t === 'exec_background' || t === 'start_process') segs.push(`后台启动「${String(calls[i].command || '').slice(0, 50)}」pid ${r.pid ?? '?'}`);
     else if (t === 'kill_process') segs.push(`停止进程 ${calls[i].pid}${r.ok ? '' : ' 失败'}`);
-    else if (t === 'write_file') segs.push(r.ok ? `写入 ${r.path}${r.checkpoint ? `（checkpoint ${r.checkpoint}）` : ''}` : `写 ${calls[i].path} 失败`);
-    else if (t === 'edit_file') segs.push(r.ok ? `修改 ${r.path}${r.checkpoint ? `（checkpoint ${r.checkpoint}）` : ''}` : `改 ${calls[i].path} 失败`);
+    else if (t === 'write_file' || t === 'edit_file') segs.push(`改代码被拒（群聊禁改，转任务）`);
     else if (t === 'write_knowledge') segs.push(r.ok ? '沉淀知识' : '沉淀知识失败');
     else if (t === 'convert_to_project' || t === 'convert_task') segs.push(r.ok ? `转项目开发任务 ${r.task_id}${r.auto_run ? '（已入队）' : ''}` : '转任务失败');
     else segs.push(t);
@@ -734,7 +661,6 @@ async function runSpeakerTurn(
     { role: 'user', content: roundPrompt(round, messages, firstSubstantive, interruptNote) },
   ];
 
-  const budget: WriteBudget = { files: new Set(), lines: 0, checkpointed: false };
   let parsed: Record<string, any> | null = null;
   let toolUsed = false;
 
@@ -792,7 +718,7 @@ async function runSpeakerTurn(
     if (calls.length && !last) {
       void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
       toolUsed = true;
-      const results = await runSpeakerToolCalls(deps, disc, agent, calls, budget);
+      const results = await runSpeakerToolCalls(deps, disc, agent, calls);
       const line = toolActivityLine(calls, results);
       await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true, model: entry.name });
       await emitProgress('discussion_tool', { discussion_id: disc.id, agent, round, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results });

@@ -264,11 +264,11 @@ describe('round engine: speak-or-silent with real tools', () => {
     expect(msgs.some((m) => m.from === 'system' && /^第 \d+ 轮/.test(m.text))).toBe(false);
   });
 
-  it('exec + write_file tool round: results execute for real, activity line lands in the transcript', async () => {
+  it('M11 禁改代码：exec 真实执行，write_file 被拒并引导转任务', async () => {
     const ws = await mkProject();
     const d = await mkDiscussion(['dev'], { project_id: 'p1' });
     h.speaker = (_sys, user) => {
-      if (user.includes('工具执行结果')) return okContent('已核实：echo 输出 hello；a.txt 已写入 3 行');
+      if (user.includes('工具执行结果')) return okContent('已核实：echo 输出 hello；改代码被拒，需转任务');
       return JSON.stringify({ tool_calls: [
         { tool: 'exec', command: 'echo hello' },
         { tool: 'write_file', path: 'a.txt', content: 'x\ny\nz' },
@@ -276,36 +276,34 @@ describe('round engine: speak-or-silent with real tools', () => {
     };
     const res = await runDiscussionRound(deps, d.id);
     expect(res.speakers).toEqual(['dev']);
-    expect(fs.existsSync(path.join(ws, 'a.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(ws, 'a.txt'))).toBe(false); // 文件绝不能落盘
     const msgs = await getMessages(d.id);
     const toolLine = msgs.find((m) => m.tool);
     expect(toolLine).toBeTruthy();
     expect(toolLine!.text).toContain('🔧');
     expect(toolLine!.text).toContain('exit 0');
-    expect(toolLine!.text).toContain('写入 a.txt');
+    expect(toolLine!.text).toContain('转任务');
     const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
     expect((evt!.payload.results as any[])[0]).toMatchObject({ tool: 'exec', returncode: 0 });
-    expect((evt!.payload.results as any[])[1]).toMatchObject({ tool: 'write_file', ok: true });
+    expect((evt!.payload.results as any[])[1]).toMatchObject({ tool: 'write_file', ok: false });
+    expect(String((evt!.payload.results as any[])[1].error)).toContain('convert_to_project');
     expect(plainAgentMsgs(msgs, 'dev').at(-1)!.text).toContain('已核实');
   });
 
-  it('small-change budget: 4th file in one turn is refused with a convert-to-task hint', async () => {
+  it('M11 禁改代码：edit_file 同样被拒且文件不落盘', async () => {
     const ws = await mkProject();
     const d = await mkDiscussion(['dev'], { project_id: 'p1' });
+    fs.writeFileSync(path.join(ws, 'exist.txt'), 'original\n');
     h.speaker = (_sys, user) => {
-      if (user.includes('工具执行结果')) return okContent('预算内改了 3 个文件，第 4 个转任务');
+      if (user.includes('工具执行结果')) return okContent('edit_file 也被拒了，转任务处理');
       return JSON.stringify({ tool_calls: [
-        { tool: 'write_file', path: 'f1.txt', content: 'a' },
-        { tool: 'write_file', path: 'f2.txt', content: 'b' },
-        { tool: 'write_file', path: 'f3.txt', content: 'c' },
-        { tool: 'write_file', path: 'f4.txt', content: 'd' },
+        { tool: 'edit_file', path: 'exist.txt', find: 'original', replace: 'hacked' },
       ] });
     };
     await runDiscussionRound(deps, d.id);
-    expect(fs.existsSync(path.join(ws, 'f3.txt'))).toBe(true);
-    expect(fs.existsSync(path.join(ws, 'f4.txt'))).toBe(false);
+    expect(fs.readFileSync(path.join(ws, 'exist.txt'), 'utf-8')).toContain('original');
     const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
-    expect(String((evt!.payload.results as any[])[3].error)).toContain('转项目');
+    expect(String((evt!.payload.results as any[])[0].error)).toContain('convert_to_project');
   });
 
   it('jail: outside paths and traversal are refused outright', async () => {
@@ -321,7 +319,8 @@ describe('round engine: speak-or-silent with real tools', () => {
     await runDiscussionRound(deps, d.id);
     expect(fs.existsSync(path.join(tmp, 'evil.txt'))).toBe(false);
     const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
-    expect(String((evt!.payload.results as any[])[0].error)).toContain('相对路径');
+    // M11：write_file 在进入路径校验前就被"禁改代码"拒绝；exec 的路径越界仍由监狱拦
+    expect(String((evt!.payload.results as any[])[0].error)).toContain('不允许修改代码');
     expect(String((evt!.payload.results as any[])[1].error)).toContain('路径越界');
     void ws;
   });
