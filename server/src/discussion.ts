@@ -35,6 +35,7 @@ import { applyToolCalls, applyEdits, checkPage } from './tools';
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { discussionTaskDigest } from './discussionBridge';
+import { CAPACITY_RE } from './orchestrator/orchestrator';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -85,6 +86,8 @@ export interface DiscussionMessage {
   reactions?: Record<string, string[]>;
   /** M5.2 任务↔群聊互通：bridge_ask 卡片（task_id+ask_id）等结构化附加信息 */
   meta?: Record<string, any>;
+  /** 产生这条发言的模型（群聊模型徽标） */
+  model?: string;
 }
 
 export interface DiscussionDeps {
@@ -737,8 +740,8 @@ async function runSpeakerTurn(
 
   for (let iter = 0; iter < MAX_TOOL_ITER; iter++) {
     const last = iter === MAX_TOOL_ITER - 1;
-    // streaming deltas for the final (non-tool) reply
-    const stream = { acc: '', emitted: 0, lastAt: 0, sid: `${disc.id}:${agent}:r${round}#${iter}` };
+    // streaming deltas for the final (non-tool) reply；每次重试用新 stream sid，旧片段以 discarded 清掉
+    let stream = { acc: '', emitted: 0, lastAt: 0, sid: `${disc.id}:${agent}:r${round}#${iter}#0` };
     const onDelta = (d: string) => {
       stream.acc += d;
       const cur = extractReplyStreaming(stream.acc);
@@ -754,14 +757,32 @@ async function runSpeakerTurn(
       convo.push({ role: 'user', content: '工具迭代次数已用完：不要再调用工具，立即用形态 B 基于已获得的信息给出你的发言（如实反映已执行与未执行的部分）。' });
     }
     let res;
-    try {
-      await emitProgress('discussion_round', { discussion_id: disc.id, round, phase: 'speaker', agent, activity: iter === 0 ? 'thinking' : 'tool_followup' });
-      // 每一轮 LLM 调用都流式：工具轮会以 discarded 事件清掉误显示的片段
-      res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta);
-    } catch (e) {
-      const reason = String((e as Error)?.message || e);
-      void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
-      return { spoke: false, asked: false, silent: true, failed: reason, toolUsed };
+    // M5.2 补课（用户实测反馈）：429/错误不再一击即溃——容量错误按任务管线同款退避（20s/40s 两次），
+    // 其他错误快重试一次。重试过程以系统 notice 落进讨论流，过程可见。
+    for (let attempt = 0; ; attempt++) {
+      stream = { acc: '', emitted: 0, lastAt: 0, sid: `${disc.id}:${agent}:r${round}#${iter}#${attempt}` };
+      try {
+        await emitProgress('discussion_round', { discussion_id: disc.id, round, phase: 'speaker', agent, activity: iter === 0 ? 'thinking' : 'tool_followup' });
+        // 每一轮 LLM 调用都流式：工具轮会以 discarded 事件清掉误显示的片段
+        res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta);
+        break;
+      } catch (e) {
+        const reason = String((e as Error)?.message || e);
+        void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
+        const capacity = CAPACITY_RE.test(reason);
+        if (capacity && attempt < 2) {
+          const waitSec = 20 * (attempt + 1);
+          await appendMessage(disc.id, { id: newId(), from: 'system', round, kind: 'notice', text: `⏳ ${agent} 遇到模型限流（429），${waitSec}s 后自动重试（第 ${attempt + 1}/2 次）`, ts: new Date().toISOString() });
+          await new Promise((r) => setTimeout(r, waitSec * 1000));
+          continue;
+        }
+        if (!capacity && attempt < 1) {
+          await appendMessage(disc.id, { id: newId(), from: 'system', round, kind: 'notice', text: `⏳ ${agent} 的模型调用出错（${reason.slice(0, 80)}），3s 后自动重试一次`, ts: new Date().toISOString() });
+          await new Promise((r) => setTimeout(r, 3000));
+          continue;
+        }
+        return { spoke: false, asked: false, silent: true, failed: reason, toolUsed };
+      }
     }
     parsed = extractJson(res.content);
     let calls: Record<string, any>[] = Array.isArray(parsed?.tool_calls) ? parsed.tool_calls.filter((c: any) => c && typeof c.tool === 'string') : [];
@@ -773,7 +794,7 @@ async function runSpeakerTurn(
       toolUsed = true;
       const results = await runSpeakerToolCalls(deps, disc, agent, calls, budget);
       const line = toolActivityLine(calls, results);
-      await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true });
+      await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true, model: entry.name });
       await emitProgress('discussion_tool', { discussion_id: disc.id, agent, round, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results });
       // M5.2 ④：同一批工具 ≥2 次失败时提示转任务——讨论的工具面（≤90s 命令、≤80 行小改）有天花板
       const failedCalls = results.filter((r) => (r as Record<string, any>)?.ok === false).length;
@@ -825,6 +846,7 @@ async function runSpeakerTurn(
     ts: new Date().toISOString(),
     round,
     needs_user: !!askUser,
+    model: entry.name,
   };
   await appendMessage(disc.id, msg);
   void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: `${disc.id}:${agent}:r${round}#*`, discarded: true });

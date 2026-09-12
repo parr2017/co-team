@@ -191,6 +191,8 @@ export interface DiscussionMessage {
   reactions?: Record<string, string[]>;
   /** M5.2 任务↔群聊互通：bridge_ask 卡片（task_id+ask_id）等结构化附加信息 */
   meta?: Record<string, any>;
+  /** 产生这条发言的模型（群聊模型徽标） */
+  model?: string;
 }
 
 /** 发用户消息：text 可空但需 react_to；reply_to 做引用回复 */

@@ -369,6 +369,7 @@ const showExp = ref(false);
           <div class="col" :class="row.side === 'me' ? 'col-me' : 'col-them'">
             <div v-if="row.head && row.side === 'them'" class="who">
               <span class="who-role" :style="{ color: row.side === 'them' ? agentColor(row.m.from) : undefined }">{{ roleOf(row.m.from) }}</span>
+              <span v-if="row.m.model" class="who-model mono">{{ row.m.model }}</span>
               <span v-if="row.m.needs_user" class="ask-tag" :class="{ answered: row.answered }">{{ row.answered ? '已回复' : '待你拍板' }}</span>
             </div>
             <div
@@ -572,6 +573,7 @@ const showExp = ref(false);
 .col-me { align-items: flex-end; }
 .who { display: flex; align-items: baseline; gap: 6px; margin: 0 2px 3px; }
 .who-role { font-size: 12px; font-weight: 600; color: #646566; }
+.who-model { font-size: 9px; color: #969799; background: #f7f8fa; border: 1px solid #ebedf0; border-radius: 3px; padding: 0 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ask-tag { font-size: 9px; color: #fff; background: #ff976a; border-radius: 4px; padding: 1px 5px; }
 .ask-tag.answered { background: #c8c9cc; }
 

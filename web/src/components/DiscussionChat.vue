@@ -54,6 +54,7 @@
             <div v-if="row.head && row.side === 'them'" class="who">
               <span class="who-role" :style="{ color: row.side === 'them' ? agentColor(row.m.from) : undefined }">{{ roleOf(row.m.from) }}</span>
               <span class="who-id mono">{{ row.m.from }}</span>
+              <span v-if="row.m.model" class="who-model mono" :title="'模型：' + row.m.model">{{ row.m.model }}</span>
               <span v-if="row.m.needs_user" class="ask-tag" :class="{ answered: row.answered }">{{ row.answered ? '@你 已回复' : '@你 待拍板' }}</span>
             </div>
             <div class="bubble" :class="{ ask: row.m.needs_user, answered: row.m.needs_user && row.answered, 'me-b': row.side === 'me', 'them-b': row.side === 'them' }">
@@ -431,6 +432,7 @@ watch(() => current.value?.id, (id) => {
 .who { display: flex; align-items: baseline; gap: 6px; margin: 0 2px 3px; }
 .who-role { font-size: 12px; font-weight: 600; }
 .who-id { font-size: 10px; color: var(--ct-text3); }
+.who-model { font-size: 9px; color: var(--ct-text3); background: var(--ct-panel2); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 4px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ask-tag { font-size: 10px; color: #fff; background: var(--ct-accent); border-radius: 4px; padding: 1px 6px; }
 .ask-tag.answered { background: var(--ct-text3); }
 
