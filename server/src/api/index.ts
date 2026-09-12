@@ -445,9 +445,13 @@ export function createApi(ctx: ApiContext): Hono {
     if (!message) throw new HttpError(400, 'message is required');
     const graph = await getTaskGraph(taskId);
     if (!graph) throw new HttpError(404, 'task not found');
-    if (!['running', 'pending', 'planned', 'retrying', 'waiting_approval'].includes(graph.status)) {
+    // failed 任务也放行：监督者的 retry_failed 提案被批准重试后，队列中的消息会被消费注入
+    if (!['running', 'pending', 'planned', 'retrying', 'waiting_approval', 'failed'].includes(graph.status)) {
       throw new HttpError(400, `task is not running (status: ${graph.status}), intervention will never be consumed`);
     }
+    const note = graph.status === 'failed'
+      ? '任务已失败：消息已入队，批准「重试」提案后会在下一轮注入 agent'
+      : '将在 Agent 下一轮对话注入';
     const { pushIntervention, appendJournal, emitProgress } = await import('../store');
     const item = await pushIntervention(taskId, message);
     // war-room journal: the user's message appears immediately as a master-side bubble
@@ -463,7 +467,7 @@ export function createApi(ctx: ApiContext): Hono {
     await emitProgress('user_intervened', { task_id: taskId, message: message.slice(0, 500), intervention_id: item.id });
     const { notify } = await import('../notify');
     notify('user_intervened', { task_id: taskId }, `[Co-Team] 用户向任务 ${taskId} 发送介入指示：${message.slice(0, 80)}`);
-    return c.json({ status: 'queued', task_id: taskId, intervention_id: item.id, note: '将在 Agent 下一轮对话注入' });
+    return c.json({ status: 'queued', task_id: taskId, intervention_id: item.id, note });
   });
 
   // M2 全员实时问答：用户回答 agent 的阻塞式提问（ask_user），等待中的节点立即被唤醒

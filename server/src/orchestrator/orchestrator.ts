@@ -2579,7 +2579,13 @@ export class Orchestrator {
     // per-agent life: cross-task lessons ride along in the system prompt
     const memories = await getAgentMemory(plugin.name, 5);
     // project mode: the project's own rules & lessons make agents productive immediately
-    const projectId = (await getTaskGraph(taskId))?.project_id;
+    const graphMeta = await getTaskGraph(taskId);
+    const projectId = graphMeta?.project_id;
+    // M7 修正（回归 mv4yq6n0 实证）：真实工作区路径注入——launcher 原提示词一直预期这一行
+    // 但实现从未提供，走查节点因此申报"缺少项目真实绝对路径"合法 blocker。现在补上。
+    const realWorkspaceBlock = this.sandboxEnabled && graphMeta?.workspace && graphMeta.workspace !== workspace
+      ? `\n真实工作区路径: ${graphMeta.workspace}（任务成功合并后产物落在该路径；沙箱内验证用工作目录即可）`
+      : '';
     const projectMemory = projectId ? await getProjectMemory(projectId, 8) : [];
     const projectBlock = projectMemory.length
       ? '\n\n## 本项目开发规范与经验\n' + projectMemory.map((m) => '- ' + m.text).join('\n')
@@ -2672,6 +2678,7 @@ export class Orchestrator {
 
     const userMsg = [
       `工作目录: ${workspace}`,
+      realWorkspaceBlock,
       `现有文件树:\n${workspaceFiles}`,
       `任务: ${node.name}`,
       node.goal_link ? `对全局目标的贡献: ${node.goal_link}` : '',
