@@ -23,6 +23,8 @@ const selectedAgent = ref('');
 const selectedNodeId = ref('');
 const events = ref<EventEnvelope[]>([]);
 const loadFailed = ref(false);
+// M10-A：聊天长按"引用"→ 介入输入框预填
+const quoteDraft = ref('');
 // M3 监督者提案
 const proposals = ref<any[]>([]);
 const acceptanceReport = ref<any>(null);
@@ -420,8 +422,8 @@ function nodeIcon(status: string): string {
                 <template v-else>暂无成员</template>
               </div>
             </div>
-            <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" />
-            <InterventionInput :task-id="taskId" :task-status="task.status" />
+            <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" @quote="quoteDraft = $event" @open-node="pickNode" />
+            <InterventionInput :task-id="taskId" :task-status="task.status" :prefill="quoteDraft" />
           </div>
         </van-tab>
 

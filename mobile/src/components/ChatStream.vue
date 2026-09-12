@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue';
 import { marked } from 'marked';
 import { api, type JournalEntry } from '../api';
 import { showToast } from 'vant';
 import { useDashboard } from '../composables/useDashboard';
+import { copyText } from '../utils/clipboard';
 import AgentAvatar from './AgentAvatar.vue';
 
 type Entry = JournalEntry & { agent: string };
@@ -13,6 +14,7 @@ type RenderItem =
   | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc' | 'ask' | 'answer'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
+const emit = defineEmits<{ (e: 'quote', text: string): void; (e: 'open-node', nodeId: string): void }>();
 
 const wrapEl = ref<HTMLElement | null>(null);
 const entries = ref<Entry[]>([]);
@@ -20,6 +22,52 @@ const typingAgent = ref('');
 const typingText = ref('');
 let stickToBottom = true;
 let unsubFns: (() => void)[] = [];
+
+// ---------- M10-A 长按消息动作面板（任务频道聊天此前完全没有复制能力） ----------
+const msgSheet = reactive({ show: false, entry: null as Entry | null });
+let lpTimer: ReturnType<typeof setTimeout> | null = null;
+let lpStartPos: { x: number; y: number } | null = null;
+function lpStart(e: TouchEvent, entry: Entry) {
+  const t = e.touches?.[0];
+  lpStartPos = t ? { x: t.clientX, y: t.clientY } : null;
+  lpTimer = setTimeout(() => {
+    msgSheet.entry = entry;
+    msgSheet.show = true;
+  }, 500);
+}
+function lpMove(e: TouchEvent) {
+  if (!lpStartPos || !lpTimer) return;
+  const t = e.touches?.[0];
+  if (!t) return;
+  if (Math.abs(t.clientX - lpStartPos.x) > 10 || Math.abs(t.clientY - lpStartPos.y) > 10) lpCancel();
+}
+function lpCancel() {
+  if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+}
+function msgSheetSelect(action: any) {
+  const name = String(action?.name || '');
+  const m = msgSheet.entry;
+  msgSheet.show = false;
+  if (!m || !name) return;
+  const body = `[${m.agent}${m.node_name ? ' · ' + m.node_name : ''}] ${m.text}`;
+  if (name === 'copy') {
+    void copyText(m.text).then((ok) => showToast(ok ? '已复制' : '复制失败（浏览器限制）'));
+  } else if (name === 'quote') {
+    void copyText(body).then((ok) => showToast(ok ? '已复制引用，去输入框粘贴' : '复制失败'));
+    emit('quote', body);
+  } else if (name === 'node') {
+    if (m.node_id && m.node_id !== 'intervene') emit('open-node', m.node_id);
+    else showToast('该消息无关联节点');
+  }
+}
+const msgActions = computed(() => {
+  const m = msgSheet.entry;
+  return [
+    { name: 'copy', text: '⧉ 复制' },
+    { name: 'quote', text: '↩ 引用到介入输入' },
+    { name: 'node', text: m?.node_id && m.node_id !== 'intervene' ? '⌖ 查看节点详情' : '⌖ 无关联节点' },
+  ];
+});
 
 const { onEvent, onResync, connected } = useDashboard();
 
@@ -277,7 +325,12 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
               <pre class="pre">{{ item.entry.text.slice(0, 2000) }}</pre>
             </details>
           </div>
-          <div v-else class="bubble them-b">
+          <div v-else class="bubble them-b"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-text md" v-html="md(item.entry.text)"></div>
             <div v-if="item.entry.meta?.verification" class="b-verify mono">验证 · {{ item.entry.meta.verification }}</div>
             <div v-if="(item.entry.meta?.changes || []).length" class="chips">
@@ -317,7 +370,12 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
             {{ item.agent }}<template v-if="item.entry.meta?.direct"> · {{ item.entry.node_name }}<template v-if="item.entry.meta?.round"> · 第 {{ item.entry.meta.round }} 轮</template></template><template v-else-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template>
             <span v-if="item.entry.meta?.direct" class="direct-tag">回复你</span>
           </div>
-          <div class="bubble them-b" :class="{ direct: item.entry.meta?.direct }">
+          <div class="bubble them-b" :class="{ direct: item.entry.meta?.direct }"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
         </div>
@@ -421,10 +479,21 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <div class="dl-body md" v-html="md(deliverableView?.markdown || '')"></div>
       </div>
     </van-popup>
+
+    <!-- M10-A 长按消息动作面板 -->
+    <van-action-sheet
+      v-model:show="msgSheet.show"
+      :actions="msgActions"
+      cancel-text="取消"
+      close-on-click-action
+      @select="msgSheetSelect"
+    />
   </div>
 </template>
 
 <style scoped>
+/* M10-A：气泡文本允许原生长按选择/复制 */
+.bubble .b-text { user-select: text; -webkit-user-select: text; }
 .chat-stream { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 10px; display: flex; flex-direction: column; gap: 10px; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text-3); padding: 48px 20px; }
 .empty-text { font-size: 13px; color: var(--text-3); text-align: center; line-height: 1.6; }

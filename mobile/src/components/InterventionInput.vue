@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { showToast } from 'vant';
 import { api } from '../api';
 
-const props = defineProps<{ taskId: string; taskStatus?: string }>();
+const props = defineProps<{ taskId: string; taskStatus?: string; prefill?: string }>();
 const emit = defineEmits<{ (e: 'sent'): void }>();
 
 const draft = ref('');
 const sending = ref(false);
+
+// M10-A：聊天长按"引用"→ 外部预填输入框
+watch(() => props.prefill, (v) => {
+  if (v) draft.value = v + '\n';
+});
 
 /** only live tasks accept interventions (backend enforces the same list) */
 const RUNNING = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'];

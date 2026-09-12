@@ -7,6 +7,7 @@ import { api } from '../api';
 import type { ProjectSummary, DiscussionMessage } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
 import { agentColor } from '../utils/agentColor';
+import { copyText } from '../utils/clipboard';
 import AgentAvatar from '../components/AgentAvatar.vue';
 import DirPicker from '../components/DirPicker.vue';
 
@@ -165,11 +166,21 @@ async function onReact(m: DiscussionMessage, emoji: string) {
 // ---------- 长按气泡动作面板 ----------
 const msgSheet = reactive({ show: false, msg: null as DiscussionMessage | null });
 let lpTimer: ReturnType<typeof setTimeout> | null = null;
-function lpStart(m: DiscussionMessage) {
+/** M10-A 长按容差：手指微动 <10px 不取消（此前 1px 移动就 cancel，长按几乎无法触发） */
+let lpStartPos: { x: number; y: number } | null = null;
+function lpStart(e: TouchEvent, m: DiscussionMessage) {
+  const t = e.touches?.[0];
+  lpStartPos = t ? { x: t.clientX, y: t.clientY } : null;
   lpTimer = setTimeout(() => {
     msgSheet.msg = m;
     msgSheet.show = true;
   }, 500);
+}
+function lpMove(e: TouchEvent) {
+  if (!lpStartPos || !lpTimer) return;
+  const t = e.touches?.[0];
+  if (!t) return;
+  if (Math.abs(t.clientX - lpStartPos.x) > 10 || Math.abs(t.clientY - lpStartPos.y) > 10) lpCancel();
 }
 function lpCancel() {
   if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
@@ -183,7 +194,7 @@ function msgSheetSelect(action: any) {
   if (name === 'reply') {
     replyTo.value = m.id;
   } else if (name === 'copy') {
-    void navigator.clipboard?.writeText(m.text).then(() => showToast('已复制'));
+    void copyText(m.text).then((ok) => showToast(ok ? '已复制' : '复制失败（浏览器限制）'));
   } else if (name.startsWith('react:')) {
     void onReact(m, name.slice(6));
   }
@@ -375,9 +386,9 @@ const showExp = ref(false);
             <div
               class="bubble"
               :class="{ ask: row.m.needs_user, answered: row.m.needs_user && row.answered, 'me-b': row.side === 'me', 'them-b': row.side === 'them' }"
-              @touchstart="lpStart(row.m)"
+              @touchstart="lpStart($event, row.m)"
               @touchend="lpCancel"
-              @touchmove="lpCancel"
+              @touchmove="lpMove"
               @contextmenu.prevent="lpCancel(); msgSheet.msg = row.m; msgSheet.show = true"
             >
               <div v-if="row.quote" class="quote-bar">↩ {{ row.quote.who }}：{{ row.quote.text }}</div>
@@ -582,6 +593,8 @@ const showExp = ref(false);
 .them-b { background: #fff; border: 1px solid #ebedf0; border-top-left-radius: 5px; color: #323233; }
 .them-b.ask { border: 1.5px solid #ff976a; }
 .them-b.answered { border: 1px solid #ebedf0; }
+/* M10-A：气泡文本允许原生长按选择/复制 */
+.bubble .b-text { user-select: text; -webkit-user-select: text; }
 .b-text :deep(.mention) { color: #1989fa; background: #ecf5ff; border-radius: 3px; padding: 0 3px; font-weight: 600; }
 .b-text :deep(code) { font-size: 12px; background: rgba(125, 125, 125, 0.12); border-radius: 3px; padding: 0 3px; }
 .b-text :deep(p) { margin: 0 0 4px; }
