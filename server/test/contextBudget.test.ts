@@ -239,7 +239,8 @@ describe('断崖压缩在真实循环内生效 + 重复调用去重', () => {
       toolRound({ tool: 'read_file', path: 'big.js' }), // 重复调用
       okNode(),
     ];
-    const pool = new ModelPool([{ name: 'm1', api_key: 'k', base_url: 'http://localhost:9' }]);
+    // M7：折叠线由模型窗口推导（min(窗口×0.6, 窗口−4096)）——用小窗口模型（4096）表达"强制折叠"
+    const pool = new ModelPool([{ name: 'm1', api_key: 'k', base_url: 'http://localhost:9', context_length: 4096 }]);
     const orch = makeOrchestrator(pool, { context: { max_prompt_tokens: 2000, workspace_tree_max_chars: 500, goal_max_chars: 500 } });
     await orch.loadAgents();
     await saveTaskGraph('t-ctx3', [makeNode()], [], { description: 'x', workspace: tmp, status: 'running' } as any);

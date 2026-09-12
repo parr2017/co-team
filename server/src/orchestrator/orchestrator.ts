@@ -7,7 +7,7 @@ import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
 import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
 import { runPostMergeAcceptance, runChecklistAudit, detectProjectProfile } from './acceptance';
-import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens } from '../tools';
+import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens, gitDiffFull, listTestAssets } from '../tools';
 import type { AskBridge, KnowledgeToolContext } from '../tools';
 import { cancelAsks, consumeAskQueue, createAsk, flushAgentAsks, queueAskForAgent, resolveAsk, waitForAnswer, abandonAsk, settleTaskPendingAsks } from '../askGate';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
@@ -2559,6 +2559,11 @@ export class Orchestrator {
       ? this.outputTiers[node.complexity === 'complex' ? 'complex' : node.complexity === 'simple' ? 'simple' : 'normal']
       : undefined;
     const maxTokens = tierCap ? Math.min(entry.max_tokens ?? 128000, tierCap) : entry.max_tokens ?? 128000;
+    // M7 折叠线按模型上下文窗口动态化：min(窗口×0.6, 窗口−4096 预留)；窗口未知回退全局常量；
+    // complex 侦查型节点上浮 1.5 档。保持"每尝试至多折叠一次+确定性折叠"原则不变。
+    const ctxWindow = (entry as any).context_length ?? 0;
+    let foldLimit = ctxWindow > 0 ? Math.min(Math.floor(ctxWindow * 0.6), ctxWindow - 4096) : this.contextCfg.max_prompt_tokens;
+    if (node.complexity === 'complex') foldLimit = Math.floor(foldLimit * 1.5);
     // 节点级总时长预算：原 plugin.timeout 的单调用绞杀语义已废除（时长不判死），
     // 现在只在轮次之间检查"整个节点是否跑得过久"，超线转人工而不是记模型失败
     const nodeBudgetMs = plugin.timeout && plugin.timeout > 0 ? plugin.timeout * 1000 : 0;
@@ -2596,7 +2601,12 @@ export class Orchestrator {
     const docsBlock = await docsSection(taskId);
 
     // improvement 3: relevant knowledge base entries are injected for immediate reuse
-    const knowledgeHits = await relevantKnowledge(`${node.name} ${context}`, { project_id: projectId, limit: 3 });
+    // M7 知识注入按角色加权：角色关键词并入检索查询，让 review/test 拿到各自相关的经验
+    const roleKeywords: Record<string, string> = {
+      review: '代码审查 质量 缺陷', test: '测试 验证 用例', 'front-dev': '前端 页面 UI',
+      dev: '实现 接口', deploy: '部署 环境', launcher: '启动 运行 服务', docs: '文档', refactor: '重构',
+    };
+    const knowledgeHits = await relevantKnowledge(`${node.name} ${context} ${roleKeywords[plugin.name] || ''}`, { project_id: projectId, limit: 3 });
     const knowledgeBlock = knowledgeHits.length
       ? '\n\n## 相关知识库条目\n' + knowledgeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')
       : '';
@@ -2649,6 +2659,17 @@ export class Orchestrator {
         (nodeClarifyState.answers?.length ? `\n用户答复:\n${nodeClarifyState.answers.map((a) => `- ${a.question} → ${a.answer}`).join('\n')}` : '')
       : '';
 
+    // M7 角色差异化上下文裁剪：review 看完整 diff、test 看测试资产索引，其余角色维持统一模板
+    let roleBlock = '';
+    if (plugin.name === 'review') {
+      const d = gitDiffFull(workspace);
+      if (d.ok && d.diff && d.diff !== '(no changes)') {
+        roleBlock = `\n\n## 当前分支完整代码变更（审查输入）\n\`\`\`diff\n${d.diff}\n\`\`\``;
+      }
+    } else if (plugin.name === 'test') {
+      roleBlock = `\n\n## 既有测试资产索引\n${listTestAssets(workspace)}`;
+    }
+
     const userMsg = [
       `工作目录: ${workspace}`,
       `现有文件树:\n${workspaceFiles}`,
@@ -2656,6 +2677,7 @@ export class Orchestrator {
       node.goal_link ? `对全局目标的贡献: ${node.goal_link}` : '',
       `节点复杂度: ${node.complexity}`,
       context ? `前置节点成果:\n${context}\n` : '',
+      roleBlock,
       clarifyBlock,
       escalationBlock,
       fixContextBlock,
@@ -3046,7 +3068,7 @@ export class Orchestrator {
         // 折叠真正发生才置位（历史不足一轮时继续观察后续轮次）
         if (!foldedOnce) {
           const est = estimateTokens(JSON.stringify(messages));
-          if (est > this.contextCfg.max_prompt_tokens && foldMessagesInto(messages)) {
+          if (est > foldLimit && foldMessagesInto(messages)) {
             foldedOnce = true;
             // 折叠与去重指针的一致性：旧 tool_result 正文已被折叠摘要取代，指向它们的
             // "结果从略"指针成为死链——模型会永远拿不到文件内容（2y3tuote 节点 10 实测：
@@ -3115,7 +3137,7 @@ export class Orchestrator {
       attemptSucceeded = true;
 
       // session continuity: remember this exchange for the agent's next node in this task
-      await busSet(sessionKey, [...priorSession, { role: 'user', content: userMsg }, { role: 'assistant', content }].slice(-20));
+      await busSet(sessionKey, [...priorSession, { role: 'user', content: userMsg }, { role: 'assistant', content }].slice(-30));
 
       // war-room journal: agent's final report
       await appendJournal(taskId, plugin.name, {
@@ -3157,7 +3179,7 @@ export class Orchestrator {
   private compactAssistant(content: string): string {
     const parsed = extractJson(content);
     if (!parsed) return content.slice(0, 1500);
-    return JSON.stringify({ status: parsed.status, summary: parsed.summary, changes: parsed.changes });
+    return JSON.stringify({ status: parsed.status, summary: parsed.summary, changes: parsed.changes, files: parsed.files });
   }
 
   // ---------- M2 全员实时问答：阻塞式 ask 桥 ----------

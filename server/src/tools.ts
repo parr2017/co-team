@@ -236,10 +236,42 @@ export function gitLog(workspace: string): { ok: boolean; log?: string; error?: 
 
 export function gitDiff(workspace: string): { ok: boolean; diff?: string; error?: string } {
   try {
-    const result = executeCommand('git diff --stat', workspace, { level: 'normal', whitelist_commands: [] } as any);
+    // 注意白名单字段是 camelCase（whitelistCommands）——此前误传 snake_case 导致
+    // canExecute 读到 undefined 抛错、被 catch 吞成 ok:false（git_diff 一直静默失效）
+    const result = executeCommand('git diff --stat', workspace, { level: 'normal', whitelistCommands: null, maxTimeSec: 30 } as any);
     return { ok: true, diff: result.stdout || '(no changes)' };
   } catch (e: any) {
     return { ok: false, error: e.message };
+  }
+}
+
+/** M7 角色差异化：review/验收角色获得完整 diff 视图（--stat 只有行数统计，看不出具体改动）。
+ *  输出限幅防单次注入撑爆上下文。 */
+export function gitDiffFull(workspace: string, maxChars = 20000): { ok: boolean; diff?: string; error?: string } {
+  try {
+    const result = executeCommand('git diff', workspace, { level: 'normal', whitelistCommands: null, maxTimeSec: 30 } as any);
+    let diff = result.stdout || '(no changes)';
+    if (diff.length > maxChars) diff = diff.slice(0, maxChars) + '\n…（diff 超长已截断，可用 read_file 按文件细看）';
+    return { ok: true, diff };
+  } catch (e: any) {
+    return { ok: false, error: e.message };
+  }
+}
+
+/** M7 角色差异化：test/验收角色的测试资产索引——tests 目录 + 测试文件清单（限幅注入）。 */
+export function listTestAssets(workspace: string, maxChars = 1200): string {
+  try {
+    const files = listFiles(workspace);
+    const tests = files
+      .map((f) => f.replace(/\\/g, '/'))
+      .filter((f) =>
+        /(^|\/)(tests?|__tests__|e2e)\//i.test(f) || /\.(test|spec)\.[cm]?[jt]sx?$/i.test(f) || /(^|\/)test_[^/]*\.py$/i.test(f)
+      );
+    if (!tests.length) return '(项目内暂无测试资产)';
+    const list = tests.slice(0, 60).join('\n');
+    return list.length > maxChars ? list.slice(0, maxChars) + `\n…（共 ${tests.length} 个测试文件，已截断）` : list + (tests.length > 60 ? `\n…（共 ${tests.length} 个）` : '');
+  } catch {
+    return '(测试资产索引不可用)';
   }
 }
 
