@@ -1510,6 +1510,20 @@ export class Orchestrator {
       node.branch = ok ? branch : '';
       // 记录切出分支，节点完成后以此计算该节点的代码变更（diff 基准）
       node.branch_base = ok ? parent : '';
+      // E25 多上游收敛：把其余上游兄弟分支全部并入本分支——只基于最后一个上游切出时，
+      // 并行实现的兄弟节点产物不可见（g6704zpm：回归节点把已完成的四页判为占位符）
+      if (ok) {
+        const depBranches = graph.edges
+          .filter(([, dst]) => dst === node.id)
+          .map(([src]) => graph.nodes.find((n) => n.id === src)?.branch)
+          .filter((b): b is string => !!b && b !== parent);
+        if (depBranches.length) {
+          const conv = await gitTool.mergeIntoCurrent(sandbox, depBranches).catch(() => null);
+          if (conv?.conflicts.length) {
+            this.logger.warn('upstream branch convergence conflicts (node continues with what merged)', { taskId, nodeId: node.id, conflicts: conv.conflicts });
+          }
+        }
+      }
       await persistGraph(graph);
       await emitProgress('node_branch_created', { task_id: taskId, node_id: node.id, branch: node.branch, parent });
     }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { commitOnBranch, createNodeBranch, ensureBase, mergeAllNodes, nodeDiff } from '../src/git';
+import { commitOnBranch, createNodeBranch, ensureBase, mergeAllNodes, mergeIntoCurrent, nodeDiff } from '../src/git';
 import { MemoryBus } from '../src/bus';
 import { emitProgress, getTaskEvents } from '../src/store';
 
@@ -83,6 +83,62 @@ describe('branch workflow (git.ts)', () => {
 
     // 分支不存在 → null
     expect(await nodeDiff(tmp, 'coteam/ghost', 'coteam/base')).toBeNull();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('mergeIntoCurrent converges sibling branches into the current branch without checkout (E25)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-git-'));
+    await ensureBase(tmp);
+    fs.writeFileSync(path.join(tmp, 'base.txt'), 'baseline');
+    await commitOnBranch(tmp, 'baseline', ['base.txt']);
+
+    // 两个并行兄弟分支各自产出（模拟 g6704zpm 并行四页场景）
+    await createNodeBranch(tmp, 'coteam/sib-a', 'coteam/base');
+    fs.writeFileSync(path.join(tmp, 'page-a.vue'), 'a');
+    await commitOnBranch(tmp, 'sibling a', ['page-a.vue']);
+
+    await createNodeBranch(tmp, 'coteam/sib-b', 'coteam/base');
+    fs.writeFileSync(path.join(tmp, 'page-b.vue'), 'b');
+    await commitOnBranch(tmp, 'sibling b', ['page-b.vue']);
+
+    // 回归节点从 base 切出（看不到兄弟产物），收敛后应同时可见
+    await createNodeBranch(tmp, 'coteam/regress', 'coteam/base');
+    const before = fs.existsSync(path.join(tmp, 'page-a.vue'));
+    expect(before).toBe(false);
+
+    const result = await mergeIntoCurrent(tmp, ['coteam/sib-a', 'coteam/sib-b']);
+    expect(result.conflicts).toEqual([]);
+    expect(result.merged).toEqual(['coteam/sib-a', 'coteam/sib-b']);
+    expect(fs.existsSync(path.join(tmp, 'page-a.vue'))).toBe(true);
+    expect(fs.existsSync(path.join(tmp, 'page-b.vue'))).toBe(true);
+    expect(fs.existsSync(path.join(tmp, 'base.txt'))).toBe(true);
+    expect(result.head).not.toBeNull();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('mergeIntoCurrent reports conflicting branches without losing the merged ones', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-git-'));
+    await ensureBase(tmp);
+    fs.writeFileSync(path.join(tmp, 'same.txt'), 'base');
+    await commitOnBranch(tmp, 'baseline', ['same.txt']);
+
+    await createNodeBranch(tmp, 'coteam/ok', 'coteam/base');
+    fs.writeFileSync(path.join(tmp, 'same.txt'), 'ok change');
+    fs.writeFileSync(path.join(tmp, 'good.txt'), 'good');
+    await commitOnBranch(tmp, 'ok work', ['same.txt', 'good.txt']);
+
+    await createNodeBranch(tmp, 'coteam/bad', 'coteam/base');
+    fs.writeFileSync(path.join(tmp, 'same.txt'), 'conflicting change');
+    await commitOnBranch(tmp, 'bad work', ['same.txt']);
+
+    // 切回独立的基础分支再收敛（createNodeBranch 会切走 HEAD，须先回到收目标分支）
+    await createNodeBranch(tmp, 'coteam/collector', 'coteam/base');
+    const result = await mergeIntoCurrent(tmp, ['coteam/ok', 'coteam/bad']);
+    expect(result.merged).toEqual(['coteam/ok']);
+    expect(result.conflicts).toEqual(['coteam/bad']);
+    // 冲突被 abort，工作树停留在"已合并 ok"状态，不留未合并残留
+    expect(fs.existsSync(path.join(tmp, 'good.txt'))).toBe(true);
+    expect(fs.readFileSync(path.join(tmp, 'same.txt'), 'utf-8')).toBe('ok change');
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

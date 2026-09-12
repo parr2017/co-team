@@ -114,6 +114,34 @@ export interface MergeResult {
   head: string | null;
 }
 
+/**
+ * E25：把若干分支合并进"当前所在分支"（不动 checkout）。
+ * 用于多上游节点的分支切出后收敛兄弟分支——否则节点只能看见最后一个上游，
+ * 并行实现的页面互相不可见（g6704zpm 节点13 实测把已完成的四页判为占位符）。
+ */
+export async function mergeIntoCurrent(workspace: string, branches: string[]): Promise<MergeResult> {
+  const g = git(workspace);
+  const result: MergeResult = { merged: [], conflicts: [], head: null };
+  for (const branch of branches) {
+    try {
+      const summary = await g.merge([branch, '--no-edit', '-m', `coteam: converge ${branch}`]);
+      if (summary.failed) {
+        result.conflicts.push(branch);
+        await g.merge(['--abort']).catch(() => {});
+      } else {
+        result.merged.push(branch);
+      }
+    } catch {
+      result.conflicts.push(branch);
+      await g.merge(['--abort']).catch(() => {});
+    }
+  }
+  try {
+    result.head = (await g.log({ maxCount: 1 })).latest?.hash ?? null;
+  } catch { /* ignore */ }
+  return result;
+}
+
 /** Merge all node branches back into the base branch, in the given order. */
 export async function mergeAllNodes(workspace: string, branches: string[]): Promise<MergeResult> {
   const g = git(workspace);
