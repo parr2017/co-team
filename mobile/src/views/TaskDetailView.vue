@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { showDialog, showToast } from 'vant';
+import { showDialog, showConfirmDialog, showToast } from 'vant';
 import { marked } from 'marked';
 import { api } from '../api';
 import type { TaskGraph, EventEnvelope, NodeDiffResponse } from '../api';
@@ -25,6 +25,93 @@ const events = ref<EventEnvelope[]>([]);
 const loadFailed = ref(false);
 // M10-A：聊天长按"引用"→ 介入输入框预填
 const quoteDraft = ref('');
+
+// ---------- M10-C 澄清答复卡 / 全局目标 / 快照 ----------
+const clarifyNode = computed(() => (task.value?.nodes || []).find((n) => n.status === 'waiting_clarify') || null);
+const clarifyBrief = ref<any>(null);
+const clarifyAnswers = ref<Record<string, string>>({});
+const clarifySending = ref(false);
+const clarifyLoadedFor = ref('');
+watch(clarifyNode, async (n) => {
+  if (!n || clarifyLoadedFor.value === `${taskId.value}:${n.id}`) return;
+  clarifyLoadedFor.value = `${taskId.value}:${n.id}`;
+  clarifyBrief.value = null;
+  try {
+    const d: any = await api.getNodeClarify(taskId.value, n.id);
+    clarifyBrief.value = d.brief || null;
+  } catch { /* ignore */ }
+});
+async function submitClarify() {
+  if (!clarifyNode.value) return;
+  const answers = Object.entries(clarifyAnswers.value)
+    .filter(([, a]) => String(a || '').trim())
+    .map(([qi, answer]) => ({ question: clarifyBrief.value?.questions?.[Number(qi)] || '', answer: String(answer).trim() }));
+  clarifySending.value = true;
+  try {
+    await api.clarifyNode(taskId.value, clarifyNode.value.id, { answers, approve: true });
+    showToast('已提交，节点继续执行');
+    clarifyAnswers.value = {};
+    await refresh();
+  } catch (e: any) {
+    showToast(e?.message || '提交失败');
+  } finally {
+    clarifySending.value = false;
+  }
+}
+
+const goalContent = ref('');
+async function loadGoal() {
+  try {
+    const d: any = await api.getTaskGoal(taskId.value);
+    goalContent.value = d.content || '';
+  } catch { goalContent.value = ''; }
+}
+const goalEditing = ref(false);
+const goalDraft = ref('');
+const goalSaving = ref(false);
+watch(goalEditing, async (v) => {
+  if (!v) return;
+  try {
+    const d: any = await api.getTaskGoal(taskId.value);
+    goalDraft.value = d.content || '';
+  } catch { goalDraft.value = ''; }
+});
+async function saveGoal() {
+  goalSaving.value = true;
+  try {
+    await api.updateTaskGoal(taskId.value, goalDraft.value.trim());
+    showToast('全局目标已更新');
+    goalEditing.value = false;
+  } catch (e: any) {
+    showToast(e?.message || '保存失败');
+  } finally {
+    goalSaving.value = false;
+  }
+}
+
+const snapshots = ref<any[]>([]);
+const snapBusy = ref('');
+async function loadSnapshots() {
+  try {
+    snapshots.value = ((await api.listSnapshots()) as any).snapshots?.filter((s: any) => s.task_id === taskId.value) || [];
+  } catch { snapshots.value = []; }
+}
+async function doRollback(snapshotId: string) {
+  try {
+    await showConfirmDialog({ title: '回滚确认', message: '工作区与协作状态将回滚到该快照，不可撤销。确定回滚？' });
+  } catch { return; }
+  snapBusy.value = snapshotId;
+  try {
+    await api.rollbackSnapshot(taskId.value, snapshotId, true);
+    showToast('已回滚');
+    await loadSnapshots();
+    await refresh();
+  } catch (e: any) {
+    showToast(e?.message || '回滚失败');
+  } finally {
+    snapBusy.value = '';
+  }
+}
 // M3 监督者提案
 const proposals = ref<any[]>([]);
 const acceptanceReport = ref<any>(null);
@@ -251,6 +338,8 @@ async function refresh() {
   }
   await fetchSingleTask(taskId.value);
   void loadProposals();
+  void loadGoal();
+  void loadSnapshots();
   try {
     const ev = await api.taskEvents(taskId.value);
     events.value = ev.events;
@@ -435,6 +524,52 @@ function nodeIcon(status: string): string {
                 <span class="prog-label">{{ statusText(task.status) }}</span>
                 <div class="prog-track"><div class="prog-fill" :style="{ width: progressPct + '%' }"></div></div>
                 <span class="prog-num">{{ progressPct }}%</span>
+              </div>
+            </div>
+
+            <!-- M10-C 澄清答复卡：waiting_clarify 节点从手机解堵 -->
+            <div v-if="clarifyNode" class="wx-group">
+              <div class="wx-cell">
+                <div class="sup-title">节点「{{ clarifyNode.name }}」等待澄清确认</div>
+                <div v-if="clarifyBrief" class="cl-brief">{{ clarifyBrief.approach }}</div>
+                <div v-if="clarifyBrief?.questions?.length" class="cl-q">
+                  <div v-for="(q, qi) in clarifyBrief.questions" :key="qi" class="cl-q-row">
+                    <div class="cl-q-text">{{ Number(qi) + 1 }}. {{ q }}</div>
+                    <input v-model="clarifyAnswers[String(qi)]" class="cl-a" placeholder="你的回答…" />
+                  </div>
+                </div>
+                <div class="cl-actions">
+                  <van-button size="small" type="primary" :loading="clarifySending" @click="submitClarify">确认并继续</van-button>
+                  <van-button size="small" plain @click="router.push(`/clarify/${taskId}`)">完整澄清页</van-button>
+                </div>
+              </div>
+            </div>
+
+            <!-- M10-C 全局目标：查看/编辑 -->
+            <div class="wx-group">
+              <div class="wx-cell">
+                <div class="sup-title">全局目标</div>
+                <div class="goal-text">{{ goalContent || '（未设置）' }}</div>
+                <div v-if="goalEditing" class="cl-actions">
+                  <textarea v-model="goalDraft" class="goal-area" rows="3"></textarea>
+                  <van-button size="small" type="primary" :loading="goalSaving" @click="saveGoal">保存</van-button>
+                  <van-button size="small" plain @click="goalEditing = false">取消</van-button>
+                </div>
+                <van-button v-else size="small" plain @click="goalEditing = true">编辑</van-button>
+              </div>
+            </div>
+
+            <!-- M10-C 快照：列表 + 一键回滚（二次确认） -->
+            <div class="wx-group">
+              <div class="wx-cell">
+                <div class="sup-title">快照</div>
+                <div v-if="snapshots.length" class="snap-list">
+                  <div v-for="s in snapshots.slice(0, 5)" :key="s.id" class="snap-row">
+                    <span class="mono">{{ s.tag }} · {{ fmtTime(s.created_at) }}</span>
+                    <van-button size="mini" plain :loading="snapBusy === s.id" @click="doRollback(s.id)">回滚</van-button>
+                  </div>
+                </div>
+                <div v-else class="cl-note">暂无快照</div>
               </div>
             </div>
 

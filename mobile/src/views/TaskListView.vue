@@ -13,7 +13,19 @@ defineOptions({ name: 'TaskListView' });
 
 const router = useRouter();
 const { theme, toggle } = useTheme();
-const { loadTasks } = useDashboard();
+// M10-C 今日概览 + 审批入口
+const sys = ref<any>(null);
+let sysTimer: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  const load = () => void api.status().then((d) => { sys.value = d; }).catch(() => {});
+  load();
+  sysTimer = setInterval(load, 15000);
+});
+onUnmounted(() => { if (sysTimer) clearInterval(sysTimer); });
+function fmtTok(n: number): string { return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+const runningCount = computed(() => Object.values(tasks.value).filter((t) => ['running', 'retrying'].includes(t.status)).length);
+const humanCount = computed(() => Object.values(tasks.value).filter((t) => ['waiting_approval', 'clarifying'].includes(t.status)).length);
+const { loadTasks, tasks } = useDashboard();
 
 const keyword = ref('');
 const list = ref<TaskGraph[]>([]);
@@ -245,6 +257,29 @@ onUnmounted(() => {
       </template>
     </van-nav-bar>
 
+    <div class="ov-bar">
+      <div class="ov-item">
+        <span class="ov-num">{{ runningCount }}</span>
+        <span class="ov-label">执行中</span>
+      </div>
+      <div class="ov-item" :class="{ alert: humanCount > 0 }" @click="router.push('/approvals')">
+        <span class="ov-num">{{ humanCount }}</span>
+        <span class="ov-label">待我处理</span>
+      </div>
+      <div class="ov-item">
+        <span class="ov-num mono">{{ sys?.tokens_total != null ? fmtTok(sys.tokens_total) : '—' }}</span>
+        <span class="ov-label">Token</span>
+      </div>
+      <div class="ov-item">
+        <span class="ov-num mono">{{ sys?.cost_total != null ? '¥' + Number(sys.cost_total).toFixed(2) : '—' }}</span>
+        <span class="ov-label">成本</span>
+      </div>
+      <div class="ov-item approve" @click="router.push('/approvals')">
+        <van-icon name="passed" size="20" />
+        <span class="ov-label">审批</span>
+      </div>
+    </div>
+
     <van-search
       v-model="keyword"
       placeholder="搜索"
@@ -449,4 +484,13 @@ onUnmounted(() => {
 .q-tag.bad { color: var(--red); background: rgba(255, 93, 110, 0.1); border-color: rgba(255, 93, 110, 0.3); }
 .q-info { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q-reason { margin-top: 6px; font-size: 12px; color: var(--red); line-height: 1.4; }
+</style>
+
+<style scoped>
+.ov-bar { display: flex; align-items: stretch; gap: 8px; padding: 8px 16px 4px; }
+.ov-item { flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 6px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.ov-item.approve { flex: 0 0 64px; color: var(--ct-accent); justify-content: center; }
+.ov-item.alert .ov-num { color: var(--ct-yellow); }
+.ov-num { font-size: var(--fs-lg); font-weight: 700; color: var(--text); }
+.ov-label { font-size: var(--fs-xs); color: var(--text-3); }
 </style>

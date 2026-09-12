@@ -351,6 +351,22 @@ export const api = {
   // M2 全员实时问答：回答 agent 的阻塞式提问
   answerAsk: (id: string, askId: string, answer: string) =>
     post<{ ok: boolean; ask_id: string }>(`/api/tasks/${id}/asks/${askId}/answer`, { answer }),
+  getPendingCommands: (id: string) => request<{ commands: any[] }>(`/api/tasks/${id}/pending-commands`),
+  resolveCommand: (id: string, commandId: string, approved: boolean) =>
+    post(`/api/tasks/${id}/commands/${commandId}/approve`, { approved }),
+  listAsks: (id: string) => request<{ asks: any[] }>(`/api/tasks/${id}/asks`),
+  status: () => request<any>('/api/status'),
+  // M10-C 管理面补齐
+  getTaskGoal: (id: string) => request<{ content: string; updated_at?: string }>(`/api/tasks/${id}/goal`),
+  updateTaskGoal: (id: string, content: string) =>
+    request(`/api/tasks/${id}/goal`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }),
+  listSnapshots: () => request<{ snapshots: any[] }>('/api/snapshots'),
+  rollbackSnapshot: (taskId: string, snapshotId: string, confirmed = true) =>
+    post(`/api/snapshots/${snapshotId}/rollback`, { task_id: taskId, confirm: confirmed }),
+  getNodeClarify: (id: string, nodeId: string) =>
+    request<{ task_id: string; node_id: string; mode: string; brief: { approach: string; files?: string[]; risks?: string[]; questions?: string[] }; answers: { question: string; answer: string }[] }>(`/api/tasks/${id}/nodes/${nodeId}/clarify`),
+  clarifyNode: (id: string, nodeId: string, payload: { approve?: boolean; answers?: { question: string; answer: string }[]; text?: string }) =>
+    post<{ status: string }>(`/api/tasks/${id}/nodes/${nodeId}/clarify`, payload),
   // M5 最终验收报告
   acceptanceReport: (id: string) => request<{ report: any }>(`/api/tasks/${id}/acceptance-report`),
   // M3 监督者提案
