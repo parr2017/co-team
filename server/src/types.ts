@@ -132,6 +132,17 @@ export interface ProjectMemoryItem {
   task_id?: string;
 }
 
+export interface ChecklistItem {
+  id: string;
+  requirement: string;
+  evidence_type: 'unit' | 'build' | 'e2e' | 'command' | 'manual';
+  target_platform?: string;
+  target?: string;
+  status?: 'open' | 'done' | 'failed';
+  evidence?: string;
+  stage?: number;
+}
+
 export interface TaskGraph {
   task_id: string;
   nodes: TaskNode[];
@@ -154,6 +165,14 @@ export interface TaskGraph {
   sandbox_path?: string;
   /** 自指任务（用 co-team 开发 co-team）：执行被隔离到 projects.selfdev_root 的本地克隆 */
   self_ref?: boolean;
+  /** M4 滚动规划：任务按阶段滚动规划与验收 */
+  rolling?: boolean;
+  stage?: number;
+  stage_count?: number;
+  stage_goal?: string;
+  stage_nodes?: string[];
+  stage_history?: { stage: number; goal: string; summaries: string[] }[];
+  checklist?: ChecklistItem[];
   /** 隔离克隆的实际工作目录（execute 时写入；主副本零触碰） */
   selfdev_path?: string;
   /** P0-2 backlink: this task was created to fix a defect found in task_id/node_id */

@@ -12,6 +12,8 @@ export async function saveTaskGraph(
   meta?: {
     description?: string; workspace?: string; status?: string; project_id?: string; level?: TaskLevel; main_model_id?: string;
     execution_policy?: { level: string; whitelist_commands?: string[] }; node_clarify?: string; self_ref?: boolean;
+    rolling?: boolean; stage?: number; stage_count?: number; stage_goal?: string;
+    stage_nodes?: string[]; stage_history?: TaskGraph['stage_history']; checklist?: TaskGraph['checklist'];
   }
 ): Promise<void> {
   const existing = await getTaskGraph(taskId);
@@ -19,6 +21,13 @@ export async function saveTaskGraph(
     task_id: taskId,
     nodes,
     edges: edges.map((e) => [e[0], e[1]]),
+    rolling: meta?.rolling ?? existing?.rolling ?? undefined,
+    stage: meta?.stage ?? existing?.stage ?? undefined,
+    stage_count: meta?.stage_count ?? existing?.stage_count ?? undefined,
+    stage_goal: meta?.stage_goal ?? existing?.stage_goal ?? undefined,
+    stage_nodes: meta?.stage_nodes ?? existing?.stage_nodes ?? undefined,
+    stage_history: meta?.stage_history ?? existing?.stage_history ?? undefined,
+    checklist: meta?.checklist ?? existing?.checklist ?? undefined,
     description: meta?.description ?? existing?.description ?? '',
     workspace: meta?.workspace ?? existing?.workspace ?? '',
     status: meta?.status ?? existing?.status ?? 'pending',

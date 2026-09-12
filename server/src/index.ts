@@ -133,6 +133,8 @@ async function main(): Promise<void> {
     nodeClarify: config.orchestrator.node_clarify,
     selfModGate: config.orchestrator.self_mod_gate,
     askTimeoutSec: config.orchestrator.ask_timeout_sec,
+    planningMode: config.orchestrator.planning_mode,
+    rollingMaxStages: config.orchestrator.rolling_max_stages,
     projects: config.projects,
     slowSuccessSec: config.llm?.slow_success_sec,
     outputTiers: config.llm?.output_tiers,

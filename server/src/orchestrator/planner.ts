@@ -3,8 +3,22 @@ import { getMemory } from '../store';
 import type { ModelPool } from '../scheduler';
 import type { Router } from '../router';
 import type { Complexity, TaskLevel } from '../types';
+import type { ChecklistItem } from '../types';
 import { relevantKnowledge } from '../knowledge';
 import { LEVEL_PROFILES } from '../grader';
+
+const EVIDENCE_TYPES = ['unit', 'build', 'e2e', 'command', 'manual'];
+
+/** M4 滚动规划：单个阶段的计划 = 子图 + 阶段目标 + 结构化验收清单 */
+export interface StagePlan {
+  planned: PlannedGraph;
+  stage_goal: string;
+  checklist: ChecklistItem[];
+  done: boolean;
+  /** done=true 时对清单的逐项裁定（evidence 必须附证据说明） */
+  checklist_results?: { id: string; done: boolean; evidence?: string }[];
+  summary: string;
+}
 
 export interface PlannedGraph {
   nodes: Record<string, any>[];
@@ -219,6 +233,115 @@ async function llmPlan(request: string, pool: ModelPool, router: Router, model: 
       const { getLogger } = await import('../logger');
       getLogger().warn('Pinned main-agent model failed, degrading to dynamic selection', { pinnedModel, error: String(e).slice(0, 200) });
     }
+    return null;
+  }
+}
+
+// ---------- M4 滚动规划：按阶段滚动生成计划 ----------
+
+export interface StagePlanOptions {
+  stage: number;
+  /** 全局目标（含澄清问答） */
+  globalGoal: string;
+  /** 已完成阶段的历史（目标 + 节点摘要） */
+  stageHistory: { stage: number; goal: string; summaries: string[] }[];
+  /** 当前验收清单（rolling 状态，replanner 裁定或补充） */
+  checklist: ChecklistItem[];
+  projectId?: string;
+  level?: TaskLevel;
+  pinnedModel?: string;
+  required?: boolean;
+}
+
+export async function generateStagePlan(request: string, pool: ModelPool | null, router: Router, opts: StagePlanOptions): Promise<StagePlan | null> {
+  if (!pool) return null;
+  const pinnedEntry = opts.pinnedModel ? pool.getModel(opts.pinnedModel) : null;
+  const model = pinnedEntry ?? pool.selectModel(['code'], 'complex');
+  if (!model) return null;
+  const available = [...router.getAvailable().keys()];
+  const agentDesc =
+    [...router.getAvailable().values()].map((p) => `- ${p.name}: ${p.role || p.description} (tags: ${p.tags.join(',')})`).join('\n') || '- dev: 开发实现';
+  const memory = (await getMemory()).map((m) => `- ${m}`).join('\n') || '（暂无历史经验）';
+  const knowledge = (await relevantKnowledge(request, { project_id: opts.projectId, limit: 4 })).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
+
+  const historyBlock = opts.stageHistory.length
+    ? '已完成阶段（这些工作不需要重做，除非清单项未达成）：\n' +
+      opts.stageHistory.map((h) => `第${h.stage}阶段（目标：${h.goal}）：\n${h.summaries.map((s) => `- ${s}`).join('\n')}`).join('\n')
+    : '（尚无已完成阶段，这是第一阶段）';
+  const checklistBlock = opts.checklist.length
+    ? '全局验收清单（open=未达成；done 必须有真实证据支撑）：\n' +
+      opts.checklist.map((c) => `${c.id}. [${c.status || 'open'}] ${c.requirement}（证据类型: ${c.evidence_type}${c.target_platform ? ` / 平台: ${c.target_platform}` : ''}）`).join('\n')
+    : '';
+
+  const isStage1 = opts.stage === 1;
+  const content = [
+    '你是滚动规划器。你只能使用这些 agent 名字：' + available.join(', ') + '。不要发明新的 agent 名字。',
+    '',
+    '可用 agent 及职责：',
+    agentDesc,
+    '',
+    '历史经验（跨任务记忆，避免重复犯错）：',
+    memory,
+    ...(knowledge.length ? ['', '相关知识库条目：', ...knowledge.map((k) => `- ${k}`)] : []),
+    '',
+    '全局目标：' + opts.globalGoal,
+    '',
+    historyBlock,
+    checklistBlock ? '\n' + checklistBlock : '',
+    '',
+    isStage1
+      ? '任务：这是第 1 阶段。把全局目标拆成一个「可运行的最小骨架」阶段——先让端到端的最小闭环跑起来，不要试图一次做完所有事。同时给出全局验收清单 checklist：任务描述中每一条显式要求一条，外加最低标准（前端交付必含「页面间导航可达、无死链、真实数据流」；后端交付必含真实接口冒烟）。无 checklist 的计划无效。'
+      : '任务：基于已完成阶段的实际产出，规划下一阶段。只规划「补齐未达成清单项、逼近全局目标」所需的最小节点集（≤5 个）。如果目标已达成且清单全部 done，输出 done=true 并对每个清单项给出裁定（done 的项必须附 evidence 真实证据说明）。',
+    '',
+    GRANULARITY_RULES,
+    '',
+    '阶段计划返回 JSON：{"done":false,"stage_goal":"本阶段一句话目标","summary":"拆解思路","nodes":[{"id":"1","name":"...","agent":"dev","reason":"...","required_skills":["code"],"complexity":"normal","requires_approval":false,"goal_link":"..."}],"edges":[["1","2"]],"checklist":[{"requirement":"...","evidence_type":"unit|build|e2e|command|manual","target_platform":"web|h5|miniprogram|app|api|cli"}]}',
+    ...(isStage1
+      ? []
+      : ['完成声明返回 JSON：{"done":true,"assessment":"...","checklist_results":[{"id":"1","done":true,"evidence":"真实证据说明"}]}']),
+    '',
+    '需求：' + request,
+  ].join('\n');
+
+  try {
+    const resp = await chat(model, [
+      { role: 'system', content: 'You are a rolling task planner. Use ONLY the given agent names. Output valid JSON only.' },
+      { role: 'user', content },
+    ]);
+    pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
+    const parsed = extractJson(stripCodeFence(resp.content));
+    if (!parsed) return null;
+
+    if (opts.stage > 1 && parsed.done === true) {
+      return { planned: { nodes: [], edges: [], summary: String(parsed.assessment || '') }, stage_goal: '', checklist: [], done: true, checklist_results: Array.isArray(parsed.checklist_results) ? parsed.checklist_results : undefined, summary: String(parsed.assessment || '') };
+    }
+
+    const planned = normalizePlan(parsed, available, new Map([...router.getAvailable().values()].map((p) => [p.name, { name: p.name, tags: p.tags as string[] }])));
+    if (!planned) return null;
+    const rawChecklist: ChecklistItem[] = Array.isArray(parsed.checklist) ? parsed.checklist : [];
+    const checklist = rawChecklist
+      .filter((c) => c && String(c.requirement || '').trim())
+      .map((c, i) => ({
+        id: String(c.id || `${opts.stage}-${i + 1}`),
+        requirement: String(c.requirement).slice(0, 300),
+        evidence_type: (EVIDENCE_TYPES.includes(String(c.evidence_type)) ? c.evidence_type : 'command') as ChecklistItem['evidence_type'],
+        target_platform: c.target_platform ? String(c.target_platform) : undefined,
+        target: c.target ? String(c.target) : undefined,
+        status: 'open' as const,
+        stage: opts.stage,
+      }));
+    // M4 铁律：阶段计划必须携带验收清单（done 声明除外）
+    if (opts.required !== false && isStage1 && checklist.length === 0) return null;
+    return {
+      planned,
+      stage_goal: String(parsed.stage_goal || parsed.summary || '').slice(0, 300),
+      checklist,
+      done: false,
+      summary: String(parsed.summary || ''),
+    };
+  } catch (e) {
+    const { getLogger } = await import('../logger');
+    getLogger().warn('stage plan failed', { stage: opts.stage, error: String(e).slice(0, 200) });
     return null;
   }
 }

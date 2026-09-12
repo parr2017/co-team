@@ -28,6 +28,10 @@ export interface OrchestrationConfig {
     heartbeat_sec?: number;
     min_interval_sec?: number;
   };
+  /** M4 滚动规划：rolling（缺省）| static */
+  planning_mode?: 'rolling' | 'static';
+  /** M4 阶段数上限（缺省 5） */
+  rolling_max_stages?: number;
 }
 
 export interface SelfModGateConfig {
@@ -183,6 +187,9 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
         heartbeat_sec: raw.orchestrator?.supervisor?.heartbeat_sec ?? 600,
         min_interval_sec: raw.orchestrator?.supervisor?.min_interval_sec ?? 120,
       },
+      // M4 滚动规划
+      planning_mode: ['rolling', 'static'].includes(raw.orchestrator?.planning_mode) ? raw.orchestrator.planning_mode : 'rolling',
+      rolling_max_stages: raw.orchestrator?.rolling_max_stages ?? 5,
       self_mod_gate: {
         enabled: raw.orchestrator?.self_mod_gate?.enabled ?? true,
         test_command: raw.orchestrator?.self_mod_gate?.test_command || 'npm test',

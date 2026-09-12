@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { generateTaskGraph, PlannedGraph } from './planner';
+import { generateTaskGraph, generateStagePlan, PlannedGraph } from './planner';
+import type { ChecklistItem } from '../types';
 import type { ModelPool, ModelEntry } from '../scheduler';
 import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
@@ -97,6 +98,10 @@ export interface OrchestratorOptions {
   context?: ContextConfig;
   /** M2 阻塞问答：ask 等待超时秒数（缺省 900） */
   askTimeoutSec?: number;
+  /** M4 滚动规划：rolling（缺省）| static */
+  planningMode?: 'rolling' | 'static';
+  /** M4 阶段数上限（缺省 5） */
+  rollingMaxStages?: number;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -206,6 +211,12 @@ function stripMergeNodes(planned: PlannedGraph): PlannedGraph {
 }
 
 /** Append the final 主 Agent 合并 node; it waits for EVERY agent node so no branch is left unmerged. */
+/** M4：静态回退时的最小合成清单——从任务描述生成一条 command 证据项，结构保底（M5 由验收 agent 深化）。 */
+function synthesizeChecklist(description: string): ChecklistItem[] {
+  const req = description.replace(/\s+/g, ' ').trim().slice(0, 300);
+  return req ? [{ id: 'auto-1', requirement: req, evidence_type: 'command', status: 'open', stage: 1 }] : [];
+}
+
 function appendMergeNode(planned: PlannedGraph): PlannedGraph {
   const nodes = [...planned.nodes];
   const edges = planned.edges.filter(([src, dst]) => src !== 'merge-auto' && dst !== 'merge-auto');
@@ -255,6 +266,9 @@ export class Orchestrator {
   /** M2 实时问答：正在执行 callAgent 的 agent 计数（key: `${taskId}:${agent}`）——
    *  同名 agent 可并发多 dispatch，收尾清扫只在最后一个 dispatch 结束时触发 */
   private activeAgents = new Map<string, number>();
+  /** M4 滚动规划 */
+  private planningMode: 'rolling' | 'static';
+  private rollingMaxStages: number;
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
@@ -280,6 +294,8 @@ export class Orchestrator {
     this.outputTiers = opts.outputTiers;
     this.contextCfg = opts.context || { max_prompt_tokens: 16000, workspace_tree_max_chars: 1500, goal_max_chars: 1500 };
     this.askTimeoutMs = Math.max(5000, (opts.askTimeoutSec ?? 900) * 1000);
+    this.planningMode = opts.planningMode ?? 'rolling';
+    this.rollingMaxStages = Math.max(1, opts.rollingMaxStages ?? 5);
     this.selfModGate = opts.selfModGate || {
       enabled: true,
       test_command: 'npm test',
@@ -362,6 +378,32 @@ export class Orchestrator {
       pinnedModel: opts.mainModelId,
       projectId: opts.projectId,
     });
+  }
+
+  /** M4 滚动规划：第 1 阶段计划（子图 + 阶段目标 + 全局验收清单）。
+   *  生成失败回退静态整图 + 从任务描述合成的最小清单——结构在，深度后续由验收 agent 补。 */
+  private async planStage1(
+    request: string,
+    opts: { level?: TaskLevel; mainModelId?: string; projectId?: string }
+  ): Promise<{ planned: PlannedGraph; rolling: boolean; stageGoal: string; checklist: ChecklistItem[]; summary?: string }> {
+    try {
+      const stage = await generateStagePlan(request, this.pool, this.router, {
+        stage: 1,
+        globalGoal: request,
+        stageHistory: [],
+        checklist: [],
+        projectId: opts.projectId,
+        level: opts.level,
+        pinnedModel: opts.mainModelId,
+      });
+      if (stage && stage.planned.nodes.length && stage.checklist.length) {
+        return { planned: stage.planned, rolling: true, stageGoal: stage.stage_goal, checklist: stage.checklist, summary: stage.summary };
+      }
+    } catch (e) {
+      this.logger.warn('stage-1 rolling plan failed, falling back to static', { error: String(e).slice(0, 200) });
+    }
+    const planned = await this.planFor(request, opts);
+    return { planned, rolling: false, stageGoal: '', checklist: synthesizeChecklist(request), summary: planned.summary };
   }
 
   async createTask(
@@ -472,9 +514,15 @@ export class Orchestrator {
     }
 
     this.logger.debug('Generating task graph', { description: requestWithContext.slice(0, 100) });
-    const planned = appendMergeNode(stripMergeNodes(await this.planFor(requestWithContext, { level: opts.level, mainModelId: opts.mainModelId, projectId })));
-
+    // M4 滚动规划：rolling 模式下第 1 阶段只规划"可运行最小骨架"+ 全局验收清单；
+    // 静态模式或滚动规划失败回退整图（回退时也带合成清单，保住结构）
+    const stage1 = this.planningMode === 'rolling'
+      ? await this.planStage1(requestWithContext, { level: opts.level, mainModelId: opts.mainModelId, projectId })
+      : { planned: appendMergeNode(stripMergeNodes(await this.planFor(requestWithContext, { level: opts.level, mainModelId: opts.mainModelId, projectId }))), rolling: false, stageGoal: '', checklist: synthesizeChecklist(requestWithContext) };
+    const planned = appendMergeNode(stripMergeNodes(stage1.planned));
     const nodes = planned.nodes.map((n) => newNode(n, taskId));
+    // 阶段 1 的节点 id 记录（阶段闸门时只结算本阶段节点）
+    const stageNodeIds = nodes.filter((n) => n.agent !== 'orchestrator').map((n) => n.id);
 
     this.logger.info('Task created', {
       taskId,
@@ -483,6 +531,8 @@ export class Orchestrator {
       agents: [...new Set(nodes.map((n) => n.agent))],
       level: opts.level,
       mainModelId: opts.mainModelId,
+      rolling: stage1.rolling,
+      checklistItems: stage1.checklist.length,
     });
 
     // plans wait for user review: status stays "planned" until explicitly executed
@@ -496,6 +546,13 @@ export class Orchestrator {
       execution_policy: opts.executionPolicy?.level || opts.executionPolicy?.whitelist_commands ? { level: opts.executionPolicy!.level || 'approve_required', whitelist_commands: opts.executionPolicy!.whitelist_commands } : undefined,
       node_clarify: opts.nodeClarify,
       self_ref: opts.selfRef,
+      rolling: stage1.rolling,
+      stage: 1,
+      stage_count: stage1.rolling ? 1 : 1,
+      stage_goal: stage1.stageGoal,
+      stage_nodes: stageNodeIds,
+      stage_history: [],
+      checklist: stage1.checklist,
     });
     return { graph: planned, level: opts.level };
   }
@@ -901,6 +958,11 @@ export class Orchestrator {
     let result: Record<string, any> = { status: 'failed', error: 'execution did not run' };
     try {
       result = await this.runGraph(taskId, graph, sandbox, policy);
+      // M4 滚动规划阶段闸门：本阶段全绿后由 replanner 基于实际产出决定下一阶段/完成/转人工。
+      // 循环在 execute 内进行以保持车道语义（一次 execute = 一个任务的完整滚动执行）。
+      if (result.status === 'success' && graph.rolling && this.planningMode === 'rolling') {
+        result = await this.rollingStageLoop(taskId, graph, sandbox, policy, result);
+      }
     } catch (error) {
       this.logger.error('Task execution failed', { taskId, error: String(error) });
       result = { status: 'failed', error: `Execution failed: ${error}` };
@@ -1072,6 +1134,122 @@ export class Orchestrator {
       this.logger.warn('Knowledge review deposit failed (non-fatal)', { taskId, error: String(e) });
     }
     return result;
+  }
+
+  // ---------- M4 滚动规划：阶段闸门 ----------
+
+  /** 阶段闸门：结算当前阶段 → replanner 裁定 → 追加下一阶段或声明完成。
+   *  返回值直接作为 execute 的 result（success 继续循环，waiting_* 转人工）。 */
+  private async rollingStageLoop(taskId: string, graph: TaskGraph, sandbox: string, policy: PermissionPolicy, result: Record<string, any>): Promise<Record<string, any>> {
+    for (;;) {
+      // 1) 结算当前阶段历史
+      const stage = graph.stage_count || 1;
+      const stageNodeIds = new Set(graph.stage_nodes || []);
+      const stageNodes = graph.nodes.filter((n) => stageNodeIds.has(n.id) || (!graph.stage_nodes && n.agent !== 'orchestrator'));
+      const summaries = stageNodes
+        .filter((n) => n.status === 'completed' && n.agent !== 'orchestrator')
+        .map((n) => `${n.name}：${(n.result as AgentResult)?.summary || '完成'}`);
+      graph.stage_history = [...(graph.stage_history || []), { stage, goal: graph.stage_goal || '', summaries }].slice(-10);
+      graph.stage_nodes = [];
+
+      // 2) 阶段数上限 → 转人工（防打转）
+      if (stage >= this.rollingMaxStages) {
+        this.logger.warn('rolling stage cap reached', { taskId, stage, max: this.rollingMaxStages });
+        await appendJournal(taskId, 'orchestrator', {
+          role: 'master', kind: 'round',
+          text: `滚动规划已达阶段上限（${this.rollingMaxStages}），转人工裁决`,
+          ts: new Date().toISOString(), node_id: '', node_name: '',
+          meta: { rolling: true, stage_cap: true },
+        });
+        return { ...result, status: 'waiting_approval', stage_cap: true };
+      }
+
+      // 3) replanner 裁定：基于实际产出决定下一阶段或声明完成
+      const decision = await generateStagePlan(graph.description, this.pool, this.router, {
+        stage: stage + 1,
+        globalGoal: graph.description,
+        stageHistory: graph.stage_history,
+        checklist: graph.checklist || [],
+        projectId: graph.project_id,
+        level: graph.level,
+        pinnedModel: graph.main_model_id,
+      });
+      if (!decision) {
+        await appendJournal(taskId, 'orchestrator', {
+          role: 'master', kind: 'round',
+          text: `第 ${stage + 1} 阶段滚动规划失败，转人工裁决`,
+          ts: new Date().toISOString(), node_id: '', node_name: '',
+          meta: { rolling: true, replan_failed: true },
+        });
+        return { ...result, status: 'waiting_approval', replan_failed: true };
+      }
+
+      if (decision.done) {
+        // 完成声明：逐项裁定必须全部 done 且附证据，否则转人工（checklist 未达成禁止声明完成）
+        const results = decision.checklist_results || [];
+        let unmet = 0;
+        for (const item of graph.checklist || []) {
+          const verdict = results.find((r) => r.id === item.id);
+          if (verdict?.done && verdict.evidence) {
+            item.status = 'done';
+            item.evidence = String(verdict.evidence).slice(0, 500);
+          }
+          if (item.status !== 'done') unmet += 1;
+        }
+        await persistGraph(graph);
+        if (unmet > 0) {
+          const unmetItems = (graph.checklist || []).filter((i) => i.status !== 'done').map((i) => `${i.id}. ${i.requirement}`).join('；');
+          await appendJournal(taskId, 'orchestrator', {
+            role: 'master', kind: 'round',
+            text: `完成声明被清单拦截：${unmet} 项未达成（${unmetItems.slice(0, 300)}），转人工裁决`,
+            ts: new Date().toISOString(), node_id: '', node_name: '',
+            meta: { rolling: true, unmet_checklist: unmet },
+          });
+          return { ...result, status: 'waiting_approval', unmet_checklist: unmet };
+        }
+        return result; // 全部达成 → 正常 success 走合并后验收
+      }
+
+      // 4) 追加下一阶段子图并继续执行
+      this.appendStageNodes(graph, decision.planned, decision.stage_goal, decision.checklist);
+      await persistGraph(graph);
+      await emitProgress('stage_started', { task_id: taskId, stage: graph.stage_count, stage_goal: decision.stage_goal });
+      await appendJournal(taskId, 'orchestrator', {
+        role: 'master', kind: 'round',
+        text: `滚动规划：第 ${graph.stage_count} 阶段启动——${decision.stage_goal}（新增 ${decision.planned.nodes.length} 节点）`,
+        ts: new Date().toISOString(), node_id: '', node_name: '',
+        meta: { rolling: true, stage: graph.stage_count },
+      });
+      // 后续阶段继续跑（人类门/取消/失败都由 runGraph 内部守卫处理）
+      result = await this.runGraph(taskId, graph, sandbox, policy);
+      if (result.status !== 'success') return result;
+    }
+  }
+
+  /** 把下一阶段的子图追加进任务图：节点 id 加阶段前缀防冲突，阶段根节点挂到上一阶段的合并节点之后 */
+  private appendStageNodes(graph: TaskGraph, planned: PlannedGraph, stageGoal: string, checklist: ChecklistItem[]): void {
+    const stage = (graph.stage_count || 1) + 1;
+    const prefix = `s${stage}-`;
+    const nodes = planned.nodes.map((n) => newNode({ ...n, id: prefix + n.id }, graph.task_id));
+    const edges: [string, string][] = planned.edges.map(([a, b]) => [prefix + a, prefix + b]);
+    const mergeId = `merge-s${stage}`;
+    nodes.push(newNode({ id: mergeId, name: `${MERGE_NODE_NAME}（阶段${stage}）`, agent: 'orchestrator', complexity: 'simple', reason: `阶段${stage} 产物合并` }, graph.task_id));
+    for (const n of nodes) {
+      if (n.id !== mergeId && n.agent !== 'orchestrator') edges.push([n.id, mergeId]);
+    }
+    // 阶段根节点（阶段内无上游）依赖上一阶段的合并节点
+    const prevMerge = stage === 2 ? 'merge-auto' : `merge-s${stage - 1}`;
+    for (const n of nodes) {
+      if (n.agent !== 'orchestrator' && !edges.some(([, d]) => d === n.id)) edges.push([prevMerge, n.id]);
+    }
+    graph.nodes.push(...nodes);
+    graph.edges.push(...edges);
+    graph.stage_count = stage;
+    graph.stage = stage;
+    graph.stage_goal = stageGoal;
+    graph.stage_nodes = nodes.filter((n) => n.agent !== 'orchestrator').map((n) => n.id);
+    graph.checklist = [...(graph.checklist || []), ...checklist];
+    this.logger.info('rolling stage appended', { taskId: graph.task_id, stage, nodes: planned.nodes.length, checklist: checklist.length });
   }
 
   // ---------- DAG execution ----------
