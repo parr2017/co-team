@@ -23,7 +23,7 @@
             <span v-for="n in t.nodes" :key="n.id" class="tc-node" :class="n.status">{{ n.name }}<i v-if="n.agent && n.agent !== 'orchestrator'">·{{ n.agent }}</i></span>
           </div>
         </div>
-        <span class="tc-enter mono">作战室 →</span>
+        <span class="tc-enter mono">任务频道 →</span>
       </div>
     </div>
 
@@ -63,8 +63,8 @@
             <span v-for="(c, i) in s.changes" :key="i" class="chip">✓ {{ c }}</span>
           </div>
 
-          <!-- 进入作战室 -->
-          <el-button v-if="s.taskId && s.status !== 'idle'" size="small" link type="primary" @click.stop="$emit('open-detail', s.taskId!)">进入作战室 →</el-button>
+          <!-- 进入任务频道 -->
+          <el-button v-if="s.taskId && s.status !== 'idle'" size="small" link type="primary" @click.stop="$emit('open-detail', s.taskId!)">进入任务频道 →</el-button>
         </div>
       </div>
     </div>

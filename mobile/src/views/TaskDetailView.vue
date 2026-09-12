@@ -392,7 +392,7 @@ function nodeIcon(status: string): string {
       </div>
 
       <van-tabs v-model:active="tab" class="tabs" sticky :offset-top="46" line-width="24px">
-        <!-- 作战室：微信聊天页 -->
+        <!-- 任务频道：微信聊天页 -->
         <van-tab title="聊天" name="warroom">
           <div class="warroom">
             <!-- 阶段条：现在到哪一步 -->

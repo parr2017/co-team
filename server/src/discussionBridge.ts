@@ -80,7 +80,7 @@ async function onEvent(envelope: unknown): Promise<void> {
       await postToProjectDiscussions(projectId, `🏁 任务 ${taskId} 最终验收：机审红灯 ${p.failed} 项、待人工 ${p.open} 项（平台：${(p.platforms || []).join('/')}）——详见任务详情`);
       return;
     case 'supervisor_proposal':
-      await postToProjectDiscussions(projectId, `🔔 任务 ${taskId} 有监督者提案待批准——去作战室处理`);
+      await postToProjectDiscussions(projectId, `🔔 任务 ${taskId} 有监督者提案待批准——去任务频道处理`);
       return;
     case 'ask_created': {
       if (String(p.to || '') !== 'user') return;

@@ -1210,7 +1210,7 @@ export class Orchestrator {
     await busSet(key, list.slice(-50));
     await appendJournal(taskId, 'supervisor', {
       role: 'master', kind: 'message',
-      text: '已生成派生修复任务提案——作战室批准后将自动创建并执行',
+      text: '已生成派生修复任务提案——任务频道批准后将自动创建并执行',
       ts: new Date().toISOString(), node_id: '', node_name: '',
       meta: { supervisor: true, proposal_id: proposal.id, proposal_type: 'derive_task' },
     });
@@ -2233,7 +2233,7 @@ export class Orchestrator {
     return depBranches[depBranches.length - 1] || 'coteam/base';
   }
 
-  /** 节点完成后立即固化其分支 diff（含测试修复轮提交），供作战室随时查看，不依赖沙箱存活。 */
+  /** 节点完成后立即固化其分支 diff（含测试修复轮提交），供任务频道随时查看，不依赖沙箱存活。 */
   private async captureNodeDiff(taskId: string, node: TaskNode, sandbox: string): Promise<void> {
     if (!node.branch || !node.branch_base) return;
     try {

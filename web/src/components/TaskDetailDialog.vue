@@ -27,8 +27,8 @@
       </div>
 
       <el-tabs v-model="tab">
-        <!-- 作战室：阶段 + 轨道 + 检视器（成员会话 / 节点详情） -->
-        <el-tab-pane label="作战室" name="warroom">
+        <!-- 任务频道：阶段 + 轨道 + 检视器（成员会话 / 节点详情） -->
+        <el-tab-pane label="任务频道" name="warroom">
           <div class="stage-banner">
             <div class="st-steps">
               <template v-for="(s, i) in STAGE_STEPS" :key="s">
@@ -413,7 +413,7 @@ const events = ref<TaskEvent[]>([]);
 const selectedNodeId = ref('');
 const selectedAgent = ref('');
 const tab = ref('warroom');
-/** 作战室右栏检视器：成员会话 / 节点详情 */
+/** 任务频道右栏检视器：成员会话 / 节点详情 */
 const wrView = ref<'chat' | 'node'>('chat');
 let pollTimer: number | undefined;
 
@@ -736,7 +736,7 @@ async function resolveCommand(c: { id: string; command: string }, approved: bool
   try {
     const r = await api.resolveCommand(props.taskId, c.id, approved);
     if (approved) {
-      ElMessage.success(r.returncode === 0 ? `命令已执行（退出码 0）` : `命令已执行但退出码为 ${r.returncode}，请查看作战室`);
+      ElMessage.success(r.returncode === 0 ? `命令已执行（退出码 0）` : `命令已执行但退出码为 ${r.returncode}，请查看任务频道`);
     } else {
       ElMessage.info('命令已拒绝，未执行');
     }
@@ -964,7 +964,7 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .cl-q { font-size: 12px; color: var(--ct-text); background: var(--ct-panel); border-radius: 4px; padding: 4px 8px; }
 .cl-ops { display: flex; gap: 8px; margin-top: 4px; }
 
-/* ---- 作战室布局 ---- */
+/* ---- 任务频道布局 ---- */
 .warroom { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
 .wr-left, .wr-right { max-height: calc(88vh - 300px); }
 .wr-left { overflow-y: auto; padding-right: 12px; }

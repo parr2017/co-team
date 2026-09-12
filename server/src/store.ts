@@ -239,7 +239,7 @@ export async function appendJournal(taskId: string, agent: string, entry: Journa
   const key = `task:${taskId}:agent:${agent}:journal`;
   const journal = (await busGet<JournalEntry[]>(key)) || [];
   journal.push(entry);
-  // 120 条会在长任务里截断中段会话，作战室回放查案需要完整记录
+  // 120 条会在长任务里截断中段会话，任务频道回放查案需要完整记录
   await busSet(key, journal.slice(-1000));
   // push the delta so chat surfaces stream live instead of polling
   await emitProgress('journal_append', { task_id: taskId, agent, entry });
