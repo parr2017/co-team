@@ -1071,13 +1071,35 @@ export class Orchestrator {
     for (const [src, dst] of graph.edges) upstream.get(dst)?.push(src);
 
     const maxWorkers = Math.max(1, this.pool ? this.pool.totalAvailable() : 2);
+    const inflight = new Set<Promise<void>>();
+    let failedNode: TaskNode | null = null;
 
-    while (!(await isCancelled(taskId))) {
+    // M1 连续调度：节点落地即收尾——STATUS_REPORT 同步、进度广播；失败节点立即 cancelDownstream，
+    // 不再等"整波 Promise.all 跑完"才发现失败（旧波次制下下游白等一个波次）
+    const onNodeSettled = async (node: TaskNode) => {
+      await this.syncStatusReport(taskId, graph, sandbox);
+      await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
+      if (!failedNode && node.status === 'failed') {
+        await this.cancelDownstream(graph, upstream, node.id);
+        failedNode = node;
+      }
+    };
+
+    const launch = (node: TaskNode) => {
+      const p: Promise<void> = this.executeNode(taskId, graph, node, sandbox, maxWorkers, policy)
+        .catch(() => {}) // executeNode 安全包裹保证节点必落终态；此处仅防意外 reject 击穿 race
+        .then(() => onNodeSettled(node));
+      inflight.add(p);
+      void p.finally(() => {
+        inflight.delete(p);
+      });
+    };
+
+    while (!(await isCancelled(taskId)) && !failedNode) {
       const ready = graph.nodes.filter((node) => {
         if (node.status !== 'pending') return false;
         return (upstream.get(node.id) || []).every((dep) => this.statusOf(graph, dep) === 'completed');
       });
-      if (ready.length === 0) break;
 
       const approvals = await getApprovals(taskId);
       const blocked = ready.filter((n) => n.requires_approval && !approvals.includes(n.id));
@@ -1087,11 +1109,11 @@ export class Orchestrator {
         await emitProgress('node_waiting_approval', { task_id: taskId, node_id: node.id, name: node.name });
         notify('approval_required', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」等待人工审批`);
       }
-      if (runnable.length === 0) return { status: 'waiting_approval', changes: [] };
 
-      // improvement 4: document check before execution — agents must read the latest SSOT.
-      // improvement 7: light-level tasks run without the doc pipeline, so no doc check either.
-      if (LEVEL_PROFILES[graph.level ?? 'standard'].docs && this.sandboxEnabled && sandbox !== graph.workspace) {
+      // 就绪即发射：槽位允许就启动，不等"整波就绪"（M1 连续调度——下游完成即刻解锁新节点）
+      if (runnable.length > 0 && LEVEL_PROFILES[graph.level ?? 'standard'].docs && this.sandboxEnabled && sandbox !== graph.workspace) {
+        // improvement 4: launch 前文档一致性检查——agents 必须读到最新 SSOT。
+        // improvement 7: light 级任务不走文档管线，也不检查
         const check = await checkDocs(taskId, sandbox).catch(() => null);
         if (check && !check.ok) {
           this.logger.warn('SSOT doc check restored inconsistent documents', { taskId, restored: check.restored });
@@ -1106,27 +1128,20 @@ export class Orchestrator {
         }
       }
 
-      await Promise.all(runnable.map((node) => this.executeNode(taskId, graph, node, sandbox, maxWorkers, policy)));
-
-      // improvement 4: keep STATUS_REPORT in sync after every execution wave
-      // improvement 6: node transitions are milestones — broadcast progress (throttled)
-      // improvement 7: light-level tasks skip the doc pipeline
-      if (LEVEL_PROFILES[graph.level ?? 'standard'].docs) {
-        try {
-          const done = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').map((n) => n.name);
-          const runningNow = graph.nodes.filter((n) => n.status === 'running' || n.status === 'retrying').map((n) => n.name);
-          const pendingNow = graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name);
-          const docTarget = this.sandboxEnabled && sandbox !== graph.workspace ? sandbox : undefined;
-          await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, done, runningNow, pendingNow), 'orchestrator', docTarget);
-        } catch { /* best effort */ }
+      while (inflight.size < maxWorkers && runnable.length > 0) {
+        launch(runnable.shift()!);
       }
-      await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
 
-      const failed = runnable.find((n) => n.status === 'failed');
-      if (failed) {
-        await this.cancelDownstream(graph, upstream, failed.id);
-        return { status: 'failed', node: failed.id, error: failed.error };
-      }
+      if (inflight.size === 0) break; // 无在飞且无就绪：进入终局守卫（waiting_* / success / cancelled）
+      await Promise.race([...inflight]);
+    }
+
+    // 停止发射后（失败/取消/无就绪），等在飞节点全部落地再进终局守卫，保证状态完整
+    if (inflight.size) await Promise.all([...inflight]);
+
+    if (failedNode) {
+      const failed = failedNode as TaskNode; // 闭包内赋值，TS 流分析不可见
+      return { status: 'failed', node: failed.id, error: failed.error };
     }
 
     if (await isCancelled(taskId)) {
@@ -1166,6 +1181,18 @@ export class Orchestrator {
 
   private statusOf(graph: TaskGraph, nodeId: string): TaskStatus {
     return graph.nodes.find((n) => n.id === nodeId)?.status ?? 'pending';
+  }
+
+  /** M1 连续调度：STATUS_REPORT 同步从"波后"迁到"每节点落地后"调用（best effort）。 */
+  private async syncStatusReport(taskId: string, graph: TaskGraph, sandbox: string): Promise<void> {
+    if (!LEVEL_PROFILES[graph.level ?? 'standard'].docs) return;
+    try {
+      const done = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').map((n) => n.name);
+      const runningNow = graph.nodes.filter((n) => n.status === 'running' || n.status === 'retrying').map((n) => n.name);
+      const pendingNow = graph.nodes.filter((n) => n.status === 'pending').map((n) => n.name);
+      const docTarget = this.sandboxEnabled && sandbox !== graph.workspace ? sandbox : undefined;
+      await writeDoc(taskId, 'STATUS_REPORT', buildStatusReport(graph.description, done, runningNow, pendingNow), 'orchestrator', docTarget);
+    } catch { /* best effort */ }
   }
 
   private async cancelDownstream(graph: TaskGraph, upstream: Map<string, string[]>, failedId: string): Promise<void> {
