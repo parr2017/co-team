@@ -9,6 +9,7 @@ import { Orchestrator } from '../orchestrator/orchestrator';
 import { ModelPool } from '../scheduler';
 import type { TaskQueueManager, QueueSnapshot } from '../taskQueue';
 import { busGet, busKeys, busSet, busDel, getBus } from '../bus';
+import { listAsks, resolveAsk } from '../askGate';
 import { getTaskGraph, listTaskGraphs, listTaskGraphsPaged, persistGraph, saveTaskGraph, deleteTask, listProjects } from '../store';
 import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
@@ -463,6 +464,27 @@ export function createApi(ctx: ApiContext): Hono {
     const { notify } = await import('../notify');
     notify('user_intervened', { task_id: taskId }, `[Co-Team] 用户向任务 ${taskId} 发送介入指示：${message.slice(0, 80)}`);
     return c.json({ status: 'queued', task_id: taskId, intervention_id: item.id, note: '将在 Agent 下一轮对话注入' });
+  });
+
+  // M2 全员实时问答：用户回答 agent 的阻塞式提问（ask_user），等待中的节点立即被唤醒
+  app.post('/api/tasks/:taskId/asks/:askId/answer', async (c) => {
+    const taskId = c.req.param('taskId');
+    const askId = c.req.param('askId');
+    const body = await c.req.json<{ answer?: string }>();
+    const answer = (body.answer || '').trim();
+    if (!answer) throw new HttpError(400, 'answer is required');
+    const asks = await listAsks(taskId);
+    const rec = asks.find((a) => a.id === askId);
+    if (!rec) throw new HttpError(404, 'ask not found');
+    if (rec.status !== 'pending') throw new HttpError(400, `ask already settled (status: ${rec.status})`);
+    const okDone = await resolveAsk(askId, taskId, answer, 'user');
+    if (!okDone) throw new HttpError(409, 'ask is no longer being waited on');
+    return c.json({ ok: true, ask_id: askId, task_id: taskId });
+  });
+
+  app.get('/api/tasks/:taskId/asks', async (c) => {
+    const taskId = c.req.param('taskId');
+    return c.json({ asks: await listAsks(taskId) });
   });
 
   app.post('/api/tasks/:taskId/approve/:nodeId', async (c) => {

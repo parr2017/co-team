@@ -2,6 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { marked } from 'marked';
 import { api, type JournalEntry } from '../api';
+import { showToast } from 'vant';
 import { useDashboard } from '../composables/useDashboard';
 import AgentAvatar from './AgentAvatar.vue';
 
@@ -9,7 +10,7 @@ type Entry = JournalEntry & { agent: string };
 type RenderItem =
   | { t: 'time'; label: string }
   | { t: 'node'; name: string }
-  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc'; entry: Entry; agent: string };
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc' | 'ask' | 'answer'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 
@@ -26,6 +27,32 @@ const { onEvent, onResync, connected } = useDashboard();
 // foreground, re-fetch the journals — live events alone leave the stream stale
 watch(connected, (now, before) => { if (now && !before) void load(); });
 unsubFns.push(onResync(() => { void load(); }));
+
+// M2 实时问答：待回答 ask 集合 + 内联答复
+const answeredAskIds = computed(() => {
+  const ids = new Set<string>();
+  for (const e of entries.value) {
+    if (e.kind === 'answer' && e.meta?.ask_id) ids.add(String(e.meta.ask_id));
+  }
+  return ids;
+});
+const answerDrafts = ref<Record<string, string>>({});
+const answeringAsk = ref('');
+const showAnswerToast = (m: string) => { try { showToast(m); } catch { /* noop */ } };
+async function sendAskAnswer(askId: string) {
+  const text = (answerDrafts.value[askId] || '').trim();
+  if (!text || answeringAsk.value) return;
+  answeringAsk.value = askId;
+  try {
+    await api.answerAsk(props.taskId, askId, text);
+    answerDrafts.value[askId] = '';
+    showAnswerToast('已回答，agent 将继续');
+  } catch (e: any) {
+    showAnswerToast(e?.message || '回答失败');
+  } finally {
+    answeringAsk.value = '';
+  }
+}
 
 const filtered = computed(() =>
   entries.value.filter((e) => {
@@ -296,6 +323,50 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         </div>
       </div>
 
+      <!-- M2 实时提问：agent 阻塞式提问（等待回答时显示内联答复框） -->
+      <div v-else-if="item.t === 'ask'" class="row them">
+        <AgentAvatar :name="item.agent" :size="36" />
+        <div class="them-col">
+          <div class="who-name">
+            {{ item.agent }} · 提问<template v-if="item.entry.meta?.to === 'user' && !answeredAskIds.has(String(item.entry.meta?.ask_id))"><span class="ask-live">等你回答</span></template>
+          </div>
+          <div class="bubble them-b ask-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
+            <div v-if="item.entry.meta?.to === 'user' && !answeredAskIds.has(String(item.entry.meta?.ask_id))" class="ask-answer">
+              <input
+                v-model="answerDrafts[String(item.entry.meta?.ask_id)]"
+                class="ask-input"
+                placeholder="输入回答，agent 将立即继续…"
+                @keydown.enter="sendAskAnswer(String(item.entry.meta?.ask_id))"
+              />
+              <van-button size="small" type="primary" :loading="answeringAsk === String(item.entry.meta?.ask_id)" @click="sendAskAnswer(String(item.entry.meta?.ask_id))">回答</van-button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- M2 实时回答：问答对展示 -->
+      <div v-else-if="item.t === 'answer' && item.entry.meta?.no_answer" class="sys-row">
+        <span class="sys-text">⏱ {{ item.entry.text }}</span>
+      </div>
+      <div v-else-if="item.t === 'answer' && item.entry.meta?.by === 'user'" class="row me">
+        <div class="me-col">
+          <div class="bubble me-b">
+            <div class="b-text md" v-html="md(item.entry.text.replace(/^回答：/, ''))"></div>
+          </div>
+        </div>
+        <AgentAvatar name="master" :size="36" />
+      </div>
+      <div v-else-if="item.t === 'answer'" class="row them">
+        <AgentAvatar :name="String(item.entry.meta?.by || item.agent)" :size="36" />
+        <div class="them-col">
+          <div class="who-name">{{ item.entry.meta?.by || item.agent }} · 回答</div>
+          <div class="bubble them-b answer-b">
+            <div class="b-text md" v-html="md(String(item.entry.text || '').replace(/^.*?回答：/, ''))"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- 协同文档更新卡片：点击弹出阅读器 -->
       <div v-else-if="item.t === 'doc'" class="row them">
         <AgentAvatar :name="item.agent" :size="36" />
@@ -424,6 +495,14 @@ details summary { font-size: 12px; color: var(--text-3); }
 .sys-text.relay { background: rgba(184, 134, 11, 0.85); }
 .direct-tag { font-size: 10px; color: #fff; background: var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
 .bubble.them-b.direct { border: 1px solid var(--accent); box-shadow: 0 0 0 1px rgba(25, 137, 250, 0.25); }
+
+/* M2 实时问答 */
+.ask-live { font-size: 10px; color: #fff; background: var(--warning, #fa8c16); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; animation: ask-pulse 1.6s ease-in-out infinite; }
+@keyframes ask-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.bubble.ask-b { border: 1px solid var(--warning, #fa8c16); box-shadow: 0 0 0 1px rgba(250, 140, 22, 0.2); }
+.ask-answer { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+.ask-input { flex: 1; min-width: 0; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border, #e5e5e5); border-radius: 4px; font-size: 13px; padding: 6px 8px; outline: none; }
+.answer-b { border-left: 3px solid var(--success, #07c160); }
 
 .typing-b { display: flex; align-items: center; gap: 4px; }
 .dot-t { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); animation: bob 1.2s infinite; }

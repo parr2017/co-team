@@ -7,7 +7,8 @@ import type { AgentPlugin, AgentTask } from '../agents';
 import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
 import { runPostMergeAcceptance } from './acceptance';
 import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens } from '../tools';
-import type { KnowledgeToolContext } from '../tools';
+import type { AskBridge, KnowledgeToolContext } from '../tools';
+import { cancelAsks, consumeAskQueue, createAsk, flushAgentAsks, queueAskForAgent, resolveAsk, waitForAnswer, abandonAsk, settleTaskPendingAsks } from '../askGate';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
 import * as gitTool from '../git';
 import { simpleGit } from 'simple-git';
@@ -94,6 +95,8 @@ export interface OrchestratorOptions {
   outputTiers?: { simple: number; normal: number; complex: number };
   /** 缓存优先上下文裁剪配置 */
   context?: ContextConfig;
+  /** M2 阻塞问答：ask 等待超时秒数（缺省 900） */
+  askTimeoutSec?: number;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -247,6 +250,11 @@ export class Orchestrator {
   private slowSuccessMs: number;
   private outputTiers?: { simple: number; normal: number; complex: number };
   private contextCfg: ContextConfig;
+  /** M2 阻塞问答：ask 等待超时（毫秒） */
+  private askTimeoutMs: number;
+  /** M2 实时问答：正在执行 callAgent 的 agent 计数（key: `${taskId}:${agent}`）——
+   *  同名 agent 可并发多 dispatch，收尾清扫只在最后一个 dispatch 结束时触发 */
+  private activeAgents = new Map<string, number>();
   private taskTokens = new Map<string, number>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
@@ -271,6 +279,7 @@ export class Orchestrator {
     this.slowSuccessMs = Math.max(0, (opts.slowSuccessSec ?? 300) * 1000);
     this.outputTiers = opts.outputTiers;
     this.contextCfg = opts.context || { max_prompt_tokens: 16000, workspace_tree_max_chars: 1500, goal_max_chars: 1500 };
+    this.askTimeoutMs = Math.max(5000, (opts.askTimeoutSec ?? 900) * 1000);
     this.selfModGate = opts.selfModGate || {
       enabled: true,
       test_command: 'npm test',
@@ -784,6 +793,8 @@ export class Orchestrator {
     for (const node of graph.nodes) {
       if (node.status !== 'completed') node.status = 'pending';
     }
+    // M2 实时问答：重跑入口把上次运行遗留的 pending ask 落盘（服务重启后内存等待已失）
+    await settleTaskPendingAsks(taskId).catch(() => {});
     // 自指任务物理隔离：在 projects.selfdev_root/<taskId> 的本地克隆中执行，
     // co-team 主副本的 HEAD/分支/工作树零触碰；成果留在克隆里由人审阅并回
     let execWorkspace = workspace;
@@ -1136,7 +1147,9 @@ export class Orchestrator {
       await Promise.race([...inflight]);
     }
 
-    // 停止发射后（失败/取消/无就绪），等在飞节点全部落地再进终局守卫，保证状态完整
+    // 停止发射后立即释放所有阻塞问答（等待者按"任务已停止"收场，不再拖住 drain），
+    // 然后等在飞节点全部落地再进终局守卫，保证状态完整
+    await cancelAsks(taskId, '任务调度已停止').catch(() => {});
     if (inflight.size) await Promise.all([...inflight]);
 
     if (failedNode) {
@@ -2271,6 +2284,9 @@ export class Orchestrator {
     policy: PermissionPolicy = this.policy
   ): Promise<AgentResult> {
     const context = await this.upstreamContext(taskId, node);
+    // M2 实时问答：登记本 agent 在执行中——ask_agent 据此选择"实时投递"还是"图外咨询"
+    const activeKey = `${taskId}:${plugin.name}`;
+    this.activeAgents.set(activeKey, (this.activeAgents.get(activeKey) || 0) + 1);
     // B3a/B3b: recon rounds and visible file list scale with node complexity —
     // complex nodes get more tool rounds and a wider view of the workspace.
     // 轮次预算（g6704zpm 实证上调）：分段读取大文件等"合并侦查"要消耗轮次，
@@ -2649,6 +2665,11 @@ export class Orchestrator {
           availableSkills: picks.map((p) => p.skill.name),
           node_id: node.id,
           node_name: node.name,
+          askBridge: {
+            askUser: (q: string) => this.bridgeAskUser(taskId, node, plugin.name, q),
+            askAgent: (to: string, q: string) => this.bridgeAskAgent(taskId, node, plugin, to, q),
+            answer: (askId: string, c: string) => this.bridgeAnswer(taskId, plugin.name, askId, c),
+          } satisfies AskBridge,
         };
         // 重复调用指针化（缓存优先裁剪）：同工具+同参数再次出现不再读盘回显全文——
         // 既省上下文增量，也让模型看到"结果同上轮"而不是被第二份大体积 JSON 挤爆窗口
@@ -2658,7 +2679,7 @@ export class Orchestrator {
         for (let ti = 0; ti < toolCalls.length; ti++) {
           const t = toolCalls[ti] as Record<string, any>;
           const tName = String(t.tool || '').toLowerCase();
-          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message';
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer';
           const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}`;
           if (!sideEffect && seenToolCalls.has(dedupKey)) {
             positioned[ti] = { tool: t.tool, ok: true, dedup: `与第 ${seenToolCalls.get(dedupKey)} 轮完全相同的调用，结果从略（可信任上轮结果）` };
@@ -2730,6 +2751,20 @@ export class Orchestrator {
         messages.push({ role: 'user', content: `工具执行结果：\n${resultsJson.slice(0, 24000)}\n${resultsNote}\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/${maxRounds} 轮完成，剩余 ${maxRounds - 1 - round} 轮——还需要的侦查请合并：同一轮 tool_calls 数组里放多个 read_file/grep 调用一次拿全，大文件分段读尤其如此，别把轮次耗在单发读取上）` });
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
         await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
+
+        // M2 实时问答：消费投递给本 agent 的提问（ask_agent 实时转交），注入并要求用 answer 工具回答
+        const incomingAsks = await consumeAskQueue(taskId, plugin.name);
+        if (incomingAsks.length) {
+          const lines = incomingAsks.map((q) => `- ask_id=${q.ask_id}（来自 ${q.from}）：${q.question}`).join('\n');
+          messages.push({ role: 'user', content: `## 其他 Agent 的实时提问（下一步必须在 tool_calls 里用 answer 工具回答，ask_id 原样带回）\n${lines}` });
+          await appendJournal(taskId, plugin.name, {
+            role: 'master', kind: 'round',
+            text: `收到 ${incomingAsks.length} 条实时提问（${incomingAsks.map((q) => q.from).join('、')}）`,
+            ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+            meta: { incoming_asks: incomingAsks },
+          });
+          await emitProgress('ask_delivered', { task_id: taskId, node_id: node.id, agent: plugin.name, count: incomingAsks.length });
+        }
 
         // 群聊化 A1：工具轮之间检查用户新插话——执行中可被对话（三分支模板，强制回应）。
         // 插话是低频人为事件，当次尝试前缀缓存作废可接受；其余时刻严格 append-only。
@@ -2839,6 +2874,15 @@ export class Orchestrator {
     } finally {
       record.duration_sec = Math.round((Date.now() - startedAt) / 100) / 10;
       await saveConversation(taskId, node.id, record);
+      // M2 实时问答收场：投递给本 agent 且未回答的 ask 收场——但只在本 agent 的
+      // 最后一个 dispatch 结束时（同名 agent 并发时兄弟还在跑，它还能回答）
+      const remaining = (this.activeAgents.get(activeKey) || 1) - 1;
+      if (remaining <= 0) {
+        this.activeAgents.delete(activeKey);
+        await flushAgentAsks(taskId, plugin.name).catch(() => {});
+      } else {
+        this.activeAgents.set(activeKey, remaining);
+      }
       // 群聊化 A4：本次尝试未成功（失败/异常/取消）→ 已消费的插话回队——
       // 换模型、重试都不吞用户的话；成功时不回队（模型已真实回应）
       if (!attemptSucceeded && consumedForAttempt.length) {
@@ -2856,6 +2900,110 @@ export class Orchestrator {
     if (!parsed) return content.slice(0, 1500);
     return JSON.stringify({ status: parsed.status, summary: parsed.summary, changes: parsed.changes });
   }
+
+  // ---------- M2 全员实时问答：阻塞式 ask 桥 ----------
+
+  private askReasonText(reason?: string): string {
+    if (reason === 'timeout') return '超时未回答（基于合理假设继续，并在 result.assumptions 写明假设）';
+    if (reason === 'cancelled') return '任务已停止，未获得回答';
+    if (reason === 'unanswered') return '对方未回答';
+    return '未获得回答';
+  }
+
+  private async bridgeAskUser(taskId: string, node: TaskNode, agent: string, question: string): Promise<{ answer?: string; noAnswer: boolean; reason?: string }> {
+    const ask = await createAsk({ task_id: taskId, from: agent, to: 'user', question, node_id: node.id, node_name: node.name });
+    // 先注册等待者再广播，杜绝"用户秒答早于 resolver 注册"的竞态
+    const waitP = waitForAnswer(ask.id, taskId, this.askTimeoutMs);
+    await appendJournal(taskId, agent, {
+      role: 'agent', kind: 'ask', text: question,
+      ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+      meta: { ask_id: ask.id, to: 'user' },
+    });
+    notify('ask_user', { task_id: taskId, node_id: node.id, ask_id: ask.id }, `[Co-Team] ${agent} 提问：${question.slice(0, 100)}`);
+    this.logger.info('ask_user waiting', { taskId, nodeId: node.id, agent, askId: ask.id });
+    const r = await waitP;
+    await appendJournal(taskId, agent, {
+      role: 'master', kind: 'answer',
+      text: r.noAnswer ? `（${this.askReasonText(r.reason)}）` : `回答：${r.answer || ''}`,
+      ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+      meta: { ask_id: ask.id, by: r.by || 'user', no_answer: r.noAnswer, question },
+    });
+    await emitProgress('ask_resolved', { task_id: taskId, ask_id: ask.id, from: agent, to: 'user', no_answer: r.noAnswer });
+    return r;
+  }
+
+  private async bridgeAskAgent(taskId: string, node: TaskNode, askerPlugin: AgentPlugin, to: string, question: string): Promise<{ answer?: string; noAnswer: boolean; reason?: string }> {
+    const available = [...this.router.getAvailable().keys()];
+    if (!to || !available.includes(to)) {
+      return { noAnswer: true, reason: `agent ${to || '(空)'} 不存在，可用：${available.join(', ')}` };
+    }
+    const ask = await createAsk({ task_id: taskId, from: askerPlugin.name, to, question, node_id: node.id, node_name: node.name });
+    const waitP = waitForAnswer(ask.id, taskId, this.askTimeoutMs);
+    await appendJournal(taskId, askerPlugin.name, {
+      role: 'agent', kind: 'ask', text: `问 ${to}：${question}`,
+      ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+      meta: { ask_id: ask.id, to },
+    });
+    if ((this.activeAgents.get(`${taskId}:${to}`) || 0) > 0) {
+      // 目标正在执行：投递到其轮间注入队列，它用 answer 工具实时回答
+      await queueAskForAgent(taskId, to, { ask_id: ask.id, from: askerPlugin.name, question });
+      await appendJournal(taskId, askerPlugin.name, {
+        role: 'agent', kind: 'round', text: `提问已实时转交 ${to}（对方执行中）`,
+        ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+        meta: { ask_id: ask.id, delivered: 'live' },
+      });
+    } else {
+      // 目标空闲：图外咨询 dispatch——单次 chat 直接拿专业判断，不动任务图、不占节点
+      await appendJournal(taskId, askerPlugin.name, {
+        role: 'agent', kind: 'round', text: `${to} 空闲，发起临时咨询`,
+        ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+        meta: { ask_id: ask.id, delivered: 'consult' },
+      });
+      const answer = await this.consultAgent(taskId, to, askerPlugin.name, question);
+      if (answer === null) {
+        await abandonAsk(ask.id, taskId, '咨询不可用（无可用模型或模型调用失败）');
+      } else {
+        await resolveAsk(ask.id, taskId, answer, to);
+      }
+    }
+    const r = await waitP;
+    await appendJournal(taskId, askerPlugin.name, {
+      role: 'agent', kind: 'answer',
+      text: r.noAnswer ? `（${this.askReasonText(r.reason)}）` : `${to} 回答：${r.answer || ''}`,
+      ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+      meta: { ask_id: ask.id, by: r.by || to, no_answer: r.noAnswer, question },
+    });
+    await emitProgress('ask_resolved', { task_id: taskId, ask_id: ask.id, from: askerPlugin.name, to, no_answer: r.noAnswer });
+    return r;
+  }
+
+  /** 图外咨询：给某角色 agent 发一个问题、拿一个回答。不建节点、不写图、不占任务分支。 */
+  private async consultAgent(taskId: string, to: string, from: string, question: string): Promise<string | null> {
+    const plugin = this.router.getAvailable().get(to);
+    if (!plugin || !this.pool) return null;
+    const entry = this.pool.selectModel(plugin.tags, 'simple');
+    if (!entry) return null;
+    try {
+      const resp = await chat(entry, [
+        { role: 'system', content: `${plugin.prompt}\n\n## 临时咨询模式\n你正被任务中的同事 agent（${from}）实时咨询。直接回答问题本身：给出具体、可执行的专业判断。不要声称执行了任何操作（你没有任何工具），不要输出 JSON，回答控制在 500 字以内。` },
+        { role: 'user', content: question },
+      ], 4000, 0);
+      const text = resp.content.trim().slice(0, 2000);
+      return text || null;
+    } catch (e) {
+      this.logger.warn('consult dispatch failed', { taskId, to, from, error: String(e) });
+      return null;
+    }
+  }
+
+  private async bridgeAnswer(taskId: string, agent: string, askId: string, content: string): Promise<boolean> {
+    const okDone = await resolveAsk(askId, taskId, content, agent);
+    if (okDone) {
+      await emitProgress('ask_answered_by_agent', { task_id: taskId, ask_id: askId, by: agent });
+    }
+    return okDone;
+  }
+
 
   private async upstreamContext(taskId: string, node: TaskNode): Promise<string> {
     const graph = await getTaskGraph(taskId);

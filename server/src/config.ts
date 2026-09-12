@@ -20,6 +20,8 @@ export interface OrchestrationConfig {
   /** P0-1 self-modification gate: self-referential tasks (workspace = co-team itself)
    *  must pass the repo's own test suite, and meta-facility edits need human approval */
   self_mod_gate?: SelfModGateConfig;
+  /** M2 全员实时问答：阻塞式 ask 等待回答的超时秒数（缺省 900） */
+  ask_timeout_sec?: number;
 }
 
 export interface SelfModGateConfig {
@@ -167,6 +169,8 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       model_wait_timeout_sec: raw.orchestrator?.model_wait_timeout_sec ?? 120,
       // feature: 实施前澄清 — off by default; 'brief' | 'confirm' turn the gate on globally
       node_clarify: ['off', 'brief', 'confirm'].includes(raw.orchestrator?.node_clarify) ? raw.orchestrator.node_clarify : 'off',
+      // M2 全员实时问答：阻塞式 ask 等待回答的超时
+      ask_timeout_sec: raw.orchestrator?.ask_timeout_sec ?? 900,
       self_mod_gate: {
         enabled: raw.orchestrator?.self_mod_gate?.enabled ?? true,
         test_command: raw.orchestrator?.self_mod_gate?.test_command || 'npm test',

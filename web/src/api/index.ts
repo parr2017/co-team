@@ -329,7 +329,7 @@ export interface ProjectMemoryItem {
 
 export interface JournalEntry {
   role: 'master' | 'agent';
-  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc' | 'ask' | 'answer';
   text: string;
   ts: string;
   node_id: string;
@@ -669,6 +669,13 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
+    }),
+  // M2 全员实时问答：回答 agent 的阻塞式提问
+  answerAsk: (taskId: string, askId: string, answer: string) =>
+    request<{ ok: boolean; ask_id: string }>(`/api/tasks/${taskId}/asks/${askId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer }),
     }),
   taskLogs: (id: string) => request<{ task_id: string; logs: Record<string, AgentConversation[]> }>(`/api/tasks/${id}/logs`),
   listAgents: () => request<{ agents: AgentInfo[] }>('/api/agents'),

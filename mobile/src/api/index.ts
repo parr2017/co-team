@@ -106,7 +106,7 @@ export interface ProgressInfo {
 
 export interface JournalEntry {
   role: 'master' | 'agent';
-  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'message' | 'doc' | 'ask' | 'answer';
   text: string;
   ts: string;
   node_id: string;
@@ -344,6 +344,9 @@ export const api = {
   replan: (id: string, feedback: string) => post(`/api/tasks/${id}/replan`, { feedback }),
   interveneTask: (id: string, message: string) =>
     post<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${id}/intervene`, { message }),
+  // M2 全员实时问答：回答 agent 的阻塞式提问
+  answerAsk: (id: string, askId: string, answer: string) =>
+    post<{ ok: boolean; ask_id: string }>(`/api/tasks/${id}/asks/${askId}/answer`, { answer }),
   createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string; profile?: 'simple' | 'expert'; allow_self_ref?: boolean }) =>
     post<{ status: 'created' | 'needs_clarification' | 'pending'; task_id: string; questions?: string[]; summary?: string; graph?: TaskGraph }>('/api/tasks', payload.profile === 'simple'
       ? { ...payload, auto_run: true, plan_async: true, skip_clarification: true }

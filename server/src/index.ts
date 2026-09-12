@@ -132,6 +132,7 @@ async function main(): Promise<void> {
     modelWaitTimeoutSec: config.orchestrator.model_wait_timeout_sec,
     nodeClarify: config.orchestrator.node_clarify,
     selfModGate: config.orchestrator.self_mod_gate,
+    askTimeoutSec: config.orchestrator.ask_timeout_sec,
     projects: config.projects,
     slowSuccessSec: config.llm?.slow_success_sec,
     outputTiers: config.llm?.output_tiers,

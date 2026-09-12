@@ -20,6 +20,15 @@ export interface KnowledgeToolContext {
   availableSkills?: string[];
   node_id?: string;
   node_name?: string;
+  /** M2 全员实时问答：ask/answer 工具的桥（仅任务管线注入；讨论室不注入即天然门控） */
+  askBridge?: AskBridge;
+}
+
+/** 阻塞式问答桥：由 orchestrator 实现（journal/飞书/目标投递都在桥内完成），tools.ts 保持无状态。 */
+export interface AskBridge {
+  askUser(question: string): Promise<{ answer?: string; noAnswer: boolean; reason?: string }>;
+  askAgent(to: string, question: string): Promise<{ answer?: string; noAnswer: boolean; reason?: string }>;
+  answer(askId: string, content: string): Promise<boolean>;
 }
 
 const MAX_FILE_BYTES = 64 * 1024;
@@ -341,7 +350,7 @@ export async function checkPage(rawUrl: string, expect?: string[], timeoutSec = 
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -449,6 +458,51 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
         results.push({ tool: 'send_message', ok: true, to, id: msg.id });
       } catch (e: any) {
         results.push({ tool: 'send_message', ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
+    } else if (name === 'ask_user' || name === 'ask_agent') {
+      // M2 阻塞式问答：仅任务管线可用（无 askBridge 即拒绝——讨论室等场景天然门控）
+      const bridge = knowledgeCtx?.askBridge;
+      if (!bridge) {
+        results.push({ tool: name, ok: false, error: 'ask 仅在任务执行中可用（当前上下文不支持阻塞问答）' });
+        continue;
+      }
+      const question = String(call.question || call.query || call.text || call.content || '').trim().slice(0, 2000);
+      if (!question) {
+        results.push({ tool: name, ok: false, error: 'question 不能为空' });
+        continue;
+      }
+      try {
+        const r = name === 'ask_user'
+          ? await bridge.askUser(question)
+          : await bridge.askAgent(String(call.to || '').trim(), question);
+        results.push({
+          tool: name,
+          ok: !r.noAnswer,
+          ...(r.noAnswer
+            ? { no_answer: true, reason: r.reason, hint: '未获得回答：基于合理假设继续推进，并在 result.assumptions 里写明你采用了什么假设' }
+            : { answer: r.answer }),
+        });
+      } catch (e: any) {
+        results.push({ tool: name, ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
+    } else if (name === 'answer') {
+      // 回答其他 agent 的实时提问（ask_id 来自注入的提问消息）
+      const bridge = knowledgeCtx?.askBridge;
+      if (!bridge) {
+        results.push({ tool: 'answer', ok: false, error: 'answer 仅在任务执行中可用' });
+        continue;
+      }
+      const askId = String(call.ask_id || call.name || call.title || '').trim();
+      const content = String(call.content || call.text || '').trim().slice(0, 2000);
+      if (!askId || !content) {
+        results.push({ tool: 'answer', ok: false, error: 'ask_id 与 content 均不能为空' });
+        continue;
+      }
+      try {
+        const okDone = await bridge.answer(askId, content);
+        results.push({ tool: 'answer', ok: okDone, ...(okDone ? {} : { error: '提问不存在或已收场' }) });
+      } catch (e: any) {
+        results.push({ tool: 'answer', ok: false, error: String(e?.message || e).slice(0, 200) });
       }
     } else {
       results.push({ tool: name, ok: false, error: `tool '${name}' not allowed mid-run` });
