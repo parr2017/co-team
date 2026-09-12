@@ -189,6 +189,8 @@ export interface DiscussionMessage {
   reply_to?: string;
   /** emoji 回应：emoji -> 回应者列表 */
   reactions?: Record<string, string[]>;
+  /** M5.2 任务↔群聊互通：bridge_ask 卡片（task_id+ask_id）等结构化附加信息 */
+  meta?: Record<string, any>;
 }
 
 /** 发用户消息：text 可空但需 react_to；reply_to 做引用回复 */

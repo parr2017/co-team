@@ -37,6 +37,26 @@ function agentStreaming(agent: string): boolean {
 
 // ---------- 消息行模型（与 web DiscussionChat 同构：分组/系统卡片/工具条/引用） ----------
 
+// M5.2 ③：群内直接回答任务的 ask_user 提问
+const answeredAskIds = ref<Set<string>>(new Set());
+const askDrafts = ref<Record<string, string>>({});
+const answeringAsk = ref('');
+async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
+  const text = (askDrafts.value[bridge.ask_id] || '').trim();
+  if (!text || answeringAsk.value) return;
+  answeringAsk.value = bridge.ask_id;
+  try {
+    await api.answerAsk(bridge.task_id, bridge.ask_id, text);
+    answeredAskIds.value = new Set([...answeredAskIds.value, bridge.ask_id]);
+    askDrafts.value[bridge.ask_id] = '';
+    showToast('已回答，agent 将继续执行');
+  } catch (e: any) {
+    showToast(e?.message || '回答失败');
+  } finally {
+    answeringAsk.value = '';
+  }
+}
+
 const GROUP_GAP_MS = 3 * 60 * 1000;
 const TIME_GAP_MS = 10 * 60 * 1000;
 type ChatRow = { type: 'chat'; m: DiscussionMessage; side: 'me' | 'them'; head: boolean; tail: boolean; answered?: boolean; quote?: { who: string; text: string } };
@@ -319,7 +339,21 @@ const showExp = ref(false);
         <div v-if="row.type === 'time'" class="time-divider">{{ row.label }}</div>
 
         <div v-else-if="row.type === 'sys'" class="sys-row">
-          <div v-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
+          <!-- M5.2 ③：任务 ask_user 提问卡片——可在群里直接回答 -->
+          <div v-if="row.m.kind === 'card' && row.m.meta?.bridge_ask" class="sys-card ask-card">
+            <div class="ask-q">{{ row.m.text }}</div>
+            <div v-if="!answeredAskIds.has(String(row.m.meta.bridge_ask.ask_id))" class="ask-row">
+              <input
+                v-model="askDrafts[String(row.m.meta.bridge_ask.ask_id)]"
+                class="ask-input"
+                placeholder="在群里直接回答，agent 将立即继续…"
+                @keydown.enter="sendAskAnswer(row.m.meta.bridge_ask)"
+              />
+              <van-button size="small" type="primary" :loading="answeringAsk === String(row.m.meta.bridge_ask.ask_id)" @click="sendAskAnswer(row.m.meta.bridge_ask)">回答</van-button>
+            </div>
+            <div v-else class="ask-done">✓ 已回答，agent 继续执行中</div>
+          </div>
+          <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
           <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
           <span v-else class="sys-text">{{ row.m.text }}</span>
         </div>
@@ -519,6 +553,12 @@ const showExp = ref(false);
 .sys-text { font-size: 10px; color: #969799; background: rgba(0, 0, 0, 0.05); border-radius: 10px; padding: 3px 10px; max-width: 88%; text-align: center; }
 .sys-notice { font-size: 10px; color: #b0b2b4; font-style: italic; text-align: center; max-width: 88%; }
 .sys-card { font-size: 12px; color: #323233; background: #fff; border: 1px solid #ebedf0; border-radius: 12px; padding: 9px 14px; max-width: 86%; text-align: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05); }
+/* M5.2 ③ ask 提问卡片 */
+.ask-card { text-align: left; max-width: 90%; border-color: #fa8c16; }
+.ask-q { margin-bottom: 8px; white-space: pre-wrap; }
+.ask-row { display: flex; gap: 6px; align-items: center; }
+.ask-input { flex: 1; min-width: 0; background: #f7f8fa; border: 1px solid #ebedf0; border-radius: 4px; font-size: 13px; padding: 6px 8px; outline: none; }
+.ask-done { font-size: 11px; color: #07c160; margin-top: 4px; }
 
 .tool-row { display: flex; padding-left: 40px; margin: 1px 0; }
 .tool-text { font-size: 10px; color: #8a8f94; background: #ebedf0; border-radius: 6px; padding: 2px 8px; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

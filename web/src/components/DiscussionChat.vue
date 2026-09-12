@@ -13,7 +13,21 @@
 
         <!-- 系统：普通小灰条 / notice 更淡 / card 居中卡片 -->
         <div v-else-if="row.type === 'sys'" class="sys-row">
-          <div v-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
+          <!-- M5.2 ③：任务 ask_user 提问卡片——可在群里直接回答 -->
+          <div v-if="row.m.kind === 'card' && row.m.meta?.bridge_ask" class="sys-card ask-card">
+            <div class="ask-q">{{ row.m.text }}</div>
+            <div v-if="!answeredAskIds.has(String(row.m.meta.bridge_ask.ask_id))" class="ask-row">
+              <input
+                v-model="askDrafts[String(row.m.meta.bridge_ask.ask_id)]"
+                class="ask-input"
+                placeholder="在群里直接回答，agent 将立即继续…"
+                @keydown.enter="sendAskAnswer(row.m.meta.bridge_ask)"
+              />
+              <el-button size="small" type="primary" :loading="answeringAsk === String(row.m.meta.bridge_ask.ask_id)" @click="sendAskAnswer(row.m.meta.bridge_ask)">回答</el-button>
+            </div>
+            <div v-else class="ask-done">✓ 已回答，agent 继续执行中</div>
+          </div>
+          <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
           <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
           <span v-else class="sys-text">{{ row.m.text }}</span>
         </div>
@@ -141,11 +155,32 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { marked } from 'marked';
 import type { DiscussionMessage } from '../api';
+import { api } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
 import { agentColor } from '../utils/agentColor';
 import AgentAvatar from './AgentAvatar.vue';
 
 const emit = defineEmits<{ (e: 'member-info', agent: string): void }>();
+
+// M5.2 ③：群内直接回答任务的 ask_user 提问
+const answeredAskIds = ref<Set<string>>(new Set());
+const askDrafts = ref<Record<string, string>>({});
+const answeringAsk = ref('');
+async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
+  const text = (askDrafts.value[bridge.ask_id] || '').trim();
+  if (!text || answeringAsk.value) return;
+  answeringAsk.value = bridge.ask_id;
+  try {
+    await api.answerAsk(bridge.task_id, bridge.ask_id, text);
+    answeredAskIds.value = new Set([...answeredAskIds.value, bridge.ask_id]);
+    askDrafts.value[bridge.ask_id] = '';
+    ElMessage.success('已回答，agent 将继续执行');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '回答失败');
+  } finally {
+    answeringAsk.value = '';
+  }
+}
 
 const { current, busy, thinking, activity, streams, send, react, round, stop, setMode, roles } = useDiscussion();
 
@@ -370,6 +405,13 @@ watch(() => current.value?.id, (id) => {
 .sys-text { font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 10px; padding: 3px 12px; max-width: 85%; text-align: center; }
 .sys-notice { font-size: 10px; color: var(--ct-text3); font-style: italic; opacity: 0.8; }
 .sys-card { font-size: 12px; color: var(--ct-text); background: var(--ct-panel); border: 1px solid var(--ct-border2); border-radius: 10px; padding: 8px 16px; max-width: 80%; text-align: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04); }
+/* M5.2 ③ ask 提问卡片 */
+.ask-card { text-align: left; max-width: 86%; border-color: var(--ct-orange, #fa8c16); }
+.ask-q { margin-bottom: 8px; white-space: pre-wrap; }
+.ask-row { display: flex; gap: 6px; align-items: center; }
+.ask-input { flex: 1; min-width: 0; background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 4px; color: var(--ct-text); font-size: 12px; padding: 5px 8px; outline: none; }
+.ask-input:focus { border-color: var(--ct-accent); }
+.ask-done { font-size: 11px; color: var(--ct-green); margin-top: 4px; }
 
 /* ---------- 工具活动行 ---------- */
 .tool-row { display: flex; padding-left: 44px; margin: 1px 0; }

@@ -158,6 +158,10 @@ async function main(): Promise<void> {
     supervisor.start();
   }
 
+  // M5.2 任务↔群聊互通：任务事件回流讨论流 + ask 提问同步（只读摘要与通知，无写路径）
+  const { initDiscussionBridge } = await import('./discussionBridge');
+  initDiscussionBridge();
+
   // E7: tasks still 'running' at boot have no executor behind them (the previous
   // process died mid-dispatch) — mark them failed so they never zombie.
   const interrupted = await orchestrator.sweepInterruptedTasks();

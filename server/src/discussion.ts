@@ -34,6 +34,7 @@ import { scaffoldProject, initGitOnly } from './scaffold';
 import { applyToolCalls, applyEdits, checkPage } from './tools';
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
+import { discussionTaskDigest } from './discussionBridge';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -82,6 +83,8 @@ export interface DiscussionMessage {
   reply_to?: string;
   /** emoji reactions: emoji -> reactor names */
   reactions?: Record<string, string[]>;
+  /** M5.2 任务↔群聊互通：bridge_ask 卡片（task_id+ask_id）等结构化附加信息 */
+  meta?: Record<string, any>;
 }
 
 export interface DiscussionDeps {
@@ -211,6 +214,11 @@ async function appendMessage(id: string, msg: DiscussionMessage): Promise<Discus
 /** Append a centered system line (status changes, notices). */
 async function appendSystemMessage(id: string, text: string, round?: number, kind?: DiscussionMessage['kind']): Promise<void> {
   await appendMessage(id, { id: newId(), from: 'system', text, ts: new Date().toISOString(), round, kind });
+}
+
+/** M5.2 任务↔群聊互通：任务侧事件以系统通知落进讨论流；meta.bridge_ask 携带可回答的提问卡片。 */
+export async function postTaskNotice(id: string, text: string, meta?: Record<string, any>): Promise<void> {
+  await appendMessage(id, { id: newId(), from: 'system', text, ts: new Date().toISOString(), kind: meta ? 'card' : 'notice', meta });
 }
 
 export async function deleteDiscussion(id: string): Promise<void> {
@@ -360,6 +368,11 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
       const head = dropped ? `（按预算省略最旧 ${dropped} 条，可用 grep/read_file 检索项目文件与知识库）\n` : '';
       parts.push(`# 项目全部经验与记忆（共 ${all.length} 条，最新在后）\n${head}${lines.join('\n')}`);
     }
+    // M5.2 ①：运行中任务速览——群聊成员据此真实回答"进度怎么样"，而不是 grep 猜
+    try {
+      const digest = await discussionTaskDigest(disc.project_id);
+      if (digest) parts.push(`# 运行中任务速览（实时；用户问进度时以此为准，禁止臆测）\n${digest}`);
+    } catch { /* best effort */ }
   } else {
     const query = `${disc.title} ${disc.topic || ''} ${messages.filter((m) => m.from === 'user').slice(-1)[0]?.text || ''}`.trim();
     try {
@@ -762,6 +775,15 @@ async function runSpeakerTurn(
       const line = toolActivityLine(calls, results);
       await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true });
       await emitProgress('discussion_tool', { discussion_id: disc.id, agent, round, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results });
+      // M5.2 ④：同一批工具 ≥2 次失败时提示转任务——讨论的工具面（≤90s 命令、≤80 行小改）有天花板
+      const failedCalls = results.filter((r) => (r as Record<string, any>)?.ok === false).length;
+      if (failedCalls >= 2) {
+        await appendMessage(disc.id, {
+          id: newId(), from: 'system', round,
+          text: `⚙️ ${agent} 本批工具连续失败 ${failedCalls} 次——若超出讨论的工具能力（需要大量改代码、装依赖、跑长任务），建议用 convert_to_project 转任务处理，别在群里硬磨。`,
+          ts: new Date().toISOString(), kind: 'notice',
+        });
+      }
       convo.push({ role: 'assistant', content: res.content });
       convo.push({ role: 'user', content: `## 工具执行结果（第 ${iter + 1} 批）\n${JSON.stringify(results).slice(0, 12000)}\n\n信息足够就用形态 B 发言汇报真实结果；需要继续动手再发形态 A。` });
       continue;
