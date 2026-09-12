@@ -495,6 +495,13 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ proposals: proposals || [] });
   });
 
+  // M5 最终验收报告（平台矩阵 + 逐项机审证据）
+  app.get('/api/tasks/:taskId/acceptance-report', async (c) => {
+    const taskId = c.req.param('taskId');
+    const report = await busGet<Record<string, any>>(`task:acceptance:${taskId}`);
+    return c.json({ report: report || null });
+  });
+
   app.post('/api/tasks/:taskId/proposals/:proposalId/decide', async (c) => {
     const taskId = c.req.param('taskId');
     const proposalId = c.req.param('proposalId');
@@ -562,6 +569,16 @@ export function createApi(ctx: ApiContext): Hono {
           agent: String(proposal.new_node?.agent || ''),
           afterNodeId: String(proposal.after_node_id || graph.nodes[0]?.id || ''),
         });
+      } else if (proposal.type === 'derive_task') {
+        // M5 一键批准全自动派生：创建派生修复任务（继承工作区/项目/经验，rolling 只修缺陷），
+        // planAsync + autoRun → 后台规划完成后自动入队执行（onTaskPlanned 钩子）
+        const created = await ctx.orchestrator.createTask(
+          String(proposal.description || proposal.reason || '派生修复任务'),
+          graph.workspace,
+          graph.project_id,
+          { autoRun: true, planAsync: true, skipClarification: true },
+        );
+        proposal.derived_task_id = created.taskId;
       } else {
         throw new Error(`未知提案类型 ${proposal.type}`);
       }

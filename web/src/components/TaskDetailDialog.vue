@@ -233,6 +233,22 @@
               <div v-else class="mg-empty mono">加载中...</div>
             </div>
 
+            <div v-if="acceptanceReport" class="mg-card">
+              <div class="mg-title mono">ACCEPTANCE · 最终验收报告（平台矩阵 + 机审证据）</div>
+              <div class="mg-body">
+                <div class="mg-line mono">
+                  交付端: {{ (acceptanceReport.platforms || []).join(' / ') }} · E2E: {{ acceptanceReport.e2e?.note }} · 测试命令: {{ acceptanceReport.test_command || '（无）' }}
+                </div>
+                <div v-for="item in acceptanceReport.items" :key="item.id" class="acc-item">
+                  <span class="acc-badge" :class="item.status">{{ item.status === 'done' ? '✓' : item.status === 'failed' ? '✗' : '…' }}</span>
+                  <div class="acc-body">
+                    <div class="acc-req mono">{{ item.requirement }}</div>
+                    <div class="acc-note mono">{{ item.evidence || item.audit_note || (item.evidence_type + ' · 待人工裁决') }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="mg-card">
               <div class="mg-title mono">SUPERVISOR · 监督者提案（待批准）</div>
               <div class="mg-body">
@@ -839,10 +855,12 @@ function fmtTime(ts: string): string {
 
 // M3 监督者提案
 const proposals = ref<any[]>([]);
+const acceptanceReport = ref<any>(null);
 const deciding = ref('');
 async function loadProposals() {
   try {
     proposals.value = (await api.listProposals(props.taskId)).proposals || [];
+    acceptanceReport.value = (await api.acceptanceReport(props.taskId)).report;
   } catch { /* ignore */ }
 }
 async function decideProposal(proposalId: string, approved: boolean) {
@@ -977,6 +995,14 @@ onUnmounted(() => window.clearInterval(pollTimer));
 /* ---- 节点详情 ---- */
 .node-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
 .agent-swap { width: 110px; margin-left: auto; }
+.acc-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; border-bottom: 1px dashed var(--ct-border); }
+.acc-badge { font-weight: 700; flex-shrink: 0; }
+.acc-badge.done { color: var(--ct-green); }
+.acc-badge.failed { color: var(--ct-red); }
+.acc-badge.open { color: var(--ct-orange, #fa8c16); }
+.acc-body { min-width: 0; }
+.acc-req { font-size: 12px; }
+.acc-note { font-size: 11px; opacity: 0.7; word-break: break-all; }
 .proposal-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
 .proposal-info { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .proposal-actions { display: flex; gap: 4px; flex-shrink: 0; }

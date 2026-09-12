@@ -25,11 +25,13 @@ const events = ref<EventEnvelope[]>([]);
 const loadFailed = ref(false);
 // M3 监督者提案
 const proposals = ref<any[]>([]);
+const acceptanceReport = ref<any>(null);
 const deciding = ref('');
 const pendingProposals = computed(() => proposals.value.filter((p) => p.status === 'pending'));
 async function loadProposals() {
   try {
     proposals.value = (await api.listProposals(taskId.value)).proposals || [];
+    acceptanceReport.value = (await api.acceptanceReport(taskId.value)).report;
   } catch { /* ignore */ }
 }
 async function decideProposal(proposalId: string, approved: boolean) {
@@ -434,6 +436,20 @@ function nodeIcon(status: string): string {
               </div>
             </div>
 
+            <div v-if="acceptanceReport" class="wx-group">
+              <div class="wx-cell">
+                <div class="sup-title">最终验收报告 · {{ (acceptanceReport.platforms || []).join('/') }}</div>
+                <div v-for="item in acceptanceReport.items" :key="item.id" class="acc-item">
+                  <span class="acc-badge" :class="item.status">{{ item.status === 'done' ? '✓' : item.status === 'failed' ? '✗' : '…' }}</span>
+                  <div class="acc-body">
+                    <div class="acc-req">{{ item.requirement }}</div>
+                    <div class="acc-note">{{ item.evidence || item.audit_note || (item.evidence_type + ' · 待人工裁决') }}</div>
+                  </div>
+                </div>
+                <div class="acc-note">E2E: {{ acceptanceReport.e2e?.note }}</div>
+              </div>
+            </div>
+
             <div v-if="pendingProposals.length" class="wx-group">
               <div class="wx-cell">
                 <div class="sup-title">监督者提案 · 待批准</div>
@@ -710,6 +726,16 @@ function nodeIcon(status: string): string {
 .ss-state.completed, .ss-state.success { color: var(--green); }
 .ss-state.failed { color: var(--red); }
 .ss-state.waiting_approval { color: var(--accent); }
+
+/* M5 验收报告 */
+.acc-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
+.acc-badge { font-weight: 700; flex-shrink: 0; }
+.acc-badge.done { color: #07c160; }
+.acc-badge.failed { color: #fa5151; }
+.acc-badge.open { color: #fa8c16; }
+.acc-body { min-width: 0; flex: 1; }
+.acc-req { font-size: 12px; }
+.acc-note { font-size: 11px; opacity: 0.7; }
 
 /* M3 监督者提案 */
 .sup-title { font-size: 12px; font-weight: 600; color: #fa8c16; margin-bottom: 6px; }

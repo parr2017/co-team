@@ -347,6 +347,8 @@ export const api = {
   // M2 全员实时问答：回答 agent 的阻塞式提问
   answerAsk: (id: string, askId: string, answer: string) =>
     post<{ ok: boolean; ask_id: string }>(`/api/tasks/${id}/asks/${askId}/answer`, { answer }),
+  // M5 最终验收报告
+  acceptanceReport: (id: string) => request<{ report: any }>(`/api/tasks/${id}/acceptance-report`),
   // M3 监督者提案
   listProposals: (id: string) =>
     request<{ proposals: any[] }>(`/api/tasks/${id}/proposals`),

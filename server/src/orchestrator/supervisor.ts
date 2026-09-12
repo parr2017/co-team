@@ -19,11 +19,15 @@ import type { AgentPlugin } from '../agents';
 export interface SupervisorProposal {
   id: string;
   task_id: string;
-  type: 'retry_failed' | 'cancel_subtree' | 'insert_node';
+  type: 'retry_failed' | 'cancel_subtree' | 'insert_node' | 'derive_task';
   node_id?: string;
   after_node_id?: string;
   new_node?: { name: string; agent: string };
   reason: string;
+  /** derive_task：派生修复任务的缺陷描述（批准后作为新任务 description） */
+  description?: string;
+  /** derive_task 执行后回填 */
+  derived_task_id?: string;
   status: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed';
   created_at: string;
   decided_at?: string;

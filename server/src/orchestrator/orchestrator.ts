@@ -6,7 +6,7 @@ import type { ModelPool, ModelEntry } from '../scheduler';
 import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
 import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
-import { runPostMergeAcceptance } from './acceptance';
+import { runPostMergeAcceptance, runChecklistAudit, detectProjectProfile } from './acceptance';
 import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens } from '../tools';
 import type { AskBridge, KnowledgeToolContext } from '../tools';
 import { cancelAsks, consumeAskQueue, createAsk, flushAgentAsks, queueAskForAgent, resolveAsk, waitForAnswer, abandonAsk, settleTaskPendingAsks } from '../askGate';
@@ -985,7 +985,13 @@ export class Orchestrator {
             const acc = await runPostMergeAcceptance(workspace);
             result.acceptance = acc;
             if (acc.status === 'failed') {
-              throw new Error(`post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`);
+              // M5：滚动任务的最终裁决交给 finalAcceptanceGate（清单机审 + 派生提案），
+              // 这里不提前判死；静态模式保持原有硬失败
+              if (graph.rolling) {
+                this.logger.warn('post-merge acceptance failed (rolling: deferred to final gate)', { taskId });
+              } else {
+                throw new Error(`post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`);
+              }
             }
             if (acc.status === 'no-test-command') {
               this.logger.warn('post-merge acceptance: no test command found', { taskId, workspace });
@@ -1061,11 +1067,20 @@ export class Orchestrator {
         const acc = await runPostMergeAcceptance(workspace);
         result.acceptance = acc;
         if (acc.status === 'failed') {
-          result = { status: 'failed', error: `post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`, changes: result.changes || [] };
+          // M5：滚动任务延迟到最终闸统一裁决
+          if (!graph.rolling) {
+            result = { status: 'failed', error: `post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`, changes: result.changes || [] };
+          }
         } else if (acc.status === 'no-test-command') {
           this.logger.warn('post-merge acceptance: no test command found', { taskId, workspace });
         }
       }
+    }
+
+    // M5 最终验收闸：滚动任务 success 后跑清单机审（构建/单测/E2E 平台矩阵）——
+    // 红灯或降级项 → waiting_approval + 派生任务提案（一键批准全自动派生）；全绿 → success
+    if (result.status === 'success' && graph.rolling) {
+      result = await this.finalAcceptanceGate(taskId, graph, workspace, result);
     }
 
     const status = String(result.status);
@@ -1134,6 +1149,72 @@ export class Orchestrator {
       this.logger.warn('Knowledge review deposit failed (non-fatal)', { taskId, error: String(e) });
     }
     return result;
+  }
+
+  // ---------- M5 最终验收闸 ----------
+
+  private async finalAcceptanceGate(taskId: string, graph: TaskGraph, workspace: string, result: Record<string, any>): Promise<Record<string, any>> {
+    const checklist = graph.checklist || [];
+    const audit = await runChecklistAudit(workspace, checklist, 240);
+    graph.checklist = audit.items.map(({ id, requirement, evidence_type, target_platform, target, status, evidence, stage, audit_note }) => ({ id, requirement, evidence_type, target_platform, target, status, evidence, stage, audit_note } as any));
+    await persistGraph(graph);
+    const profile = detectProjectProfile(workspace);
+    const failedItems = audit.items.filter((i) => i.status === 'failed');
+    const openItems = audit.items.filter((i) => i.status !== 'done');
+    const report = {
+      task_id: taskId,
+      platforms: profile.platforms,
+      e2e: profile.e2e,
+      test_command: profile.testCommand?.command || null,
+      items: audit.items,
+      at: new Date().toISOString(),
+    };
+    await busSet(`task:acceptance:${taskId}`, report);
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master', kind: 'round',
+      text: `最终验收报告：平台[${profile.platforms.join('/')}] 机审红灯 ${failedItems.length} 项、降级/待人工 ${openItems.length} 项、通过 ${audit.items.length - failedItems.length - openItems.length} 项`,
+      ts: new Date().toISOString(), node_id: '', node_name: '',
+      meta: { acceptance_report: true, failed: failedItems.length, open: openItems.length },
+    });
+    await emitProgress('acceptance_report', { task_id: taskId, failed: failedItems.length, open: openItems.length, platforms: profile.platforms });
+    if (failedItems.length || openItems.length) {
+      await this.createDeriveProposal(taskId, graph, failedItems, openItems);
+      const detail = failedItems.length
+        ? `机审红灯：${failedItems.map((i) => `${i.id}.${i.requirement.slice(0, 40)}（${i.evidence || ''}）`).join('；').slice(0, 600)}`
+        : `待人工裁决：${openItems.map((i) => `${i.id}.${i.requirement.slice(0, 40)}（${i.audit_note || '无证据'}）`).join('；').slice(0, 600)}`;
+      return { ...result, status: 'waiting_approval', acceptance_failed: true, acceptance_detail: detail, acceptance_report: report };
+    }
+    return result;
+  }
+
+  /** 验收未过 → 生成派生任务提案：用户一键批准后自动创建只修缺陷的派生任务并全自动执行 */
+  private async createDeriveProposal(taskId: string, graph: TaskGraph, failedItems: { requirement: string; evidence?: string; audit_note?: string }[], openItems: { requirement: string; audit_note?: string }[]): Promise<void> {
+    const key = `task:proposals:${taskId}`;
+    const list = (await busGet<any[]>(key)) || [];
+    if (list.some((x) => x.status === 'pending' && x.type === 'derive_task')) return;
+    const defectLines = [
+      ...failedItems.map((i) => `- [机审红灯] ${i.requirement}：${i.evidence || ''} ${i.audit_note || ''}`),
+      ...openItems.map((i) => `- [待补证据] ${i.requirement}：${i.audit_note || ''}`),
+    ].join('\n').slice(0, 2000);
+    const description = `【派生修复任务·来源 ${taskId}】修复上一任务最终验收未通过项。全局目标：${graph.description.slice(0, 200)}。缺陷清单：\n${defectLines}`;
+    const proposal = {
+      id: Math.random().toString(36).slice(2, 10),
+      task_id: taskId,
+      type: 'derive_task',
+      reason: `最终验收未通过：红灯 ${failedItems.length} 项、待补证据 ${openItems.length} 项`,
+      description,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    };
+    list.push(proposal);
+    await busSet(key, list.slice(-50));
+    await appendJournal(taskId, 'supervisor', {
+      role: 'master', kind: 'message',
+      text: '已生成派生修复任务提案——作战室批准后将自动创建并执行',
+      ts: new Date().toISOString(), node_id: '', node_name: '',
+      meta: { supervisor: true, proposal_id: proposal.id, proposal_type: 'derive_task' },
+    });
+    notify('supervisor_proposal', { task_id: taskId, proposal_id: proposal.id }, `[Co-Team] 派生修复任务提案待批准（任务 ${taskId}）`);
   }
 
   // ---------- M4 滚动规划：阶段闸门 ----------

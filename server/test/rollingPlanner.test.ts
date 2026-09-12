@@ -114,6 +114,8 @@ describe('M4 滚动规划', () => {
   });
 
   it('replanner 返回下一阶段子图：节点追加（s2- 前缀）、挂接上一阶段合并节点、继续执行', async () => {
+    // 机审可过的测试命令（M5 最终闸会跑 unit 清单项）
+    fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({ name: 'x', scripts: { test: 'node -e "process.exit(0)"' } }));
     plannerBehaviors.push(stage1Planner());
     await (orchestrator as any).planAndSave('t-r2', '做一个记账应用', tmp, undefined, { level: 'standard' });
     // 阶段2 计划：追加 2 个节点
