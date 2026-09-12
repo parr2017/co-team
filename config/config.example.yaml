@@ -68,6 +68,18 @@ orchestrator:
       - server/src/orchestrator/
       - skills/
       - agents/
+  # M2 全员实时问答：agent 可用 ask_user/ask_agent 发起阻塞式提问（回答到达前节点挂起等待，
+  # 超时后按假设继续并在 result.assumptions 留痕）。0 以下视为非法，强制回缺省。
+  ask_timeout_sec: 900
+  # M3 监督者：事件驱动 + 周期心跳的有边界处置（催办/汇报/建议），改图类动作只生成提案待人工批准
+  supervisor:
+    enabled: true
+    heartbeat_sec: 600      # 心跳评估周期（秒）；0 = 关闭心跳仅事件驱动
+    min_interval_sec: 120   # 同任务同原因的最小评估间隔（防自激）
+  # M4 滚动规划：rolling（缺省）= 按阶段滚动生成子图+全局验收清单，阶段闸门三出口；
+  # static = 一次性整图（旧行为回退）。rolling_max_stages 防打转，达上限转人工。
+  planning_mode: rolling
+  rolling_max_stages: 5
 # LLM 超时语义重做（2026-09-09，i6efv5h2 复盘）：时长本身不构成失败——
 # 只有 ①连接错误/流无 finish_reason 提前结束 ②持续静默（真停滞）③人工终止 才中止调用。
 # 慢但在吐字的大上下文请求永不被误杀（旧 600s 总超时把"活着生成"当"停滞"绞死）。
