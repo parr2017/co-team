@@ -140,8 +140,17 @@ export class TaskQueueManager {
     const lane = key ? this.lanes.get(key) : undefined;
     if (!key || !lane || lane.running !== taskId) return;
     // waiting_approval / waiting_clarify: the task is paused on a human gate, it keeps
-    // the lane slot; approving/clarifying relaunches it through enqueue() with the slot held
-    if (status === 'waiting_approval' || status === 'waiting_clarify') return;
+    // the lane slot; approving/clarifying relaunches it through enqueue() with the slot held.
+    // M5.1 修正（mv4yq6n0 派生死锁实证）：车道还有排队任务时必须放行——派生修复任务
+    // 与父任务同车道，父任务停在人工门会把孩子永久堵死。父任务已暂停、不写工作区，
+    // 派生任务接手安全；父任务批准恢复时经 enqueue() 重新排队，自然排在派生任务之后。
+    if (status === 'waiting_approval' || status === 'waiting_clarify') {
+      if (!lane.pending.length) return;
+      lane.running = null;
+      this.logger.info('Human-gate task releases lane to queued tasks', { lane: key, taskId, pending: lane.pending.length });
+      this.tryStart(key);
+      return;
+    }
     lane.running = null;
     if (status === 'failed') {
       lane.blocked = true;
