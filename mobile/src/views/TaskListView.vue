@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showToast, showConfirmDialog } from 'vant';
 import { api, statusLabel } from '../api';
+import { useTheme } from '../composables/useTheme';
+import StatusTag from '../components/StatusTag.vue';
 import type { TaskGraph, QueueSnapshot } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import AgentAvatar from '../components/AgentAvatar.vue';
@@ -10,6 +12,7 @@ import AgentAvatar from '../components/AgentAvatar.vue';
 defineOptions({ name: 'TaskListView' });
 
 const router = useRouter();
+const { theme, toggle } = useTheme();
 const { loadTasks } = useDashboard();
 
 const keyword = ref('');
@@ -231,7 +234,14 @@ onUnmounted(() => {
   <div class="page">
     <van-nav-bar title="Co-Team" fixed placeholder>
       <template #right>
-        <van-icon name="plus" size="22" color="#07c160" @click="router.push('/task/new')" />
+        <van-icon
+          :name="theme === 'dark' ? 'bulb-o' : 'lock'"
+          size="20"
+          color="var(--text-2)"
+          style="margin-right: 14px"
+          @click="toggle()"
+        />
+        <van-icon name="plus" size="22" color="var(--ct-accent)" @click="router.push('/task/new')" />
       </template>
     </van-nav-bar>
 
@@ -283,7 +293,7 @@ onUnmounted(() => {
           @load="onLoad"
         >
           <div v-if="!visible.length && finished" class="empty">
-            <van-icon name="chat-o" size="52" class="wx-float" color="var(--text-3)" />
+            <van-icon name="chat-o" size="52" color="var(--text-3)" />
             <div class="empty-title">暂无任务</div>
             <div class="empty-text">点右上角 + 发起第一个任务</div>
           </div>
@@ -311,14 +321,16 @@ onUnmounted(() => {
                     class="s-restart"
                     @click.stop="onRestart(t)"
                   >重启</van-button>
-                  <span
+                  <StatusTag
                     v-if="t.status === 'running' || t.status === 'retrying'"
-                    class="s-pill run wx-pulse"
-                  >执行中</span>
-                  <span v-else-if="t.status === 'queued'" class="s-pill queue">排队中</span>
-                  <span v-else-if="t.status === 'waiting_approval' || t.status === 'clarifying' || t.status === 'planned'" class="s-pill wait">待处理</span>
-                  <span v-else-if="t.status === 'failed'" class="s-pill bad">失败</span>
-                  <span v-else-if="t.status === 'success'" class="s-pill ok">完成</span>
+                    status="running"
+                    label="执行中"
+                    class="wx-pulse"
+                  />
+                  <StatusTag v-else-if="t.status === 'queued'" status="queued" label="排队中" />
+                  <StatusTag v-else-if="t.status === 'waiting_approval' || t.status === 'clarifying' || t.status === 'planned'" :status="t.status" label="待处理" />
+                  <StatusTag v-else-if="t.status === 'failed'" status="failed" label="失败" />
+                  <StatusTag v-else-if="t.status === 'success'" status="success" label="完成" />
                   <span v-if="t.project_id && projectNames[t.project_id]" class="s-proj">{{ projectNames[t.project_id] }}</span>
                 </span>
               </div>
@@ -345,7 +357,7 @@ onUnmounted(() => {
 .session {
   display: flex; gap: 13px;
   padding: 13px 16px 13px 16px;
-  background: linear-gradient(180deg, rgba(17, 26, 40, 0.92), rgba(13, 20, 31, 0.95));
+  background: var(--panel);
   position: relative;
   align-items: center;
   transition: background 0.12s ease;

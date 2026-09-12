@@ -61,7 +61,7 @@ function nodeIcon(status: string): string {
     <van-loading v-if="loading" class="loading" vertical>加载中…</van-loading>
 
     <div v-else-if="error" class="err-state">
-      <van-icon name="warning-o" size="48" color="#ffb454" />
+      <van-icon name="warning-o" size="48" color="var(--yellow)" />
       <div class="err-text">{{ error }}</div>
       <button class="wx-btn err-btn" @click="load">重新加载</button>
     </div>

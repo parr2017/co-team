@@ -113,14 +113,14 @@ function goCreate() {
     <van-nav-bar :title="projectName || '项目'" left-arrow fixed placeholder @click-left="router.back()">
       <template #right>
         <span class="rep-link" @click="router.push('/project/' + projectId + '/report')">成果表</span>
-        <van-icon name="plus" size="22" color="#07c160" @click="goCreate" />
+        <van-icon name="plus" size="22" color="var(--green)" @click="goCreate" />
       </template>
     </van-nav-bar>
 
     <van-loading v-if="loading" class="loading" vertical>加载中…</van-loading>
 
     <div v-else-if="error" class="err-state">
-      <van-icon name="warning-o" size="48" color="#fa9d3b" />
+      <van-icon name="warning-o" size="48" color="var(--yellow)" />
       <div class="err-text">{{ error }}</div>
       <button class="wx-btn err-btn" @click="load">重新加载</button>
     </div>
@@ -210,13 +210,10 @@ function goCreate() {
 .stat-row { display: flex; gap: 8px; margin-bottom: 14px; }
 .stat-item { flex: 1; text-align: center; }
 .stat-num { font-size: 26px; font-weight: 700; color: var(--text); line-height: 1.1; font-variant-numeric: tabular-nums; }
-.stat-item.ok .stat-num { color: var(--green); text-shadow: var(--glow-green); }
-.stat-item.run .stat-num { color: var(--yellow); text-shadow: var(--glow-orange); }
-.stat-item.bad .stat-num { color: var(--red); text-shadow: var(--glow-red); }
 .stat-label { font-size: 12px; color: var(--text-3); margin-top: 3px; }
 .stat-prog { display: flex; align-items: center; gap: 10px; }
 .sp-track { flex: 1; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
-.sp-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #22d3ee, #0369a1); box-shadow: 0 0 8px rgba(34, 211, 238, 0.45); transition: width 0.5s ease; }
+.sp-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.4s ease; }
 .sp-pct { font-size: 13px; font-weight: 600; color: var(--text-2); width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
 .stat-waiting {
   font-size: 13px; color: var(--wx-orange); margin-top: 12px;

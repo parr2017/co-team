@@ -91,7 +91,7 @@ async function submitCreate() {
   <div class="page">
     <van-nav-bar title="项目" fixed placeholder>
       <template #right>
-        <van-icon name="plus" size="22" color="#07c160" @click="openCreate" />
+        <van-icon name="plus" size="22" color="var(--green)" @click="openCreate" />
       </template>
     </van-nav-bar>
 
@@ -100,13 +100,13 @@ async function submitCreate() {
       <van-loading v-if="loading" class="loading" vertical>加载中…</van-loading>
 
       <div v-else-if="error" class="err-state">
-        <van-icon name="warning-o" size="48" color="#fa9d3b" />
+        <van-icon name="warning-o" size="48" color="var(--yellow)" />
         <div class="err-text">{{ error }}</div>
         <button class="wx-btn err-btn" @click="load">重新加载</button>
       </div>
 
       <div v-else-if="!projects.length" class="empty">
-        <van-icon name="apps-o" size="52" class="wx-float" color="var(--text-3)" />
+        <van-icon name="apps-o" size="52" color="var(--text-3)" />
         <div class="empty-title">暂无项目</div>
         <div class="empty-text">点右上角 + 创建第一个项目</div>
       </div>
@@ -180,7 +180,7 @@ async function submitCreate() {
 
 .p-icon {
   position: relative; width: 46px; height: 46px; border-radius: 11px;
-  background: linear-gradient(145deg, #26e0fb, #0284c7);
+  background: linear-gradient(145deg, var(--accent), var(--accent));
   color: #04121d; display: flex; align-items: center; justify-content: center;
   font-size: 19px; font-weight: 800; flex-shrink: 0;
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -188,13 +188,13 @@ async function submitCreate() {
   overflow: visible;
 }
 .p-icon.running {
-  background: linear-gradient(145deg, #ffcf87, #ff9a3d);
-  box-shadow: var(--glow-orange);
+  background: linear-gradient(145deg, var(--yellow), var(--yellow));
+  
 }
 .p-dot {
   position: absolute; top: -2px; right: -2px; width: 10px; height: 10px;
   border-radius: 50%; background: var(--red);
-  box-shadow: var(--glow-red);
+  
   animation: wx-pulse 1.6s ease-in-out infinite;
 }
 .p-body { flex: 1; min-width: 0; }
@@ -202,7 +202,7 @@ async function submitCreate() {
 .p-sub { font-size: 12.5px; color: var(--text-2); margin-bottom: 7px; }
 .p-prog { display: flex; align-items: center; gap: 8px; }
 .p-track { flex: 1; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
-.p-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #22d3ee, #0369a1); box-shadow: 0 0 8px rgba(34, 211, 238, 0.45); transition: width 0.5s ease; }
+.p-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), #0369a1); box-shadow: 0 0 8px rgba(34, 211, 238, 0.45); transition: width 0.5s ease; }
 .p-pct { font-size: 12px; font-weight: 600; color: var(--text-2); width: 36px; text-align: right; }
 
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0; }

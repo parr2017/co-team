@@ -186,14 +186,14 @@ async function submit() {
       <div class="wx-caption">任务归属</div>
       <div class="wx-group">
         <div class="wx-cell link" @click="projectsReady ? (showProjectPicker = true) : (projectsFailed && retryProjects())">
-          <van-icon name="apps-o" size="20" color="#07c160" />
+          <van-icon name="apps-o" size="20" color="var(--green)" />
           <span class="cell-label">所属项目</span>
           <span class="cell-value">{{ projectsFailed ? '加载失败 · 点击重试' : projectsReady ? (projectName || '不关联项目') : '加载中…' }}</span>
           <van-icon v-if="projectsReady && !projectsFailed" name="arrow" size="14" color="#b2b2b2" />
           <van-loading v-else size="14" />
         </div>
         <div class="wx-cell link" @click="showPicker = true">
-          <van-icon name="folder-o" size="20" color="#07c160" />
+          <van-icon name="folder-o" size="20" color="var(--green)" />
           <span class="cell-label">工作区目录</span>
           <span class="cell-value">{{ workspace || (projectId ? '跟随项目' : '点击选择') }}</span>
           <van-icon name="arrow" size="14" color="#b2b2b2" />
@@ -213,7 +213,7 @@ async function submit() {
         <div class="wx-cell link" @click="simpleMode = !simpleMode">
           <span class="cell-label">简单模式</span>
           <span class="cell-value">{{ simpleMode ? '自动澄清·自动执行·白名单放行' : '点击开启，提交后直接开跑' }}</span>
-          <van-icon v-if="simpleMode" name="success" size="18" color="#07c160" />
+          <van-icon v-if="simpleMode" name="success" size="18" color="var(--green)" />
         </div>
       </div>
 
@@ -228,7 +228,7 @@ async function submit() {
         >
           <span class="cell-label">{{ l.label }}</span>
           <span class="cell-value">{{ l.hint }}</span>
-          <van-icon v-if="level === l.value" name="success" size="18" color="#07c160" />
+          <van-icon v-if="level === l.value" name="success" size="18" color="var(--green)" />
         </div>
       </div>
 
@@ -238,7 +238,7 @@ async function submit() {
         <div class="wx-cell link" @click="allowSelfRef = !allowSelfRef">
           <span class="cell-label">自指任务</span>
           <span class="cell-value">co-team 开发 co-team：隔离克隆执行，不碰主副本</span>
-          <van-icon v-if="allowSelfRef" name="success" size="18" color="#07c160" />
+          <van-icon v-if="allowSelfRef" name="success" size="18" color="var(--green)" />
         </div>
       </div>
 

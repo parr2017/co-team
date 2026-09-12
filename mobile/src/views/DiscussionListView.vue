@@ -158,15 +158,15 @@ async function doCreate() {
 .page-head { padding: 14px 16px 6px; }
 .ph-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .ph-title { font-size: 18px; font-weight: 700; }
-.ph-sub { font-size: 11px; color: #969799; margin-top: 2px; }
-.st { font-size: 11px; color: #969799; }
-.st.converged { color: #ff976a; }
-.st.converted { color: #07c160; }
+.ph-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.st { font-size: 11px; color: var(--text-3); }
+.st.converged { color: var(--yellow); }
+.st.converted { color: var(--green); }
 .pend-tag { margin-left: 6px; }
 .sheet { padding: 16px; }
 .sheet-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
 .sheet-ops { margin-top: 16px; }
 .mem-picker { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0; }
-.mem-chip { font-size: 12px; padding: 3px 10px; border-radius: 12px; border: 1px solid #ebedf0; color: #646566; background: #f7f8fa; }
-.mem-chip.on { border-color: #1989fa; color: #1989fa; background: #ecf5ff; }
+.mem-chip { font-size: 12px; padding: 3px 10px; border-radius: 12px; border: 1px solid var(--border); color: var(--text-2); background: var(--panel-2); }
+.mem-chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 </style>

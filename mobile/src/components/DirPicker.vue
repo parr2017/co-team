@@ -68,14 +68,14 @@ watch(
       </div>
       <div v-if="fsPath" class="fs-path">{{ fsPath }}</div>
       <div v-if="fsParent" class="wx-cell link fs-up" @click="goUp">
-        <van-icon name="arrow-up" size="16" color="#07c160" />
+        <van-icon name="arrow-up" size="16" color="var(--green)" />
         <span class="cell-label">返回上级</span>
       </div>
       <van-loading v-if="fsLoading" class="fs-loading" />
       <div v-else class="fs-list">
         <div class="wx-group fs-inline-group">
           <div v-for="s in fsShortcuts" :key="s.path" class="wx-cell link" @click="loadFs(s.path)">
-            <van-icon name="star-o" size="18" color="#fa9d3b" />
+            <van-icon name="star-o" size="18" color="var(--yellow)" />
             <span class="cell-label">{{ s.name }}</span>
           </div>
           <div
@@ -85,9 +85,9 @@ watch(
             :class="{ chosen: d.path === fsPath }"
             @click="enterDir(d)"
           >
-            <van-icon name="folder-o" size="18" color="#07c160" />
+            <van-icon name="folder-o" size="18" color="var(--green)" />
             <span class="cell-label">{{ d.name }}</span>
-            <van-icon v-if="d.path === fsPath" name="success" size="16" color="#07c160" />
+            <van-icon v-if="d.path === fsPath" name="success" size="16" color="var(--green)" />
           </div>
         </div>
         <div v-if="!fsDirs.length && !fsShortcuts.length" class="fs-empty">无子目录</div>

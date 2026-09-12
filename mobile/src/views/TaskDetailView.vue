@@ -476,7 +476,7 @@ function nodeIcon(status: string): string {
                 <van-icon
                   :name="nodeIcon(n.status)"
                   :size="18"
-                  :color="n.status === 'completed' ? '#07c160' : n.status === 'failed' ? '#fa5151' : '#b2b2b2'"
+                  :color="n.status === 'completed' ? 'var(--green)' : n.status === 'failed' ? 'var(--red)' : '#b2b2b2'"
                 />
                 <div class="n-body">
                   <div class="n-name">{{ n.name }}</div>
@@ -581,7 +581,7 @@ function nodeIcon(status: string): string {
     </div>
     <!-- 其他加载失败（网络等）：可重试 -->
     <div v-else-if="loadFailed" class="err-state">
-      <van-icon name="warning-o" size="56" color="#fa9d3b" />
+      <van-icon name="warning-o" size="56" color="var(--yellow)" />
       <div class="err-title">加载失败</div>
       <div class="err-sub">无法连接服务器获取任务详情</div>
       <button class="wx-btn err-btn" @click="loadFailed = false; void refresh()">重新加载</button>
@@ -695,7 +695,6 @@ function nodeIcon(status: string): string {
 
 /* nav right status/取消 */
 .nav-status { font-size: 14px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.nav-status.running { color: var(--red); text-shadow: var(--glow-red); }
 
 .tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
 .tabs :deep(.van-tabs__content) { flex: 1; min-height: 0; }
@@ -706,7 +705,7 @@ function nodeIcon(status: string): string {
 .action-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 10px 16px;
-  background: linear-gradient(90deg, rgba(255,180,84,0.12), rgba(255,180,84,0.05)); border-bottom: 1px solid rgba(255, 180, 84, 0.2);
+  background: var(--ct-yellow-soft); border-bottom: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -732,21 +731,21 @@ function nodeIcon(status: string): string {
 /* M5 验收报告 */
 .acc-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
 .acc-badge { font-weight: 700; flex-shrink: 0; }
-.acc-badge.done { color: #07c160; }
-.acc-badge.failed { color: #fa5151; }
-.acc-badge.open { color: #fa8c16; }
+.acc-badge.done { color: var(--green); }
+.acc-badge.failed { color: var(--red); }
+.acc-badge.open { color: var(--yellow); }
 .acc-body { min-width: 0; flex: 1; }
 .acc-req { font-size: 12px; }
 .acc-note { font-size: 11px; opacity: 0.7; }
 
 /* M3 监督者提案 */
-.sup-title { font-size: 12px; font-weight: 600; color: #fa8c16; margin-bottom: 6px; }
+.sup-title { font-size: 12px; font-weight: 600; color: var(--yellow); margin-bottom: 6px; }
 .sup-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; }
 .sup-reason { font-size: 12px; flex: 1; min-width: 0; }
 .sup-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .ss-count { font-size: 11px; color: var(--text-3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .ss-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
-.ss-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, #22d3ee, #0369a1); transition: width 0.5s ease; }
+.ss-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.4s ease; }
 .ss-fill.failed { background: var(--red); }
 .member-strip {
   display: flex; gap: 18px; overflow-x: auto;
@@ -764,7 +763,7 @@ function nodeIcon(status: string): string {
   position: absolute; top: 1px; right: 7px;
   width: 9px; height: 9px; border-radius: 50%;
   background: var(--yellow);
-  box-shadow: var(--glow-orange);
+  
   animation: wx-pulse 1.6s ease-in-out infinite;
 }
 .no-members {
@@ -776,7 +775,7 @@ function nodeIcon(status: string): string {
 .prog-cell { gap: 10px; }
 .prog-label { font-size: 13px; color: var(--text-2); flex-shrink: 0; font-weight: 500; }
 .prog-track { flex: 1; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
-.prog-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #22d3ee, #0369a1); box-shadow: 0 0 8px rgba(34, 211, 238, 0.45); transition: width 0.5s ease; }
+.prog-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.4s ease; }
 .prog-num { font-size: 13px; font-weight: 600; color: var(--text-2); width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 
 .node-cell { flex-wrap: wrap; align-items: center; padding: 14px 16px; }

@@ -1,92 +1,137 @@
-/* Co-Team mobile — TECH OPS-CONSOLE skin.
-   Deep-space canvas, neon-cyan single accent, glass panels, glow states.
-   Dark-only by design: a mission-control surface you watch for hours. */
+/* Co-Team mobile — Enterprise console theme.
+   双主题（dark 默认 / html.light 切换），token 与 web 端 --ct-* 同源。
+   设计纪律：低饱和语义色、平面 1px 边框、4/8/12px 圆角、无发光、无装饰渐变。 */
 
 :root {
-  /* canvas & surfaces */
-  --bg: #0a0f16;
-  --panel: #111a28;
-  --panel-2: #16202e;
-  --panel-3: #1b2736;
-  --border: rgba(148, 163, 184, 0.14);
-  --border-strong: rgba(148, 163, 184, 0.25);
+  /* ---- 语义 token（dark 默认，与 web html.dark 同源） ---- */
+  --ct-bg: #0b0c0e;
+  --ct-panel: #111214;
+  --ct-panel2: #17181b;
+  --ct-border: #26272c;
+  --ct-border2: #33353b;
+  --ct-text: #d7dae0;
+  --ct-text2: #9aa0aa;
+  --ct-text3: #666b75;
+  --ct-accent: #4a8dff;
+  --ct-accent-press: #3a7ae0;
+  --ct-accent-soft: rgba(74, 141, 255, 0.14);
+  --ct-accent-ink: #0a1526;
+  --ct-green: #3fb950;
+  --ct-yellow: #d29922;
+  --ct-red: #e5534b;
+  --ct-green-soft: rgba(63, 185, 80, 0.14);
+  --ct-yellow-soft: rgba(210, 153, 34, 0.14);
+  --ct-red-soft: rgba(229, 83, 75, 0.14);
+  --ct-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
 
-  /* text */
-  --text: #e6edf5;
-  --text-2: #8b9bb0;
-  --text-3: #5a6b82;
+  /* ---- 排版阶梯（全端只允许这 6 档） ---- */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
 
-  /* THE accent: neon cyan */
-  --accent: #22d3ee;
-  --accent-press: #0fb5d6;
-  --accent-soft: rgba(34, 211, 238, 0.12);
-  --accent-ink: #05141f;
+  /* ---- 圆角三档 ---- */
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
 
-  /* status neons */
-  --green: #34f5c5;
-  --yellow: #ffb454;
-  --wx-orange: #ffb454;
-  --red: #ff5d6e;
-  --wx-red: #ff5d6e;
-  --wx-blue: #4cc2ff;
-
-  /* chat */
-  --me-bubble: #0ea5e9;
+  /* ---- 兼容映射（旧变量名 → 新 token，存量引用零破坏） ---- */
+  --bg: var(--ct-bg);
+  --panel: var(--ct-panel);
+  --panel-2: var(--ct-panel2);
+  --panel-3: var(--ct-panel2);
+  --border: var(--ct-border);
+  --border-strong: var(--ct-border2);
+  --text: var(--ct-text);
+  --text-2: var(--ct-text2);
+  --text-3: var(--ct-text3);
+  --accent: var(--ct-accent);
+  --accent-press: var(--ct-accent-press);
+  --accent-soft: var(--ct-accent-soft);
+  --accent-ink: var(--ct-accent-ink);
+  --green: var(--ct-green);
+  --yellow: var(--ct-yellow);
+  --red: var(--ct-red);
+  --wx-orange: var(--ct-yellow);
+  --wx-red: var(--ct-red);
+  --wx-blue: var(--ct-accent);
+  --me-bubble: var(--ct-accent);
   --me-text: #ffffff;
-
-  /* glows & shadows */
-  --glow-accent: 0 0 14px rgba(34, 211, 238, 0.35);
-  --glow-green: 0 0 10px rgba(52, 245, 197, 0.35);
-  --glow-orange: 0 0 10px rgba(255, 180, 84, 0.35);
-  --glow-red: 0 0 10px rgba(255, 93, 110, 0.4);
-  --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  --shadow-2: 0 8px 26px rgba(0, 0, 0, 0.5);
-  --shadow-bubble: 0 2px 10px rgba(0, 0, 0, 0.3);
-
-  --nav-bg: #0d141f;
+  --nav-bg: var(--ct-panel);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --shadow-bubble: 0 1px 4px rgba(0, 0, 0, 0.2);
+  --bubble-me: var(--ct-accent); /* 品牌情感色：我方气泡（对齐 web DiscussionChat） */
 
-  /* ---- Vant theme overrides → tech ---- */
-  --van-primary-color: #22d3ee;
-  --van-success-color: #34f5c5;
-  --van-danger-color: #ff5d6e;
-  --van-warning-color: #ffb454;
-  --van-text-color: #e6edf5;
-  --van-text-color-2: #8b9bb0;
-  --van-text-color-3: #5a6b82;
-  --van-border-color: rgba(148, 163, 184, 0.14);
-  --van-background: #0a0f16;
-  --van-background-2: #111a28;
-  --van-cell-background: #111a28;
-  --van-cell-text-color: #e6edf5;
-  --van-cell-value-color: #8b9bb0;
-  --van-nav-bar-background: #0d141f;
-  --van-nav-bar-title-text-color: #e6edf5;
-  --van-nav-bar-title-font-size: 17px;
+  /* ---- Vant 桥接 ---- */
+  --van-primary-color: var(--ct-accent);
+  --van-success-color: var(--ct-green);
+  --van-danger-color: var(--ct-red);
+  --van-warning-color: var(--ct-yellow);
+  --van-text-color: var(--ct-text);
+  --van-text-color-2: var(--ct-text2);
+  --van-text-color-3: var(--ct-text3);
+  --van-border-color: var(--ct-border);
+  --van-background: var(--ct-bg);
+  --van-background-2: var(--ct-panel);
+  --van-cell-background: var(--ct-panel);
+  --van-cell-text-color: var(--ct-text);
+  --van-cell-value-color: var(--ct-text2);
+  --van-nav-bar-background: var(--ct-panel);
+  --van-nav-bar-title-text-color: var(--ct-text);
+  --van-nav-bar-title-font-size: var(--fs-lg);
   --van-nav-bar-title-font-weight: 600;
   --van-nav-bar-arrow-size: 20px;
-  --van-nav-bar-icon-color: #22d3ee;
+  --van-nav-bar-icon-color: var(--ct-accent);
   --van-nav-bar-height: 46px;
-  --van-tabbar-background: #0d141f;
-  --van-tabbar-item-active-color: #22d3ee;
-  --van-tabbar-item-text-color: #5a6b82;
+  --van-tabbar-background: var(--ct-panel);
+  --van-tabbar-item-active-color: var(--ct-accent);
+  --van-tabbar-item-text-color: var(--ct-text3);
   --van-tabbar-item-icon-size: 23px;
   --van-tabbar-height: 52px;
-  --van-button-primary-background: #22d3ee;
-  --van-button-primary-border-color: #22d3ee;
-  --van-button-border-radius: 10px;
-  --van-search-background: #0a0f16;
-  --van-search-input-background: #111a28;
-  --van-tabs-bottom-bar-color: #22d3ee;
-  --van-tabs-default-color: #8b9bb0;
-  --van-tabs-active-color: #22d3ee;
-  --van-dialog-background: #111a28;
-  --van-dialog-header-font-size: 17px;
-  --van-dialog-confirm-button-text-color: #22d3ee;
-  --van-cell-font-size: 16px;
-  --van-picker-background: #111a28;
-  --van-popup-background: #111a28;
+  --van-button-primary-background: var(--ct-accent);
+  --van-button-primary-border-color: var(--ct-accent);
+  --van-button-border-radius: var(--r-md);
+  --van-search-background: var(--ct-bg);
+  --van-search-input-background: var(--ct-panel2);
+  --van-tabs-bottom-bar-color: var(--ct-accent);
+  --van-tabs-default-color: var(--ct-text2);
+  --van-tabs-active-color: var(--ct-accent);
+  --van-dialog-background: var(--ct-panel);
+  --van-dialog-header-font-size: var(--fs-lg);
+  --van-dialog-confirm-button-text-color: var(--ct-accent);
+  --van-cell-font-size: var(--fs-base);
+  --van-picker-background: var(--ct-panel);
+  --van-popup-background: var(--ct-panel);
+}
+
+/* ---- light 主题 ---- */
+html.light {
+  --ct-bg: #f5f6f8;
+  --ct-panel: #ffffff;
+  --ct-panel2: #eef0f3;
+  --ct-border: #e2e4e8;
+  --ct-border2: #cfd2d8;
+  --ct-text: #191c20;
+  --ct-text2: #494e56;
+  --ct-text3: #878d96;
+  --ct-accent: #2f6fed;
+  --ct-accent-press: #2559c7;
+  --ct-accent-soft: rgba(47, 111, 237, 0.1);
+  --ct-accent-ink: #ffffff;
+  --ct-green: #178a3e;
+  --ct-yellow: #9a6c0a;
+  --ct-red: #cc3f38;
+  --ct-green-soft: rgba(23, 138, 62, 0.1);
+  --ct-yellow-soft: rgba(154, 108, 10, 0.1);
+  --ct-red-soft: rgba(204, 63, 56, 0.1);
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.12);
+  --shadow-bubble: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -104,44 +149,31 @@ html, body {
   text-rendering: optimizeLegibility;
 }
 
-/* tech grid canvas: faint blueprint lines + top aurora */
-body {
-  background-image:
-    radial-gradient(900px 420px at 50% -8%, rgba(34, 211, 238, 0.07), transparent 62%),
-    linear-gradient(rgba(56, 189, 248, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 189, 248, 0.035) 1px, transparent 1px);
-  background-size: auto, 100% 28px, 28px 100%;
-  background-attachment: fixed;
-}
-
 #app { height: 100dvh; display: flex; flex-direction: column; }
 
 input, textarea, select { font-size: 16px; }
 
-.mono { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
+.mono { font-family: var(--ct-mono); }
 
 ::-webkit-scrollbar { width: 0; height: 0; }
 
-/* ================= tech primitives ================= */
+/* ================= 基础组件（平面化） ================= */
 
-/* glass panel with cyan hairline */
 .wx-group {
-  background: linear-gradient(180deg, rgba(22, 32, 48, 0.85), rgba(15, 23, 36, 0.9));
-  border: 1px solid rgba(56, 189, 248, 0.14);
-  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   margin: 8px 16px;
   overflow: hidden;
   box-shadow: var(--shadow-1);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 .wx-cell {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 13px 16px;
+  padding: 12px 16px;
   position: relative;
-  font-size: 16px;
+  font-size: var(--fs-base);
   min-height: 52px;
 }
 .wx-cell + .wx-cell::before {
@@ -152,28 +184,27 @@ input, textarea, select { font-size: 16px; }
   background: var(--border);
   transform: scaleY(0.5);
 }
-.wx-cell.link { cursor: pointer; transition: background 0.12s ease; }
-.wx-cell.link:active { background: rgba(34, 211, 238, 0.06); }
+.wx-cell.link { cursor: pointer; transition: background 0.15s ease; }
+.wx-cell.link:active { background: var(--ct-accent-soft); }
 
-/* neon capsule primary button */
+/* 主按钮：平面、无渐变、无发光 */
 .wx-btn {
   display: block;
   width: 100%;
-  height: 48px;
+  height: 46px;
   border: none;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #26e0fb, #0ea5e9);
+  border-radius: var(--r-md);
+  background: var(--accent);
   color: var(--accent-ink);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  box-shadow: var(--glow-accent);
-  transition: transform 0.1s ease, box-shadow 0.15s ease, opacity 0.12s ease;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  transition: transform 0.12s ease, opacity 0.12s ease;
 }
-.wx-btn:active { transform: scale(0.98); box-shadow: 0 0 8px rgba(34, 211, 238, 0.3); }
-.wx-btn:disabled { opacity: 0.35; box-shadow: none; }
-.wx-btn-plain { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); box-shadow: none; }
-.wx-btn-danger { background: linear-gradient(135deg, #ff7080, #f43f52); color: #1c060a; box-shadow: var(--glow-red); }
+.wx-btn:active { transform: scale(0.97); opacity: 0.9; }
+.wx-btn:disabled { opacity: 0.35; }
+.wx-btn-plain { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.wx-btn-danger { background: var(--red); color: #fff; }
 
 .wx-dot {
   position: absolute;
@@ -181,12 +212,12 @@ input, textarea, select { font-size: 16px; }
   min-width: 9px; height: 9px;
   border-radius: 50%;
   background: var(--red);
-  box-shadow: var(--glow-red);
 }
 
-/* uppercase tracked caption — ops-console flavor */
+/* 大写间距标题（mono 点缀，继承 web 的 section 语言） */
 .wx-caption {
-  font-size: 12px;
+  font-family: var(--ct-mono);
+  font-size: var(--fs-sm);
   color: var(--text-3);
   padding: 14px 20px 6px;
   letter-spacing: 1.2px;
@@ -194,29 +225,20 @@ input, textarea, select { font-size: 16px; }
   font-weight: 600;
 }
 
-/* ============ motion primitives ============ */
+/* ================= motion ================= */
 
 @keyframes wx-pop-in {
   from { opacity: 0; transform: translateY(6px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.wx-pop-in { animation: wx-pop-in 0.22s cubic-bezier(0.22, 0.8, 0.36, 1); }
+.wx-pop-in { animation: wx-pop-in 0.2s cubic-bezier(0.22, 0.8, 0.36, 1); }
 
-@keyframes wx-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
-}
-.wx-float { animation: wx-float 3s ease-in-out infinite; }
-
-/* status breathing with glow */
 @keyframes wx-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  50% { opacity: 0.5; }
 }
 .wx-pulse { animation: wx-pulse 1.6s ease-in-out infinite; }
 
-/* scanline shimmer for progress fills */
-@keyframes wx-scan {
-  0% { background-position: 0% 0; }
-  100% { background-position: 200% 0; }
-}
+/* 统一按压反馈 */
+.pressable:active { transform: scale(0.97); }
+.pressable { transition: transform 0.12s ease; }

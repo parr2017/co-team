@@ -6,25 +6,20 @@ const props = withDefaults(defineProps<{ name: string; size?: number; active?: b
   active: false,
 });
 
-/** tech-console palette: deep gradients with a neon edge per role */
-const ROLE_GRADIENTS: Record<string, string> = {
-  dev: 'linear-gradient(145deg, #0d9488, #0f766e)',
-  test: 'linear-gradient(145deg, #d97706, #b45309)',
-  tester: 'linear-gradient(145deg, #d97706, #b45309)',
-  review: 'linear-gradient(145deg, #7c3aed, #6d28d9)',
-  deploy: 'linear-gradient(145deg, #ea580c, #c2410c)',
-  docs: 'linear-gradient(145deg, #0891b2, #0e7490)',
-  refactor: 'linear-gradient(145deg, #db2777, #be185d)',
+/** M10-B 企业化：低饱和平面角色色（无渐变、无扫描线），色相区分角色、双主题可读 */
+const ROLE_COLORS: Record<string, string> = {
+  dev: '#0f766e',
+  front: '#3b6fd4',
+  test: '#8a6d1d',
+  tester: '#8a6d1d',
+  review: '#6d5bc7',
+  deploy: '#8a6d1d',
+  docs: '#2c7a8c',
+  refactor: '#b05a7e',
+  orchestrator: 'var(--ct-accent)',
 };
 
-const FALLBACK_GRADIENTS = [
-  'linear-gradient(145deg, #0d9488, #0f766e)',
-  'linear-gradient(145deg, #d97706, #b45309)',
-  'linear-gradient(145deg, #7c3aed, #6d28d9)',
-  'linear-gradient(145deg, #0891b2, #0e7490)',
-  'linear-gradient(145deg, #db2777, #be185d)',
-  'linear-gradient(145deg, #0369a1, #075985)',
-];
+const FALLBACK_COLORS = ['#0f766e', '#3b6fd4', '#8a6d1d', '#6d5bc7', '#b05a7e', '#2c7a8c'];
 
 const isMaster = computed(() => props.name === 'orchestrator' || props.name === 'master' || props.name === '主 Agent');
 
@@ -38,14 +33,14 @@ const label = computed(() => {
 });
 
 const background = computed(() => {
-  if (isMaster.value) return 'linear-gradient(145deg, #26e0fb, #0284c7)';
+  if (isMaster.value) return 'var(--ct-accent)';
   const key = props.name.toLowerCase();
-  for (const [frag, grad] of Object.entries(ROLE_GRADIENTS)) {
-    if (key.includes(frag)) return grad;
+  for (const [frag, color] of Object.entries(ROLE_COLORS)) {
+    if (key.includes(frag)) return color;
   }
   let hash = 0;
   for (const ch of props.name || '') hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  return FALLBACK_GRADIENTS[hash % FALLBACK_GRADIENTS.length];
+  return FALLBACK_COLORS[hash % FALLBACK_COLORS.length];
 });
 </script>
 
@@ -62,7 +57,6 @@ const background = computed(() => {
     }"
   >
     <span>{{ label }}</span>
-    <span class="av-scan"></span>
   </div>
 </template>
 
@@ -78,22 +72,12 @@ const background = computed(() => {
   user-select: none;
   letter-spacing: 1px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   transition: transform 0.12s ease;
 }
-.agent-avatar:active { transform: scale(0.92); }
-/* animated scan highlight sweeping across the chip */
-.av-scan {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.14) 50%, transparent 70%);
-  background-size: 200% 100%;
-  animation: wx-scan 3.2s linear infinite;
-  pointer-events: none;
-}
+.agent-avatar:active { transform: scale(0.94); }
 .av-active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), var(--glow-accent);
+  border-color: var(--ct-accent);
+  box-shadow: 0 0 0 1px var(--ct-accent);
 }
 </style>

@@ -135,7 +135,7 @@ function goTaskOf(name: string) {
         </div>
       </template>
       <div v-if="!sections.length" class="empty">
-        <van-icon name="friends-o" size="52" class="wx-float" color="var(--text-3)" />
+        <van-icon name="friends-o" size="52" color="var(--text-3)" />
         <div class="empty-text">加载中…</div>
       </div>
     </div>
@@ -144,8 +144,8 @@ function goTaskOf(name: string) {
 
 <style scoped>
 .page { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
-.conn-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); display: inline-block; box-shadow: var(--glow-green); animation: wx-pulse 1.6s ease-in-out infinite; }
-.conn-dot.off { background: var(--red); box-shadow: var(--glow-red); }
+.conn-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); display: inline-block;  animation: wx-pulse 1.6s ease-in-out infinite; }
+.conn-dot.off { background: var(--red);  }
 
 .book { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 20px; }
 
@@ -160,7 +160,7 @@ function goTaskOf(name: string) {
 .m-dot {
   position: absolute; top: -1px; right: -1px;
   width: 10px; height: 10px; border-radius: 50%;
-  background: var(--yellow); box-shadow: var(--glow-orange);
+  background: var(--yellow); 
   animation: wx-pulse 1.6s ease-in-out infinite;
 }
 .m-body { flex: 1; min-width: 0; }

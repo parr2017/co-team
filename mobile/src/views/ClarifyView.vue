@@ -89,7 +89,7 @@ async function submit(confirm: boolean) {
 
     <!-- 加载失败：可重试的错误态，替代无响应的空白页 -->
     <div v-else-if="loadError" class="err-state">
-      <van-icon name="warning-o" size="56" color="#fa9d3b" />
+      <van-icon name="warning-o" size="56" color="var(--yellow)" />
       <div class="err-title">加载失败</div>
       <div class="err-sub">{{ loadError }}</div>
       <button class="wx-btn err-btn" @click="load">重新加载</button>
