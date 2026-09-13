@@ -358,3 +358,35 @@ body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: 
 .el-table { --el-table-border-color: var(--ct-border); --el-table-bg-color: var(--ct-panel); --el-table-tr-bg-color: var(--ct-panel); --el-table-header-bg-color: var(--ct-panel2); }
 .el-tag { border-radius: 3px !important; font-family: var(--ct-mono); }
 </style>
+
+/* ==== SEC/OBS 后补：企业级 Markdown 排版（.md 全局生效——交付阅读器/文档/聊天气泡） ==== */
+.md { line-height: 1.65; }
+.md h1, .md h2, .md h3, .md h4 {
+  color: var(--ct-text); font-weight: 700; line-height: 1.3;
+  margin: 1.2em 0 0.5em; padding-bottom: 4px;
+  border-bottom: 1px solid var(--ct-border);
+}
+.md h1 { font-size: 1.35em; } .md h2 { font-size: 1.2em; } .md h3 { font-size: 1.08em; border-bottom: none; } .md h4 { font-size: 1em; border-bottom: none; }
+.md > *:first-child { margin-top: 0; }
+.md p { margin: 0.5em 0; }
+.md code {
+  font-family: var(--ct-mono); font-size: 0.88em;
+  background: var(--ct-panel2); border: 1px solid var(--ct-border);
+  border-radius: 4px; padding: 1px 5px;
+}
+.md pre {
+  background: var(--ct-panel2); border: 1px solid var(--ct-border);
+  border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0.6em 0;
+}
+.md pre code { background: none; border: none; padding: 0; font-size: 12px; line-height: 1.5; }
+.md table { border-collapse: collapse; margin: 0.6em 0; width: 100%; font-size: 0.92em; }
+.md th, .md td { border: 1px solid var(--ct-border); padding: 5px 9px; text-align: left; }
+.md th { background: var(--ct-panel2); font-weight: 600; }
+.md tr:nth-child(even) td { background: var(--ct-panel2); }
+.md ul, .md ol { padding-left: 1.4em; margin: 0.5em 0; }
+.md li { margin: 0.25em 0; }
+.md blockquote { border-left: 3px solid var(--ct-accent); margin: 0.6em 0; padding: 2px 12px; color: var(--ct-text2); background: var(--ct-panel2); border-radius: 0 4px 4px 0; }
+.md a { color: var(--ct-accent); }
+.md hr { border: none; border-top: 1px solid var(--ct-border); margin: 1em 0; }
+.md img { max-width: 100%; }
+
