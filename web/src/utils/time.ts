@@ -4,19 +4,21 @@
  * - relativeTime: 刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过一周落日期
  * 服务端 ts 形如 "YYYY-MM-DD HH:mm:ss"（Safari 不认空格分隔），统一先归一为 ISO。
  */
-function toDate(ts?: string | number): Date | null {
+export type TimeInput = string | number | Date;
+
+function toDate(ts?: TimeInput): Date | null {
   if (!ts) return null;
   const d = ts instanceof Date ? ts : new Date(typeof ts === 'string' && ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts);
   return isNaN(d.getTime()) ? null : d;
 }
 
-export function fmtDateTime(ts?: string | number): string {
+export function fmtDateTime(ts?: TimeInput): string {
   const d = toDate(ts);
   if (!d) return ts ? String(ts) : '';
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-export function relativeTime(ts?: string | number): string {
+export function relativeTime(ts?: TimeInput): string {
   const d = toDate(ts);
   if (!d) return ts ? String(ts) : '';
   const diff = Date.now() - d.getTime();

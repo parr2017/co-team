@@ -116,7 +116,6 @@ interface EditableNode {
   _original?: { name: string; agent: string };
 }
 
-const task = computed(() => null as TaskGraph | null); // App supplies graph via loader below
 const graph = ref<TaskGraph | null>(null);
 const editableNodes = ref<EditableNode[]>([]);
 const feedback = ref('');

@@ -184,6 +184,7 @@ async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
 }
 
 const { current, busy, thinking, activity, streams, send, react, round, stop, setMode, roles } = useDiscussion();
+const mode = computed(() => (current.value?.mode as string) || 'manual');
 
 const members = computed(() => current.value?.members || []);
 const converted = computed(() => (current.value?.status || 'discussing') === 'converted');
