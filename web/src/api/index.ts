@@ -558,13 +558,14 @@ export const api = {
   updateTaskGoal: (id: string, content: string) =>
     request(`/api/tasks/${id}/goal`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }),
   taskProgress: (id: string) => request<ProgressInfo>(`/api/tasks/${id}/progress`),
-  listKnowledge: (params: { category?: string; project_id?: string; q?: string; limit?: number; source?: string } = {}) => {
+  listKnowledge: (params: { category?: string; project_id?: string; q?: string; limit?: number; source?: string; stale?: boolean } = {}) => {
     const sp = new URLSearchParams();
     if (params.category) sp.set('category', params.category);
     if (params.project_id) sp.set('project_id', params.project_id);
     if (params.q) sp.set('q', params.q);
     if (params.limit) sp.set('limit', String(params.limit));
     if (params.source) sp.set('source', params.source);
+    if (params.stale) sp.set('stale', '1');
     return request<{ entries: KnowledgeEntry[] }>(`/api/knowledge?${sp}`);
   },
   createKnowledge: (payload: { title: string; content: string; category?: string; project_id?: string; tags?: string[] }) =>
@@ -718,6 +719,10 @@ export const api = {
       body: JSON.stringify({ approved }),
     }),
   taskLogs: (id: string) => request<{ task_id: string; logs: Record<string, AgentConversation[]> }>(`/api/tasks/${id}/logs`),
+  // OBS-1 服务日志（tail）：?date=YYYY-MM-DD&lines=N
+  logs: (date: string, lines: number) => request<{ date: string; total: number; lines: string[] }>(`/api/logs?date=${date}&lines=${lines}`),
+  // M2 阻塞问答列表（此前只有 answer，无列表入口）
+  listAsks: (taskId: string) => request<{ asks: { id: string; from: string; to?: string; question: string; status: string; created_at?: string; resolved_at?: string }[] }>(`/api/tasks/${taskId}/asks`),
   listAgents: () => request<{ agents: AgentInfo[] }>('/api/agents'),
   agentDefinitions: () => request<{ agents: AgentDefinition[] }>('/api/agents/definitions'),
   createAgent: (def: Partial<AgentDefinition>) =>

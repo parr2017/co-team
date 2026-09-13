@@ -34,6 +34,7 @@
             <div class="page-title">工作台</div>
             <div class="page-ops">
               <el-button size="small" @click="roadmapVisible = true">项目路线图</el-button>
+              <el-button size="small" @click="logVisible = true">服务日志</el-button>
               <el-button size="small" @click="knowledgeVisible = true">知识库</el-button>
               <el-button size="small" @click="dailyReportVisible = true">
                 问题报告
@@ -98,6 +99,7 @@
       <DailyReportDialog v-model="dailyReportVisible" @open-task="(tid: string) => { dailyReportVisible = false; detailTaskId = tid; }" />
       <TaskDetailDialog :model-value="detailTaskId !== null" :task-id="detailTaskId || ''" :live-agents="agents" @close="detailTaskId = null" />
       <RoadmapDialog v-model="roadmapVisible" />
+      <LogViewerDialog v-model="logVisible" />
 
       <!-- SEC-P0 Token 门禁：任何 401 全局接管（替代首访/凭据失效的静默空白页） -->
       <el-dialog v-model="tokenGateVisible" title="访问验证" width="420px" append-to-body :close-on-click-modal="false">
@@ -135,6 +137,7 @@ import KnowledgeDialog from './components/KnowledgeDialog.vue';
 import DailyReportDialog from './components/DailyReportDialog.vue';
 import TaskDetailDialog from './components/TaskDetailDialog.vue';
 import RoadmapDialog from './components/RoadmapDialog.vue';
+import LogViewerDialog from './components/LogViewerDialog.vue';
 import ProjectView from './components/ProjectView.vue';
 import GroupDiscussionView from './components/GroupDiscussionView.vue';
 import { useDiscussion } from './composables/useDiscussion';
@@ -148,6 +151,7 @@ const metricsRef = ref<{ refresh: () => void } | null>(null);
 const settingsVisible = ref(false);
 const page = ref<'workbench' | 'tasks' | 'project' | 'discuss'>('workbench');
 const roadmapVisible = ref(false);
+const logVisible = ref(false);
 const reviewTaskId = ref<string | null>(null);
 const detailTaskId = ref<string | null>(null);
 const clarifyTaskId = ref<string | null>(null);

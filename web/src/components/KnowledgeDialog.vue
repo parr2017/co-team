@@ -10,6 +10,7 @@
         <el-input v-model="keyword" size="small" placeholder="语义搜索（关键词 + 相似度）..." style="width: 260px" clearable @keydown.enter="load" @clear="load" />
         <el-button size="small" @click="load">搜索</el-button>
         <el-button size="small" type="primary" @click="openCreate">+ 新增条目</el-button>
+        <el-checkbox v-model="staleOnly" size="small" style="margin-left: 4px" @change="load">只看过期</el-checkbox>
       </div>
 
       <div v-if="!entries.length" class="empty mono">暂无知识条目 — Agent 会在任务中自动沉淀，你也可以手动添加</div>
@@ -76,6 +77,7 @@ defineEmits<{ (e: 'close'): void }>();
 const entries = ref<(KnowledgeEntry & { _open?: boolean })[]>([]);
 const category = ref('');
 const keyword = ref('');
+const staleOnly = ref(false);
 const editVisible = ref(false);
 const editingId = ref('');
 const saving = ref(false);
@@ -83,7 +85,7 @@ const form = ref({ title: '', content: '', category: 'general-tech', project_id:
 
 async function load() {
   try {
-    const d = await api.listKnowledge({ category: category.value || undefined, q: keyword.value.trim() || undefined, limit: 100 });
+    const d = await api.listKnowledge({ category: category.value || undefined, q: keyword.value.trim() || undefined, limit: 100, stale: staleOnly.value || undefined });
     entries.value = d.entries.map((e) => ({ ...e, _open: false }));
   } catch (e: any) {
     ElMessage.error(e.message);

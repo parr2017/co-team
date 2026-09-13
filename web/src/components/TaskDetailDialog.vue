@@ -289,6 +289,37 @@
                   </div>
                 </template>
                 <div v-else class="mg-empty mono">暂无待批准提案（监督者只在发现卡点时提案）</div>
+                <el-collapse v-if="(proposals || []).filter((p) => p.status !== 'pending').length" class="prop-history">
+                  <el-collapse-item :title="`历史提案 (${proposals.filter((p) => p.status !== 'pending').length})`" name="hist">
+                    <div v-for="p in proposals.filter((p) => p.status !== 'pending')" :key="p.id" class="mg-line proposal-row">
+                      <div class="proposal-info">
+                        <el-tag size="small" :type="p.status === 'executed' ? 'success' : 'info'" class="mono">{{ p.status }}</el-tag>
+                        <span class="mono">{{ p.reason || p.type }}</span>
+                      </div>
+                      <span v-if="p.exec_error" class="prop-err mono" :title="p.exec_error">执行出错</span>
+                    </div>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
+            </div>
+
+            <div class="mg-card">
+              <div class="mg-title mono">ASKS · 阻塞问答</div>
+              <div class="mg-body">
+                <template v-if="(asks || []).length">
+                  <div v-for="a in asks" :key="a.id" class="ask-row">
+                    <div class="ask-line">
+                      <el-tag size="small" :type="a.status === 'pending' ? 'warning' : 'success'" class="mono">{{ a.status === 'pending' ? '待回答' : '已解决' }}</el-tag>
+                      <span class="ask-from mono">{{ a.from }}</span>
+                      <span class="ask-q">{{ a.question }}</span>
+                    </div>
+                    <div v-if="a.status === 'pending'" class="ask-answer">
+                      <el-input v-model="askDrafts[a.id]" size="small" placeholder="回答后 agent 继续执行" @keydown.enter="answerAsk(a)" />
+                      <el-button size="small" type="primary" :loading="answering === a.id" @click="answerAsk(a)">回答</el-button>
+                    </div>
+                  </div>
+                </template>
+                <div v-else class="mg-empty mono">暂无阻塞提问</div>
               </div>
             </div>
 
@@ -880,11 +911,36 @@ function fmtTime(ts: string): string {
 const proposals = ref<any[]>([]);
 const acceptanceReport = ref<any>(null);
 const deciding = ref('');
+// M2 阻塞问答集中面板（此前 web 只有 answer 无列表，关页期间的 ask 不可见）
+const asks = ref<any[]>([]);
+const askDrafts = ref<Record<string, string>>({});
+const answering = ref('');
+async function loadAsks() {
+  try {
+    asks.value = (await api.listAsks(props.taskId)).asks || [];
+  } catch { asks.value = []; }
+}
+async function answerAsk(a: any) {
+  const text = (askDrafts.value[a.id] || '').trim();
+  if (!text) return;
+  answering.value = a.id;
+  try {
+    await api.answerAsk(props.taskId, a.id, text);
+    ElMessage.success('已回答，agent 将继续');
+    askDrafts.value[a.id] = '';
+    await loadAsks();
+  } catch (e: any) {
+    ElMessage.error(e.message || '回答失败');
+  } finally {
+    answering.value = '';
+  }
+}
 async function loadProposals() {
   try {
     proposals.value = (await api.listProposals(props.taskId)).proposals || [];
     acceptanceReport.value = (await api.acceptanceReport(props.taskId)).report;
   } catch { /* ignore */ }
+  void loadAsks();
 }
 async function decideProposal(proposalId: string, approved: boolean) {
   deciding.value = proposalId;
@@ -1126,4 +1182,15 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .model-opt .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .model-opt .dot.on { background: var(--ct-green); }
 .model-opt .dot.off { background: var(--ct-red); }
+
+.prop-history { border-top: 1px dashed var(--ct-border); margin-top: 8px; }
+.prop-history :deep(.el-collapse-item__header) { font-size: 11px; color: var(--ct-text3); height: 30px; line-height: 30px; background: transparent; border: none; }
+.prop-history :deep(.el-collapse-item__wrap) { background: transparent; border: none; }
+.prop-err { font-size: 10px; color: var(--ct-red); flex-shrink: 0; }
+.ask-row { padding: 5px 0; border-bottom: 1px dotted var(--ct-border); }
+.ask-row:last-child { border-bottom: none; }
+.ask-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.ask-from { flex-shrink: 0; font-size: 11px; color: var(--ct-accent); }
+.ask-q { flex: 1; min-width: 0; font-size: 12px; color: var(--ct-text2); overflow-wrap: anywhere; }
+.ask-answer { display: flex; gap: 6px; margin-top: 5px; padding-left: 58px; }
 </style>
