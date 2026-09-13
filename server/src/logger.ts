@@ -21,6 +21,7 @@ class Logger {
   private logDir?: string;
   private prefix: string;
   private stream?: fs.WriteStream;
+  private streamDate = '';
 
   constructor(options: LoggerOptions) {
     this.level = LOG_LEVELS[options.level] ?? LOG_LEVELS.info;
@@ -34,22 +35,33 @@ class Logger {
 
   private initFileStream(): void {
     if (!this.logDir) return;
-    
+
     try {
       if (!fs.existsSync(this.logDir)) {
         fs.mkdirSync(this.logDir, { recursive: true });
       }
-      
+
       const date = new Date().toISOString().split('T')[0];
       const logFile = path.join(this.logDir, `co-team-${date}.log`);
-      
+
       this.stream = fs.createWriteStream(logFile, { flags: 'a' });
-      
+
       process.on('exit', () => {
         this.stream?.end();
       });
     } catch (err) {
       console.error('Failed to initialize log file:', err);
+    }
+  }
+
+  /** OBS-1 修复：跨天滚动——长期运行的进程此前一直写启动当天那份文件 */
+  private ensureStream(): void {
+    if (!this.logDir) return;
+    const date = new Date().toISOString().split('T')[0];
+    if (this.streamDate !== date) {
+      this.streamDate = date;
+      this.stream?.end();
+      this.initFileStream();
     }
   }
 
@@ -77,6 +89,7 @@ class Logger {
     }
     
     // 写入文件
+    this.ensureStream();
     if (this.stream) {
       this.stream.write(formattedMessage + '\n');
     }

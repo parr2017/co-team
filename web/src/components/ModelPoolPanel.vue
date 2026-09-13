@@ -15,6 +15,12 @@
         <div class="m-meta mono">{{ m.tags.join(' · ') }}</div>
         <div class="slot-bar"><div class="slot-fill" :style="{ width: Math.round((m.available / m.concurrency) * 100) + '%' }"></div></div>
         <div class="m-slots mono">余量 {{ m.available }}/{{ m.concurrency }} · 活跃 {{ m.active }}</div>
+        <!-- OBS-1 健康细节：失败/慢计数/冷却 -->
+        <div v-if="m.fail_count || m.slow_count || m.cooldown_ms" class="m-health mono">
+          <span v-if="m.fail_count" class="mh-bad">败 {{ m.fail_count }}</span>
+          <span v-if="m.slow_count" class="mh-slow">慢 {{ m.slow_count }}</span>
+          <span v-if="m.cooldown_ms" class="mh-cd">冷却 {{ Math.ceil(m.cooldown_ms / 1000) }}s</span>
+        </div>
       </div>
     </div>
   </div>
@@ -41,4 +47,12 @@ defineEmits<{ (e: 'refresh'): void }>();
 .m-slots { font-size: 10px; color: var(--ct-text3); margin-top: 5px; }
 .muted { color: var(--ct-text3); font-size: 12px; }
 .section-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+</style>
+
+<style scoped>
+/* OBS-1 模型健康细节 */
+.m-health { display: flex; gap: 6px; margin-top: 4px; font-size: 10px; }
+.mh-bad { color: var(--ct-red); }
+.mh-slow { color: var(--ct-yellow); }
+.mh-cd { color: var(--ct-text3); }
 </style>

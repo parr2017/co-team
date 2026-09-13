@@ -78,6 +78,45 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
         ? { text: `${p.agent || ''}汇报完成${summary ? ` — ${summary}` : ''}`, level: 'success', category: 'agent', noisy: false }
         : { text: `${p.agent || ''}汇报失败${summary ? ` — ${summary}` : ''}`, level: 'error', category: 'agent', noisy: false };
     }
+    case 'llm_backoff':
+      return { text: `⏳ ${p.model || '模型'} 限流（429），${p.backoff_sec}s 后自动重试（第 ${p.attempt}/2 次）`, level: 'info', category: 'agent', noisy: true };
+    case 'model_slow':
+      return { text: `🐌 ${p.model} 慢成功（${p.elapsed_sec}s），已降权`, level: 'info', category: 'agent', noisy: false };
+    case 'model_failover':
+      return { text: `↯ ${p.model} 失败，切换下一候选`, level: 'warn', category: 'agent', noisy: false };
+    case 'stage_started':
+      return { text: `📋 第 ${p.stage} 阶段启动：${CLIP(p.stage_goal || '', 60)}`, level: 'accent', category: 'task', noisy: true };
+    case 'acceptance_report':
+      return { text: `🏁 最终验收：红灯 ${p.failed}、待人工 ${p.open}`, level: p.failed > 0 ? 'warn' : 'accent', category: 'task', noisy: true };
+    case 'supervisor_evaluated':
+      return { text: `监督者评估（${p.reason || '心跳'}）：${CLIP(p.assessment || '', 50)}`, level: 'info', category: 'system', noisy: false };
+    case 'supervisor_action':
+      return { text: `监督者动作：${p.action}`, level: 'info', category: 'system', noisy: false };
+    case 'supervisor_proposal':
+      return { text: `🔔 监督者提案待批准（任务 ${p.task_id}）`, level: 'warn', category: 'task', noisy: true };
+    case 'supervisor_proposal_executed':
+      return { text: `提案已批准执行（${p.type}）`, level: 'accent', category: 'task', noisy: false };
+    case 'ask_created':
+      return { text: `❓ ${p.from} 提问：${CLIP(p.question || '', 60)}`, level: 'warn', category: 'task', noisy: true };
+    case 'ask_delivered':
+      return { text: `提问已转交 ${p.agent}`, level: 'info', category: 'task', noisy: false };
+    case 'ask_answered_by_agent':
+      return { text: `ask 已被 ${p.by} 回答`, level: 'info', category: 'task', noisy: false };
+    case 'ask_resolved':
+      return { text: p.no_answer ? '提问超时未答（按假设继续）' : '提问已回答', level: 'info', category: 'task', noisy: false };
+    case 'intervention_injected':
+      return { text: `插话已送达（${p.count} 条）`, level: 'info', category: 'task', noisy: false };
+    case 'intervention_deferred':
+      return { text: `插话已接力到后续节点（${p.count} 条）`, level: 'info', category: 'task', noisy: false };
+    case 'gate_test':
+      return { text: `自修改门禁：${p.passed ? '通过' : '未通过'}`, level: p.passed ? 'info' : 'warn', category: 'task', noisy: false };
+    case 'defect_converted':
+      return { text: '缺陷已转修复任务', level: 'accent', category: 'task', noisy: false };
+    case 'task_plan_failed':
+      return { text: `后台规划失败：${CLIP(p.error || '', 60)}`, level: 'error', category: 'task', noisy: true };
+    case 'node_added':
+      return { text: '计划插入新节点', level: 'info', category: 'task', noisy: false };
+
     case 'knowledge_deposited':
       return { text: `${p.agent || ''}沉淀知识到知识库${p.updated ? '（更新已有条目）' : ''}`, level: 'success', category: 'agent', noisy: false };
 

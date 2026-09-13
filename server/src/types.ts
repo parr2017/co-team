@@ -101,6 +101,8 @@ export interface TaskNode {
   complexity: Complexity;
   requires_approval: boolean;
   needs_human: boolean;
+  /** OBS-1 失败分型：budget/precondition/blocker/capacity/content/system/other */
+  error_type?: string;
   reason?: string;
   /** one-line contribution of this node to the global goal (improvement 9) */
   goal_link?: string;

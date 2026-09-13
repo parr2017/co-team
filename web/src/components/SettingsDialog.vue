@@ -23,6 +23,24 @@
               </div>
             </div>
           </div>
+          <!-- SEC-P0 API Token：服务端 dashboard.token 配置后，此处填入同一值即可通过门禁 -->
+          <div class="gen-row">
+            <div class="gen-info">
+              <div class="gen-title">API Token</div>
+              <div class="gen-desc">服务端 config.yaml 配置了 dashboard.token 时必填——本浏览器访问 API 的门禁凭据（存本地，不落服务端）</div>
+              <div class="gen-ctrl">
+                <el-input
+                  v-model="apiTokenDraft"
+                  size="small"
+                  style="width: 260px"
+                  placeholder="粘贴服务端 dashboard.token"
+                  show-password
+                  @change="saveApiToken"
+                />
+                <el-button size="small" @click="saveApiToken">保存</el-button>
+              </div>
+            </div>
+          </div>
         </div>
       </el-tab-pane>
       <el-tab-pane label="模型池" name="models">
@@ -215,7 +233,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
+import { api, getApiToken, setApiToken, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
 
 // 模型池按「服务接入点」分组编辑：同一 base_url + api_key 下可挂任意多个模型；
 // 存储/接口契约仍是扁平 model_pool（name 为调度唯一键），保存时展平。
@@ -310,6 +328,13 @@ function providerLabel(g: ProviderGroup): string {
 }
 
 // feature: 每日问题报告 —— 界面开关（开启才触发）
+// SEC-P0 API Token（本浏览器凭据）
+const apiTokenDraft = ref(getApiToken());
+function saveApiToken() {
+  setApiToken(apiTokenDraft.value.trim());
+  ElMessage.success('API Token 已保存，立即生效');
+}
+
 const dailyReport = reactive({ enabled: false, hour: 9 });
 const savingDailyReport = ref(false);
 const agents = ref<AgentDefinition[]>([]);

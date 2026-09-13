@@ -21,10 +21,13 @@
               <el-tag size="small" :type="e.category === 'project' ? 'warning' : 'success'">{{ e.category === 'project' ? '项目' : '通用' }}</el-tag>
               <el-tag v-if="e.updated_by === 'user'" size="small" type="info">已人工编辑</el-tag>
               <el-tag v-if="typeof e.score === 'number'" size="small" type="primary" effect="dark" class="mono">相关度 {{ e.score.toFixed(2) }}</el-tag>
+              <!-- OBS-1 经验闭环度量：注入命中次数 -->
+              <el-tag v-if="e.hits" size="small" type="success" effect="plain" class="mono">命中 {{ e.hits }}</el-tag>
             </div>
             <div class="kb-meta mono">
               <span v-if="e.project_id">项目 {{ e.project_id }} ·</span>
               <span>{{ e.source }} · {{ fmtTime(e.updated_at) }}</span>
+              <span v-if="e.last_hit_at">· 最近命中 {{ fmtTime(e.last_hit_at) }}</span>
               <el-tag v-for="t in e.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
             </div>
             <div v-if="e._open" class="kb-content">{{ e.content }}</div>

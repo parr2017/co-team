@@ -500,6 +500,17 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ ok: true, ask_id: askId, task_id: taskId });
   });
 
+  // OBS-1 服务日志查询（tail）：?date=YYYY-MM-DD&lines=N
+  app.get('/api/logs', async (c) => {
+    const date = c.req.query('date') || new Date().toISOString().split('T')[0];
+    const lines = Math.min(800, Math.max(1, Number(c.req.query('lines') || 120)));
+    const file = path.join(PROJECT_ROOT, 'logs', `co-team-${date}.log`);
+    if (!fs.existsSync(file)) return c.json({ date, lines: [] });
+    const content = fs.readFileSync(file, 'utf-8');
+    const all = content.split('\n');
+    return c.json({ date, total: all.length, lines: all.slice(-lines) });
+  });
+
   app.get('/api/tasks/:taskId/asks', async (c) => {
     const taskId = c.req.param('taskId');
     return c.json({ asks: await listAsks(taskId) });
@@ -1579,6 +1590,7 @@ export function createApi(ctx: ApiContext): Hono {
 
   app.get('/api/metrics', async (c) => {
     const agentStats: Record<string, { tasks: number; completed: number; failed: number; retries: number; tokens: number }> = {};
+    const failureTypes: Record<string, number> = {};
     let tasksTotal = 0;
     let tasksSuccess = 0;
     const graphs = await listTaskGraphs();
@@ -1592,7 +1604,13 @@ export function createApi(ctx: ApiContext): Hono {
         if (node.status === 'completed') stat.completed += 1;
         else if (node.status === 'failed') stat.failed += 1;
         stat.retries += node.retry_count || 0;
-        stat.tokens += 0; // per-node token usage lives in conversations
+        // OBS-1：per-agent tokens 从节点结果聚合（此前硬编码 0）
+        stat.tokens += (node.result as any)?.tokens || (node.result as any)?.execution?.tokens || 0;
+        // OBS-1：失败分型聚合
+        if (node.status === 'failed') {
+          const et = (node as any).error_type || 'other';
+          failureTypes[et] = (failureTypes[et] || 0) + 1;
+        }
       }
     }
     const { summarizeQuality } = await import('../metrics');
@@ -1603,6 +1621,8 @@ export function createApi(ctx: ApiContext): Hono {
         success_rate: tasksTotal ? Math.round((tasksSuccess / tasksTotal) * 1000) / 1000 : 0,
       },
       agents: agentStats,
+      // OBS-1：失败分型构成（budget/precondition/blocker/capacity/content/system/other）
+      failure_types: failureTypes,
       // P0-1/P0-2 quality loop: fix rounds, test outcomes, defect closure, delivery consistency
       quality: summarizeQuality(graphs),
       model_pool: ctx.modelPool.getStatus(),

@@ -139,6 +139,30 @@
                   <span v-if="selected.result?.tokens"> · {{ fmtTok(selected.result.tokens || 0) }} tok</span>
                   <el-button v-if="selected.branch" size="small" link type="primary" class="diff-btn" @click="diffNodeId = selected.id">查看代码变更</el-button>
                 </div>
+                <!-- OBS-1 节点执行档案：轮次/工具/技能/知识命中/上下文 一屏可查 -->
+                <div v-if="(selected.result as any)?.execution" class="exec-archive mono">
+                  <div class="ea-title">EXECUTION · 执行档案</div>
+                  <div class="ea-grid">
+                    <span>轮次 {{ (selected.result as any).execution.rounds }}</span>
+                    <span>折叠 {{ (selected.result as any).execution.folded ? '是' : '否' }}</span>
+                    <span v-if="(selected.result as any).execution.duration_sec">耗时 {{ (selected.result as any).execution.duration_sec }}s</span>
+                    <span v-if="(selected.result as any).execution.context">ctx {{ fmtTok((selected.result as any).execution.context?.est_base_tokens || 0) }} est</span>
+                    <span>知识命中 {{ ((selected.result as any).execution.knowledge_hits || []).length }}</span>
+                  </div>
+                  <div v-if="Object.keys((selected.result as any).execution.tools || {}).length" class="ea-row">
+                    工具：
+                    <span v-for="(st, tool) in (selected.result as any).execution.tools" :key="tool" class="ea-chip" :class="{ bad: st.fail > 0 }">
+                      {{ tool }}×{{ st.count }}<template v-if="st.fail"> ({{ st.fail }} 失败)</template>
+                    </span>
+                  </div>
+                  <div v-if="((selected.result as any).execution.skills_indexed || []).length" class="ea-row">
+                    技能索引：{{ ((selected.result as any).execution.skills_indexed || []).join('、') }}
+                  </div>
+                  <div v-if="((selected.result as any).execution.skills_loaded || []).length" class="ea-row">
+                    <span class="ea-loaded">实际加载：</span>{{ ((selected.result as any).execution.skills_loaded || []).join('、') }}
+                  </div>
+                </div>
+                <div v-if="(selected as any).error_type" class="error mono" style="opacity: 0.75">分型 · {{ (selected as any).error_type }}</div>
                 <div v-if="selected.reason" class="reason"><span class="mini-label">规划理由</span>{{ selected.reason }}</div>
                 <div v-if="selected.error" class="error mono">✗ {{ selected.error }}</div>
                 <div v-if="selected.result?.summary" class="summary">{{ selected.result.summary }}</div>
@@ -1014,6 +1038,13 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .n-status.pending, .n-status.planned, .n-status.cancelled, .n-status.queued { color: var(--ct-text3); }
 .n-name { color: var(--ct-text); font-weight: 600; }
 .n-meta { color: var(--ct-text3); font-size: 11px; }
+.exec-archive { margin: 8px 0; padding: 8px 10px; background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 6px; font-size: 11px; color: var(--ct-text2); }
+.ea-title { font-weight: 700; letter-spacing: 1px; color: var(--ct-text3); margin-bottom: 4px; }
+.ea-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
+.ea-row { margin: 2px 0; overflow-wrap: anywhere; }
+.ea-chip { display: inline-block; background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 3px; padding: 0 5px; margin-right: 4px; }
+.ea-chip.bad { color: var(--ct-red); border-color: var(--ct-red); }
+.ea-loaded { color: var(--ct-green); }
 .n-obs { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 4px; padding: 4px 10px; margin-bottom: 8px; }
 .diff-btn { margin-left: auto; }
 .mini-label { display: inline-block; font-size: 10px; color: var(--ct-text3); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 5px; margin-right: 8px; vertical-align: 1px; }

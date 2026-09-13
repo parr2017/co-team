@@ -121,7 +121,8 @@ function handleEvent(msg: EventEnvelope) {
 
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws/events`);
+  const t = localStorage.getItem('coteam-api-token') || '';
+  ws = new WebSocket(`${proto}://${location.host}/ws/events${t ? `?token=${encodeURIComponent(t)}` : ''}`);
   ws.onopen = () => (connected.value = true);
   ws.onclose = () => {
     connected.value = false;

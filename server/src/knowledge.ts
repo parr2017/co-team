@@ -16,6 +16,9 @@ export interface KnowledgeEntry {
   updated_at: string;
   updated_by?: string;
   content: string;
+  /** OBS-1 注入命中计数：relevantKnowledge 注入 prompt 时累加（经验闭环度量） */
+  hits?: number;
+  last_hit_at?: string;
 }
 
 export interface KnowledgeWriteInput {
@@ -193,6 +196,20 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
   };
   fs.writeFileSync(path.join(dir, `${id}.md`), entryToMarkdown(entry), 'utf-8');
   return { id, updated: false };
+}
+
+/** OBS-1：注入命中计数——entries 被拼进 prompt 时调用，hits/last_hit_at 落盘 frontmatter。 */
+export function recordKnowledgeHits(ids: string[], root?: string): number {
+  if (!ids.length) return 0;
+  const now = new Date().toISOString();
+  let n = 0;
+  for (const e of readAll(root)) {
+    if (!ids.includes(e.id)) continue;
+    const updated: KnowledgeEntry = { ...e, hits: (e.hits || 0) + 1, last_hit_at: now };
+    fs.writeFileSync(path.join(categoryDir(updated.category, updated.project_id, root), `${updated.id}.md`), entryToMarkdown(updated), 'utf-8');
+    n += 1;
+  }
+  return n;
 }
 
 export function listKnowledge(query: KnowledgeQuery = {}, root?: string): KnowledgeEntry[] {

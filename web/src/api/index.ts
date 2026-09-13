@@ -51,6 +51,9 @@ export interface KnowledgeEntry {
   content: string;
   /** hybrid search relevance (keyword + embedding cosine), present on q= results */
   score?: number;
+  /** OBS-1 经验闭环度量 */
+  hits?: number;
+  last_hit_at?: string;
   age_days?: number;
 }
 
@@ -267,6 +270,11 @@ export interface ModelStatus {
   tags: string[];
   healthy: boolean;
   cost_per_1k: number;
+  /** OBS-1 健康细节（scheduler 记账） */
+  fail_count?: number;
+  slow_count?: number;
+  cooldown_ms?: number;
+  effective_priority?: number;
 }
 
 export interface StatusResponse {
@@ -387,8 +395,19 @@ export interface EventEnvelope {
   payload: Record<string, any>;
 }
 
+// SEC-P0 API Token：设置里配置后自动携带（存 localStorage）
+export function getApiToken(): string {
+  return localStorage.getItem('coteam-api-token') || '';
+}
+export function setApiToken(token: string) {
+  localStorage.setItem('coteam-api-token', token);
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const token = getApiToken();
+  const headers = new Headers(init?.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(url, { ...init, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as any).detail || res.statusText);
   return body as T;

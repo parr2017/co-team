@@ -45,7 +45,7 @@ import { getLogger } from '../logger';
 import { assessRequirement, isConfirmation, MAX_CLARIFY_ROUNDS, generateNodeBrief, type ClarificationAssessment, type ClarifyAnswer, type NodeBrief } from '../clarify';
 import { gradeTask, normalizeLevel, LEVEL_PROFILES } from '../grader';
 import { computeProgress, shouldBroadcast, clearProgressThrottle } from '../progress';
-import { writeKnowledge, relevantKnowledge } from '../knowledge';
+import { writeKnowledge, relevantKnowledge, recordKnowledgeHits } from '../knowledge';
 import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract, docsSection, getDocRegistry } from '../ssot';
 import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, detectStackMismatch, MAX_FIX_ROUNDS, type ParsedTestOutput } from '../testloop';
 import { createSnapshot } from '../snapshot';
@@ -123,6 +123,7 @@ export const PRECONDITION_FAIL_RE = /缺少(项目)?源代码|文件不在本沙
  */
 export const LEGIT_BLOCKER_RE = /\[blocker\]|需要人类|需要人工|需要.{0,8}补充|信息不足|无法获得|未获得|缺少.{0,8}(信息|权限|证据)|上游.*(声明|实际).*(不符|不一致)|cannot proceed|need human/i;
 /** M3：429/503/rate limit 是容量信号不是能力失败——退避重试同模型，不记健康度不烧链 */
+export const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
 export const CAPACITY_RE = /429|503|rate.?limit|too many requests|tpm|rpm|quota/i;
 /**
  * 群聊化（批次一）：用户插话的三分支处理模板——attempt 开头与工具轮之间两处注入共用，
@@ -1697,6 +1698,18 @@ export class Orchestrator {
 
   // ---------- single node ----------
 
+  /** OBS-1 失败分型：把 node.error 归入结构化类别（供 /api/metrics 聚合失败构成） */
+  private classifyNodeError(err: string): string {
+    const e = err || '';
+    if (e.startsWith(NODE_BUDGET_PREFIX)) return 'budget';
+    if (PRECONDITION_FAIL_RE.test(e)) return 'precondition';
+    if (LEGIT_BLOCKER_RE.test(e)) return 'blocker';
+    if (CAPACITY_RE.test(e)) return 'capacity';
+    if (CONTENT_FAIL_RE.test(e)) return 'content';
+    if (SYSTEM_DEFECT_RE.test(e)) return 'system';
+    return 'other';
+  }
+
   /** Safety wrapper: a node must ALWAYS land on a terminal status, even if the inner pipeline throws. */
   private async executeNode(taskId: string, graph: TaskGraph, node: TaskNode, sandbox: string, workers: number, policy: PermissionPolicy): Promise<void> {
     try {
@@ -1708,8 +1721,9 @@ export class Orchestrator {
       node.finished_at = new Date().toISOString();
       node.error = node.error || String(e?.message || e).slice(0, 300);
       node.needs_human = true;
+      node.error_type = this.classifyNodeError(node.error);
       await persistGraph(graph).catch(() => {});
-      await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error }).catch(() => {});
+      await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error, error_type: node.error_type }).catch(() => {});
     }
   }
 
@@ -2410,7 +2424,6 @@ export class Orchestrator {
     const tally: string[] = [];
     // content failures (parse/schema/refusal) are usually not model-specific: retry the
     // SAME model once with the failure text as feedback before burning the fallback chain
-    const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
     const sameModelRetries = new Map<string, number>();
     const capacityRetries = new Map<string, number>();
     for (let ci = 0; ci < chain.length; ci++) {
@@ -2434,6 +2447,10 @@ export class Orchestrator {
             // 慢不是失败：只降权（本地慢模型与远程快模型混池的正确记账）
             this.pool.markSlow(entry);
             this.logger.warn('Model slow but usable', { taskId, nodeId: node.id, model: entry.name, attempt_sec: Math.round(attemptMs / 1000), slow_streak: (this.pool.getStatus()[entry.name] as Record<string, unknown> | undefined)?.slow_count });
+            // OBS-1：慢成功可见——作战室 + 事件流
+            const slowSec = Math.round(attemptMs / 1000);
+            await emitProgress('model_slow', { task_id: taskId, node_id: node.id, model: entry.name, elapsed_sec: slowSec });
+            await appendJournal(taskId, plugin.name, { role: 'master', kind: 'round', text: `🐌 ${entry.name} 慢成功（${slowSec}s），已降权`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name });
           } else {
             this.pool.markSuccess(entry);
           }
@@ -2488,6 +2505,10 @@ export class Orchestrator {
             capacityRetries.set(entry.name, capTried + 1);
             const backoffMs = 20_000 * (capTried + 1);
             this.logger.warn('Model capacity limited (429) — backing off same model, health untouched', { taskId, nodeId: node.id, model: entry.name, backoff_sec: backoffMs / 1000, attempt: capTried + 1 });
+            // OBS-1：限流退避可见（此前只写日志，用户看作战室只觉"卡住"）
+            const backoffSec = Math.round(backoffMs / 1000);
+            await emitProgress('llm_backoff', { task_id: taskId, node_id: node.id, model: entry.name, backoff_sec: backoffSec, attempt: capTried + 1 });
+            await appendJournal(taskId, plugin.name, { role: 'master', kind: 'round', text: `⏳ ${entry.name} 限流（429），${backoffSec}s 后自动重试（第 ${capTried + 1}/2 次）——不是卡住`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name });
             await new Promise((r) => setTimeout(r, backoffMs));
             ci--; // 重试同一模型
             continue;
@@ -2504,6 +2525,9 @@ export class Orchestrator {
         });
         // 确定性模型侧失败（连接死亡/真停滞）——计入模型健康度
         this.pool.markFailure(entry);
+        // OBS-1：降级链可见
+        await emitProgress('model_failover', { task_id: taskId, node_id: node.id, model: entry.name, error: String(lastErr).slice(0, 160) });
+        await appendJournal(taskId, plugin.name, { role: 'master', kind: 'round', text: `↯ ${entry.name} 失败（${String(lastErr).slice(0, 80)}），切换下一候选`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name });
       } finally {
         this.pool.release(entry);
       }
@@ -2613,6 +2637,8 @@ export class Orchestrator {
       dev: '实现 接口', deploy: '部署 环境', launcher: '启动 运行 服务', docs: '文档', refactor: '重构',
     };
     const knowledgeHits = await relevantKnowledge(`${node.name} ${context} ${roleKeywords[plugin.name] || ''}`, { project_id: projectId, limit: 3 });
+    // OBS-1 经验闭环度量：命中即计数（hits/last_hit_at 落盘知识条目）
+    if (knowledgeHits.length) { try { recordKnowledgeHits(knowledgeHits.map((k) => k.id)); } catch { /* best effort */ } }
     const knowledgeBlock = knowledgeHits.length
       ? '\n\n## 相关知识库条目\n' + knowledgeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')
       : '';
@@ -2725,6 +2751,7 @@ export class Orchestrator {
       session_chars: compacted.reduce((s, m) => s + m.content.length, 0),
       user_chars: userMsg.length,
       skills_indexed: picks.length,
+      knowledge_hits: knowledgeHits.length,
       max_output_tokens: maxTokens,
       est_base_tokens:
         estimateTokens(systemMsg) + estimateTokens(userMsg) + estimateTokens(compacted.map((m) => m.content).join('')),
@@ -3158,6 +3185,30 @@ export class Orchestrator {
       if ((result.files || []).length) {
         await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: `写入文件: ${(result.files || []).map((f) => f.path).join(', ')}`, model: entry.name });
       }
+      // OBS-1 节点执行档案：轮次/工具/技能/知识命中/上下文用量一屏可查的数据源
+      const toolStats: Record<string, { count: number; fail: number }> = {};
+      let skillsLoaded: string[] = [];
+      for (const r of record.rounds) {
+        for (const tr of (r as Record<string, any>).tool_results || []) {
+          const t = String(tr?.tool || '?');
+          toolStats[t] = toolStats[t] || { count: 0, fail: 0 };
+          toolStats[t].count += 1;
+          if (tr?.ok === false) toolStats[t].fail += 1;
+          if (t === 'load_skill' && tr?.ok && tr?.name) skillsLoaded.push(String(tr.name));
+        }
+      }
+      (result as Record<string, any>).execution = {
+        rounds: record.rounds.length,
+        model: entry.name,
+        tokens: result.tokens || 0,
+        duration_sec: record.duration_sec ?? undefined,
+        tools: toolStats,
+        skills_indexed: picks.map((p2) => p2.skill.name),
+        skills_loaded: [...new Set(skillsLoaded)],
+        knowledge_hits: knowledgeHits.map((k) => k.id),
+        folded: foldedOnce,
+        context: record.prompt_profile ? { system_chars: (record.prompt_profile as any).system_chars, session_chars: (record.prompt_profile as any).session_chars, user_chars: (record.prompt_profile as any).user_chars, est_base_tokens: (record.prompt_profile as any).est_base_tokens } : undefined,
+      };
       return result;
     } finally {
       record.duration_sec = Math.round((Date.now() - startedAt) / 100) / 10;
