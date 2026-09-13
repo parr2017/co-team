@@ -17,7 +17,7 @@ import { copyText } from '../utils/clipboard';
 
 const route = useRoute();
 const router = useRouter();
-const { tasks, fetchSingleTask, onEvent } = useDashboard();
+const { tasks, putTask, onTaskStatus } = useDashboard();
 
 const taskId = computed(() => String(route.params.id));
 const task = computed<TaskGraph | null>(() => tasks.value[taskId.value] || null);
@@ -348,16 +348,17 @@ const busyAgents = computed(() => {
 async function refresh() {
   try {
     // direct fetch with error propagation — the store's fetchSingleTask
-    // silently swallows 404s, so the page needs its own existence check
-    await api.getTask(taskId.value);
+    // silently swallows 404s, so the page needs its own existence check;
+    // 数据一次拉取后经 putTask 入库（此前 getTask + fetchSingleTask 重复 GET 两次）
+    const d = await api.getTask(taskId.value);
     loadFailed.value = false;
     notFound.value = false;
+    putTask(d);
   } catch (e: any) {
     if (String(e.message || '').includes('not found')) notFound.value = true;
     else loadFailed.value = true;
     return; // no point fetching events for a dead task
   }
-  await fetchSingleTask(taskId.value);
   void loadProposals();
   void loadGoal();
   void loadSnapshots();
@@ -374,17 +375,22 @@ watch(taskId, () => {
   void refresh();
 }, { immediate: true });
 
-unsub = onEvent((msg) => {
-  if (msg.payload?.task_id === taskId.value) void fetchSingleTask(taskId.value);
+// store 已按生命周期事件精准刷新任务；这里只挂提案/验收的防抖补拉
+let propReloadTimer: number | undefined;
+unsub = onTaskStatus((t) => {
+  if (t.task_id !== taskId.value) return;
+  window.clearTimeout(propReloadTimer);
+  propReloadTimer = window.setTimeout(() => void loadProposals(), 1500);
 });
 
 // light polling backstop for WS gaps (mobile networks)
 pollTimer = window.setInterval(() => {
   if (document.visibilityState === 'visible' && !notFound.value && !loadFailed.value) void refresh();
-}, 8000);
+}, 15000);
 
 onUnmounted(() => {
   window.clearInterval(pollTimer);
+  window.clearTimeout(propReloadTimer);
   unsub?.();
 });
 

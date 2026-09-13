@@ -65,7 +65,10 @@ function handleEvent(msg: EventEnvelope) {
   if (ev === 'task_creating') createStage.value = String(p.stage || '');
   else if (['task_needs_clarification', 'execute_start'].includes(ev)) createStage.value = '';
 
-  if (ev !== 'task_creating' && p.task_id && !tasks[p.task_id]) void fetchSingleTask(String(p.task_id));
+  // 外部任务视图：payload 显式携带 project_id 的事件必然是项目任务，直接跳过预取
+  if (ev !== 'task_creating' && p.task_id && !tasks[p.task_id] && !(p.project_id && taskFilter?.scope === 'external')) {
+    void fetchSingleTask(String(p.task_id));
+  }
 
   const task = p.task_id ? tasks[p.task_id] : null;
   if (task) {

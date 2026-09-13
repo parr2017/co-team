@@ -132,7 +132,7 @@ function refresh() {
   void load();
 }
 refresh();
-timer = setInterval(refresh, 10000);
+timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 10000);
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
 const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清' };

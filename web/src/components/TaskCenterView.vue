@@ -133,7 +133,10 @@ const pageSize = computed(() => props.pageSize ?? 20);
 
 onMounted(() => {
   refreshStats();
-  statTimer = window.setInterval(refreshStats, 5000);
+  statTimer = window.setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    void refreshStats();
+  }, 30_000);
 });
 onUnmounted(() => {
   if (statTimer !== null) window.clearInterval(statTimer);

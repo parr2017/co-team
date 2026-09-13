@@ -19,6 +19,19 @@ const { ensureStarted, onEvent, onResync } = useWs();
 let started = false;
 const statusListeners = new Set<(t: TaskGraph) => void>();
 
+/** 触发全量任务预取的生命周期事件（高频心跳 agent_round/progress_update/journal_append 不再打全量 GET） */
+const REFRESH_EVENTS = new Set([
+  'node_start', 'node_complete', 'node_error', 'node_retry', 'node_cancelled',
+  'node_waiting_approval', 'node_awaiting_clarify', 'node_clarified', 'node_added',
+  'execute_start', 'execute_failed', 'execute_waiting_approval',
+  'task_needs_clarification', 'task_clarified', 'task_replanned', 'task_model_changed',
+  'goal_updated', 'stage_started', 'acceptance_report',
+  'command_pending_approval', 'command_resolved',
+  'ask_created', 'ask_resolved',
+  'supervisor_proposal', 'supervisor_proposal_executed',
+  'snapshot_created', 'snapshot_rolled_back',
+]);
+
 async function loadTasks(page = 1, q?: string) {
   const d = await api.listTasks(page, taskPageSize.value, q);
   taskTotal.value = d.total;
@@ -71,7 +84,7 @@ function handleEvent(msg: EventEnvelope) {
   }
 
   // task/node lifecycle events → refresh the affected task + bump live statuses
-  if (tid) void fetchSingleTask(tid);
+  if (tid && REFRESH_EVENTS.has(msg.type)) void fetchSingleTask(tid);
   if (msg.type.startsWith('node_') && tid && p.node_id) {
     const t = tasks.value[tid];
     if (t) {
@@ -79,6 +92,11 @@ function handleEvent(msg: EventEnvelope) {
       tasks.value = { ...tasks.value, [tid]: { ...t, nodes: nodes as TaskGraph['nodes'] } };
     }
   }
+}
+
+function putTask(t: TaskGraph) {
+  tasks.value = { ...tasks.value, [t.task_id]: t };
+  statusListeners.forEach((fn) => fn(t));
 }
 
 export function useDashboard() {
@@ -96,7 +114,7 @@ export function useDashboard() {
   }
   return {
     tasks, taskTotal, taskPage, taskPageSize, agents, connected,
-    loadTasks, fetchSingleTask, loadAgents,
+    loadTasks, fetchSingleTask, loadAgents, putTask,
     onEvent(fn: (msg: EventEnvelope) => void) { return onEvent(fn); },
     onResync(fn: () => void): () => void { return onResync(fn); },
     onTaskStatus(fn: (t: TaskGraph) => void): () => void {
