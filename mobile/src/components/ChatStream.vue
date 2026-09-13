@@ -208,7 +208,9 @@ unsubFns.push(
         typingAgent.value = '';
         typingText.value = '';
       }
-    } else if (['node_error', 'node_cancelled', 'execute_complete', 'execute_failed', 'execute_cancelled'].includes(msg.type)) {
+    } else if (['node_error', 'node_cancelled', 'execute_failed', 'node_complete'].includes(msg.type)) {
+      // 注意：服务端从不发 execute_complete/execute_cancelled（只有 execute_start/execute_failed），
+      // 打字指示的清除以 node 终态事件为准
       typingAgent.value = '';
       typingText.value = '';
     }

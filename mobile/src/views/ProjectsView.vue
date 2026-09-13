@@ -26,6 +26,21 @@ async function load() {
   }
 }
 
+/** 下拉刷新：此前 :model-value="false" 受控常量，转圈零反馈 */
+const refreshing = ref(false);
+async function onRefresh() {
+  refreshing.value = true;
+  try {
+    const d = await api.listProjects();
+    projects.value = d.projects || [];
+    error.value = '';
+  } catch (e: any) {
+    showToast(e.message || '刷新失败');
+  } finally {
+    refreshing.value = false;
+  }
+}
+
 onMounted(() => void load());
 
 function donePct(p: ProjectSummary): number {
@@ -95,7 +110,7 @@ async function submitCreate() {
       </template>
     </van-nav-bar>
 
-    <van-pull-refresh :model-value="false" class="pull-wrap" @refresh="load">
+    <van-pull-refresh v-model="refreshing" class="pull-wrap" @refresh="onRefresh">
       <div class="pull">
       <van-loading v-if="loading" class="loading" vertical>加载中…</van-loading>
 

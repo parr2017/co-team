@@ -14,7 +14,13 @@ const projectId = computed(() => String(route.params.id));
 const projectTasks = ref<TaskGraph[]>([]);
 const projectName = ref('');
 const projectKnowledge = ref<{ id: string; title: string; source: string; tags: string[]; content: string; updated_at: string }[]>([]);
-const expOpen = ref(false);
+/** 知识条目按条独立展开（此前单一布尔控制所有条目，点一条全部开合） */
+const expOpenSet = ref<Set<string>>(new Set());
+function toggleExp(id: string) {
+  const s = new Set(expOpenSet.value);
+  if (s.has(id)) s.delete(id); else s.add(id);
+  expOpenSet.value = s;
+}
 const loading = ref(true);
 const error = ref('');
 let unsub: (() => void) | undefined;
@@ -177,13 +183,13 @@ function goCreate() {
       <div class="wx-caption">项目经验 · 知识库 ({{ projectKnowledge.length }})</div>
       <div class="wx-group exp-group">
         <div v-if="!projectKnowledge.length" class="t-empty">暂无条目 — 群组讨论经验与任务复盘会自动沉淀到这里</div>
-        <div v-for="e in projectKnowledge" :key="e.id" class="exp-item" @click="expOpen = !expOpen">
+        <div v-for="e in projectKnowledge" :key="e.id" class="exp-item" @click="toggleExp(e.id)">
           <div class="s-line1">
             <span class="exp-title">{{ e.title }}</span>
             <span class="s-time">{{ (e.updated_at || '').slice(5, 10) }}</span>
           </div>
           <div v-if="e.tags?.length" class="exp-tags"><span v-for="tg in e.tags.slice(0, 4)" :key="tg" class="exp-tag">{{ tg }}</span></div>
-          <div v-if="expOpen" class="exp-body">{{ e.content.slice(0, 500) }}{{ e.content.length > 500 ? '…' : '' }}</div>
+          <div v-if="expOpenSet.has(e.id)" class="exp-body">{{ e.content.slice(0, 500) }}{{ e.content.length > 500 ? '…' : '' }}</div>
         </div>
       </div>
     </div>

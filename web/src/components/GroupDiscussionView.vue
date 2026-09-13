@@ -212,7 +212,9 @@ function statusTag(s: string) {
 
 function shortTime(ts?: string): string {
   if (!ts) return '';
-  const d = new Date(ts);
+  // 服务端 ts 形如 "YYYY-MM-DD HH:mm:ss"，Safari 的 Date 不认空格分隔，需归一为 ISO
+  const d = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T'));
+  if (isNaN(d.getTime())) return ts;
   const diff = Date.now() - d.getTime();
   if (diff < 60_000) return '刚刚';
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`;

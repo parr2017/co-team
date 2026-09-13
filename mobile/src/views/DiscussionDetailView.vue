@@ -21,6 +21,8 @@ const discId = computed(() => String(route.params.id));
 const draft = ref('');
 const stickToBottom = ref(true);
 const wrapEl = ref<HTMLElement | null>(null);
+/** 打开失败（已删除/404）：明确错误态，替代永远"加载中" */
+const loadFailed = ref(false);
 
 const members = computed(() => current.value?.members || []);
 const status = computed(() => current.value?.status || 'discussing');
@@ -132,7 +134,7 @@ function scrollToBottom(force = false) {
 }
 watch(() => [current.value?.messages.length, Object.keys(streams).length, thinking.value], () => void nextTick(() => scrollToBottom()));
 onMounted(() => {
-  void open(discId.value);
+  void open(discId.value).then((ok) => { if (!ok) loadFailed.value = true; });
   void nextTick(() => scrollToBottom(true));
 });
 
@@ -343,7 +345,8 @@ const showExp = ref(false);
     </van-nav-bar>
 
     <div ref="wrapEl" class="stream" @scroll="onScroll">
-      <div v-if="!current" class="center-tip">加载中…</div>
+      <div v-if="loadFailed" class="center-tip">讨论不存在或已被删除<br /><button class="wx-btn err-back" @click="router.back()">返回列表</button></div>
+      <div v-else-if="!current" class="center-tip">加载中…</div>
       <div v-else-if="!rows.length" class="center-tip">还没有聊天内容<br />发一条消息——成员谁有话说谁上</div>
 
       <template v-for="(row, i) in rows" :key="row.type === 'time' ? `t${i}${row.label}` : row.type === 'sys' || row.type === 'tool' ? `${row.type}${row.m.id}` : row.m.id">
@@ -446,7 +449,7 @@ const showExp = ref(false);
           type="textarea"
           rows="1"
           autosize
-          max-length="4000"
+          maxlength="4000"
           :placeholder="busy ? '成员在忙，插话即刻受理' : '说点什么…（@成员点名，或让它动手）'"
           class="input-field"
           @keydown.enter.exact.prevent="sendNow"
@@ -559,6 +562,7 @@ const showExp = ref(false);
 
 .stream { flex: 1; overflow-y: auto; padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 2px; }
 .center-tip { text-align: center; color: var(--text-3); font-size: 12px; padding: 40px 20px; line-height: 1.8; }
+.err-back { margin-top: 12px; }
 .time-divider { text-align: center; font-size: 10px; color: #b8bbbd; margin: 10px 0 4px; }
 
 .sys-row { display: flex; justify-content: center; margin: 4px 0; }

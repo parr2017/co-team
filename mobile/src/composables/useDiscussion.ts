@@ -148,7 +148,7 @@ async function loadExperiences(id: string) {
   }
 }
 
-async function open(id: string) {
+async function open(id: string): Promise<boolean> {
   subscribe();
   void loadRoles();
   try {
@@ -157,10 +157,12 @@ async function open(id: string) {
     // 重进/换设备打开在飞讨论：恢复"成员处理中"指示
     if (detail.busy) armBusy(false);
     void loadExperiences(id);
+    return true;
   } catch {
     // 讨论不存在（已删除/数据丢失）：自清返回列表，界面不再反复打 404
     current.value = null;
     void loadList();
+    return false;
   }
 }
 

@@ -745,7 +745,7 @@ export const api = {
   deleteDiscussion: (id: string) => request(`/api/discussions/${id}`, { method: 'DELETE' }),
   postDiscussionMessage: (id: string, payload: PostDiscussionPayload) =>
     request<{ status: string; message: DiscussionMessage | null; queued?: boolean; responding: string[] | string | null }>(`/api/discussions/${id}/messages`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     }),
   discussionRound: (id: string) => request<{ status: string }>(`/api/discussions/${id}/round`, { method: 'POST' }),
   discussionStop: (id: string) => request<{ status: string }>(`/api/discussions/${id}/stop`, { method: 'POST' }),

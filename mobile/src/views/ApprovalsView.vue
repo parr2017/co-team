@@ -21,6 +21,8 @@ interface ApprovalItem {
   detail: string;
   /** 直接可执行的动作（一键批准/拒绝/答复） */
   act?: (decision: { approved: boolean; answer?: string }) => Promise<void>;
+  /** 服务端是否有真实拒绝语义（节点审批/ask 只能批准或答复，不显示假拒绝按钮） */
+  rejectable?: boolean;
 }
 
 const items = ref<ApprovalItem[]>([]);
@@ -47,12 +49,9 @@ async function load() {
               title: `节点「${n.name}」等待审批`,
               detail: n.reason || '该节点被标记为需要人工审批后才能执行',
               act: async ({ approved }) => {
-                if (approved) {
-                  await api.approveNode(t.task_id, n.id);
-                  showToast('已批准，任务恢复执行');
-                } else {
-                  showToast('节点审批请在任务详情中处理（取消需谨慎）');
-                }
+                if (!approved) return;
+                await api.approveNode(t.task_id, n.id);
+                showToast('已批准，任务恢复执行');
               },
             });
           }
@@ -80,6 +79,7 @@ async function load() {
                 await api.decideProposal(t.task_id, p.id, approved);
                 showToast(approved ? '提案已批准并执行' : '提案已拒绝');
               },
+              rejectable: true,
             });
           }
         } catch { /* task may be gone */ }
@@ -97,6 +97,7 @@ async function load() {
                 await api.resolveCommand(t.task_id, c.id, approved);
                 showToast(approved ? '命令已批准执行' : '命令已拒绝');
               },
+              rejectable: true,
             });
           }
         } catch { /* optional */ }
@@ -134,6 +135,8 @@ timer = setInterval(refresh, 10000);
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
 const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清' };
+/** kind 不在 StatusTag 语义表内，映射到相近的审批语义色 */
+const kindTone: Record<string, string> = { node: 'waiting_approval', proposal: 'waiting_approval', command: 'waiting_approval', ask: 'waiting_approval', clarify: 'waiting_clarify' };
 const busy = (key: string) => busyKey.value === key;
 async function decide(item: ApprovalItem, approved: boolean) {
   if (!item.act) return;
@@ -158,14 +161,14 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
       <van-empty v-if="!loading && !items.length" description="当前没有等你处理的事项" />
       <div v-for="it in items" :key="it.key" class="wx-group ap-card">
         <div class="ap-head">
-          <StatusTag :status="it.kind === 'ask' ? 'waiting_approval' : it.kind" :label="kindLabel[it.kind] || it.kind" />
+          <StatusTag :status="kindTone[it.kind]" :label="kindLabel[it.kind] || it.kind" />
           <span class="ap-task mono" @click="goTask(it.taskId)">{{ it.taskId }} ›</span>
         </div>
         <div class="ap-title">{{ it.title }}</div>
         <div v-if="it.detail" class="ap-detail">{{ it.detail }}</div>
         <div v-if="it.act" class="ap-actions">
           <van-button size="small" type="primary" :loading="busy(it.key)" @click="decide(it, true)">批准</van-button>
-          <van-button size="small" :loading="busy(it.key)" @click="decide(it, false)">拒绝</van-button>
+          <van-button v-if="it.rejectable" size="small" :loading="busy(it.key)" @click="decide(it, false)">拒绝</van-button>
           <van-button size="small" plain @click="goTask(it.taskId)">详情</van-button>
         </div>
         <div v-else class="ap-actions">
@@ -183,7 +186,7 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
 .conn.ok { color: var(--ct-green); }
 .ap-card { margin: 10px 16px; }
 .ap-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.ap-task { font-size: var(--fs-xs); color: var(--ct-accent); }
+.ap-task { font-size: var(--fs-xs); color: var(--ct-accent); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ap-title { font-size: var(--fs-md); font-weight: 600; margin-bottom: 4px; }
 .ap-detail { font-size: var(--fs-sm); color: var(--text-2); margin-bottom: 8px; word-break: break-all; }
 .ap-actions { display: flex; gap: 8px; }

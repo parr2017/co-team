@@ -146,8 +146,10 @@ onUnmounted(() => {
   // echarts 实例随组件销毁，避免 tab 反复切换累积实例
   agentChart?.dispose();
   costChart?.dispose();
+  trendChart?.dispose();
   agentChart = null;
   costChart = null;
+  trendChart = null;
 });
 function onResize() {
   agentChart?.resize();

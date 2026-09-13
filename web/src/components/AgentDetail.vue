@@ -2,7 +2,7 @@
   <el-dialog :model-value="modelValue" title="成员档案" width="680px" @open="load" @close="$emit('close')">
     <template v-if="agent">
       <div class="p-head">
-        <span class="p-avatar mono">{{ badge }}</span>
+        <span class="p-avatar mono" :style="{ borderColor: color }">{{ badge }}</span>
         <div class="p-id"><div class="p-name mono">{{ agent.name }}</div></div>
       </div>
       <div class="p-section-title mono">当前状态</div>
@@ -77,8 +77,9 @@ async function load() {
   try {
     const d = await api.agentProfiles();
     profile.value = d.agents[props.agent.name] || null;
-    if (!lastTaskDesc.value && profile.value?.tasks?.length) {
-      lastTaskDesc.value = [...profile.value.tasks].reverse()[0].description;
+    const tasks = profile.value?.profile?.tasks || [];
+    if (!lastTaskDesc.value && tasks.length) {
+      lastTaskDesc.value = [...tasks].reverse()[0].description;
     }
   } catch {
     profile.value = null;

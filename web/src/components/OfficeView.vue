@@ -123,7 +123,7 @@
     </div>
 
     <!-- 发起新任务 -->
-    <el-dialog v-model="newTaskVisible" title="发起新任务" width="560px" @open="() => {}">
+    <el-dialog v-model="newTaskVisible" title="发起新任务" width="560px">
       <el-form label-width="80px" size="small">
         <el-form-item label="任务描述">
           <el-input v-model="taskDesc" type="textarea" :rows="3" placeholder="要开发什么？agent 会带上项目记忆快速上手" />
@@ -133,8 +133,11 @@
       <template #footer>
         <el-button size="small" @click="newTaskVisible = false">取消</el-button>
         <el-button size="small" type="primary" :loading="creatingTask" @click="createTask">生成计划（进入评审）</el-button>
-          <!-- 进度成本表 -->
-    <el-dialog v-model="costVisible" title="项目进度成果表" width="94%" top="4vh">
+      </template>
+    </el-dialog>
+
+    <!-- 进度成本表 -->
+    <el-dialog v-model="costVisible" title="项目进度成果表" width="94%" top="4vh" append-to-body destroy-on-close>
       <div v-if="costReport" class="cost-report">
         <div class="cost-totals mono">
           <span>任务 {{ costReport.totals.tasks }}</span>
@@ -185,8 +188,6 @@
     <!-- 交付成果阅读器：统一模板固定展现 -->
     <el-dialog v-model="delivViewOpen" :title="'交付成果 · ' + (delivView?.node_name || '')" width="720px" top="5vh" append-to-body>
       <div class="deliverable-md md" v-html="renderMd(delivView?.markdown || '')"></div>
-    </el-dialog>
-</template>
     </el-dialog>
   </div>
 </template>
@@ -251,12 +252,13 @@ let pollTimer: number | undefined;
 let refreshDebounce: number | undefined;
 let unsubFn: (() => void) | undefined;
 
-// computed
+// computed — 终态之外都算进行中（queued/retrying/waiting_clarify/clarifying 等中间态不再凭空消失）
+const TERMINAL_STATUSES = ['completed', 'success', 'failed', 'cancelled'];
 const activeTasks = computed(() =>
-  (detail.value?.tasks || []).filter(t => ['pending', 'planned', 'running', 'waiting_approval'].includes(t.status))
+  (detail.value?.tasks || []).filter(t => !TERMINAL_STATUSES.includes(t.status))
 );
 const archivedTasks = computed(() =>
-  (detail.value?.tasks || []).filter(t => ['completed', 'failed', 'cancelled'].includes(t.status) || (t.status as string) === 'success')
+  (detail.value?.tasks || []).filter(t => TERMINAL_STATUSES.includes(t.status))
 );
 const doneCount = computed(() => (detail.value?.tasks || []).reduce((s, t) => s + t.nodes.filter(n => n.status === 'completed').length, 0));
 const totalCount = computed(() => (detail.value?.tasks || []).reduce((s, t) => s + t.nodes.length, 0));

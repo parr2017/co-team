@@ -139,6 +139,7 @@ async function decideProposal(proposalId: string, approved: boolean) {
   try {
     await api.decideProposal(taskId.value, proposalId, approved);
     showToast(approved ? '提案已批准并执行' : '提案已拒绝');
+    proposalViewOpen.value = false;
     await loadProposals();
     await refresh();
   } catch (e: any) {
@@ -386,6 +387,12 @@ function pickNode(id: string) {
   selectedNodeId.value = selectedNodeId.value === id ? '' : id;
 }
 
+/** 聊天长按「查看节点」：切到执行详情 tab 并展开该节点（此前只设 id 不切 tab，界面无变化） */
+function openNodeFromChat(id: string) {
+  tab.value = 'exec';
+  selectedNodeId.value = id;
+}
+
 function approve(nodeId: string) {
   api.approveNode(taskId.value, nodeId)
     .then(() => { showToast('已批准，任务恢复执行'); void refresh(); })
@@ -522,7 +529,7 @@ function nodeIcon(status: string): string {
                 <template v-else>暂无成员</template>
               </div>
             </div>
-            <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" @quote="quoteDraft = $event" @open-node="pickNode" />
+            <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" @quote="quoteDraft = $event" @open-node="openNodeFromChat" />
             <InterventionInput :task-id="taskId" :task-status="task.status" :prefill="quoteDraft" />
           </div>
         </van-tab>
@@ -598,7 +605,7 @@ function nodeIcon(status: string): string {
             <div v-if="pendingProposals.length" class="wx-group">
               <div class="wx-cell">
                 <div class="sup-title">监督者提案 · 待批准</div>
-                <div v-for="p in pendingProposals" :key="p.id" class="sup-row tap-cell" @click="proposalView = p">
+                <div v-for="p in pendingProposals" :key="p.id" class="sup-row tap-cell" @click="proposalView = p; proposalViewOpen = true">
                   <span class="sup-reason clamp">{{ p.reason || p.type }}</span>
                   <span class="tap-more">全文 ›</span>
                 </div>
@@ -822,13 +829,16 @@ function nodeIcon(status: string): string {
       <div class="pv-body" v-if="proposalView">
         <div class="pv-head">
           <StatusTag :status="'waiting_approval'" label="提案 · 待裁决" />
-          <span class="mono">{{ proposalView.type }}</span>
+          <span class="pv-head-right">
+            <span class="mono">{{ proposalView.type }}</span>
+            <van-icon name="cross" size="18" @click="proposalViewOpen = false" />
+          </span>
         </div>
         <div class="pv-text">{{ proposalView.reason || proposalView.type }}</div>
         <div v-if="proposalView.description" class="pv-text sub">{{ proposalView.description }}</div>
         <div class="pv-actions">
-          <van-button type="primary" block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, true); proposalViewOpen = false">批准执行</van-button>
-          <van-button block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, false); proposalViewOpen = false">拒绝</van-button>
+          <van-button type="primary" block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, true)">批准执行</van-button>
+          <van-button block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, false)">拒绝</van-button>
         </div>
       </div>
     </van-popup>
@@ -1085,6 +1095,7 @@ function nodeIcon(status: string): string {
 .goal-text.clamp { -webkit-line-clamp: 2; }
 .pv-body { height: 100%; display: flex; flex-direction: column; padding: 16px; gap: 10px; overflow-y: auto; }
 .pv-head { display: flex; justify-content: space-between; align-items: center; }
+.pv-head-right { display: flex; align-items: center; gap: 10px; }
 .pv-text { font-size: var(--fs-md); overflow-wrap: anywhere; word-break: break-all; }
 .pv-text.sub { color: var(--text-2); font-size: var(--fs-sm); }
 .pv-text.pre-wrap, .pre-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
