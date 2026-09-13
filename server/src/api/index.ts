@@ -89,6 +89,20 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ detail: err.message }, status as any);
   });
 
+  // SEC-P0 API Token 门禁：配置 dashboard.token 后，全部 /api 请求必须携带
+  // Authorization: Bearer <token>（或 ?token=，供无法设头的场景）。未配置 = 不启用门禁（仅建议本机使用）。
+  const apiToken = ctx.config.dashboard?.token;
+  if (apiToken) {
+    app.use('/api/*', async (c, next) => {
+      const header = c.req.header('Authorization') || '';
+      const query = new URL(c.req.url).searchParams.get('token') || '';
+      if (header !== `Bearer ${apiToken}` && query !== apiToken) {
+        return c.json({ detail: 'unauthorized (missing/invalid API token)' }, 401);
+      }
+      await next();
+    });
+  }
+
   // 请求日志中间件
   app.use('*', async (c, next) => {
     const start = Date.now();
@@ -1523,6 +1537,11 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- feishu bot (event subscription mode) ----------
 
   if (ctx.config.feishu?.app_id && ctx.config.feishu.app_secret) {
+    // SEC-P0：encrypt_key 与 verification_token 都未配置 = webhook 无鉴权（任何人可建任务入队），
+    // 此时拒绝挂载路由
+    if (!ctx.config.feishu.encrypt_key && !ctx.config.feishu.verification_token) {
+      logger.warn('Feishu webhook NOT mounted: no encrypt_key / verification_token configured (unauthenticated webhook is disabled by SEC-P0)');
+    } else {
     let handlerP: Promise<FeishuHandler> | null = null;
     const getHandler = () => {
       handlerP ||= import('../feishu/webhook').then((m) =>
@@ -1542,6 +1561,7 @@ export function createApi(ctx: ApiContext): Hono {
     };
     app.post('/api/feishu/webhook', async (c) => (await getHandler()).handle(c));
     logger.info('Feishu bot webhook mounted at /api/feishu/webhook', { app_id: ctx.config.feishu.app_id });
+    }
   }
 
   // ---------- status / metrics / fs ----------
@@ -1633,13 +1653,19 @@ export function createApi(ctx: ApiContext): Hono {
   return app;
 }
 
-export function attachWebSocket(server: Server, dashboardChannel: string): WebSocketServer {
+export function attachWebSocket(server: Server, dashboardChannel: string, apiToken?: string): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set<WebSocket>();
 
   server.on('upgrade', (request: any, socket: any, head: any) => {
     const url = new URL(request.url, 'http://localhost');
     if (url.pathname !== '/ws/events') return;
+    // SEC-P0：配置 API token 后，WS 升级同样要求 ?token= 匹配
+    if (apiToken && url.searchParams.get('token') !== apiToken) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });

@@ -53,11 +53,11 @@ export const DEFAULT_META_PATHS = [
 
 export interface AppConfig {
   agents_dir: string;
-  dashboard: { host: string; port: number };
+  dashboard: { host: string; port: number; token?: string };
   model_pool: ModelConfig[];
   orchestrator: OrchestrationConfig;
   permissions: { level?: string; whitelist_commands?: string[]; max_time_sec?: number };
-  redis: { host: string; port: number; db: number };
+  redis: { host: string; port: number; db: number; password?: string };
   knowledge: {
     dir: string;
     /** RAG upgrade: model_pool entry name used for /v1/embeddings; unset/missing → keyword search only */
@@ -163,7 +163,7 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
   const agentsDir = raw.agents_dir || './agents';
   return {
     agents_dir: path.isAbsolute(agentsDir) ? agentsDir : path.join(root, agentsDir),
-    dashboard: { host: raw.dashboard?.host ?? '0.0.0.0', port: raw.dashboard?.port ?? 8855 },
+    dashboard: { host: raw.dashboard?.host ?? '127.0.0.1', port: raw.dashboard?.port ?? 8855, token: raw.dashboard?.token },
     model_pool: raw.model_pool || [],
     orchestrator: {
       max_retries: raw.orchestrator?.max_retries ?? 3,

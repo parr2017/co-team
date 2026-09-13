@@ -159,6 +159,9 @@ async function main(): Promise<void> {
   }
 
   // M5.2 任务↔群聊互通：任务事件回流讨论流 + ask 提问同步（只读摘要与通知，无写路径）
+  if (!config.dashboard?.token) {
+    logger.warn('Dashboard API token NOT configured — API is unauthenticated. Set dashboard.token in config.yaml (SEC-P0).');
+  }
   const { initDiscussionBridge } = await import('./discussionBridge');
   initDiscussionBridge();
 
@@ -240,7 +243,7 @@ async function main(): Promise<void> {
       models: config.model_pool.map((m) => m.name)
     });
   });
-  attachWebSocket(server as unknown as import('node:http').Server, 'coteam:dashboard');
+  attachWebSocket(server as unknown as import('node:http').Server, 'coteam:dashboard', config.dashboard?.token);
 
   const shutdown = () => {
     logger.info('Shutting down...');

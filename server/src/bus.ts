@@ -20,9 +20,10 @@ export class RedisBus implements MessageBus {
   private sub: Redis;
   private handlers = new Map<string, Set<(msg: unknown) => void>>();
 
-  constructor(host: string, port: number, db: number) {
-    this.client = new Redis({ host, port, db, lazyConnect: false, maxRetriesPerRequest: 1 });
-    this.sub = new Redis({ host, port, db });
+  constructor(host: string, port: number, db: number, password?: string) {
+    const auth = password ? { password } : {};
+    this.client = new Redis({ host, port, db, ...auth, lazyConnect: false, maxRetriesPerRequest: 1 });
+    this.sub = new Redis({ host, port, db, ...auth });
     this.sub.on('message', (_channel, data) => {
       const handlers = this.handlers.get(_channel);
       if (!handlers) return;
@@ -208,7 +209,7 @@ export class MemoryBus implements MessageBus {
 
 let bus: MessageBus | null = null;
 
-export async function initBus(redisConfig: { host: string; port: number; db: number }): Promise<MessageBus> {
+export async function initBus(redisConfig: { host: string; port: number; db: number; password?: string }): Promise<MessageBus> {
   if (bus) return bus;
   
   const logger = getLogger();
@@ -221,7 +222,7 @@ export async function initBus(redisConfig: { host: string; port: number; db: num
   
   try {
     logger.info('Connecting to Redis', { host: redisConfig.host, port: redisConfig.port, db: redisConfig.db });
-    const redisBus = new RedisBus(redisConfig.host, redisConfig.port, redisConfig.db);
+    const redisBus = new RedisBus(redisConfig.host, redisConfig.port, redisConfig.db, redisConfig.password);
     await redisBus.ping();
     bus = redisBus as unknown as MessageBus;
     logger.info('Redis connection successful');

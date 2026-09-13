@@ -1,7 +1,9 @@
 agents_dir: ./agents
 dashboard:
+  # SEC-P0：0.0.0.0（局域网可访问）时强烈建议配置 token——web/mobile 设置里填同一值即可通过门禁
   host: 0.0.0.0
   port: 8855
+  # token: 长随机字符串（如 openssl rand -hex 24 生成）
 model_pool:
   # 混合推理模型（Qwen3 系）可加 chat_template_kwargs: {enable_thinking: false} 关闭思考——
   # E17 实测思考可耗尽整个输出预算导致正文空假性失败；编排/结构化输出场景关闭更稳
@@ -165,3 +167,5 @@ redis:
   db: 0
   host: 127.0.0.1
   port: 6379
+  # SEC-P0：Redis 暴露非 127.0.0.1 时必须设密码（requirepass），co-team 连接同步配置此项
+  # password: your-redis-password
