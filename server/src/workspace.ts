@@ -119,6 +119,11 @@ export function assertWithinJail(command: string, jailRoot: string): { ok: boole
       const abs = path.resolve(jail, cand);
       if (!isInside(jail, abs)) violations.add(cand);
     }
+    // SEC-P0：环境变量间接路径（%USERPROFILE%\x、$HOME/x）——解析前无法判定真实位置，
+    // shell 展开后即逃逸，直接判违规（无斜杠语义的 %PATH% 回显不误伤）
+    if ((/%[^%\s]*%/.test(tok) || /\$[A-Za-z_{]/.test(tok)) && /[\\/]/.test(tok)) {
+      violations.add(tok);
+    }
   }
   return { ok: violations.size === 0, violations: [...violations] };
 }

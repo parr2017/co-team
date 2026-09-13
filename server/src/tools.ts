@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { canExecute, executeCommand, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
+import { classifyCommand, canExecuteChain } from './commandGuard';
 import { writeKnowledge } from './knowledge';
 import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
 import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agentMessages';
@@ -591,6 +592,19 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
     if (!jail.ok) {
       return { command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, workspace) };
     }
+    // SEC-P0 高危形态守卫：删除/系统级/解释器内联代码/强推——无论执行策略，
+    // 一律暂存待人工审批（「⚠ 敏感操作」），绝不直接执行
+    const cls = classifyCommand(command);
+    if (cls.sensitive && policy.level !== 'plan_only') {
+      return { command, allowed: false, needs_approval: true, sensitive: true, returncode: -1, stdout: '', stderr: `⚠ 敏感操作待人工审批：${cls.reasons.join('、')}` };
+    }
+    // SEC-P0 链式命令逐段过白名单（`git log && del x` 不再借首词放行）
+    if (policy.level !== 'full' && !canExecuteChain(policy, command, (seg) => canExecute(policy, seg))) {
+      if (policy.level === 'approve_required') {
+        return { command, allowed: false, needs_approval: true, returncode: -1, stdout: '', stderr: '等待人工审批（链式命令含白名单外片段，执行策略 approve_required）' };
+      }
+      return { command, allowed: false, returncode: -1, stdout: '', stderr: 'command not in whitelist' };
+    }
     if (policy.level === 'full' || canExecute(policy, command)) return executeCommand(command, workspace, policy);
     if (policy.level === 'approve_required') {
       // park the command for human approval — the orchestrator blocks node completion on it
@@ -600,6 +614,9 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
   });
   const pendingCommands = commandResults.filter((c) => c.needs_approval).map((c) => c.command);
   if (pendingCommands.length) output.pending_commands = pendingCommands;
+  // SEC-P0：敏感命令单列，移动端审批收件箱按「⚠ 敏感操作」呈现
+  const sensitiveCommands = commandResults.filter((c) => c.sensitive).map((c) => c.command);
+  if (sensitiveCommands.length) output.sensitive_commands = sensitiveCommands;
 
   const declared: string[] = output.changes || [];
   const merged = [...new Set([...written, ...declared.map((c: unknown) => String(c))])];
@@ -609,7 +626,7 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
   const declaredPaths = new Set(declared.map((c: unknown) => String(c).split(':')[0].trim()));
   const unreported = written.filter((w) => !declaredPaths.has(w));
   if (unreported.length) output.unreported_files = unreported;
-  output.command_results = commandResults.map((c: CommandResult) => ({ command: c.command, needs_approval: c.needs_approval || false, returncode: c.returncode, stderr: c.stderr.slice(-500), stdout: c.stdout.slice(-4000) }));
+  output.command_results = commandResults.map((c: CommandResult) => ({ command: c.command, needs_approval: c.needs_approval || false, sensitive: c.sensitive || false, returncode: c.returncode, stderr: c.stderr.slice(-500), stdout: c.stdout.slice(-4000) }));
 
   const failed = commandResults.filter((c: CommandResult) => c.returncode !== 0 && !c.needs_approval);
   if (failed.length) {

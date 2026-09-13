@@ -84,7 +84,7 @@ describe('sandbox & tools', () => {
       status: 'success',
       changes: ['declared.txt: said'],
       files: [{ path: 'w.txt', content: 'w' }],
-      commands: ['python -c "print(\'ok\')"'],
+      commands: ['echo ok'], // SEC-P0：python -c 属敏感内联代码转审批，此处用非敏感命令验证执行通路
     }, policy);
     expect(out.changes).toContain('w.txt');
     expect(out.changes.some((c: string) => c.startsWith('declared.txt'))).toBe(true);

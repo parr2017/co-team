@@ -128,6 +128,8 @@ export interface CommandResult {
   stderr: string;
   /** approve_required policy: the command was parked for human approval, not executed */
   needs_approval?: boolean;
+  /** SEC-P0 高危形态命中（删除/系统级/内联代码/强推），强制转人工审批 */
+  sensitive?: boolean;
 }
 
 export function executeCommand(command: string, cwd: string, policy: PermissionPolicy, timeoutSec?: number): CommandResult {
