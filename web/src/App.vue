@@ -28,7 +28,7 @@
         </div>
       </header>
 
-      <div class="layout single" v-if="page === 'workbench'">
+      <div class="layout" v-if="page === 'workbench'">
         <main class="main">
           <div class="page-toolbar">
             <div class="page-title">工作台</div>
@@ -46,11 +46,13 @@
             </div>
           </div>
           <TaskForm @planned="openReview" @needs-clarify="(tid: string) => openClarify(tid)" />
+          <MetricsPanel ref="metricsRef" />
+        </main>
+        <aside class="side">
           <AgentCards :agents="agents" @show-detail="detailAgent = $event" />
           <ModelPoolPanel :status="status" @refresh="refreshStatus" />
-          <MetricsPanel ref="metricsRef" />
           <EventLog :events="events" @clear="clearEvents" />
-        </main>
+        </aside>
       </div>
 
       <div class="layout" v-else-if="page === 'tasks'">
