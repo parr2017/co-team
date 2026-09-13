@@ -352,6 +352,16 @@ export const api = {
   getTask: async (id: string): Promise<TaskGraph> => normalizeTask(await request<Record<string, any>>(`/api/tasks/${id}`)),
   taskProgress: (id: string) => request<ProgressInfo>(`/api/tasks/${id}/progress`),
   taskEvents: (id: string) => request<{ task_id: string; events: EventEnvelope[] }>(`/api/tasks/${id}/events`),
+  metrics: () => request<{
+    tasks: { total: number; success: number; success_rate: number };
+    agents: Record<string, { tasks: number; completed: number; failed: number; retries: number; tokens: number }>;
+    failure_types?: Record<string, number>;
+    quality?: { defects_total: number; defects_closed: number; defect_close_rate: number; fix_rounds_avg: number; test_pass_rate: number; delivery_consistent_rate: number; delivery_checked_nodes: number };
+    token_usage: Record<string, { prompt_tokens: number; completion_tokens: number; calls: number; cost: number }>;
+    tokens_total: number;
+    cost_total: number;
+  }>('/api/metrics'),
+  metricsTrend: (days = 7) => request<{ trend: { date: string; tasks: number; defects_total: number; success_rate: number }[] }>(`/api/metrics/trend?days=${days}`),
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   approveNode: (taskId: string, nodeId: string) => post(`/api/tasks/${taskId}/approve/${nodeId}`),
   convertDefect: (taskId: string, nodeId: string, defectIndex: number, autoRun = false) =>

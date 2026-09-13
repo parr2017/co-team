@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: '/discussions', component: () => import('./views/DiscussionListView.vue'), meta: { tab: 'discussions' } },
     { path: '/discussion/:id', component: () => import('./views/DiscussionDetailView.vue'), props: true },
     { path: '/agents', component: () => import('./views/AgentsView.vue'), meta: { tab: 'agents' } },
+    { path: '/metrics', component: () => import('./views/MetricsView.vue'), meta: { tab: 'metrics' } },
     { path: '/projects', component: () => import('./views/ProjectsView.vue'), meta: { tab: 'projects' } },
     { path: '/project/:id', component: () => import('./views/ProjectDetailView.vue'), props: true },
     { path: '/project/:id/report', component: () => import('./views/ProjectReportView.vue'), props: true },

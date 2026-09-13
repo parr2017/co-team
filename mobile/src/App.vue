@@ -13,6 +13,7 @@ const activeTab = computed(() => {
   if (route.meta.tab === 'agents') return 'agents';
   if (route.meta.tab === 'projects') return 'projects';
   if (route.meta.tab === 'discussions') return 'discussions';
+  if (route.meta.tab === 'metrics') return 'metrics';
   return 'tasks';
 });
 const showTabbar = computed(() => !!route.meta.tab);
@@ -56,6 +57,7 @@ function dismissTokenGate() {
       <van-tabbar-item to="/discussions" name="discussions" icon="friends-o">沟通</van-tabbar-item>
       <van-tabbar-item to="/projects" name="projects" icon="apps-o">项目</van-tabbar-item>
       <van-tabbar-item to="/agents" name="agents" icon="manager-o">成员</van-tabbar-item>
+      <van-tabbar-item to="/metrics" name="metrics" icon="bar-chart-o">指标</van-tabbar-item>
     </van-tabbar>
 
     <!-- SEC-P0 Token 门禁输入层：不用 van-popup——实测其 leave 过渡类会滞留（transitionend 不触发）导致门禁永不消失，安全门禁必须确定性显隐 -->

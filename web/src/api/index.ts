@@ -289,6 +289,7 @@ export interface StatusResponse {
 export interface MetricsResponse {
   tasks: { total: number; success: number; success_rate: number };
   agents: Record<string, { tasks: number; completed: number; failed: number; retries: number; tokens: number }>;
+  failure_types?: Record<string, number>;
   quality?: QualitySummary;
   token_usage: Record<string, { prompt_tokens: number; completion_tokens: number; calls: number; cost: number }>;
   tokens_total: number;
