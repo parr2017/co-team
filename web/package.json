@@ -9,6 +9,7 @@
     "check": "vue-tsc --noEmit"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
     "echarts": "^5.5.0",
     "element-plus": "^2.8.0",
     "highlight.js": "^11.12.0",

@@ -180,7 +180,7 @@ function renderCharts() {
       series: [
         {
           type: 'pie',
-          radius: ['42%', '68%'],
+          radius: ['40%', '60%'],
           center: ['50%', '58%'],
           data: fails.map(([k, v]) => ({ name: FAILURE_LABEL[k] || k, value: v })),
           label: { color: c.text3, fontSize: 10 },
@@ -250,8 +250,9 @@ defineExpose({ refresh });
 
 <style scoped>
 .metrics-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
-.metric-box { background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 6px; padding: 12px 14px; }
-.m-num { font-size: 20px; font-weight: 700; color: var(--ct-text); line-height: 1.2; }
+.metric-box { background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 10px; padding: 14px 16px; transition: border-color 0.15s ease, transform 0.15s ease; }
+.metric-box:hover { border-color: var(--ct-accent); }
+.m-num { font-size: 24px; font-weight: 700; color: var(--ct-text); line-height: 1.2; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
 .m-num i { font-style: normal; font-size: 13px; color: var(--ct-text3); }
 .m-label { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
 .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }

@@ -21,8 +21,8 @@
       <!-- A3/A2/A1: 验收合并 · 协同文档 · 实时产出 -->
       <div class="meta-actions">
         <el-button v-if="task.status === 'success'" size="small" type="primary" :loading="merging" @click="onMergePreview">⎇ 合并到主分支</el-button>
-        <el-button size="small" @click="openDocs">📘 协同文档</el-button>
-        <el-button size="small" @click="openOutput">📂 实时产出</el-button>
+        <el-button size="small" @click="openDocs"><el-icon style="margin-right:4px"><Memo /></el-icon>协同文档</el-button>
+        <el-button size="small" @click="openOutput"><el-icon style="margin-right:4px"><FolderOpened /></el-icon>实时产出</el-button>
         <span v-if="mergeMsg" class="mono merge-msg" :class="{ ok: mergeOk }">{{ mergeMsg }}</span>
       </div>
 
@@ -420,7 +420,7 @@
       <div v-if="!docsList.length" class="mono" style="color: var(--ct-text3)">暂无协同文档</div>
       <div v-for="d in docsList" :key="d.type" class="doc-row">
         <el-button link type="primary" @click="docView = { title: `docs/${d.type}.md（v${d.version}）`, content: d.content }">
-          📘 docs/{{ d.type }}.md · v{{ d.version }} · {{ d.updated_by }}
+          <el-icon style="vertical-align:-3px;margin-right:2px;color:var(--ct-text3)"><Document /></el-icon> docs/{{ d.type }}.md · v{{ d.version }} · {{ d.updated_by }}
         </el-button>
         <el-button link size="small" @click="downloadText(`${d.type}.md`, d.content)">下载</el-button>
       </div>
@@ -450,6 +450,7 @@
 </template>
 
 <script setup lang="ts">
+import { Document, Memo, FolderOpened } from '@element-plus/icons-vue';
 import { computed, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { renderMarkdown as mdShared } from '../utils/md';

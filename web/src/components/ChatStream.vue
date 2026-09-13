@@ -46,7 +46,7 @@
           <div class="who-name mono">主 Agent</div>
           <div class="file-card">
             <details class="attach">
-              <summary class="mono"><span class="file-ico">📄</span> 交付工具数据 · {{ (item.entry.meta?.results || []).length }} 项</summary>
+              <summary class="mono"><el-icon class="file-ico"><Tickets /></el-icon> 交付工具数据 · {{ (item.entry.meta?.results || []).length }} 项</summary>
               <pre class="pre mono">{{ dump(item.entry.meta?.results) }}</pre>
             </details>
           </div>
@@ -66,7 +66,7 @@
           <div class="who-name mono">{{ item.agent }}</div>
           <div v-if="isRawToolJson(item.entry.text)" class="bubble them-b">
             <details class="attach">
-              <summary class="mono"><span class="file-ico">🔧</span> 工具调用消息（原始输出已折叠）</summary>
+              <summary class="mono"><el-icon class="file-ico"><Tools /></el-icon> 工具调用消息（原始输出已折叠）</summary>
               <pre class="pre mono">{{ item.entry.text.slice(0, 2000) }}</pre>
             </details>
           </div>
@@ -77,7 +77,7 @@
               <span v-for="c in (item.entry.meta?.changes || []).slice(0, 6)" :key="c" class="chip">✓ {{ c }}</span>
             </div>
             <details v-if="(item.entry.meta?.files || []).length || (item.entry.meta?.commands || []).length" class="attach">
-              <summary class="mono"><span class="file-ico">📄</span> 附件 · {{ (item.entry.meta?.files || []).length }} 文件 / {{ (item.entry.meta?.commands || []).length }} 命令</summary>
+              <summary class="mono"><el-icon class="file-ico"><Link /></el-icon> 附件 · {{ (item.entry.meta?.files || []).length }} 文件 / {{ (item.entry.meta?.commands || []).length }} 命令</summary>
               <pre class="pre mono">files: {{ (item.entry.meta?.files || []).join(', ') }}
 commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
             </details>
@@ -92,7 +92,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <div class="them-col">
           <div class="who-name mono">{{ item.agent }} · 交付成果</div>
           <button class="deliv-card mono" @click="openDeliverable(item.entry)">
-            <span class="dc-ico">📄</span>
+            <el-icon class="dc-ico"><Document /></el-icon>
             <span class="dc-body">
               <span class="dc-title">{{ item.entry.node_name }}</span>
               <span class="dc-sub">交付报告 · 统一模板 · 点击阅读</span>
@@ -166,7 +166,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <div class="them-col">
           <div class="who-name mono">{{ item.agent }} · 协同文档</div>
           <button class="deliv-card mono" @click="openDoc(item.entry)">
-            <span class="dc-ico">📘</span>
+            <el-icon class="dc-ico"><Memo /></el-icon>
             <span class="dc-body">
               <span class="dc-title">docs/{{ item.entry.meta?.doc_type }}.md → v{{ item.entry.meta?.version }}</span>
               <span class="dc-sub">协同文档更新 · 点击阅读</span>
@@ -184,7 +184,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
           <div class="bubble them-b fatal">
             <div class="b-error mono">✗ {{ item.entry.text }}</div>
             <details v-if="item.entry.meta?.raw" class="attach">
-              <summary class="mono"><span class="file-ico">📄</span> 原始输出</summary>
+              <summary class="mono"><el-icon class="file-ico"><Document /></el-icon> 原始输出</summary>
               <pre class="pre mono">{{ item.entry.meta.raw }}</pre>
             </details>
           </div>
@@ -234,6 +234,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
 </template>
 
 <script setup lang="ts">
+import { Document, Memo, Tickets, Tools, Link } from '@element-plus/icons-vue';
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { renderMarkdown as mdShared } from '../utils/md';
@@ -548,7 +549,7 @@ html.dark .me-b::before { border-top-color: var(--ct-green); border-left-color: 
 }
 .deliv-card:hover { border-color: var(--ct-accent); }
 .deliv-card:active { transform: scale(0.98); }
-.dc-ico { font-size: 20px; }
+.dc-ico { font-size: 18px; color: var(--ct-accent); flex-shrink: 0; }
 .dc-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dc-title { font-size: 13px; color: var(--ct-text); font-weight: 600; }
 .dc-sub { font-size: 11px; color: var(--ct-text3); }
