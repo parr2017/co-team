@@ -70,6 +70,7 @@ import { ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type KnowledgeEntry } from '../api';
 import MdView from './MdView.vue';
+import { fmtDateTime } from '../utils/time';
 
 const props = defineProps<{ modelValue: boolean; projectId?: string }>();
 defineEmits<{ (e: 'close'): void }>();
@@ -157,11 +158,7 @@ async function remove(e: KnowledgeEntry) {
 }
 
 function fmtTime(ts: string): string {
-  try {
-    return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return ts;
-  }
+  return fmtDateTime(ts);
 }
 </script>
 

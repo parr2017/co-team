@@ -221,15 +221,27 @@ async function refreshQueues() {
 }
 
 async function onResume(key: string) {
-  await api.resumeQueue(key);
-  showToast('队列已恢复');
-  await refreshQueues();
+  try {
+    await api.resumeQueue(key);
+    showToast('队列已恢复');
+    await refreshQueues();
+  } catch (e: any) {
+    showToast(e?.message || '恢复失败');
+  }
 }
 
 async function onClear(key: string) {
-  await api.clearQueue(key);
-  showToast('已清空排队任务');
-  await refreshQueues();
+  // 破坏性操作：清空后排队任务需手动重新执行
+  try {
+    await showConfirmDialog({ title: '清空排队', message: '确定清空该队列的所有排队任务？清空后需手动重新执行。' });
+  } catch { return; }
+  try {
+    await api.clearQueue(key);
+    showToast('已清空排队任务');
+    await refreshQueues();
+  } catch (e: any) {
+    showToast(e?.message || '清空失败');
+  }
 }
 
 onMounted(() => {

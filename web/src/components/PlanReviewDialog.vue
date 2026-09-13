@@ -96,7 +96,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type TaskGraph } from '../api';
 import { statusText } from '../utils/events';
 
@@ -155,7 +155,13 @@ async function onOpen() {
 }
 
 async function reload() {
-  const d = await api.getTask(props.taskId);
+  let d: TaskGraph;
+  try {
+    d = await api.getTask(props.taskId);
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载任务失败');
+    return;
+  }
   graph.value = d;
   editableNodes.value = d.nodes
     .filter((n) => n.id !== 'merge-auto')
@@ -258,6 +264,11 @@ async function approve() {
 }
 
 async function cancelTask() {
+  try {
+    await ElMessageBox.confirm('确定取消该任务？执行中的节点将停止。', '取消任务', { type: 'warning' });
+  } catch {
+    return;
+  }
   try {
     await api.cancelTask(props.taskId);
     ElMessage.info('任务已取消');

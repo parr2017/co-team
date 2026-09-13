@@ -197,6 +197,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { renderMarkdown } from '../utils/md';
 import MdView from './MdView.vue';
+import { fmtDateTime, relativeTime } from '../utils/time';
 import { api, type AgentInfo, type ProjectProgressReport, type ProjectDetail, type TaskGraph, type TaskNode, type KnowledgeEntry } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
@@ -356,12 +357,11 @@ function avatarOf(name: string): string {
 }
 
 function fmt(ts: string): string {
-  return ts ? new Date(ts).toLocaleString() : '';
+  return fmtDateTime(ts);
 }
 
 function fmtShort(ts: string): string {
-  if (!ts) return '';
-  try { return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch { return ts; }
+  return relativeTime(ts);
 }
 
 // data loading

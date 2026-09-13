@@ -741,6 +741,12 @@ function pickDefaultAgent() {
 
 async function refresh() {
   if (!props.modelValue) return;
+  try {
+    await doRefresh();
+  } catch { /* 轮询失败静默（401/网络闪断），下一轮重试 */ }
+}
+
+async function doRefresh() {
   const d = await api.getTask(props.taskId);
   task.value = d;
   const ev = await api.taskEvents(props.taskId);

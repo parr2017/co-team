@@ -320,7 +320,8 @@ const deliverableOpen = computed({
   set: (v: boolean) => { if (!v) deliverableView.value = null; },
 });
 function copyDeliverable() {
-  if (deliverableView.value) void navigator.clipboard?.writeText(deliverableView.value.markdown);
+  if (!deliverableView.value) return;
+  void navigator.clipboard?.writeText(deliverableView.value.markdown).then(() => ElMessage.success('已复制 Markdown')).catch(() => ElMessage.error('复制失败'));
 }
 // P0-2: convert a defect from the open deliverable into a fix task
 const converting = ref<number | null>(null);
@@ -349,7 +350,7 @@ function openDeliverable(entry: JournalEntry) {
     // journal cap may have evicted the body — fetch on demand
     void api.getDeliverable(props.taskId, entry.node_id).then((d) => {
       deliverableView.value = { title: '交付成果 · ' + (d.node_name || entry.node_id), markdown: d.markdown, nodeId: entry.node_id, defects: d.defects || [] };
-    }).catch(() => {});
+    }).catch(() => { ElMessage.error('交付成果加载失败'); });
   }
 }
 /** 协同文档更新卡片：正文随 journal 落盘（截断 16KB），点击即读 */

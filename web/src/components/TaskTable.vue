@@ -98,6 +98,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type TaskGraph } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { statusText, statusTagType } from '../utils/events';
+import { fmtDateTime } from '../utils/time';
 import AgentAvatar from './AgentAvatar.vue';
 
 interface Row {

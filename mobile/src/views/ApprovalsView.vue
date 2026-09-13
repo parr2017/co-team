@@ -5,7 +5,7 @@
  */
 import { onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { showToast } from 'vant';
+import { showToast, showConfirmDialog } from 'vant';
 import { api } from '../api';
 import StatusTag from '../components/StatusTag.vue';
 import MdView from '../components/MdView.vue';
@@ -141,6 +141,12 @@ const kindTone: Record<string, string> = { node: 'waiting_approval', proposal: '
 const busy = (key: string) => busyKey.value === key;
 async function decide(item: ApprovalItem, approved: boolean) {
   if (!item.act) return;
+  if (!approved && item.kind === 'command') {
+    // 拒绝敏感命令需确认，防误触
+    try {
+      await showConfirmDialog({ title: '拒绝命令', message: '确定拒绝该命令？agent 将收到拒绝结果并继续。' });
+    } catch { return; }
+  }
   busyKey.value = item.key;
   try {
     await item.act({ approved });

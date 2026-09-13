@@ -473,7 +473,12 @@ function cancel() {
 }
 
 function fmtTime(ts: string) {
-  try { return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); } catch { return ts; }
+  try {
+    const d = new Date(ts);
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+  } catch { return ts; }
 }
 
 function nodeIcon(status: string): string {
@@ -913,7 +918,7 @@ function nodeIcon(status: string): string {
 .err-btn { margin-top: 24px; max-width: 200px; }
 
 /* nav right status/取消 */
-.nav-status { font-size: 14px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.nav-status { font-size: 14px; color: var(--text-2); font-variant-numeric: tabular-nums; padding: 10px 0 10px 14px; display: inline-block; }
 
 .tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
 .tabs :deep(.van-tabs__content) { flex: 1; min-height: 0; }
@@ -930,7 +935,7 @@ function nodeIcon(status: string): string {
 }
 .ab-text { font-size: 13.5px; color: var(--wx-orange); font-weight: 500; }
 .ab-btn {
-  border: none; border-radius: 14px; padding: 4px 16px;
+  min-height: 32px; border: none; border-radius: 14px; padding: 4px 16px;
   background: var(--accent); color: #fff; font-size: 13px; font-weight: 600;
   flex-shrink: 0;
   transition: transform 0.1s ease;

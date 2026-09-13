@@ -15,7 +15,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type QueueSnapshot } from '../api';
 
 const queues = ref<QueueSnapshot[]>([]);
@@ -29,15 +29,29 @@ async function refreshQueues() {
 }
 
 async function onResume(key: string) {
-  await api.resumeQueue(key);
-  ElMessage.success('队列已恢复，开始执行下一个任务');
-  await refreshQueues();
+  try {
+    await api.resumeQueue(key);
+    ElMessage.success('队列已恢复，开始执行下一个任务');
+    await refreshQueues();
+  } catch (e: any) {
+    ElMessage.error(e.message || '恢复失败');
+  }
 }
 
 async function onClear(key: string) {
-  await api.clearQueue(key);
-  ElMessage.success('已清空排队任务');
-  await refreshQueues();
+  // 破坏性操作：清空后排队任务不再自动执行，需二次确认
+  try {
+    await ElMessageBox.confirm('确定清空该队列的所有排队任务？清空后需手动重新执行。', '清空排队', { type: 'warning' });
+  } catch {
+    return;
+  }
+  try {
+    await api.clearQueue(key);
+    ElMessage.success('已清空排队任务');
+    await refreshQueues();
+  } catch (e: any) {
+    ElMessage.error(e.message || '清空失败');
+  }
 }
 
 onMounted(() => {
