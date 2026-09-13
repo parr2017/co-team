@@ -408,6 +408,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
   const res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    // SEC-P0 门禁：全局广播，TokenGate 弹窗接管（替代首访/凭据失效的全站静默空白）
+    window.dispatchEvent(new CustomEvent('coteam:unauthorized'));
+    throw new Error('访问被拒绝：API Token 缺失或已失效');
+  }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as any).detail || res.statusText);
   return body as T;

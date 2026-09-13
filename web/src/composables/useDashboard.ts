@@ -58,6 +58,7 @@ function ensureAgent(name: string): AgentLiveState {
 function handleEvent(msg: EventEnvelope) {
   const ev = msg.type || '';
   const p = msg.payload || {};
+  if (ev === 'ping') return; // 服务端 15s 心跳：不入事件缓冲（否则约 50 分钟即把真实事件挤光）
   events.value.unshift({ ts: msg.ts || new Date().toISOString(), type: ev, data: p });
   if (events.value.length > 200) events.value.pop();
 
@@ -119,13 +120,42 @@ function handleEvent(msg: EventEnvelope) {
   for (const cb of eventListeners) cb(msg);
 }
 
+let everConnected = false;
+let wsOpenedAt = 0;
+
+/** token 被拒的探活：WS 快速被断时用当前凭据打一次 /api/status 确认 */
+async function probeUnauthorized() {
+  try {
+    const t = localStorage.getItem('coteam-api-token') || '';
+    const res = await fetch('/api/status', { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+    if (res.status === 401) window.dispatchEvent(new CustomEvent('coteam:unauthorized'));
+  } catch { /* 服务器不可达不是鉴权问题 */ }
+}
+
+/** 断线重连成功：补拉全量数据（断线期间的事件已永久丢失，靠增量事件会陈旧） */
+function resyncAfterReconnect() {
+  void loadAgents();
+  void loadTasks(taskPage.value, taskPageSize.value);
+}
+
 function connectWs() {
+  // 已有在途/在连的 socket：幂等返回（reconnectWs 与 3s 重连定时器并发时防双连接）
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const t = localStorage.getItem('coteam-api-token') || '';
   ws = new WebSocket(`${proto}://${location.host}/ws/events${t ? `?token=${encodeURIComponent(t)}` : ''}`);
-  ws.onopen = () => (connected.value = true);
+  ws.onopen = () => {
+    connected.value = true;
+    const first = !everConnected;
+    everConnected = true;
+    wsOpenedAt = Date.now();
+    if (!first) resyncAfterReconnect();
+  };
   ws.onclose = () => {
     connected.value = false;
+    // 建连后 2s 内即被断开：多半是 token 被拒，探活确认后弹 Token 门禁
+    if (wsOpenedAt && Date.now() - wsOpenedAt < 2000) void probeUnauthorized();
+    wsOpenedAt = 0;
     setTimeout(connectWs, 3000);
   };
   ws.onmessage = (e) => {
@@ -135,6 +165,13 @@ function connectWs() {
       /* ignore */
     }
   };
+}
+
+/** token 保存后热更新：立刻按新 token 重连 WS（此前旧连接一直用失效 token 到手动刷新页面） */
+function reconnectWs() {
+  if (!started || !ws) return;
+  try { ws.close(); } catch { /* noop */ }
+  connectWs();
 }
 
 /** Fetch one task by id and merge it into the tasks map — only when it matches the current filter, so the workbench list stays scoped. */
@@ -220,5 +257,5 @@ function ensureStarted() {
 /** Shared dashboard store — safe to call from any component; opens the WS only once. */
 export function useDashboard() {
   ensureStarted();
-  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, createStage, loadTasks, loadAgents, loadJournals, onEvent, clearEvents: () => { events.value = []; } };
+  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, createStage, loadTasks, loadAgents, loadJournals, onEvent, reconnectWs, clearEvents: () => { events.value = []; } };
 }

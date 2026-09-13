@@ -7,6 +7,7 @@
 
 import { ref } from 'vue';
 import type { EventEnvelope } from '../api';
+import { openTokenGate } from '../tokenGate';
 
 const connected = ref(false);
 
@@ -14,8 +15,18 @@ let ws: WebSocket | null = null;
 let backoffMs = 1000;
 let reconnectTimer: number | undefined;
 let started = false;
+let openedAt = 0;
 const listeners = new Set<(msg: EventEnvelope) => void>();
 const resyncFns = new Set<() => void>();
+
+/** WS 快速被断（token 被拒）时的鉴权探活：确认 401 就弹 Token 门禁 */
+async function probeUnauthorized() {
+  try {
+    const t = localStorage.getItem('coteam-api-token') || '';
+    const res = await fetch(`${import.meta.env.VITE_API_BASE ?? ''}/api/status`, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+    if (res.status === 401) void openTokenGate();
+  } catch { /* 网络不可达不是鉴权问题 */ }
+}
 
 function wsUrl(): string {
   const base = import.meta.env.VITE_API_BASE ?? '';
@@ -43,6 +54,7 @@ function connect() {
   }
   ws.onopen = () => {
     connected.value = true;
+    openedAt = Date.now();
     backoffMs = 1000;
   };
   ws.onmessage = (e) => {
@@ -57,6 +69,9 @@ function connect() {
   };
   ws.onclose = () => {
     connected.value = false;
+    // 建连后 2s 内即被断开：多半是 token 被拒，探活确认后弹 Token 门禁
+    if (openedAt && Date.now() - openedAt < 2000) void probeUnauthorized();
+    openedAt = 0;
     scheduleReconnect();
   };
   ws.onerror = () => {
@@ -86,6 +101,15 @@ function onVisibility() {
   });
 }
 
+/** token 更新后立即以新凭据重连（否则旧连接一直用失效 token 到下次自然重连） */
+function forceReconnect() {
+  window.clearTimeout(reconnectTimer);
+  backoffMs = 1000;
+  try { ws?.close(); } catch { /* noop */ }
+  ws = null;
+  connect();
+}
+
 export function useWs() {
   function ensureStarted() {
     if (started) return;
@@ -96,6 +120,7 @@ export function useWs() {
   return {
     connected,
     ensureStarted,
+    forceReconnect,
     onEvent(fn: (msg: EventEnvelope) => void): () => void {
       listeners.add(fn);
       return () => listeners.delete(fn);

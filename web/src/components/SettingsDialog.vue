@@ -234,6 +234,7 @@
 import { ref, reactive, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, getApiToken, setApiToken, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
+import { useDashboard } from '../composables/useDashboard';
 
 // 模型池按「服务接入点」分组编辑：同一 base_url + api_key 下可挂任意多个模型；
 // 存储/接口契约仍是扁平 model_pool（name 为调度唯一键），保存时展平。
@@ -332,6 +333,8 @@ function providerLabel(g: ProviderGroup): string {
 const apiTokenDraft = ref(getApiToken());
 function saveApiToken() {
   setApiToken(apiTokenDraft.value.trim());
+  // 保存即热重连：WS 与后续请求立即使用新 token（重连成功后会自动补拉全量数据）
+  useDashboard().reconnectWs();
   ElMessage.success('API Token 已保存，立即生效');
 }
 

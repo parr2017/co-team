@@ -98,6 +98,16 @@
       <DailyReportDialog v-model="dailyReportVisible" @open-task="(tid: string) => { dailyReportVisible = false; detailTaskId = tid; }" />
       <TaskDetailDialog :model-value="detailTaskId !== null" :task-id="detailTaskId || ''" :live-agents="agents" @close="detailTaskId = null" />
       <RoadmapDialog v-model="roadmapVisible" />
+
+      <!-- SEC-P0 Token 门禁：任何 401 全局接管（替代首访/凭据失效的静默空白页） -->
+      <el-dialog v-model="tokenGateVisible" title="访问验证" width="420px" append-to-body :close-on-click-modal="false">
+        <div class="gate-tip">本系统已启用 API Token 门禁，请输入访问 Token（由管理员下发，仅保存在本浏览器）。</div>
+        <el-input v-model="tokenDraft" placeholder="API Token" show-password @keydown.enter="saveTokenGate" />
+        <template #footer>
+          <el-button size="small" @click="tokenGateVisible = false">稍后再说</el-button>
+          <el-button size="small" type="primary" :disabled="!tokenDraft.trim()" @click="saveTokenGate">保存并重连</el-button>
+        </template>
+      </el-dialog>
     </div>
   </el-config-provider>
 </template>
@@ -105,7 +115,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, onUnmounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, type StatusResponse } from './api';
+import { api, setApiToken, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
 import { useTheme } from './composables/useTheme';
 import { useNotifier } from './composables/useNotifier';
@@ -129,7 +139,7 @@ import ProjectView from './components/ProjectView.vue';
 import GroupDiscussionView from './components/GroupDiscussionView.vue';
 import { useDiscussion } from './composables/useDiscussion';
 
-const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, clearEvents } = useDashboard();
+const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, reconnectWs, clearEvents } = useDashboard();
 const { list: discList, loadList: loadDiscussions } = useDiscussion();
 const { theme, toggle } = useTheme();
 const { enabled: notifyEnabled, setEnabled: setNotifyEnabled } = useNotifier();
@@ -257,8 +267,32 @@ onMounted(() => {
   refreshStatus();
   void loadDiscussions();
   timer = window.setInterval(refreshStatus, 8000);
+  window.addEventListener('coteam:unauthorized', onUnauthorized);
 });
-onUnmounted(() => window.clearInterval(timer));
+onUnmounted(() => {
+  window.clearInterval(timer);
+  window.removeEventListener('coteam:unauthorized', onUnauthorized);
+});
+
+// SEC-P0 Token 门禁：401 → 弹窗收 token → 保存后热重连 WS + 全量重拉
+const tokenGateVisible = ref(false);
+const tokenDraft = ref('');
+function onUnauthorized() {
+  if (!tokenGateVisible.value) {
+    tokenDraft.value = '';
+    tokenGateVisible.value = true;
+    ElMessage.warning('API Token 缺失或已失效，请输入访问 Token');
+  }
+}
+async function saveTokenGate() {
+  const t = tokenDraft.value.trim();
+  if (!t) return;
+  setApiToken(t);
+  tokenGateVisible.value = false;
+  reconnectWs();
+  await Promise.all([refreshStatus(), loadAgents(), loadTasks(taskPage.value, taskPageSize.value)]);
+  ElMessage.success('Token 已保存，数据已重新加载');
+}
 </script>
 
 <style>:root {
@@ -354,6 +388,7 @@ body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: 
 .panel { background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 6px; padding: 14px; margin-bottom: 16px; }
 .el-dialog { border: 1px solid var(--ct-border2) !important; border-radius: 6px !important; }
 .el-dialog__title { font-family: var(--ct-mono); font-size: 13px !important; }
+.gate-tip { font-size: 12px; color: var(--ct-text2); line-height: 1.6; margin-bottom: 10px; }
 .el-button { border-radius: 4px !important; font-weight: 400 !important; }
 .el-table { --el-table-border-color: var(--ct-border); --el-table-bg-color: var(--ct-panel); --el-table-tr-bg-color: var(--ct-panel); --el-table-header-bg-color: var(--ct-panel2); }
 .el-tag { border-radius: 3px !important; font-family: var(--ct-mono); }
