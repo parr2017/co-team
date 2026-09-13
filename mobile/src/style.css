@@ -65,6 +65,7 @@
   --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.25);
   --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.35);
   --shadow-bubble: 0 1px 4px rgba(0, 0, 0, 0.2);
+  --shadow-card: none; /* dark：边框即层级，不加投影 */
   --bubble-me: var(--ct-accent); /* 品牌情感色：我方气泡（对齐 web DiscussionChat） */
 
   /* ---- Vant 桥接 ---- */
@@ -141,6 +142,7 @@ html.light {
   --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.12);
   --shadow-bubble: 0 1px 4px rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 14px rgba(16, 24, 40, 0.06);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -171,10 +173,10 @@ input, textarea, select { font-size: 16px; }
 .wx-group {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  margin: 8px 16px;
+  border-radius: 14px;
+  margin: 10px 16px;
   overflow: hidden;
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--shadow-card);
 }
 .wx-cell {
   display: flex;
@@ -225,13 +227,21 @@ input, textarea, select { font-size: 16px; }
 
 /* 大写间距标题（mono 点缀，继承 web 的 section 语言） */
 .wx-caption {
-  font-family: var(--ct-mono);
   font-size: var(--fs-sm);
   color: var(--text-3);
-  padding: 14px 20px 6px;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
+  padding: 16px 20px 7px;
+  letter-spacing: 0.3px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.wx-caption::before {
+  content: '';
+  width: 3px; height: 12px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.75;
 }
 
 /* ================= motion ================= */

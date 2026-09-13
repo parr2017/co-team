@@ -307,7 +307,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
           <div class="who-name">主 Agent</div>
           <div class="file-card">
             <details>
-              <summary>📄 交付工具数据 · {{ (item.entry.meta?.results || []).length }} 项</summary>
+              <summary><van-icon name="records" class="sum-ico" /> 交付工具数据 · {{ (item.entry.meta?.results || []).length }} 项</summary>
               <div v-for="(r, ri) in (item.entry.meta?.results || [])" :key="ri" class="tr-item">
                 <template v-if="r && typeof r === 'object'">
                   <div class="tr-head mono">{{ r.name || r.tool || r.path || ('#' + (Number(ri) + 1)) }}</div>
@@ -339,7 +339,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
           <div class="who-name">{{ item.agent }}</div>
           <div v-if="isRawToolJson(item.entry.text)" class="file-card">
             <details>
-              <summary>🔧 工具调用消息（原始输出已折叠）</summary>
+              <summary><van-icon name="setting-o" class="sum-ico" /> 工具调用消息（原始输出已折叠）</summary>
               <pre class="pre">{{ item.entry.text.slice(0, 2000) }}</pre>
             </details>
           </div>
@@ -355,7 +355,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
               <span v-for="c in (item.entry.meta?.changes || []).slice(0, 4)" :key="c" class="chip">✓ {{ c }}</span>
             </div>
             <details v-if="(item.entry.meta?.files || []).length || (item.entry.meta?.commands || []).length">
-              <summary>📄 附件 · {{ (item.entry.meta?.files || []).length }} 文件 / {{ (item.entry.meta?.commands || []).length }} 命令</summary>
+              <summary><van-icon name="link-o" class="sum-ico" /> 附件 · {{ (item.entry.meta?.files || []).length }} 文件 / {{ (item.entry.meta?.commands || []).length }} 命令</summary>
               <pre class="pre">files: {{ (item.entry.meta?.files || []).join(', ') }}
 commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
             </details>
@@ -370,7 +370,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <div class="them-col">
           <div class="who-name">{{ item.agent }} · 交付成果</div>
           <button class="deliv-card" @click="openDeliverable(item.entry)">
-            <span class="dc-ico">📄</span>
+            <van-icon name="description" class="dc-ico" />
             <span class="dc-body">
               <span class="dc-title">{{ item.entry.node_name }}</span>
               <span class="dc-sub">交付报告 · 统一模板 · 点击阅读</span>
@@ -464,7 +464,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <div class="them-col">
           <div class="who-name">{{ item.agent }} · 协同文档</div>
           <button class="deliv-card" @click="openDoc(item.entry)">
-            <span class="dc-ico">📘</span>
+            <van-icon name="notes-o" class="dc-ico" />
             <span class="dc-body">
               <span class="dc-title">docs/{{ item.entry.meta?.doc_type }}.md → v{{ item.entry.meta?.version }}</span>
               <span class="dc-sub">协同文档更新 · 点击阅读</span>
@@ -487,7 +487,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
           >
             <div class="b-error">✗ {{ item.entry.text }}</div>
             <details v-if="item.entry.meta?.raw">
-              <summary>📄 原始输出</summary>
+              <summary><van-icon name="description" class="sum-ico" /> 原始输出</summary>
               <pre class="pre">{{ item.entry.meta.raw }}</pre>
             </details>
           </div>
@@ -626,6 +626,7 @@ details summary { font-size: 12px; color: var(--text-3); }
 .typing-label { font-size: 11px; color: var(--text-3); margin-left: 4px; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 交付成果卡片 */
+.sum-ico { font-size: 13px; color: var(--text-3); vertical-align: -2px; margin-right: 2px; }
 .deliv-card {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px; text-align: left;
@@ -635,7 +636,7 @@ details summary { font-size: 12px; color: var(--text-3); }
   transition: transform 0.1s ease;
 }
 .deliv-card:active { transform: scale(0.98); background: var(--panel-2); }
-.dc-ico { font-size: 20px; }
+.dc-ico { font-size: 20px; color: var(--ct-accent); flex-shrink: 0; display: flex; align-items: center; }
 .dc-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dc-title { font-size: 14px; color: var(--text); font-weight: 600; }
 .dc-sub { font-size: 11px; color: var(--text-3); }

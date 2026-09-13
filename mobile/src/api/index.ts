@@ -350,7 +350,6 @@ export const api = {
     return { ...d, tasks: d.tasks.map(normalizeTask) };
   },
   getTask: async (id: string): Promise<TaskGraph> => normalizeTask(await request<Record<string, any>>(`/api/tasks/${id}`)),
-  taskProgress: (id: string) => request<ProgressInfo>(`/api/tasks/${id}/progress`),
   taskEvents: (id: string) => request<{ task_id: string; events: EventEnvelope[] }>(`/api/tasks/${id}/events`),
   metrics: () => request<{
     tasks: { total: number; success: number; success_rate: number };
@@ -420,7 +419,6 @@ export const api = {
   nodeDiff: (taskId: string, nodeId: string) => request<NodeDiffResponse>(`/api/tasks/${taskId}/nodes/${nodeId}/diff`),
   getModelPool: () => request<{ model_pool: ModelPoolItem[] }>('/api/config/model-pool'),
   fsList: (p: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(p)}`),
-  listDeliverables: (taskId: string) => request<{ task_id: string; deliverables: DeliverableDoc[] }>(`/api/tasks/${taskId}/deliverables`),
   getDeliverable: (taskId: string, nodeId: string) => request<DeliverableDoc & { task_id: string }>(`/api/tasks/${taskId}/deliverables/${nodeId}`),
   // A3 验收合并闭环
   mergeTask: (taskId: string, dryRun: boolean, target?: string) =>

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showToast, showConfirmDialog } from 'vant';
-import { api, statusLabel } from '../api';
+import { api } from '../api';
 import { useTheme } from '../composables/useTheme';
 import StatusTag from '../components/StatusTag.vue';
 import type { TaskGraph, QueueSnapshot } from '../api';
@@ -81,21 +81,22 @@ function badgeCount(t: TaskGraph): number {
 
 /** one-line digest under the title, like the last message preview */
 function digest(t: TaskGraph): string {
-  if (t.status === 'clarifying') return '[需求澄清] 等待你回复澄清问题';
-  if (t.status === 'queued') return '[排队中] 等待前面的任务执行完成';
   const n = t.nodes.length;
   const done = t.nodes.filter((x) => x.status === 'completed').length;
+  if (t.status === 'clarifying') return '等待你回复澄清问题';
+  if (t.status === 'queued') return '等待前面的任务执行完成';
+  if (!n) return '尚未生成执行计划';
   const running = t.nodes.find((x) => ['running', 'retrying'].includes(x.status));
-  if (running) return `[执行中] ${running.name} — ${running.agent}`;
+  if (running) return `正在执行 ${running.name}`;
   const approval = t.nodes.find((x) => x.status === 'waiting_approval');
-  if (approval) return `[待审批] ${approval.name}`;
-  if (t.status === 'success') return `[已完成] ${done}/${n} 节点全部通过`;
+  if (approval) return `待审批 · ${approval.name}`;
+  if (t.status === 'success') return `${n} 个节点全部通过`;
   if (t.status === 'failed') {
     const failed = t.nodes.find((x) => x.status === 'failed');
-    return `[失败] ${failed?.name || n - done} 个节点未通过`;
+    return failed ? `「${failed.name}」未通过` : `${n - done} 个节点未通过`;
   }
-  if (t.status === 'planned') return `[计划待确认] 共 ${n} 个节点`;
-  return `[${statusLabel(t.status)}] ${done}/${n} 节点`;
+  if (t.status === 'planned') return `计划含 ${n} 个节点，待你确认`;
+  return `${done}/${n} 节点完成`;
 }
 
 async function fetchPage(p: number, q = keyword.value) {
@@ -269,26 +270,26 @@ onUnmounted(() => {
       </template>
     </van-nav-bar>
 
-    <div class="ov-bar">
-      <div class="ov-item">
-        <span class="ov-num">{{ runningCount }}</span>
-        <span class="ov-label">执行中</span>
-      </div>
-      <div class="ov-item" :class="{ alert: humanCount > 0 }" @click="router.push('/approvals')">
-        <span class="ov-num">{{ humanCount }}</span>
-        <span class="ov-label">待我处理</span>
-      </div>
-      <div class="ov-item">
-        <span class="ov-num mono">{{ sys?.tokens_total != null ? fmtTok(sys.tokens_total) : '—' }}</span>
-        <span class="ov-label">Token</span>
-      </div>
-      <div class="ov-item">
-        <span class="ov-num mono">{{ sys?.cost_total != null ? '¥' + Number(sys.cost_total).toFixed(2) : '—' }}</span>
-        <span class="ov-label">成本</span>
-      </div>
-      <div class="ov-item approve" @click="router.push('/approvals')">
-        <van-icon name="passed" size="20" />
-        <span class="ov-label">审批</span>
+    <!-- 主角只有一个：等你处理的事；其余是配角指标 -->
+    <div class="hero">
+      <button class="hero-main" @click="router.push('/approvals')">
+        <span class="hero-num" :class="{ alert: humanCount > 0 }">{{ humanCount }}</span>
+        <span class="hero-label">待我处理<template v-if="humanCount"> ›</template></span>
+      </button>
+      <div class="hero-div"></div>
+      <div class="hero-side">
+        <div class="hs-item">
+          <span class="hs-num">{{ runningCount }}</span>
+          <span class="hs-label">执行中</span>
+        </div>
+        <div class="hs-item">
+          <span class="hs-num mono">{{ sys?.tokens_total != null ? fmtTok(sys.tokens_total) : '—' }}</span>
+          <span class="hs-label">Token</span>
+        </div>
+        <div class="hs-item">
+          <span class="hs-num mono">{{ sys?.cost_total != null ? '¥' + Number(sys.cost_total).toFixed(2) : '—' }}</span>
+          <span class="hs-label">成本</span>
+        </div>
       </div>
     </div>
 
@@ -300,18 +301,15 @@ onUnmounted(() => {
       @search="onSearch"
     />
 
-    <!-- 任务中心 status chips: tap to filter the session list -->
-    <div class="stat-row">
+    <!-- 状态筛选：药丸分段 -->
+    <div class="filter-row">
       <button
         v-for="c in chips"
         :key="c.key"
-        class="stat-chip"
-        :class="{ active: statusFilter === c.key }"
+        class="f-chip"
+        :class="{ on: statusFilter === c.key }"
         @click="toggleFilter(c.key)"
-      >
-        <span class="stat-num mono">{{ c.count }}</span>
-        <span class="stat-label">{{ c.label }}</span>
-      </button>
+      >{{ c.label }} <b class="mono">{{ c.count }}</b></button>
     </div>
 
     <!-- execution queues: one lane per project, blocked lanes wait for the user -->
@@ -457,26 +455,27 @@ onUnmounted(() => {
 .s-pill.bad { color: var(--red); background: rgba(255, 93, 110, 0.1); border: 1px solid rgba(255, 93, 110, 0.3); }
 .s-pill.ok { color: var(--green); background: rgba(52, 245, 197, 0.08); border: 1px solid rgba(52, 245, 197, 0.28); }
 .s-proj {
-  font-size: 11px; color: var(--wx-blue); background: rgba(76, 194, 255, 0.08);
-  border: 1px solid rgba(76, 194, 255, 0.22);
-  border-radius: 5px; padding: 2px 7px; max-width: 96px;
+  font-size: 11px; color: var(--text-3); background: var(--panel-2);
+  border-radius: 999px; padding: 2px 8px; max-width: 96px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .s-chevron { flex-shrink: 0; opacity: 0.55; }
 
-.stat-row { display: flex; gap: 7px; padding: 0 12px 8px; overflow-x: auto; }
-.stat-chip {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
-  min-width: 58px; padding: 5px 11px;
-  background: var(--panel-2);
+.filter-row { display: flex; gap: 8px; padding: 12px 16px 4px; overflow-x: auto; }
+.f-chip {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 13px;
+  font-size: var(--fs-sm); color: var(--text-2);
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 9px; cursor: pointer; text-align: left;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  border-radius: 999px; cursor: pointer;
+  transition: all 0.15s ease;
 }
-.stat-chip.active { border-color: var(--accent); background: var(--accent-soft); }
-.stat-num { font-size: 16px; font-weight: 700; color: var(--text); line-height: 1.1; }
-.stat-label { font-size: 11px; color: var(--text-3); }
-.s-restart { height: 22px; padding: 0 9px; border-radius: 6px; font-weight: 500; }
+.f-chip b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.f-chip.on { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.f-chip.on b { color: var(--accent); }
+.s-restart { height: 24px; padding: 0 10px; border-radius: 999px; font-weight: 500; }
 
 /* queue strips between search and the session list */
 .queue-strip {
@@ -499,10 +498,34 @@ onUnmounted(() => {
 </style>
 
 <style scoped>
-.ov-bar { display: flex; align-items: stretch; gap: 8px; padding: 8px 16px 4px; }
-.ov-item { flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px 6px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.ov-item.approve { flex: 0 0 64px; color: var(--ct-accent); justify-content: center; }
-.ov-item.alert .ov-num { color: var(--ct-yellow); }
-.ov-num { font-size: var(--fs-lg); font-weight: 700; color: var(--text); }
-.ov-label { font-size: var(--fs-xs); color: var(--text-3); }
+/* 主角卡：待我处理独占 C 位，配角指标靠右弱化 */
+.hero {
+  display: flex; align-items: stretch;
+  margin: 10px 16px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.hero-main {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 3px; padding: 15px 18px;
+  background: transparent; border: none; text-align: left; cursor: pointer;
+}
+.hero-main:active { background: var(--panel-2); }
+.hero-num { font-size: 30px; font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.hero-num.alert { color: var(--red); }
+.hero-label { font-size: var(--fs-sm); color: var(--text-3); }
+.hero-div { width: 1px; background: var(--border); transform: scaleX(0.5); margin: 10px 0; }
+.hero-side { display: flex; align-items: center; }
+.hs-item {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; padding: 0 14px; min-width: 74px;
+}
+.hs-item + .hs-item { border-left: 1px solid var(--border); transform: scaleX(0.999); }
+.hs-item + .hs-item::before { content: none; }
+.hs-num { font-size: 15px; font-weight: 600; color: var(--text-2); line-height: 1; font-variant-numeric: tabular-nums; }
+.hs-label { font-size: 10.5px; color: var(--text-3); }
 </style>

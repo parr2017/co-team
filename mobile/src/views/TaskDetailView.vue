@@ -530,11 +530,14 @@ function nodeIcon(status: string): string {
         <!-- 任务频道：微信聊天页 -->
         <van-tab title="聊天" name="warroom">
           <div class="warroom">
-            <!-- 阶段条：现在到哪一步 -->
-            <div class="stage-strip">
-              <span class="ss-state" :class="task.status">{{ stageLabel }}</span>
-              <span class="ss-count mono">{{ progressPct }}% · {{ task.nodes.filter((n) => n.status === 'completed').length }}/{{ task.nodes.length }} 节点<template v-if="taskTokens"> · {{ fmtTok(taskTokens) }} tok</template></span>
-              <div class="ss-bar"><div class="ss-fill" :class="{ failed: stageFailed }" :style="{ width: progressPct + '%' }"></div></div>
+            <!-- 进度主角卡：阶段一句话 + 大号百分比 -->
+            <div class="stage-card">
+              <div class="sc-top">
+                <span class="sc-stage" :class="task.status">{{ stageLabel }}</span>
+                <span class="sc-pct mono">{{ progressPct }}<i>%</i></span>
+              </div>
+              <div class="sc-bar"><div class="sc-fill" :class="{ failed: stageFailed }" :style="{ width: progressPct + '%' }"></div></div>
+              <div class="sc-meta">{{ task.nodes.filter((n) => n.status === 'completed').length }}/{{ task.nodes.length }} 节点<template v-if="taskTokens"> · {{ fmtTok(taskTokens) }} tok</template></div>
             </div>
             <div class="member-strip">
               <div
@@ -820,7 +823,7 @@ function nodeIcon(status: string): string {
         <div class="dl-body">
           <div v-if="!docsList.length" class="dl-state">暂无协同文档</div>
           <div v-for="d in docsList" :key="d.type" class="docs-row" @click="docView = { title: `docs/${d.type}.md（v${d.version}）`, content: d.content }">
-            <span class="docs-name">📘 docs/{{ d.type }}.md · v{{ d.version }}</span>
+            <span class="docs-name"><van-icon name="notes-o" class="docs-ico" /> docs/{{ d.type }}.md · v{{ d.version }}</span>
             <span class="docs-meta">{{ d.updated_by }}</span>
           </div>
         </div>
@@ -854,7 +857,7 @@ function nodeIcon(status: string): string {
             </div>
             <div class="out-list">
               <div v-for="f in outputFiles" :key="f" class="docs-row" @click="viewOutputFile(f)">
-                <span class="docs-name">📄 {{ f }}</span>
+                <span class="docs-name"><van-icon name="description" class="docs-ico" /> {{ f }}</span>
               </div>
               <div v-if="!outputFiles.length" class="dl-state">暂无文件</div>
             </div>
@@ -957,12 +960,24 @@ function nodeIcon(status: string): string {
 /* warroom = WeChat chat page */
 .warroom { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 /* 阶段条 */
-.stage-strip { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.ss-state { font-size: 13px; font-weight: 600; color: var(--text-2); flex-shrink: 0; }
-.ss-state.running, .ss-state.retrying { color: var(--wx-orange); }
-.ss-state.completed, .ss-state.success { color: var(--green); }
-.ss-state.failed { color: var(--red); }
-.ss-state.waiting_approval { color: var(--accent); }
+.stage-card {
+  margin: 10px 16px 0; padding: 14px 16px 13px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: var(--shadow-card);
+  flex-shrink: 0;
+}
+.sc-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+.sc-stage { font-size: 14px; font-weight: 600; color: var(--text-2); }
+.sc-stage.running, .sc-stage.retrying { color: var(--wx-orange); }
+.sc-stage.completed, .sc-stage.success { color: var(--green); }
+.sc-stage.failed { color: var(--red); }
+.sc-stage.waiting_approval { color: var(--accent); }
+.sc-pct { font-size: 24px; font-weight: 700; color: var(--text); line-height: 1; font-variant-numeric: tabular-nums; }
+.sc-pct i { font-style: normal; font-size: 13px; color: var(--text-3); margin-left: 1px; }
+.sc-bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.sc-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.4s ease; }
+.sc-fill.failed { background: var(--red); }
+.sc-meta { margin-top: 7px; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* M5 验收报告 */
 .acc-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
@@ -979,15 +994,9 @@ function nodeIcon(status: string): string {
 .sup-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; }
 .sup-reason { font-size: 12px; flex: 1; min-width: 0; }
 .sup-actions { display: flex; gap: 4px; flex-shrink: 0; }
-.ss-count { font-size: 11px; color: var(--text-3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.ss-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--panel-2); overflow: hidden; }
-.ss-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.4s ease; }
-.ss-fill.failed { background: var(--red); }
 .member-strip {
   display: flex; gap: 18px; overflow-x: auto;
-  padding: 12px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  padding: 12px 16px 10px;
   flex-shrink: 0;
   -webkit-overflow-scrolling: touch;
 }
@@ -1125,6 +1134,7 @@ function nodeIcon(status: string): string {
 .df-row.hunk { color: var(--ct-accent); background: rgba(76, 194, 255, 0.08); }
 .df-row.meta { color: var(--text-3); }
 
+.docs-ico { font-size: 14px; color: var(--text-3); vertical-align: -2px; margin-right: 2px; }
 .docs-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px; border-bottom: 1px solid var(--border); }
 .docs-name { font-size: 13px; color: var(--text); }
 .docs-meta { font-size: 11px; color: var(--text-3); }

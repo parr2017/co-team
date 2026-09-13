@@ -29,12 +29,19 @@ const text = computed(() => props.label || props.status);
 .st-tag {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   font-size: var(--fs-xs);
   font-weight: 600;
   line-height: 1;
-  padding: 3px 7px;
-  border-radius: var(--r-sm);
+  padding: 4px 9px;
+  border-radius: 999px;
   white-space: nowrap;
+}
+.st-tag::before {
+  content: '';
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 .st-tag.green { color: var(--ct-green); background: var(--ct-green-soft); }
 .st-tag.yellow { color: var(--ct-yellow); background: var(--ct-yellow-soft); }
