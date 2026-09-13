@@ -41,6 +41,14 @@ const eventListeners = new Set<(msg: EventEnvelope) => void>();
 let ws: WebSocket | null = null;
 let started = false;
 let taskFilter: TaskListFilter | undefined = { scope: 'external' };
+/** 任务中心是否包含项目任务（默认只列外部任务，与原设计一致） */
+const includeProjects = ref(false);
+
+function setTaskScope(all: boolean) {
+  includeProjects.value = all;
+  taskFilter = all ? {} : { scope: 'external' };
+  void loadTasks(1, taskPageSize.value);
+}
 
 /** Subscribe to raw WS events (called after internal state updates). Returns an unsubscribe fn. */
 export function onEvent(cb: (msg: EventEnvelope) => void): () => void {
@@ -262,5 +270,5 @@ function ensureStarted() {
 /** Shared dashboard store — safe to call from any component; opens the WS only once. */
 export function useDashboard() {
   ensureStarted();
-  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, createStage, loadTasks, loadAgents, loadJournals, onEvent, reconnectWs, clearEvents: () => { events.value = []; } };
+  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, createStage, includeProjects, setTaskScope, loadTasks, loadAgents, loadJournals, onEvent, reconnectWs, clearEvents: () => { events.value = []; } };
 }

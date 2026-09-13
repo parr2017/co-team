@@ -2,7 +2,10 @@
   <div class="section">
     <div class="section-head">
       <div class="section-title">任务中心</div>
-      <div class="section-actions">
+      <div class="section-actions" style="display:flex; align-items:center; gap:10px;">
+        <el-tooltip content="开启后列表、徽标与统计涵盖项目开发下的任务（默认只列外部下发的任务）" placement="top">
+          <el-checkbox :model-value="includeProjects" size="small" @change="onScopeChange">包含项目任务</el-checkbox>
+        </el-tooltip>
         <el-tag size="small" type="info" class="mono">共 {{ stats.total }} 个任务</el-tag>
       </div>
     </div>
@@ -64,6 +67,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../api';
+import { useDashboard } from '../composables/useDashboard';
 import TaskTable from './TaskTable.vue';
 import QueuePanel from './QueuePanel.vue';
 
@@ -83,14 +87,19 @@ const emit = defineEmits<{
 
 // ---------- status overview (counts matching the table's external scope, own lightweight poll) ----------
 
+const { includeProjects, setTaskScope } = useDashboard();
+function onScopeChange(v: any) {
+  setTaskScope(!!v);
+  void refreshStats();
+}
+
 const stats = ref({ total: 0, running: 0, queued: 0, waiting: 0, pending: 0, done: 0, failed: 0 });
 let statTimer: number | null = null;
 
 async function refreshStats() {
   try {
-    // same scope as the table below (external ad-hoc tasks): the chips must describe
-    // the list the user is looking at, not a hidden superset that includes project tasks
-    const d = await api.listTasks(1, 200, { scope: 'external' });
+    // 统计口径跟随列表开关（外部任务 / 全部任务）
+    const d = await api.listTasks(1, 200, includeProjects.value ? {} : { scope: 'external' });
     const all = d.tasks || [];
     stats.value = {
       total: d.total,
