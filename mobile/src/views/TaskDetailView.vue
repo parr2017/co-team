@@ -12,6 +12,8 @@ import MdView from '../components/MdView.vue';
 import InterventionInput from '../components/InterventionInput.vue';
 import AgentAvatar from '../components/AgentAvatar.vue';
 import { describeEvent, statusText, taskStage, type EventView } from '../utils/events';
+import { parsePatch, type DiffFile } from '../utils/diff';
+import { copyText } from '../utils/clipboard';
 
 const route = useRoute();
 const router = useRouter();
@@ -297,6 +299,7 @@ function openDiff(n: { id: string; name: string }) {
 async function loadDiff(nodeId: string) {
   diffLoading.value = true;
   diffData.value = null;
+  diffFilter.value = '';
   try {
     diffData.value = await api.nodeDiff(taskId.value, nodeId);
   } catch (e: any) {
@@ -306,13 +309,19 @@ async function loadDiff(nodeId: string) {
   }
 }
 
-function diffLineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
-  return '';
+/** diff 弹层分文件渲染：解析 unified patch + 文件过滤 + 复制（此前整包平铺无对齐无复制） */
+const diffFilter = ref('');
+const diffParsed = computed<DiffFile[]>(() => (diffData.value?.available ? parsePatch(diffData.value?.patch || '') : []));
+const diffFilesShown = computed(() => (diffFilter.value ? diffParsed.value.filter((f) => f.path === diffFilter.value) : diffParsed.value));
+const diffStats = computed(() => `${diffParsed.value.length} 文件 · +${diffParsed.value.reduce((s, f) => s + f.insertions, 0)} −${diffParsed.value.reduce((s, f) => s + f.deletions, 0)}`);
+function copyDiff() {
+  const text = diffFilter.value
+    ? (diffParsed.value.find((f) => f.path === diffFilter.value)?.patch || '')
+    : (diffData.value?.patch || '');
+  void copyText(text).then((ok) => showToast(ok ? '已复制 diff' : '复制失败（浏览器限制）'));
+}
+function pickDiffFile(path: string) {
+  diffFilter.value = diffFilter.value === path ? '' : path;
 }
 
 const RUNNING_STATES = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'];
@@ -744,11 +753,12 @@ function nodeIcon(status: string): string {
       title="交给哪位成员"
       @select="onSwapSelect"
     />
-    <!-- 节点代码变更阅读器 -->
+    <!-- 节点代码变更阅读器：分文件渲染 + 文件过滤 + 复制 -->
     <van-popup v-model:show="diffOpen" position="bottom" :style="{ height: '80%' }" round>
       <div class="dl-viewer">
         <div class="dl-head">
           <span class="dl-title">代码变更 · {{ diffNode?.name }}</span>
+          <span class="dl-copy mono" @click="copyDiff">复制</span>
           <van-icon name="cross" size="18" @click="diffOpen = false" />
         </div>
         <div class="dl-body">
@@ -756,15 +766,27 @@ function nodeIcon(status: string): string {
           <template v-else-if="diffData">
             <div v-if="!diffData.available" class="dl-state mono">{{ diffData.reason || '暂无代码变更' }}</div>
             <template v-else>
-              <div class="dl-files mono">
-                <div v-for="f in diffData.files" :key="f.path" class="dl-file">
-                  <span class="df-path">{{ f.path }}</span>
-                  <span class="df-ins">+{{ f.insertions }}</span>
-                  <span class="df-del">−{{ f.deletions }}</span>
+              <div class="dl-stats mono">
+                <span>{{ diffStats }}</span>
+                <span v-if="diffFilter" class="dl-filter" @click="diffFilter = ''">已过滤: {{ diffFilter }} ×</span>
+              </div>
+              <div v-if="diffParsed.length > 1" class="dl-chips">
+                <button v-for="f in diffParsed" :key="f.path" type="button" class="dl-chip mono" :class="{ on: diffFilter === f.path }" @click="pickDiffFile(f.path)">
+                  {{ f.path.split('/').pop() }} <i class="ins">+{{ f.insertions }}</i><i class="del">−{{ f.deletions }}</i>
+                </button>
+              </div>
+              <div v-for="f in diffFilesShown" :key="f.path" class="dl-file-block">
+                <div class="dfb-head mono">
+                  <span class="dfb-path">{{ f.path }}</span>
+                  <span class="ins">+{{ f.insertions }}</span>
+                  <span class="del">−{{ f.deletions }}</span>
+                </div>
+                <div v-for="(ln, i) in f.lines" :key="i" class="df-row" :class="ln.kind">
+                  <span class="df-no mono">{{ ln.oldNo || '' }}</span>
+                  <span class="df-no mono">{{ ln.newNo || '' }}</span>
+                  <span class="df-code mono">{{ ln.text || ' ' }}</span>
                 </div>
               </div>
-              <pre class="dl-patch mono"><code><span v-for="(line, i) in (diffData.patch || '').split('\n')" :key="i" class="pl" :class="diffLineClass(line)">{{ line === '' ? ' ' : line }}
-</span></code></pre>
             </template>
           </template>
         </div>
@@ -1058,23 +1080,33 @@ function nodeIcon(status: string): string {
 
 /* diff 阅读器 */
 .dl-viewer { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
-.dl-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
-.dl-title { font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.dl-title { font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.dl-copy { font-size: 12px; color: var(--ct-accent); padding: 4px 8px; min-height: 28px; display: inline-flex; align-items: center; }
 .dl-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 14px; }
 .dl-state { text-align: center; color: var(--text-3); font-size: 13px; padding: 40px 0; }
-.dl-files { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
-.dl-file { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
-.dl-file:last-child { border-bottom: none; }
-.df-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
-.df-ins { color: var(--green); }
-.df-del { color: var(--red); }
-.dl-patch { margin: 0; background: rgba(5, 10, 16, 0.75); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11px; line-height: 1.5; overflow-x: auto; }
-.dl-patch code { display: block; font-family: inherit; }
-.pl { display: block; white-space: pre-wrap; word-break: break-all; color: var(--text-2); }
-.pl.add { background: rgba(7, 193, 96, 0.12); color: var(--green); }
-.pl.del { background: rgba(250, 81, 81, 0.10); color: var(--red); }
-.pl.hunk { color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); }
-.pl.meta { color: var(--text-3); }
+.dl-stats { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-3); margin-bottom: 8px; }
+.dl-filter { color: var(--ct-accent); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.dl-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 9px; min-height: 28px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel-2); color: var(--text-2); max-width: 100%; }
+.dl-chip span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-chip.on { border-color: var(--ct-accent); color: var(--ct-accent); background: var(--bg); }
+.dl-chip .ins { color: var(--green); font-style: normal; }
+.dl-chip .del { color: var(--red); font-style: normal; }
+.dl-file-block { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; background: var(--panel-2); }
+.dfb-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.dfb-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.dl-file-block .ins { color: var(--green); }
+.dl-file-block .del { color: var(--red); }
+.df-row { display: flex; align-items: baseline; font-size: 11px; line-height: 1.5; }
+.df-no { flex: 0 0 34px; text-align: right; padding: 0 5px; color: var(--text-3); opacity: 0.65; font-size: 10px; user-select: none; }
+.df-code { flex: 1; min-width: 0; white-space: pre; overflow-x: auto; color: var(--text-2); padding: 0 8px 0 0; }
+.df-row.add { background: rgba(7, 193, 96, 0.10); }
+.df-row.add .df-code { color: var(--green); }
+.df-row.del { background: rgba(250, 81, 81, 0.08); }
+.df-row.del .df-code { color: var(--red); }
+.df-row.hunk { color: var(--ct-accent); background: rgba(76, 194, 255, 0.08); }
+.df-row.meta { color: var(--text-3); }
 
 .docs-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px; border-bottom: 1px solid var(--border); }
 .docs-name { font-size: 13px; color: var(--text); }

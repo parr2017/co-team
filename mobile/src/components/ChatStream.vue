@@ -238,10 +238,6 @@ function fmtFull(ts: string): string {
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
-function dump(v: unknown): string {
-  return JSON.stringify(v, null, 1);
-}
-
 /** 弱模型偶发把 tool_calls JSON 当最终消息输出——折叠为可展开卡片而非大段裸 JSON。 */
 function isRawToolJson(text: string): boolean {
   return /"tool_calls"\s*:/.test(text || '') && /^\s*\{/.test(text || '');
@@ -294,7 +290,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
         </div>
       </div>
 
-      <!-- 主 Agent 工具数据（文件卡片） -->
+      <!-- 主 Agent 工具数据（结构化 key-value，替代整段 JSON dump） -->
       <div v-else-if="item.t === 'tool_results'" class="row them">
         <AgentAvatar name="orchestrator" :size="36" />
         <div class="them-col">
@@ -302,7 +298,19 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
           <div class="file-card">
             <details>
               <summary>📄 交付工具数据 · {{ (item.entry.meta?.results || []).length }} 项</summary>
-              <pre class="pre">{{ dump(item.entry.meta?.results) }}</pre>
+              <div v-for="(r, ri) in (item.entry.meta?.results || [])" :key="ri" class="tr-item">
+                <template v-if="r && typeof r === 'object'">
+                  <div class="tr-head mono">{{ r.name || r.tool || r.path || ('#' + (Number(ri) + 1)) }}</div>
+                  <div v-for="(v, k) in r" :key="k" class="tr-kv">
+                    <template v-if="k !== 'name' && k !== 'tool' && v !== null && v !== undefined && v !== ''">
+                      <span class="tr-k mono">{{ k }}</span>
+                      <span class="tr-v">{{ typeof v === 'object' ? JSON.stringify(v) : String(v) }}</span>
+                    </template>
+                  </div>
+                </template>
+                <div v-else class="tr-head mono">{{ String(r) }}</div>
+              </div>
+              <div v-if="!(item.entry.meta?.results || []).length" class="pre">（空）</div>
             </details>
           </div>
         </div>
@@ -545,7 +553,14 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
 /* 汇报内的验证行 */
 .b-verify { margin-top: 6px; font-size: 12px; color: var(--green); background: rgba(7, 193, 96, 0.08); border-left: 3px solid var(--green); border-radius: 4px; padding: 4px 8px; font-family: Consolas, monospace; }
 
-.file-card { background: rgba(22, 32, 48, 0.85); border: 1px solid rgba(56, 189, 248, 0.14); border-radius: 9px; padding: 7px 10px; }
+.file-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 7px 10px; }
+/* 工具结果结构化条目 */
+.tr-item { padding: 5px 0; border-bottom: 1px dotted var(--border); }
+.tr-item:last-child { border-bottom: none; }
+.tr-head { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; overflow-wrap: anywhere; }
+.tr-kv { display: flex; gap: 6px; font-size: 11px; line-height: 1.5; }
+.tr-k { flex-shrink: 0; color: var(--text-3); min-width: 52px; }
+.tr-v { flex: 1; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .chip { font-size: 11px; color: var(--green); border: 1px solid rgba(52, 245, 197, 0.25); border-radius: 4px; padding: 1px 6px; background: rgba(52, 245, 197, 0.08); }
 details { margin-top: 6px; }
