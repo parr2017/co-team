@@ -6,14 +6,37 @@
 
 const BASE = import.meta.env.VITE_API_BASE ?? '';
 
+// SEC-P0 API Token：localStorage 持久化；401 时一次性弹出输入（存后自动重试）
+export function getApiToken(): string {
+  return localStorage.getItem('coteam-api-token') || '';
+}
+export function setApiToken(token: string) {
+  localStorage.setItem('coteam-api-token', token);
+}
+function askApiToken(): string {
+  // 一次性输入：企业内网部署时由管理员下发 token（无登录系统的轻量门禁）
+  const v = window.prompt('本系统已启用 API Token 门禁，请输入访问 Token：') || '';
+  if (v.trim()) setApiToken(v.trim());
+  return v.trim();
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const build = (): RequestInit => {
+    const token = getApiToken();
+    const headers = new Headers(init?.headers);
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    return { ...init, headers };
+  };
   let res: Response;
   try {
-    res = await fetch(`${BASE}${url}`, init);
+    res = await fetch(`${BASE}${url}`, build());
   } catch {
     // phones (esp. iOS Safari) abort long fetches with "Load failed" / "Failed to fetch";
     // surface a readable message instead of the raw browser error
     throw new Error('网络连接失败或请求超时，请检查网络后重试');
+  }
+  if (res.status === 401 && !getApiToken()) {
+    if (askApiToken()) return request<T>(url, init); // 输入后重试一次
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error((body as any).detail || res.statusText || `请求失败(${res.status})`);

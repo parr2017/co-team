@@ -7,6 +7,7 @@ import { api } from '../api';
 import type { TaskGraph, EventEnvelope, NodeDiffResponse } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import ChatStream from '../components/ChatStream.vue';
+import StatusTag from '../components/StatusTag.vue';
 import InterventionInput from '../components/InterventionInput.vue';
 import AgentAvatar from '../components/AgentAvatar.vue';
 import { describeEvent, statusText, taskStage, type EventView } from '../utils/events';
@@ -25,6 +26,16 @@ const events = ref<EventEnvelope[]>([]);
 const loadFailed = ref(false);
 // M10-A：聊天长按"引用"→ 介入输入框预填
 const quoteDraft = ref('');
+
+// M10-C 长内容弹窗化
+const proposalViewOpen = ref(false);
+const proposalView = ref<any>(null);
+const goalOpen = ref(false);
+const accView = ref<any>(null);
+const accViewOpen = computed({
+  get: () => accView.value !== null,
+  set: (v: boolean) => { if (!v) accView.value = null; },
+});
 
 // ---------- M10-C 澄清答复卡 / 全局目标 / 快照 ----------
 const clarifyNode = computed(() => (task.value?.nodes || []).find((n) => n.status === 'waiting_clarify') || null);
@@ -545,17 +556,12 @@ function nodeIcon(status: string): string {
               </div>
             </div>
 
-            <!-- M10-C 全局目标：查看/编辑 -->
+            <!-- M10-C 全局目标：摘要 + 弹窗看全文/编辑（长内容不再挤压列表） -->
             <div class="wx-group">
-              <div class="wx-cell">
+              <div class="wx-cell tap-cell" @click="goalOpen = true">
                 <div class="sup-title">全局目标</div>
-                <div class="goal-text">{{ goalContent || '（未设置）' }}</div>
-                <div v-if="goalEditing" class="cl-actions">
-                  <textarea v-model="goalDraft" class="goal-area" rows="3"></textarea>
-                  <van-button size="small" type="primary" :loading="goalSaving" @click="saveGoal">保存</van-button>
-                  <van-button size="small" plain @click="goalEditing = false">取消</van-button>
-                </div>
-                <van-button v-else size="small" plain @click="goalEditing = true">编辑</van-button>
+                <div class="goal-text clamp">{{ goalContent || '（未设置）' }}</div>
+                <span class="tap-more">全文 ›</span>
               </div>
             </div>
 
@@ -573,29 +579,28 @@ function nodeIcon(status: string): string {
               </div>
             </div>
 
+            <!-- M10-C 验收报告：摘要行 + 点击弹窗看完整证据 -->
             <div v-if="acceptanceReport" class="wx-group">
               <div class="wx-cell">
                 <div class="sup-title">最终验收报告 · {{ (acceptanceReport.platforms || []).join('/') }}</div>
-                <div v-for="item in acceptanceReport.items" :key="item.id" class="acc-item">
+                <div v-for="item in acceptanceReport.items" :key="item.id" class="acc-item tap-cell" @click="accView = item">
                   <span class="acc-badge" :class="item.status">{{ item.status === 'done' ? '✓' : item.status === 'failed' ? '✗' : '…' }}</span>
                   <div class="acc-body">
-                    <div class="acc-req">{{ item.requirement }}</div>
-                    <div class="acc-note">{{ item.evidence || item.audit_note || (item.evidence_type + ' · 待人工裁决') }}</div>
+                    <div class="acc-req clamp">{{ item.requirement }}</div>
+                    <div class="acc-note clamp">{{ item.evidence || item.audit_note || (item.evidence_type + ' · 待人工裁决') }}</div>
                   </div>
                 </div>
                 <div class="acc-note">E2E: {{ acceptanceReport.e2e?.note }}</div>
               </div>
             </div>
 
+            <!-- M10-C 监督者提案：摘要行 + 点击弹窗看全文并裁决 -->
             <div v-if="pendingProposals.length" class="wx-group">
               <div class="wx-cell">
                 <div class="sup-title">监督者提案 · 待批准</div>
-                <div v-for="p in pendingProposals" :key="p.id" class="sup-row">
-                  <span class="sup-reason">{{ p.reason || p.type }}</span>
-                  <div class="sup-actions">
-                    <van-button size="small" round type="primary" :loading="deciding === p.id" @click="decideProposal(p.id, true)">批准</van-button>
-                    <van-button size="small" round :loading="deciding === p.id" @click="decideProposal(p.id, false)">拒绝</van-button>
-                  </div>
+                <div v-for="p in pendingProposals" :key="p.id" class="sup-row tap-cell" @click="proposalView = p">
+                  <span class="sup-reason clamp">{{ p.reason || p.type }}</span>
+                  <span class="tap-more">全文 ›</span>
                 </div>
               </div>
             </div>
@@ -811,6 +816,53 @@ function nodeIcon(status: string): string {
         </div>
       </div>
     </van-popup>
+
+    <!-- M10-C 提案全文弹窗：完整内容 + 裁决按钮 -->
+    <van-popup v-model:show="proposalViewOpen" position="bottom" :style="{ height: '72%' }" round>
+      <div class="pv-body" v-if="proposalView">
+        <div class="pv-head">
+          <StatusTag :status="'waiting_approval'" label="提案 · 待裁决" />
+          <span class="mono">{{ proposalView.type }}</span>
+        </div>
+        <div class="pv-text">{{ proposalView.reason || proposalView.type }}</div>
+        <div v-if="proposalView.description" class="pv-text sub">{{ proposalView.description }}</div>
+        <div class="pv-actions">
+          <van-button type="primary" block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, true); proposalViewOpen = false">批准执行</van-button>
+          <van-button block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, false); proposalViewOpen = false">拒绝</van-button>
+        </div>
+      </div>
+    </van-popup>
+
+    <!-- M10-C 全局目标全文弹窗：查看 + 编辑 -->
+    <van-popup v-model:show="goalOpen" position="bottom" :style="{ height: '72%' }" round>
+      <div class="pv-body">
+        <div class="pv-head">
+          <StatusTag :status="'done'" label="全局目标" />
+          <van-icon name="cross" size="18" @click="goalOpen = false" />
+        </div>
+        <div v-if="!goalEditing" class="pv-text pre-wrap">{{ goalContent || '（未设置）' }}</div>
+        <textarea v-else v-model="goalDraft" class="goal-area" rows="8"></textarea>
+        <div class="pv-actions">
+          <van-button v-if="!goalEditing" type="primary" block @click="goalDraft = goalContent; goalEditing = true">编辑</van-button>
+          <template v-else>
+            <van-button type="primary" block :loading="goalSaving" @click="saveGoal(); goalOpen = false">保存</van-button>
+            <van-button block @click="goalEditing = false">取消</van-button>
+          </template>
+        </div>
+      </div>
+    </van-popup>
+
+    <!-- M10-C 验收项证据弹窗 -->
+    <van-popup v-model:show="accViewOpen" position="bottom" :style="{ height: '62%' }" round>
+      <div class="pv-body" v-if="accView">
+        <div class="pv-head">
+          <StatusTag :status="accView.status" :label="accView.status" />
+          <van-icon name="cross" size="18" @click="accViewOpen = false" />
+        </div>
+        <div class="pv-text">{{ accView.requirement }}</div>
+        <div class="pv-text sub pre-wrap">{{ accView.evidence || accView.audit_note || '（无机器证据，待人工裁决）' }}</div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -1022,4 +1074,23 @@ function nodeIcon(status: string): string {
 .out-pre { max-height: 260px; overflow: auto; background: rgba(5, 10, 16, 0.75); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11px; white-space: pre-wrap; color: #9fe8f5; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0; }
 .empty-text { font-size: 13px; color: var(--text-3); }
+</style>
+
+<style scoped>
+/* M10-C 长内容弹窗化 */
+.clamp { min-width: 0; overflow-wrap: anywhere; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tap-cell { cursor: pointer; }
+.tap-cell:active { background: var(--panel-2); }
+.tap-more { font-size: var(--fs-xs); color: var(--ct-accent); flex-shrink: 0; margin-left: 8px; }
+.goal-text.clamp { -webkit-line-clamp: 2; }
+.pv-body { height: 100%; display: flex; flex-direction: column; padding: 16px; gap: 10px; overflow-y: auto; }
+.pv-head { display: flex; justify-content: space-between; align-items: center; }
+.pv-text { font-size: var(--fs-md); overflow-wrap: anywhere; word-break: break-all; }
+.pv-text.sub { color: var(--text-2); font-size: var(--fs-sm); }
+.pv-text.pre-wrap, .pre-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pv-actions { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+.goal-area { width: 100%; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); color: var(--text); font-size: var(--fs-md); padding: 8px; outline: none; resize: vertical; }
+/* 溢出总保护 */
+.wx-group, .wx-cell { min-width: 0; overflow-wrap: anywhere; }
+.acc-body { min-width: 0; overflow-wrap: anywhere; }
 </style>

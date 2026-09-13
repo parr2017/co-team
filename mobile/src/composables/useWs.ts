@@ -20,14 +20,17 @@ const resyncFns = new Set<() => void>();
 function wsUrl(): string {
   const base = import.meta.env.VITE_API_BASE ?? '';
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  // SEC-P0：API token 随 WS 升级携带
+  const t = localStorage.getItem('coteam-api-token') || '';
+  const qs = t ? `?token=${encodeURIComponent(t)}` : '';
   if (base) {
     // explicit base (app packaging): derive host from it
     try {
       const u = new URL(base);
-      return `${proto}://${u.host}/ws/events`;
+      return `${proto}://${u.host}/ws/events${qs}`;
     } catch { /* fall through to same-origin */ }
   }
-  return `${proto}://${location.host}/ws/events`;
+  return `${proto}://${location.host}/ws/events${qs}`;
 }
 
 function connect() {
