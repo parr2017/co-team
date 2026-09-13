@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue';
-import { marked } from 'marked';
+import { renderMd as mdShared } from '../utils/md';
 import { api, type JournalEntry } from '../api';
 import { showToast } from 'vant';
 import { useDashboard } from '../composables/useDashboard';
@@ -248,9 +248,7 @@ function isRawToolJson(text: string): boolean {
 }
 
 function md(text: string): string {
-  if (!text) return '';
-  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return String(marked.parse(escaped, { async: false, breaks: true }));
+  return mdShared(text);
 }
 
 onUnmounted(() => unsubFns.forEach((u) => u()));

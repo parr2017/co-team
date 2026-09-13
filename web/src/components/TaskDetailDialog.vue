@@ -376,7 +376,7 @@
 
     <!-- A3 合并确认弹窗 -->
     <el-dialog :model-value="mergeConfirmOpen" title="确认合并" width="560px" append-to-body @close="mergeConfirmOpen = false">
-      <div class="md">{{ mergeMsg }}</div>
+      <MdView :source="mergeMsg" />
       <div class="mono" style="margin-top: 8px; color: var(--ct-text3)">合并后成果进入主分支；任务分支保留可回溯。</div>
       <template #footer>
         <el-button size="small" @click="mergeConfirmOpen = false">取消</el-button>
@@ -421,7 +421,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { marked } from 'marked';
+import { renderMarkdown as mdShared } from '../utils/md';
 import { api, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, type SnapshotMeta } from '../api';
 import PipelineTrack from './PipelineTrack.vue';
 import ChatStream from './ChatStream.vue';
@@ -594,8 +594,7 @@ async function viewOutputFile(path: string) {
 }
 
 function mdRender(text: string): string {
-  const escaped = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return String(marked.parse(escaped, { async: false, breaks: true }));
+  return mdShared(text);
 }
 
 // ---------- 消耗统计（Σ 节点 tokens，按模型池单价估算成本） ----------

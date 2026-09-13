@@ -9,7 +9,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { marked } from 'marked';
+import { renderMarkdown } from '../utils/md';
 import { api } from '../api';
 
 defineProps<{ modelValue: boolean }>();
@@ -20,7 +20,7 @@ const updatedAt = ref('');
 const loading = ref(false);
 const error = ref('');
 
-const rendered = computed(() => marked.parse(content.value, { async: false }) as string);
+const rendered = computed(() => renderMarkdown(content.value));
 
 async function load() {
   loading.value = true;

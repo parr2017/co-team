@@ -2,12 +2,13 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showDialog, showConfirmDialog, showToast } from 'vant';
-import { marked } from 'marked';
+import { renderMd as mdShared } from '../utils/md';
 import { api } from '../api';
 import type { TaskGraph, EventEnvelope, NodeDiffResponse } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import ChatStream from '../components/ChatStream.vue';
 import StatusTag from '../components/StatusTag.vue';
+import MdView from '../components/MdView.vue';
 import InterventionInput from '../components/InterventionInput.vue';
 import AgentAvatar from '../components/AgentAvatar.vue';
 import { describeEvent, statusText, taskStage, type EventView } from '../utils/events';
@@ -277,8 +278,7 @@ async function openOutput() {
 }
 
 function renderMd(text: string): string {
-  const escaped = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return String(marked.parse(escaped, { async: false, breaks: true }));
+  return mdShared(text);
 }
 
 async function viewOutputFile(path: string) {
@@ -549,7 +549,7 @@ function nodeIcon(status: string): string {
             <div v-if="clarifyNode" class="wx-group">
               <div class="wx-cell">
                 <div class="sup-title">节点「{{ clarifyNode.name }}」等待澄清确认</div>
-                <div v-if="clarifyBrief" class="cl-brief">{{ clarifyBrief.approach }}</div>
+                <div v-if="clarifyBrief" class="cl-brief"><MdView :source="clarifyBrief.approach" /></div>
                 <div v-if="clarifyBrief?.questions?.length" class="cl-q">
                   <div v-for="(q, qi) in clarifyBrief.questions" :key="qi" class="cl-q-row">
                     <div class="cl-q-text">{{ Number(qi) + 1 }}. {{ q }}</div>
@@ -653,7 +653,7 @@ function nodeIcon(status: string): string {
                     <van-button size="mini" plain type="primary">更换 Agent</van-button>
                   </div>
                   <div v-if="n.error" class="n-error">✗ {{ n.error }}</div>
-                  <div v-if="n.result?.summary" class="n-summary">{{ n.result.summary }}</div>
+                  <MdView v-if="n.result?.summary" class="n-summary" :source="n.result.summary" />
                   <div v-if="n.result?.verification" class="n-verify">验证 · {{ n.result.verification }}</div>
                   <div v-if="(n.result?.changes || []).length" class="n-changes">
                     <div v-for="c in n.result!.changes!.slice(0, 8)" :key="c" class="change">✓ {{ c }}</div>
@@ -834,8 +834,8 @@ function nodeIcon(status: string): string {
             <van-icon name="cross" size="18" @click="proposalViewOpen = false" />
           </span>
         </div>
-        <div class="pv-text">{{ proposalView.reason || proposalView.type }}</div>
-        <div v-if="proposalView.description" class="pv-text sub">{{ proposalView.description }}</div>
+        <MdView class="pv-text" :source="proposalView.reason || proposalView.type" />
+        <MdView v-if="proposalView.description" class="pv-text sub" :source="proposalView.description" />
         <div class="pv-actions">
           <van-button type="primary" block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, true)">批准执行</van-button>
           <van-button block :loading="deciding === proposalView.id" @click="decideProposal(proposalView.id, false)">拒绝</van-button>
@@ -870,7 +870,7 @@ function nodeIcon(status: string): string {
           <van-icon name="cross" size="18" @click="accViewOpen = false" />
         </div>
         <div class="pv-text">{{ accView.requirement }}</div>
-        <div class="pv-text sub pre-wrap">{{ accView.evidence || accView.audit_note || '（无机器证据，待人工裁决）' }}</div>
+        <MdView class="pv-text sub" :source="accView.evidence || accView.audit_note || '（无机器证据，待人工裁决）'" />
       </div>
     </van-popup>
   </div>
@@ -996,7 +996,7 @@ function nodeIcon(status: string): string {
 .n-swap { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
 .n-swap-label { font-size: 12px; color: var(--text-2); }
 .n-error { color: var(--red); font-size: 14px; margin-bottom: 8px; white-space: pre-wrap; line-height: 1.5; }
-.n-summary { font-size: 14px; color: var(--text-2); margin-bottom: 8px; white-space: pre-wrap; line-height: 1.55; }
+.n-summary { font-size: 14px; color: var(--text-2); margin-bottom: 8px; line-height: 1.55; }
 .change { font-size: 13px; color: var(--green); margin-bottom: 3px; }
 .n-report { background: var(--panel-2); border-radius: 9px; padding: 11px 12px; margin-bottom: 10px; }
 .r-title { font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }

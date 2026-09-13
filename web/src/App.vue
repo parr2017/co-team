@@ -424,4 +424,25 @@ body { margin: 0; background: var(--ct-bg); color: var(--ct-text); font-family: 
 .md a { color: var(--ct-accent); }
 .md hr { border: none; border-top: 1px solid var(--ct-border); margin: 1em 0; }
 .md img { max-width: 100%; }
+.md del, .md s { color: var(--ct-text3); }
+
+/* 代码块工具条 + 表格横滚包裹（utils/md.ts 生成结构） */
+.md-code { margin: 0.6em 0; border: 1px solid var(--ct-border); border-radius: 6px; overflow: hidden; }
+.md-code-bar { display: flex; align-items: center; justify-content: space-between; padding: 3px 10px; background: var(--ct-panel2); border-bottom: 1px solid var(--ct-border); }
+.md-code-lang { font-size: 10px; color: var(--ct-text3); text-transform: uppercase; letter-spacing: 0.5px; }
+.md-copy { border: none; background: transparent; color: var(--ct-accent); font-size: 11px; cursor: pointer; padding: 1px 4px; border-radius: 3px; }
+.md-copy:hover { background: var(--ct-bg); }
+.md-code pre { margin: 0; padding: 10px 12px; overflow-x: auto; background: var(--ct-bg); }
+.md-code pre code { display: block; }
+.md-twrap { overflow-x: auto; margin: 0.6em 0; }
+.md-twrap table { margin: 0; }
+
+/* highlight.js 令牌色：跟随双主题变量，不引第三方主题 CSS */
+.md .hljs-keyword, .md .hljs-selector-tag, .md .hljs-built_in, .md .hljs-tag { color: var(--ct-accent); }
+.md .hljs-string, .md .hljs-attr, .md .hljs-template-variable, .md .hljs-addition { color: var(--ct-green); }
+.md .hljs-comment, .md .hljs-quote, .md .hljs-deletion { color: var(--ct-text3); font-style: italic; }
+.md .hljs-number, .md .hljs-literal, .md .hljs-symbol, .md .hljs-bullet { color: var(--ct-yellow, #d29922); }
+.md .hljs-title, .md .hljs-function, .md .hljs-name, .md .hljs-section { color: var(--ct-green); }
+.md .hljs-variable, .md .hljs-attribute, .md .hljs-params { color: var(--ct-text); }
+.md .hljs-type, .md .hljs-class, .md .hljs-meta { color: var(--ct-red); }
 

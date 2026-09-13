@@ -8,6 +8,7 @@ import { useRouter } from 'vue-router';
 import { showToast } from 'vant';
 import { api } from '../api';
 import StatusTag from '../components/StatusTag.vue';
+import MdView from '../components/MdView.vue';
 import { useDashboard } from '../composables/useDashboard';
 
 const router = useRouter();
@@ -165,7 +166,7 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
           <span class="ap-task mono" @click="goTask(it.taskId)">{{ it.taskId }} ›</span>
         </div>
         <div class="ap-title">{{ it.title }}</div>
-        <div v-if="it.detail" class="ap-detail">{{ it.detail }}</div>
+        <MdView v-if="it.detail" class="ap-detail" :source="it.detail" />
         <div v-if="it.act" class="ap-actions">
           <van-button size="small" type="primary" :loading="busy(it.key)" @click="decide(it, true)">批准</van-button>
           <van-button v-if="it.rejectable" size="small" :loading="busy(it.key)" @click="decide(it, false)">拒绝</van-button>
@@ -188,6 +189,6 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
 .ap-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .ap-task { font-size: var(--fs-xs); color: var(--ct-accent); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ap-title { font-size: var(--fs-md); font-weight: 600; margin-bottom: 4px; }
-.ap-detail { font-size: var(--fs-sm); color: var(--text-2); margin-bottom: 8px; word-break: break-all; }
+.ap-detail { font-size: var(--fs-sm); color: var(--text-2); margin-bottom: 8px; }
 .ap-actions { display: flex; gap: 8px; }
 </style>

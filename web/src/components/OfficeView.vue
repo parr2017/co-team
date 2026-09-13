@@ -115,7 +115,7 @@
               <span v-for="t in (e.tags || []).filter((x: string) => ['群组讨论', '项目规划方案', '任务复盘'].includes(x))" :key="t" class="exp-tag">{{ t }}</span>
             </div>
             <div class="exp-src mono">来源 {{ e.source }} · {{ (e.updated_at || e.created_at || '').slice(0, 10) }}</div>
-            <div class="exp-body">{{ e.content.slice(0, 300) }}{{ e.content.length > 300 ? '…' : '' }}</div>
+            <MdView class="exp-body" :source="e.content" />
           </div>
           <div v-if="!projectKnowledge.length" class="empty mono">暂无条目 — 群组讨论经验、任务复盘与规划方案会自动沉淀到这里</div>
         </el-collapse-item>
@@ -187,7 +187,7 @@
 
     <!-- 交付成果阅读器：统一模板固定展现 -->
     <el-dialog v-model="delivViewOpen" :title="'交付成果 · ' + (delivView?.node_name || '')" width="720px" top="5vh" append-to-body>
-      <div class="deliverable-md md" v-html="renderMd(delivView?.markdown || '')"></div>
+      <MdView class="deliverable-md" :source="delivView?.markdown || ''" />
     </el-dialog>
   </div>
 </template>
@@ -195,7 +195,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { marked } from 'marked';
+import { renderMarkdown } from '../utils/md';
+import MdView from './MdView.vue';
 import { api, type AgentInfo, type ProjectProgressReport, type ProjectDetail, type TaskGraph, type TaskNode, type KnowledgeEntry } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
@@ -242,9 +243,7 @@ function viewDeliverable(n: { deliverable: { node_name: string; markdown: string
     delivViewOpen.value = true;
   }
 }
-function renderMd(text: string): string {
-  return String(marked.parse(text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'), { async: false, breaks: true }));
-}
+
 const creatingTask = ref(false);
 const taskDesc = ref('');
 const newMemory = ref('');
@@ -540,7 +539,7 @@ defineExpose({ refreshDetail, loadAgents });
 .exp-title { font-size: 12px; font-weight: 600; color: var(--ct-text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .exp-tag { font-size: 9px; font-weight: 400; color: var(--ct-accent); border: 1px solid var(--ct-accent); border-radius: 3px; padding: 0 4px; }
 .exp-src { font-size: 10px; color: var(--ct-text3); margin: 2px 0; }
-.exp-body { font-size: 11px; color: var(--ct-text2); line-height: 1.6; white-space: pre-wrap; }
+.exp-body { font-size: 11px; color: var(--ct-text2); line-height: 1.6; }
 
 .empty { color: var(--ct-text3); text-align: center; padding: 30px; font-size: 12px; }
 .muted { color: var(--ct-text3); text-transform: none; font-weight: 400; }

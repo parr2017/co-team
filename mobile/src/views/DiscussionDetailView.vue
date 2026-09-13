@@ -2,13 +2,14 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showToast } from 'vant';
-import { marked } from 'marked';
+import { renderMd as renderMdShared } from '../utils/md';
 import { api } from '../api';
 import type { ProjectSummary, DiscussionMessage } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
 import { agentColor } from '../utils/agentColor';
 import { copyText } from '../utils/clipboard';
 import AgentAvatar from '../components/AgentAvatar.vue';
+import MdView from '../components/MdView.vue';
 import DirPicker from '../components/DirPicker.vue';
 
 defineOptions({ name: 'DiscussionDetailView' });
@@ -115,10 +116,12 @@ function hasReactions(m: DiscussionMessage): boolean {
   return !!m.reactions && Object.keys(m.reactions).length > 0;
 }
 
+/** 共享渲染 + @点名高亮：只作用于纯文本段，不误伤代码块内容与标签属性 */
 function md(text: string): string {
-  const escaped = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const html = String(marked.parse(escaped, { async: false, breaks: true }));
-  return html.replace(/@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '<span class="mention">@$1</span>');
+  const html = renderMdShared(text);
+  return html.split(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>|<[^>]*>)/g)
+    .map((part) => (part.startsWith('<') ? part : part.replace(/@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '<span class="mention">@$1</span>')))
+    .join('');
 }
 
 // ---------- 滚动 ----------
@@ -489,7 +492,7 @@ const showExp = ref(false);
         </div>
         <div v-if="!current?.scheme" class="center-tip">方案尚未生成——点右上菜单「生成方案」</div>
         <template v-else>
-          <div v-if="!schemeEditing" class="scheme-md" v-html="md(current.scheme)"></div>
+          <div v-if="!schemeEditing" class="scheme-md md" v-html="md(current.scheme)"></div>
           <van-field v-else v-model="schemeBuffer" type="textarea" rows="18" autosize />
           <div class="sheet-ops">
             <template v-if="schemeEditing">
@@ -543,7 +546,7 @@ const showExp = ref(false);
         <div v-for="e in experiences" :key="e.id" class="exp-item">
           <div class="exp-title">{{ e.title }}</div>
           <div class="exp-src">来源 {{ e.source }} · {{ (e.updated_at || '').slice(0, 10) }}</div>
-          <div class="exp-body">{{ e.content }}</div>
+          <MdView class="exp-body" :source="e.content" />
         </div>
       </div>
     </van-popup>
@@ -650,5 +653,5 @@ const showExp = ref(false);
 .exp-item { padding: 8px 0; border-bottom: 1px solid var(--bg); }
 .exp-title { font-size: 13px; font-weight: 600; }
 .exp-src { font-size: 10px; color: var(--text-3); margin: 2px 0; }
-.exp-body { font-size: 12px; color: var(--text-2); white-space: pre-wrap; }
+.exp-body { font-size: 12px; color: var(--text-2); }
 </style>

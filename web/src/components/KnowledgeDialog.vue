@@ -30,7 +30,7 @@
               <span v-if="e.last_hit_at">· 最近命中 {{ fmtTime(e.last_hit_at) }}</span>
               <el-tag v-for="t in e.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
             </div>
-            <div v-if="e._open" class="kb-content">{{ e.content }}</div>
+            <MdView v-if="e._open" class="kb-content" :source="e.content" />
           </div>
           <div class="kb-ops">
             <el-button size="small" link type="primary" @click="openEdit(e)">修改</el-button>
@@ -68,6 +68,7 @@
 import { ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type KnowledgeEntry } from '../api';
+import MdView from './MdView.vue';
 
 const props = defineProps<{ modelValue: boolean; projectId?: string }>();
 defineEmits<{ (e: 'close'): void }>();

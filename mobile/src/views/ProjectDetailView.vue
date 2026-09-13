@@ -5,6 +5,7 @@ import { api, statusLabel } from '../api';
 import type { TaskGraph } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import AgentAvatar from '../components/AgentAvatar.vue';
+import MdView from '../components/MdView.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -189,7 +190,7 @@ function goCreate() {
             <span class="s-time">{{ (e.updated_at || '').slice(5, 10) }}</span>
           </div>
           <div v-if="e.tags?.length" class="exp-tags"><span v-for="tg in e.tags.slice(0, 4)" :key="tg" class="exp-tag">{{ tg }}</span></div>
-          <div v-if="expOpenSet.has(e.id)" class="exp-body">{{ e.content.slice(0, 500) }}{{ e.content.length > 500 ? '…' : '' }}</div>
+          <MdView v-if="expOpenSet.has(e.id)" class="exp-body" :source="e.content" />
         </div>
       </div>
     </div>
@@ -258,5 +259,5 @@ function goCreate() {
 .exp-title { font-size: 15px; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .exp-tags { display: flex; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
 .exp-tag { font-size: 10px; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(34, 211, 238, 0.3); border-radius: 4px; padding: 0 5px; }
-.exp-body { margin-top: 6px; font-size: 13px; color: var(--text-2); line-height: 1.6; white-space: pre-wrap; }
+.exp-body { margin-top: 6px; font-size: 13px; color: var(--text-2); line-height: 1.6; }
 </style>

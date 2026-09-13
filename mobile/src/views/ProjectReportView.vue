@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showFailToast } from 'vant';
-import { marked } from 'marked';
+import { renderMd } from '../utils/md';
 import { api } from '../api';
 import type { ProjectProgressReport } from '../api';
 
@@ -42,12 +42,6 @@ function openDeliverable(taskId: string, nodeId: string) {
 
 const deliverableOpen = ref(false);
 const deliverableView = ref<{ title: string; markdown: string } | null>(null);
-
-/** 交付成果是 markdown：转义后渲染（此前 v-html 直插原文，markdown 语法裸奔且有注入面） */
-function renderMd(text: string): string {
-  const escaped = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return String(marked.parse(escaped, { async: false, breaks: true }));
-}
 
 function statusType(s: string): string {
   if (s === 'success' || s === 'completed') return 'success';

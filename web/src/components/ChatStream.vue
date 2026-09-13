@@ -236,7 +236,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { marked } from 'marked';
+import { renderMarkdown as mdShared } from '../utils/md';
 import { api, type JournalEntry } from '../api';
 import { onEvent } from '../composables/useDashboard';
 import AgentAvatar from './AgentAvatar.vue';
@@ -465,9 +465,7 @@ function isRawToolJson(text: string): boolean {
 }
 
 function md(text: string): string {
-  if (!text) return '';
-  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return String(marked.parse(escaped, { async: false, breaks: true }));
+  return mdShared(text);
 }
 
 onUnmounted(() => unsubFns.forEach((u) => u()));

@@ -76,7 +76,7 @@
           <div v-if="!experiences.length" class="mono empty-line">本讨论暂未沉淀经验——成员在发言中写出经验/踩坑/决策理由时会自动进入知识库。</div>
           <div v-for="e in experiences" :key="e.id" class="exp-item">
             <div class="exp-title mono">{{ e.title }} <el-tag size="small" type="success">{{ e.tags?.find(t => t !== '群组讨论') || '经验' }}</el-tag></div>
-            <div class="exp-body">{{ e.content }}</div>
+            <MdView class="exp-body" :source="e.content" />
           </div>
         </div>
 
@@ -134,6 +134,7 @@ import { api, type AgentInfo, type ProjectSummary } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
 import { statusText } from '../utils/events';
 import { agentColor } from '../utils/agentColor';
+import MdView from './MdView.vue';
 import DiscussionChat from './DiscussionChat.vue';
 import SchemePanel from './SchemePanel.vue';
 import DiscussionConvertDialog from './DiscussionConvertDialog.vue';

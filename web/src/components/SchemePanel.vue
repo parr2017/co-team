@@ -27,7 +27,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { marked } from 'marked';
+import { renderMarkdown as mdShared } from '../utils/md';
 import { useDiscussion } from '../composables/useDiscussion';
 
 const props = defineProps<{ modelValue: boolean }>();
@@ -41,8 +41,7 @@ const buffer = ref('');
 const regen = ref(false);
 
 function md(text: string): string {
-  const escaped = (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return String(marked.parse(escaped, { async: false, breaks: true }));
+  return mdShared(text);
 }
 
 async function save() {

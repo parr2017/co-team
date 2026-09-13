@@ -154,7 +154,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { marked } from 'marked';
+import { renderMarkdown } from '../utils/md';
 import type { DiscussionMessage } from '../api';
 import { api } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
@@ -283,12 +283,13 @@ function fmtFull(ts: string): string {
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
-/** escape first (XSS), then light markdown, then @token highlight */
+/** 共享渲染 + @点名高亮：只作用于纯文本段，不再误伤代码块内容与标签属性 */
 function md(text: string): string {
   if (!text) return '';
-  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const html = String(marked.parse(escaped, { async: false, breaks: true }));
-  return html.replace(/@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '<span class="mention">@$1</span>');
+  const html = renderMarkdown(text);
+  return html.split(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>|<[^>]*>)/g)
+    .map((part) => (part.startsWith('<') ? part : part.replace(/@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g, '<span class="mention">@$1</span>')))
+    .join('');
 }
 
 // ---------- 交互 ----------
