@@ -45,6 +45,21 @@ model_pool:
     professional_weight: 90
     cost_per_1k: 0
     tags: []
+  # 视觉模型（多模态旁路，可选）：tags 带 image 即可被 screenshot/look_image 工具定点调度
+  # （UI 测试的视觉辅助手段，Playwright E2E 仍是主门槛）。未配置时工具返回软错误并降级为
+  # check_page 文本验证 + 报告注明"需人工复核"，不影响任务主线。
+  # - name: qwen2.5-vl-72b-instruct
+  #   provider: ''
+  #   api_key: sk_your_api_key_here
+  #   base_url: https://your-openai-compatible-endpoint/v1
+  #   concurrency: 2
+  #   priority: 20
+  #   professional_weight: 50
+  #   cost_per_1k: 0
+  #   max_tokens: 8192
+  #   context_length: 32768
+  #   tags:
+  #     - image
 orchestrator:
   max_retries: 3
   model: deepseek-v4-flash

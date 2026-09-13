@@ -111,6 +111,33 @@ export class ModelPool {
     return top[top.length - 1];
   }
 
+  /** 池中是否存在带指定 tag 的模型（严格选型的可解释性：区分"未配置"与"全忙"） */
+  hasTag(tag: string): boolean {
+    return this.models.some((m) => m.tags.some((t) => t.toLowerCase() === tag.toLowerCase()));
+  }
+
+  /**
+   * 严格 image 定点选型（多模态旁路 screenshot/look_image 专用）：只在带 image tag
+   * 的健康模型中按 normal 档加权随机，绝不回退全池——纯文本模型收到图只会产出
+   * 垃圾结论，宁缺毋滥。无候选（未配置/全忙/冷却）返回 null，由工具层给软错误与
+   * 文本降级指引（vision.ts analyzeImages）。
+   */
+  selectVisionModel(): ModelEntry | null {
+    const candidates = this.models.filter(
+      (m) => m.tags.some((t) => t.toLowerCase() === 'image') && this.isHealthy(m) && this.availableSlots(m) > 0
+    );
+    if (!candidates.length) return null;
+    const sorted = [...candidates].sort((a, b) => this.effectivePriority(a) - this.effectivePriority(b) || b.professional_weight - a.professional_weight);
+    const top = sorted.slice(0, Math.max(2, Math.floor(sorted.length / 2)));
+    const totalWeight = top.reduce((s, m) => s + m.professional_weight, 0);
+    let roll = Math.random() * totalWeight;
+    for (const m of top) {
+      roll -= m.professional_weight;
+      if (roll <= 0) return m;
+    }
+    return top[top.length - 1];
+  }
+
   /** Ordered degradation list: primary first, then remaining healthy models by priority. */
   fallbackChain(primary: ModelEntry, tags?: string[]): ModelEntry[] {
     const rest = this.filterByTags(this.models, tags)

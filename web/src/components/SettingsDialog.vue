@@ -250,7 +250,7 @@ const CAPABILITY_TAG_LABELS: Record<string, string> = {
   reasoning: '推理',
   code: '代码',
   doc: '文档编写',
-  image: '生图',
+  image: '视觉',
   debug: '调试',
   review: '审查',
   test: '测试',

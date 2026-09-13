@@ -9,6 +9,7 @@ import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCo
 import { runPostMergeAcceptance, runChecklistAudit, detectProjectProfile } from './acceptance';
 import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens, gitDiffFull, listTestAssets } from '../tools';
 import type { AskBridge, KnowledgeToolContext } from '../tools';
+import { analyzeImages, type VisionBridge } from '../vision';
 import { cancelAsks, consumeAskQueue, createAsk, flushAgentAsks, queueAskForAgent, resolveAsk, waitForAnswer, abandonAsk, settleTaskPendingAsks } from '../askGate';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
 import * as gitTool from '../git';
@@ -2985,6 +2986,7 @@ export class Orchestrator {
             askAgent: (to: string, q: string) => this.bridgeAskAgent(taskId, node, plugin, to, q),
             answer: (askId: string, c: string) => this.bridgeAnswer(taskId, plugin.name, askId, c),
           } satisfies AskBridge,
+          ...(this.pool ? { vision: { analyze: (prompt: string, images: { base64: string; mediaType: string }[]) => analyzeImages(this.pool!, prompt, images) } satisfies VisionBridge } : {}),
         };
         // 重复调用指针化（缓存优先裁剪）：同工具+同参数再次出现不再读盘回显全文——
         // 既省上下文增量，也让模型看到"结果同上轮"而不是被第二份大体积 JSON 挤爆窗口
@@ -2994,7 +2996,9 @@ export class Orchestrator {
         for (let ti = 0; ti < toolCalls.length; ti++) {
           const t = toolCalls[ti] as Record<string, any>;
           const tName = String(t.tool || '').toLowerCase();
-          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer';
+          // screenshot/look_image 虽只读，但每次都是独立的视觉分析（页面随节点推进在变，
+          // 且消耗 vision 配额）——"同参结果从略"的契约对它们不成立，豁免去重
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image';
           const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}`;
           if (!sideEffect && seenToolCalls.has(dedupKey)) {
             positioned[ti] = { tool: t.tool, ok: true, dedup: `与第 ${seenToolCalls.get(dedupKey)} 轮完全相同的调用，结果从略（可信任上轮结果）` };

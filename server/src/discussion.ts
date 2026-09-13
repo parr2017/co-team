@@ -32,6 +32,7 @@ import type { Logger } from './logger';
 import { writeKnowledge, relevantKnowledge, listKnowledge } from './knowledge';
 import { scaffoldProject, initGitOnly } from './scaffold';
 import { applyToolCalls, checkPage } from './tools';
+import { analyzeImages } from './vision';
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { discussionTaskDigest } from './discussionBridge';
@@ -412,6 +413,9 @@ function speakerSystemPrompt(projectCtx: string): string {
  {"tool":"exec","command":"npm install"}
 渲染级验证（前端页面验收必须用它——curl 200 看不见 JS 崩溃；expect 全部命中才算通过）：
  {"tool":"check_page","url":"http://localhost:5123/","expect":["页面应有的文本"]}
+视觉辅助（辅助手段——断言覆盖不了的视觉问题：布局溢出/组件错位/配色；截图分析不替代 Playwright E2E）：
+ {"tool":"screenshot","url":"http://localhost:5123/","question":"要确认的视觉问题"}  截图并交视觉模型分析
+ {"tool":"look_image","path":"相对路径","question":"要确认的问题"}  分析项目内图片（含 Playwright 截图产物）
 长驻服务（后台启动，返回 pid 与日志路径，随后可 exec 查端口 / read_file 看日志）：
  {"tool":"exec_background","command":"npm run dev"}   停止进程： {"tool":"kill_process","pid":12345}
 禁止修改代码：群聊没有 write_file/edit_file，任何改代码的请求一律 {"tool":"convert_to_project"} 转任务（这是修改代码的唯一出路）
@@ -510,14 +514,14 @@ async function runSpeakerToolCalls(
   const proj = disc.project_id ? await getProject(disc.project_id) : null;
   const ws = proj?.workspace || '';
 
-  const roSet = new Set(['list_files', 'read_file', 'read_dir', 'grep', 'git_log', 'git_diff', 'write_knowledge', 'check_page']);
+  const roSet = new Set(['list_files', 'read_file', 'read_dir', 'grep', 'git_log', 'git_diff', 'write_knowledge', 'check_page', 'screenshot', 'look_image']);
   const roCalls = calls.filter((c) => roSet.has(String(c.tool || '').toLowerCase()));
   // check_page 不碰文件系统（只渲染 localhost），未绑定项目也可用；其余只读工具需要工作目录
-  const roNeedsWs = roCalls.filter((c) => String(c.tool || '').toLowerCase() !== 'check_page');
+  const roNeedsWs = roCalls.filter((c) => !['check_page'].includes(String(c.tool || '').toLowerCase()));
   let roResults: unknown[] = [];
   if (roCalls.length) {
     if (roNeedsWs.length === 0 || ws) {
-      roResults = await applyToolCalls(ws, roCalls as any, { agent, project_id: disc.project_id });
+      roResults = await applyToolCalls(ws, roCalls as any, { agent, project_id: disc.project_id, ...(deps.pool ? { vision: { analyze: (prompt: string, images: { base64: string; mediaType: string }[]) => analyzeImages(deps.pool, prompt, images) } } : {}) });
     } else {
       for (const c of roCalls) {
         if (String(c.tool || '').toLowerCase() === 'check_page') {

@@ -215,7 +215,7 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
   return { content, promptTokens, completionTokens, finishReason, cachedTokens, firstTokenMs, elapsedMs: Date.now() - startedAt };
 }
 
-async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number): Promise<LlmResponse> {
+async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number): Promise<LlmResponse> {
   const startedAt = Date.now();
   // 非流式没有进度信号可用——只能以总时长兜底（COTEAM_LLM_STREAM=0 的部署自担此限）
   const capMs = wallclockCapMsOverride !== undefined && wallclockCapMsOverride > 0 ? wallclockCapMsOverride : Math.max(policy.wallclockCapMs, 0) || policy.nonStreamTimeoutMs;
@@ -257,6 +257,22 @@ async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: str
     cachedTokens: typeof cached === 'number' ? cached : undefined,
     elapsedMs: Date.now() - startedAt,
   };
+}
+
+/**
+ * 多模态旁路（vision side-call）：图片经 OpenAI 兼容的 content 分片数组
+ * （{type:'image_url', image_url:{url:'data:...'}}）送入视觉模型，一次问答拿文字结论。
+ * 只走非流式（工具级短调用，无 onDelta 消费者）；主对话 chat() 的纯文本契约不受影响。
+ */
+export async function chatVision(entry: ModelEntry, prompt: string, images: { base64: string; mediaType: string }[], opts?: { maxTokens?: number; temperature?: number }): Promise<LlmResponse> {
+  const client = getClient(entry);
+  const content: unknown[] = [{ type: 'text', text: prompt }];
+  for (const img of images) {
+    content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.base64}` } });
+  }
+  const messages = [{ role: 'user', content }] as { role: string; content: string | unknown[] }[];
+  const cap = opts?.maxTokens ?? entry.max_tokens ?? 128000;
+  return chatOnce(client, entry, messages, cap, opts?.temperature ?? 0, undefined, undefined);
 }
 
 /** Embed texts via the OpenAI-compatible /v1/embeddings endpoint (knowledge RAG). */

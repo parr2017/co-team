@@ -8,6 +8,7 @@ import { writeKnowledge } from './knowledge';
 import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
 import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agentMessages';
 import { findSkillForAgent } from './skills';
+import { IMAGE_MEDIA_TYPES, MAX_IMAGE_BYTES, type VisionBridge } from './vision';
 
 export interface KnowledgeToolContext {
   agent: string;
@@ -23,6 +24,8 @@ export interface KnowledgeToolContext {
   node_name?: string;
   /** M2 全员实时问答：ask/answer 工具的桥（仅任务管线注入；讨论室不注入即天然门控） */
   askBridge?: AskBridge;
+  /** 多模态旁路：screenshot/look_image 的视觉分析桥（orchestrator/discussion 注入池实现；缺省即软错误门控） */
+  vision?: VisionBridge;
 }
 
 /** 阻塞式问答桥：由 orchestrator 实现（journal/飞书/目标投递都在桥内完成），tools.ts 保持无状态。 */
@@ -304,12 +307,16 @@ export function findHeadlessBrowser(): string | null {
   return cands.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || null;
 }
 
-function dumpDomWith(browser: string, url: string, headlessFlag: string, budgetMs: number, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+/**
+ * headless 跑一次 Chrome 并收集退出状态。captureArgs 决定"拍什么"：
+ * ['--dump-dom'] 渲染 DOM 回显到 stdout；['--screenshot=<file>'] 落盘截图（stdout 为空）。
+ */
+function runChrome(browser: string, url: string, headlessFlag: string, budgetMs: number, timeoutMs: number, captureArgs: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let killed = false;
-    const proc = spawn(browser, [headlessFlag, '--disable-gpu', '--no-first-run', '--disable-extensions', `--virtual-time-budget=${budgetMs}`, '--dump-dom', url], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(browser, [headlessFlag, '--disable-gpu', '--no-first-run', '--disable-extensions', `--virtual-time-budget=${budgetMs}`, ...captureArgs, url], { stdio: ['ignore', 'pipe', 'pipe'] });
     const timer = setTimeout(() => { killed = true; try { proc.kill(); } catch { /* gone */ } }, timeoutMs);
     proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
     proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
@@ -333,6 +340,8 @@ export interface CheckPageResult {
   textSample?: string;
   /** expect 里没出现在渲染结果中的片段 */
   missing?: string[];
+  /** 渲染成功时的现场提醒：文本验证的盲区即视觉工具的用武之地 */
+  hint?: string;
   error?: string;
 }
 
@@ -349,9 +358,9 @@ export async function checkPage(rawUrl: string, expect?: string[], timeoutSec = 
   if (!browser) return { ok: false, error: '未找到 Chrome/Edge（可设 COTEAM_BROWSER_PATH 指向浏览器可执行文件）' };
   const budgetMs = Math.min(20_000, Math.max(3_000, Math.floor(timeoutSec * 1000 / 3)));
   // Chrome 132+ 移除了旧 headless；老版本/Edge 可能不认 --headless=new——先新后旧各试一次
-  let r = await dumpDomWith(browser, rawUrl, '--headless=new', budgetMs, timeoutSec * 1000);
+  let r = await runChrome(browser, rawUrl, '--headless=new', budgetMs, timeoutSec * 1000, ['--dump-dom']);
   if (r.code !== 0 || !r.stdout.trim()) {
-    const r2 = await dumpDomWith(browser, rawUrl, '--headless', budgetMs, timeoutSec * 1000);
+    const r2 = await runChrome(browser, rawUrl, '--headless', budgetMs, timeoutSec * 1000, ['--dump-dom']);
     if (r2.stdout.trim()) r = r2;
   }
   if (!r.stdout.trim()) {
@@ -377,13 +386,110 @@ export async function checkPage(rawUrl: string, expect?: string[], timeoutSec = 
     textLength: text.length,
     textSample: text.slice(0, 600),
     missing,
+    hint: '本工具仅返回可见文本；如需确认布局/样式/视觉效果，调用 screenshot（截图+视觉模型分析）',
   };
+}
+
+// ---------- screenshot / look_image：多模态旁路（UI 测试的视觉辅助） ----------
+// 定位：Playwright E2E 断言是 UI 验证主手段，这两个工具只补断言覆盖不了的盲区——
+// 布局溢出/组件错位/配色异常等视觉细节、解读 Playwright page.screenshot() 产物、
+// 被测项目无 Playwright 依赖时的轻量视觉冒烟。实现复用 check_page 的浏览器发现与
+// spawn 骨架（零新依赖）；视觉分析走 vision.ts 的旁路桥（image tag 严格选型）。
+
+/** 默认桌面视口；移动端验收由 agent 显式传 window_size（如 "375,812"） */
+const DEFAULT_WINDOW_SIZE = '1280,900';
+
+/** 视觉分析的系统问法：固定职责边界（指出可见问题、不编造），question 追加重点 */
+function visionPrompt(question?: string): string {
+  const base = '你是软件测试的视觉分析助手。请用中文简要分析这张截图（≤300字）：描述关键界面元素与状态；明确指出可见的问题（布局溢出、组件错位、文字截断、样式异常、空白或崩溃页面等）。只描述确实看到的内容，不要编造。';
+  return question ? `${base}\n本次重点回答：${question}` : base;
+}
+
+export interface ScreenshotResult {
+  ok: boolean;
+  url: string;
+  /** 截图相对路径（workspace 内，即使分析失败也已落盘，可 look_image 重试或供人工查看） */
+  path?: string;
+  analysis?: string;
+  error?: string;
+}
+
+/** 对 localhost 页面截图并交视觉模型分析。URL 限定与 check_page 同源（防 SSRF/外联）。 */
+export async function screenshotPage(workspace: string, rawUrl: string, opts: { question?: string; windowSize?: string; timeoutSec?: number; vision?: VisionBridge }): Promise<ScreenshotResult> {
+  let u: URL;
+  try { u = new URL(rawUrl); } catch { return { ok: false, url: rawUrl, error: `URL 无效: ${rawUrl}` }; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, url: rawUrl, error: '仅支持 http(s)' };
+  if (!LOCAL_HOSTS.has(u.hostname)) return { ok: false, url: rawUrl, error: 'screenshot 仅允许 localhost 地址（开发服务器验证）' };
+  if (!opts.vision) return { ok: false, url: rawUrl, error: '当前上下文未接入视觉模型服务（vision bridge 缺失）' };
+  const browser = findHeadlessBrowser();
+  if (!browser) return { ok: false, url: rawUrl, error: '未找到 Chrome/Edge（可设 COTEAM_BROWSER_PATH 指向浏览器可执行文件）' };
+
+  const base = path.resolve(workspace);
+  const shotsDir = path.join(base, '.coteam', 'shots');
+  const outPath = path.join(shotsDir, `shot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`);
+  try {
+    await fs.promises.mkdir(shotsDir, { recursive: true });
+  } catch (e: any) {
+    return { ok: false, url: rawUrl, error: `无法创建截图目录: ${String(e?.message || e).slice(0, 200)}` };
+  }
+
+  const timeoutSec = opts.timeoutSec ?? 60;
+  const budgetMs = Math.min(20_000, Math.max(3_000, Math.floor(timeoutSec * 1000 / 3)));
+  const capture = [`--window-size=${opts.windowSize || DEFAULT_WINDOW_SIZE}`, '--hide-scrollbars', `--screenshot=${outPath}`];
+  // 与 check_page 同款先新后旧：截图落盘与否以文件存在且非空为准（stdout 不承载截图）
+  let r = await runChrome(browser, rawUrl, '--headless=new', budgetMs, timeoutSec * 1000, capture);
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+    r = await runChrome(browser, rawUrl, '--headless', budgetMs, timeoutSec * 1000, capture);
+  }
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+    return { ok: false, url: rawUrl, error: `截图失败（exit ${r.code}）：${(r.stderr || '无输出').slice(-300)}` };
+  }
+  const rel = path.relative(base, outPath).replace(/\\/g, '/');
+
+  const visionRes = await opts.vision.analyze(visionPrompt(opts.question), [{ base64: fs.readFileSync(outPath).toString('base64'), mediaType: 'image/png' }]);
+  if (!visionRes.ok) {
+    return { ok: false, url: rawUrl, path: rel, error: `截图已保存（${rel}），但视觉分析失败：${visionRes.error}` };
+  }
+  return { ok: true, url: rawUrl, path: rel, analysis: visionRes.analysis };
+}
+
+export interface LookImageResult {
+  ok: boolean;
+  path: string;
+  analysis?: string;
+  error?: string;
+}
+
+/** 分析 workspace 内任意图片文件（含 Playwright page.screenshot() 产物）。 */
+export async function lookImage(workspace: string, imagePath: string, question: string | undefined, vision?: VisionBridge): Promise<LookImageResult> {
+  const p = String(imagePath || '').trim();
+  if (!p) return { ok: false, path: p, error: 'path 不能为空' };
+  if (!vision) return { ok: false, path: p, error: '当前上下文未接入视觉模型服务（vision bridge 缺失）' };
+  const base = path.resolve(workspace);
+  const target = path.resolve(base, p);
+  if (!target.startsWith(base)) return { ok: false, path: p, error: 'path outside workspace' };
+  const ext = path.extname(target).toLowerCase();
+  const mediaType = IMAGE_MEDIA_TYPES[ext];
+  if (!mediaType) return { ok: false, path: p, error: `不支持的图片格式: ${ext || '(无扩展名)'}；支持 ${Object.keys(IMAGE_MEDIA_TYPES).join(' ')}` };
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    return { ok: false, path: p, error: `file not found: ${p}` };
+  }
+  if (!stat.isFile()) return { ok: false, path: p, error: `not a file: ${p}` };
+  if (stat.size > MAX_IMAGE_BYTES) {
+    return { ok: false, path: p, error: `图片超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB 上限（当前 ${Math.round(stat.size / 1024 / 1024)}MB）；请压缩或裁剪后重试` };
+  }
+  const res = await vision.analyze(visionPrompt(question), [{ base64: fs.readFileSync(target).toString('base64'), mediaType }]);
+  if (!res.ok) return { ok: false, path: p, error: res.error };
+  return { ok: true, path: p, analysis: res.analysis };
 }
 
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -426,6 +532,23 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
       const url = String(call.url || call.path || '');
       const expect = Array.isArray(call.expect) ? call.expect.map(String) : (call.expect ? [String(call.expect)] : undefined);
       results.push({ tool: 'check_page', ...(await checkPage(url, expect)) });
+    } else if (name === 'screenshot') {
+      // 视觉辅助（Playwright E2E 仍是主手段）：截图落盘 + vision 旁路分析，文字结论回流
+      const url = String(call.url || call.path || '');
+      results.push({
+        tool: 'screenshot',
+        ...(await screenshotPage(workspace, url, {
+          question: call.question ? String(call.question) : undefined,
+          windowSize: call.window_size !== undefined ? String(call.window_size) : undefined,
+          vision: knowledgeCtx?.vision,
+        })),
+      });
+    } else if (name === 'look_image') {
+      // 视觉辅助：分析 workspace 内图片（含 Playwright page.screenshot() 产物）
+      results.push({
+        tool: 'look_image',
+        ...(await lookImage(workspace, String(call.path || call.url || ''), call.question ? String(call.question) : undefined, knowledgeCtx?.vision)),
+      });
     } else if (name === 'write_knowledge') {
       if (!knowledgeCtx) {
         results.push({ tool: 'write_knowledge', ok: false, error: 'knowledge deposit not available in this context' });
