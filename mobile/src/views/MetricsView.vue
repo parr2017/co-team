@@ -83,7 +83,7 @@ function fmtTok(n: number): string {
 
 <template>
   <div class="page">
-    <van-nav-bar title="运行指标" fixed placeholder>
+    <van-nav-bar safe-area-inset-top title="运行指标" fixed placeholder>
       <template #right>
         <span class="conn mono" :class="{ ok: connected }">{{ connected ? '实时' : '离线' }}</span>
       </template>

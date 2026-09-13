@@ -104,7 +104,7 @@ async function submitCreate() {
 
 <template>
   <div class="page">
-    <van-nav-bar title="项目" fixed placeholder>
+    <van-nav-bar safe-area-inset-top title="项目" fixed placeholder>
       <template #right>
         <van-icon name="plus" size="22" color="var(--green)" @click="openCreate" />
       </template>
@@ -150,7 +150,7 @@ async function submitCreate() {
                 <span class="p-pct">{{ donePct(p) }}%</span>
               </div>
             </div>
-            <van-icon name="arrow" size="14" color="#b2b2b2" />
+            <van-icon name="arrow" size="14" color="var(--text-3)" />
           </div>
         </div>
         <div class="wx-caption hint">监控进度与下发任务；项目初始化（脚手架/git）由服务端自动完成</div>
@@ -195,16 +195,14 @@ async function submitCreate() {
 
 .p-icon {
   position: relative; width: 46px; height: 46px; border-radius: 11px;
-  background: linear-gradient(145deg, var(--accent), var(--accent));
-  color: #04121d; display: flex; align-items: center; justify-content: center;
+  background: var(--accent);
+  color: #fff; display: flex; align-items: center; justify-content: center;
   font-size: 19px; font-weight: 800; flex-shrink: 0;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  box-shadow: 0 0 14px rgba(34, 211, 238, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   overflow: visible;
 }
 .p-icon.running {
-  background: linear-gradient(145deg, var(--yellow), var(--yellow));
-  
+  background: var(--yellow);
 }
 .p-dot {
   position: absolute; top: -2px; right: -2px; width: 10px; height: 10px;

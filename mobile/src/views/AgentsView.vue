@@ -94,7 +94,7 @@ function goTaskOf(name: string) {
 
 <template>
   <div class="page">
-    <van-nav-bar title="团队成员" fixed placeholder>
+    <van-nav-bar safe-area-inset-top title="团队成员" fixed placeholder>
       <template #right>
         <span class="conn-dot" :class="{ off: !connected }"></span>
       </template>

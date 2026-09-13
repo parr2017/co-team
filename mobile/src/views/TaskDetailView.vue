@@ -483,7 +483,7 @@ function nodeIcon(status: string): string {
 
 <template>
   <div class="page">
-    <van-nav-bar :title="title" left-arrow fixed placeholder @click-left="router.back()">
+    <van-nav-bar safe-area-inset-top :title="title" left-arrow fixed placeholder @click-left="router.back()">
       <template #right>
         <span v-if="isRunning" class="nav-status running" @click="cancel">取消</span>
         <span v-else-if="canRestart" class="nav-status running" @click="restart">重启</span>
@@ -632,7 +632,7 @@ function nodeIcon(status: string): string {
                 <van-icon
                   :name="nodeIcon(n.status)"
                   :size="18"
-                  :color="n.status === 'completed' ? 'var(--green)' : n.status === 'failed' ? 'var(--red)' : '#b2b2b2'"
+                  :color="n.status === 'completed' ? 'var(--green)' : n.status === 'failed' ? 'var(--red)' : 'var(--text-3)'"
                 />
                 <div class="n-body">
                   <div class="n-name">{{ n.name }}</div>
@@ -649,7 +649,7 @@ function nodeIcon(status: string): string {
                   type="primary"
                   @click.stop="approve(n.id)"
                 >审批</van-button>
-                <van-icon v-else name="arrow" size="14" color="#b2b2b2" />
+                <van-icon v-else name="arrow" size="14" color="var(--text-3)" />
 
                 <div v-if="selectedNodeId === n.id" class="n-detail">
                   <div class="n-obs mono">
@@ -721,7 +721,7 @@ function nodeIcon(status: string): string {
               </div>
             </div>
             <div v-if="!visibleEvents.length" class="empty">
-              <van-icon name="clock-o" size="56" color="#b2b2b2" />
+              <van-icon name="clock-o" size="56" color="var(--text-3)" />
               <div class="empty-text">暂无事件</div>
             </div>
           </div>
@@ -730,7 +730,7 @@ function nodeIcon(status: string): string {
     </template>
     <!-- 任务不存在/已删除：明确错误态，替代无限 loading -->
     <div v-else-if="notFound" class="err-state">
-      <van-icon name="info-o" size="56" color="#b2b2b2" />
+      <van-icon name="info-o" size="56" color="var(--text-3)" />
       <div class="err-title">任务不存在或已被删除</div>
       <div class="err-sub">它可能刚被清理——回到任务列表刷新后重试</div>
       <button class="wx-btn err-btn" @click="router.replace('/tasks')">返回任务列表</button>
@@ -940,7 +940,7 @@ function nodeIcon(status: string): string {
 /* warroom = WeChat chat page */
 .warroom { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 /* 阶段条 */
-.stage-strip { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: rgba(17, 26, 40, 0.92); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.stage-strip { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .ss-state { font-size: 13px; font-weight: 600; color: var(--text-2); flex-shrink: 0; }
 .ss-state.running, .ss-state.retrying { color: var(--wx-orange); }
 .ss-state.completed, .ss-state.success { color: var(--green); }
@@ -969,7 +969,7 @@ function nodeIcon(status: string): string {
 .member-strip {
   display: flex; gap: 18px; overflow-x: auto;
   padding: 12px 16px;
-  background: rgba(17, 26, 40, 0.92);
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   -webkit-overflow-scrolling: touch;
@@ -1113,7 +1113,7 @@ function nodeIcon(status: string): string {
 .docs-meta { font-size: 11px; color: var(--text-3); }
 .out-list { margin-top: 10px; }
 .out-file { margin-bottom: 10px; }
-.out-pre { max-height: 260px; overflow: auto; background: rgba(5, 10, 16, 0.75); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11px; white-space: pre-wrap; color: #9fe8f5; }
+.out-pre { max-height: 260px; overflow: auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11px; white-space: pre-wrap; color: var(--text-2); }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0; }
 .empty-text { font-size: 13px; color: var(--text-3); }
 </style>

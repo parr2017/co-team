@@ -84,14 +84,14 @@ async function send() {
   padding: 0 18px;
   border: none;
   border-radius: 8px;
-  background: #95ec69;
+  background: var(--ct-green); color: #fff;
   color: #0b2e13;
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   flex-shrink: 0;
 }
-html.dark .iv-send { background: #3eb575; color: #eafff1; }
+html.dark .iv-send { background: var(--ct-green); color: #0b1a10; }
 .iv-send:disabled { opacity: 0.45; cursor: not-allowed; }
 .iv-send:not(:disabled):hover { filter: brightness(1.05); }
 </style>

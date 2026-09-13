@@ -500,13 +500,13 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
   border: 4px solid transparent; border-top-color: var(--ct-border); border-right-color: var(--ct-border);
 }
 /* 用户"我"绿气泡：右上三角指向头像 */
-.me-b { background: #95ec69; border: none; border-top-right-radius: 2px; color: #0b2e13; }
-html.dark .me-b { background: #3eb575; color: #eafff1; }
+.me-b { background: var(--ct-green); border: none; border-top-right-radius: 2px; color: #fff; }
+html.dark .me-b { background: var(--ct-green); color: #0b1a10; }
 .me-b::before {
   content: ''; position: absolute; top: 0; right: -7px;
-  border: 4px solid transparent; border-top-color: #95ec69; border-left-color: #95ec69;
+  border: 4px solid transparent; border-top-color: var(--ct-green); border-left-color: var(--ct-green);
 }
-html.dark .me-b::before { border-top-color: #3eb575; border-left-color: #3eb575; }
+html.dark .me-b::before { border-top-color: var(--ct-green); border-left-color: var(--ct-green); }
 
 .them-b.fatal { border-color: var(--ct-red); }
 .them-b.fatal::before { border-top-color: var(--ct-red); border-right-color: var(--ct-red); }

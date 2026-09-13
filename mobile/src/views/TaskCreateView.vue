@@ -165,7 +165,7 @@ async function submit() {
 
 <template>
   <div class="page">
-    <van-nav-bar title="发起任务" left-arrow fixed placeholder @click-left="router.back()" />
+    <van-nav-bar safe-area-inset-top title="发起任务" left-arrow fixed placeholder @click-left="router.back()" />
 
     <div class="form">
       <!-- 任务描述：微信大输入区 -->
@@ -189,20 +189,20 @@ async function submit() {
           <van-icon name="apps-o" size="20" color="var(--green)" />
           <span class="cell-label">所属项目</span>
           <span class="cell-value">{{ projectsFailed ? '加载失败 · 点击重试' : projectsReady ? (projectName || '不关联项目') : '加载中…' }}</span>
-          <van-icon v-if="projectsReady && !projectsFailed" name="arrow" size="14" color="#b2b2b2" />
+          <van-icon v-if="projectsReady && !projectsFailed" name="arrow" size="14" color="var(--text-3)" />
           <van-loading v-else size="14" />
         </div>
         <div class="wx-cell link" @click="showPicker = true">
           <van-icon name="folder-o" size="20" color="var(--green)" />
           <span class="cell-label">工作区目录</span>
           <span class="cell-value">{{ workspace || (projectId ? '跟随项目' : '点击选择') }}</span>
-          <van-icon name="arrow" size="14" color="#b2b2b2" />
+          <van-icon name="arrow" size="14" color="var(--text-3)" />
         </div>
         <div class="wx-cell link" @click="modelsReady ? (showModelPicker = true) : (modelsFailed && retryModels())">
           <van-icon name="medal-o" size="20" color="#10aeff" />
           <span class="cell-label">主 Agent 模型</span>
           <span class="cell-value">{{ modelsFailed ? '加载失败 · 点击重试' : modelsReady ? (mainModel || '自动选择') : '加载中…' }}</span>
-          <van-icon v-if="modelsReady && !modelsFailed" name="arrow" size="14" color="#b2b2b2" />
+          <van-icon v-if="modelsReady && !modelsFailed" name="arrow" size="14" color="var(--text-3)" />
           <van-loading v-else size="14" />
         </div>
       </div>
@@ -274,7 +274,7 @@ async function submit() {
 
 <style scoped>
 .page { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--bg); }
-.form { padding-bottom: 30px; }
+.form { padding-bottom: calc(30px + env(safe-area-inset-bottom)); }
 
 .desc-group { padding: 0; }
 .desc-input { padding: 12px 14px; background: transparent; }

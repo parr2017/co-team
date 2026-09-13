@@ -156,7 +156,7 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
 
 <template>
   <div class="page">
-    <van-nav-bar title="我的审批" fixed placeholder left-arrow @click-left="router.back()" />
+    <van-nav-bar safe-area-inset-top title="我的审批" fixed placeholder left-arrow @click-left="router.back()" />
     <div class="body">
       <div class="conn mono" :class="{ ok: connected }">{{ connected ? '实时同步中' : '离线——重连后自动刷新' }}</div>
       <van-empty v-if="!loading && !items.length" description="当前没有等你处理的事项" />
@@ -182,7 +182,7 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
 
 <style scoped>
 .page { height: 100dvh; display: flex; flex-direction: column; background: var(--bg); }
-.body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 16px; }
+.body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
 .conn { font-size: var(--fs-xs); color: var(--text-3); padding: 10px 16px 0; }
 .conn.ok { color: var(--ct-green); }
 .ap-card { margin: 10px 16px; }

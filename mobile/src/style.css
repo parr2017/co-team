@@ -107,6 +107,15 @@
   --van-cell-font-size: var(--fs-base);
   --van-picker-background: var(--ct-panel);
   --van-popup-background: var(--ct-panel);
+  --van-popover-background: var(--ct-panel);
+  --van-action-sheet-background: var(--ct-panel);
+  --van-action-sheet-item-text-color: var(--ct-text);
+  --van-action-sheet-cancel-text-color: var(--ct-text);
+  --van-action-sheet-item-disabled-text-color: var(--ct-text3);
+  --van-field-label-color: var(--ct-text2);
+  --van-overlay-background: rgba(0, 0, 0, 0.7);
+  --van-empty-description-color: var(--ct-text3);
+  --van-tag-plain-background: transparent;
 }
 
 /* ---- light 主题 ---- */

@@ -118,7 +118,7 @@ function goCreate() {
 
 <template>
   <div class="page">
-    <van-nav-bar :title="projectName || '项目'" left-arrow fixed placeholder @click-left="router.back()">
+    <van-nav-bar safe-area-inset-top :title="projectName || '项目'" left-arrow fixed placeholder @click-left="router.back()">
       <template #right>
         <span class="rep-link" @click="router.push('/project/' + projectId + '/report')">成果表</span>
         <van-icon name="plus" size="22" color="var(--green)" @click="goCreate" />

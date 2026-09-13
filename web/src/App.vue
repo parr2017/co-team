@@ -311,6 +311,7 @@ async function saveTokenGate() {
   --ct-accent: #2f6fed;
   --ct-green: #178a3e;
   --ct-yellow: #9a6c0a;
+  --ct-orange: #c26a10;
   --ct-red: #cc3f38;
   --ct-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
   --el-font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -327,6 +328,7 @@ html.dark {
   --ct-accent: #4a8dff;
   --ct-green: #3fb950;
   --ct-yellow: #d29922;
+  --ct-orange: #e08a3c;
   --ct-red: #e5534b;
 }
 /* flatten element-plus */

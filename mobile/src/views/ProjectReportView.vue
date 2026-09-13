@@ -52,7 +52,7 @@ function nodeIcon(status: string): string {
 
 <template>
   <div class="page">
-    <van-nav-bar title="项目进度成果表" left-arrow fixed placeholder @click-left="router.back()" />
+    <van-nav-bar safe-area-inset-top title="项目进度成果表" left-arrow fixed placeholder @click-left="router.back()" />
 
     <van-loading v-if="loading" class="loading" vertical>加载中…</van-loading>
 
@@ -119,7 +119,7 @@ function nodeIcon(status: string): string {
 <style scoped>
 .page { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 .loading { margin: 60px auto; }
-.body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 16px; }
+.body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
 
 .stat-card { padding: 16px 14px 10px; }
 .stat-row { display: flex; gap: 8px; }

@@ -253,7 +253,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
 <template>
   <div ref="wrapEl" class="chat-stream" @scroll.passive="onScroll">
     <div v-if="!entries.length && !typingAgent" class="empty">
-      <van-icon name="chat-o" size="48" color="#d5d5d5" />
+      <van-icon name="chat-o" size="48" color="var(--text-3)" />
       <div class="empty-text">暂无对话记录<br/>Agent 执行后这里会实时显示工作过程</div>
     </div>
 
@@ -565,7 +565,7 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
 .chip { font-size: 11px; color: var(--green); border: 1px solid rgba(52, 245, 197, 0.25); border-radius: 4px; padding: 1px 6px; background: rgba(52, 245, 197, 0.08); }
 details { margin-top: 6px; }
 details summary { font-size: 12px; color: var(--text-3); }
-.pre { max-height: 200px; overflow: auto; background: rgba(5, 10, 16, 0.75); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 4px; font-size: 11px; white-space: pre-wrap; font-family: Consolas, monospace; color: #9fe8f5; }
+.pre { max-height: 200px; overflow: auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 4px; font-size: 11px; white-space: pre-wrap; font-family: Consolas, monospace; color: var(--text-2); }
 
 .sys-row { display: flex; flex-direction: column; align-items: center; gap: 2px; margin: 2px 0; }
 .sys-text {

@@ -83,7 +83,7 @@ async function submit(confirm: boolean) {
 
 <template>
   <div class="page">
-    <van-nav-bar title="需求澄清" left-arrow fixed placeholder @click-left="router.back()" />
+    <van-nav-bar safe-area-inset-top title="需求澄清" left-arrow fixed placeholder @click-left="router.back()" />
 
     <van-loading v-if="loading" class="loading" vertical>加载中…</van-loading>
 

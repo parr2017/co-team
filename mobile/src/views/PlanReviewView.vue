@@ -63,7 +63,7 @@ function nodeStatusColor(s: string): string {
 
 <template>
   <div class="page">
-    <van-nav-bar title="确认计划" left-arrow fixed placeholder @click-left="router.back()" />
+    <van-nav-bar safe-area-inset-top title="确认计划" left-arrow fixed placeholder @click-left="router.back()" />
 
     <div class="content">
       <div v-if="task" class="wx-caption">任务描述</div>
@@ -121,7 +121,7 @@ function nodeStatusColor(s: string): string {
 
 <style scoped>
 .page { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--bg); }
-.content { padding-bottom: 30px; }
+.content { padding-bottom: calc(30px + env(safe-area-inset-bottom)); }
 
 .task-desc { font-size: 16px; line-height: 1.6; color: var(--text); }
 .meta-cell { padding-top: 0; }

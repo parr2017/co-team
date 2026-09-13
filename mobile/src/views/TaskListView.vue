@@ -244,7 +244,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
-    <van-nav-bar title="Co-Team" fixed placeholder>
+    <van-nav-bar safe-area-inset-top title="Co-Team" fixed placeholder>
       <template #right>
         <van-icon
           :name="theme === 'dark' ? 'bulb-o' : 'lock'"
@@ -396,7 +396,7 @@ onUnmounted(() => {
   position: relative;
   align-items: center;
   transition: background 0.12s ease;
-  border-bottom: 1px solid rgba(56, 189, 248, 0.07);
+  border-bottom: 1px solid var(--border);
 }
 .session + .session::before {
   content: ''; position: absolute;
@@ -404,7 +404,7 @@ onUnmounted(() => {
   height: 1px; background: var(--border);
   transform: scaleY(0.5);
 }
-.session:active { background: rgba(34, 211, 238, 0.05); }
+.session:active { background: var(--panel-2); }
 
 .s-avatar { position: relative; flex-shrink: 0; }
 .s-badge {
@@ -441,7 +441,7 @@ onUnmounted(() => {
 }
 .s-pill.run { color: var(--yellow); background: rgba(255, 180, 84, 0.1); border: 1px solid rgba(255, 180, 84, 0.3); }
 .s-pill.queue { color: var(--text-3); background: rgba(148, 163, 184, 0.1); border: 1px solid rgba(148, 163, 184, 0.3); }
-.s-pill.wait { color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(34, 211, 238, 0.3); }
+.s-pill.wait { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-soft); }
 .s-pill.bad { color: var(--red); background: rgba(255, 93, 110, 0.1); border: 1px solid rgba(255, 93, 110, 0.3); }
 .s-pill.ok { color: var(--green); background: rgba(52, 245, 197, 0.08); border: 1px solid rgba(52, 245, 197, 0.28); }
 .s-proj {
@@ -456,7 +456,7 @@ onUnmounted(() => {
 .stat-chip {
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
   min-width: 58px; padding: 5px 11px;
-  background: rgba(17, 26, 40, 0.6);
+  background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 9px; cursor: pointer; text-align: left;
   transition: border-color 0.15s ease, background 0.15s ease;
@@ -472,7 +472,7 @@ onUnmounted(() => {
   padding: 9px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(17, 26, 40, 0.6);
+  background: var(--panel-2);
 }
 .queue-strip.queue-blocked { border-color: var(--red); }
 .q-head { display: flex; align-items: center; gap: 8px; }
