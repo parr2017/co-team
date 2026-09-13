@@ -77,6 +77,8 @@ function handleEvent(msg: EventEnvelope) {
       else if (ev === 'node_waiting_approval') node.status = 'waiting_approval';
       else if (ev === 'node_cancelled') node.status = 'cancelled';
       else if (ev === 'node_retry') node.status = 'retrying';
+      else if (ev === 'node_awaiting_clarify') node.status = 'waiting_clarify';
+      else if (ev === 'node_clarified') node.status = 'pending';
     }
     if (ev === 'execute_start') task.status = 'running';
     else if (ev === 'execute_complete') task.status = 'success';

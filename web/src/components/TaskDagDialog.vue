@@ -13,6 +13,7 @@ import { nextTick, ref, watch } from 'vue';
 import * as echarts from 'echarts';
 import type { TaskGraph } from '../api';
 import { useTheme } from '../composables/useTheme';
+import { statusText } from '../utils/events';
 
 const props = defineProps<{ modelValue: boolean; task: TaskGraph | null }>();
 defineEmits<{ (e: 'close'): void }>();
@@ -26,14 +27,18 @@ const STATUS_VAR: Record<string, string> = {
   success: '--ct-green',
   running: '--ct-yellow',
   retrying: '--ct-yellow',
+  clarifying: '--ct-yellow',
+  waiting_clarify: '--ct-yellow',
   failed: '--ct-red',
   waiting_approval: '--ct-accent',
+  planned: '--ct-accent',
   cancelled: '--ct-text3',
   pending: '--ct-text3',
+  queued: '--ct-text3',
 };
 
 function statusLabel(s: string) {
-  return ({ pending: '待执行', running: '执行中', success: '已完成', failed: '失败', waiting_approval: '待审批', cancelled: '已取消' } as Record<string, string>)[s] || s;
+  return statusText(s);
 }
 
 watch(

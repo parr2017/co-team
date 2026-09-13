@@ -97,6 +97,7 @@ import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type TaskGraph } from '../api';
 import { useDashboard } from '../composables/useDashboard';
+import { statusText, statusTagType } from '../utils/events';
 import AgentAvatar from './AgentAvatar.vue';
 
 interface Row {
@@ -168,7 +169,7 @@ function fmtTok(n: number): string {
 }
 
 const canRestart = (s: string) => ['failed', 'completed', 'success', 'cancelled'].includes(s);
-const canCancel = (s: string) => ['running', 'retrying', 'queued', 'pending', 'waiting_approval'].includes(s);
+const canCancel = (s: string) => ['running', 'retrying', 'queued', 'pending', 'waiting_approval', 'waiting_clarify', 'clarifying'].includes(s);
 
 async function onRestart(row: Row) {
   try {
@@ -195,10 +196,10 @@ function onMore(cmd: string, row: Row) {
 }
 
 function statusLabel(s: string) {
-  return ({ planned: '待确认计划', clarifying: '需求需澄清', pending: '待执行', queued: '排队中', running: '执行中', completed: '已完成', success: '已完成', failed: '失败', waiting_approval: '待审批', retrying: '重试中', cancelled: '已取消' } as Record<string, string>)[s] || s;
+  return statusText(s);
 }
 function statusType(s: string) {
-  return ({ success: 'success', completed: 'success', failed: 'danger', running: 'warning', retrying: 'warning', waiting_approval: 'primary', planned: 'primary', clarifying: 'warning', queued: 'info' } as Record<string, any>)[s] || 'info';
+  return statusTagType(s);
 }
 function levelLabel(l: string) {
   return ({ light: '轻量', standard: '标准', heavy: '重量' } as Record<string, string>)[l] || l;

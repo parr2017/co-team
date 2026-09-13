@@ -10,9 +10,9 @@ const props = withDefaults(defineProps<{ status: string; label?: string }>(), { 
 type Tone = 'green' | 'yellow' | 'red' | 'accent' | 'neutral';
 
 const TONE_MAP: Record<string, Tone> = {
-  completed: 'green', success: 'green', passed: 'green', done: 'green', ok: 'green', connected: 'green',
-  running: 'accent', retrying: 'accent', active: 'accent', executing: 'accent',
-  pending: 'neutral', planned: 'neutral', queued: 'neutral', idle: 'neutral', discussing: 'neutral',
+  completed: 'green', success: 'green', passed: 'green', done: 'green', ok: 'green', connected: 'green', converted: 'green',
+  running: 'accent', retrying: 'accent', active: 'accent', executing: 'accent', open: 'accent',
+  pending: 'neutral', planned: 'neutral', queued: 'neutral', idle: 'neutral', discussing: 'neutral', converged: 'yellow',
   failed: 'red', error: 'red', blocked: 'red', cancelled: 'red',
   waiting_approval: 'yellow', waiting_clarify: 'yellow', clarifying: 'yellow', retrying_budget: 'yellow',
 };

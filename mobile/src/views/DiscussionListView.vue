@@ -5,6 +5,7 @@ import { showToast } from 'vant';
 import { api } from '../api';
 import type { ProjectSummary } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
+import StatusTag from '../components/StatusTag.vue';
 
 defineOptions({ name: 'DiscussionListView' });
 
@@ -107,7 +108,7 @@ async function doCreate() {
       @click="open(d)"
     >
       <template #value>
-        <span :class="['st', d.status]">{{ statusLabel(d.status) }}</span>
+        <StatusTag :status="d.status" :label="statusLabel(d.status)" />
         <van-tag v-if="d.pending_user" type="warning" class="pend-tag">待拍板</van-tag>
       </template>
     </van-cell>

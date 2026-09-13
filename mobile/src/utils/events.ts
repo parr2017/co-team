@@ -156,6 +156,52 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
     case 'discussion_experience':
       return { text: `${p.agent || '成员'}沉淀经验到知识库：${CLIP(p.title, 40)}`, level: 'success', category: 'system', noisy: false };
 
+    // ---- 监督者 / 阻塞问答 / 阶段与验收（对齐服务端 emitProgress 全量清单）----
+    case 'agent_message':
+      return { text: `${p.agent || '成员'}${p.direct ? '定向' : '广播'}发言：${CLIP(p.text, 70)}`, level: 'info', category: 'agent', noisy: false };
+    case 'ask_created':
+      return { text: `${p.from || 'Agent'} 向你提问：${CLIP(p.question, 70)}`, level: 'accent', category: 'agent', noisy: false };
+    case 'ask_delivered':
+      return { text: `提问已送达任务频道${p.question ? `：${CLIP(p.question, 60)}` : ''}`, level: 'accent', category: 'agent', noisy: false };
+    case 'ask_resolved':
+      return { text: '提问已解决，执行继续', level: 'success', category: 'agent', noisy: false };
+    case 'ask_answered_by_agent':
+      return { text: `${p.agent || '成员'}回答了同伴提问${p.answer ? `：${CLIP(p.answer, 60)}` : ''}`, level: 'info', category: 'agent', noisy: false };
+    case 'stage_started':
+      return { text: `进入阶段 ${p.stage ?? '?'}${p.stage_goal ? ` — ${CLIP(p.stage_goal, 70)}` : ''}`, level: 'accent', category: 'task', noisy: false };
+    case 'acceptance_report': {
+      const open = Array.isArray(p.open) ? p.open.length : p.open;
+      return { text: `最终验收完成${typeof open === 'number' ? ` · ${open} 项待人工裁决` : ''}${p.failed ? ` · ${p.failed} 项失败` : ''}`, level: p.failed ? 'error' : 'accent', category: 'task', noisy: false };
+    }
+    case 'gate_test':
+      return p.passed
+        ? { text: `自修改门禁通过 · ${CLIP(p.command, 50)}`, level: 'success', category: 'node', noisy: false }
+        : { text: `自修改门禁未通过 · ${CLIP(p.command, 50)}`, level: 'error', category: 'node', noisy: false };
+    case 'defect_converted':
+      return { text: `缺陷已转为修复任务${p.fix_task_id ? `（${p.fix_task_id}）` : ''}`, level: 'success', category: 'task', noisy: false };
+    case 'node_added':
+      return { text: `规划新增节点${NODE_NAME(p)} · ${p.agent || ''}`, level: 'accent', category: 'node', noisy: false };
+    case 'daily_report_ready':
+      return { text: `每日问题报告已生成${p.count ? `（${p.count} 项）` : ''}`, level: 'info', category: 'system', noisy: false };
+    case 'supervisor_evaluated':
+      return { text: `监督者巡检：${CLIP(p.assessment || p.reason, 70)}`, level: 'info', category: 'agent', noisy: false };
+    case 'supervisor_action':
+      return { text: `监督者执行动作：${CLIP(p.action || p.reason, 70)}`, level: 'warn', category: 'agent', noisy: false };
+    case 'supervisor_proposal':
+      return { text: `监督者提案${p.type ? `（${p.type}）` : ''}：${CLIP(p.reason, 70)}`, level: 'accent', category: 'agent', noisy: false };
+    case 'supervisor_proposal_executed':
+      return { text: `提案已执行${p.fix_task_id ? ` · 修复任务 ${p.fix_task_id}` : ''}`, level: 'success', category: 'agent', noisy: false };
+    case 'intervention_injected':
+      return { text: `插话已送达执行中的 Agent（${p.count ?? 1} 条）`, level: 'accent', category: 'task', noisy: false };
+    case 'intervention_deferred':
+      return { text: '插话已排队，将在当前步骤结束后送达', level: 'info', category: 'task', noisy: false };
+    case 'llm_backoff':
+      return { text: `模型 ${p.model || '?'} 限流，${p.backoff_sec ?? '?'} 秒后重试（第 ${p.attempt ?? '?'} 次）`, level: 'warn', category: 'system', noisy: false };
+    case 'model_slow':
+      return { text: `模型 ${p.model || '?'} 响应缓慢，持续观察中`, level: 'warn', category: 'system', noisy: false };
+    case 'model_failover':
+      return { text: `模型降级：${p.from || '?'} → ${p.to || p.model || '?'}`, level: 'warn', category: 'system', noisy: false };
+
     default: {
       // 未登记类型：尽量从 payload 拼出可读内容，而不是裸 type
       const fallback = p.text || p.summary || p.message || p.name || p.error || '';

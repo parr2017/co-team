@@ -157,7 +157,7 @@
                 <el-table-column prop="name" label="节点" min-width="200" show-overflow-tooltip />
                 <el-table-column prop="agent" label="Agent" width="90" />
                 <el-table-column label="状态" width="100">
-                  <template #default="{ row: n }"><el-tag size="small" :type="n.status === 'completed' ? 'success' : n.status === 'failed' ? 'danger' : 'warning'">{{ n.status }}</el-tag></template>
+                  <template #default="{ row: n }"><el-tag size="small" :type="n.status === 'completed' ? 'success' : n.status === 'failed' ? 'danger' : 'warning'">{{ statusText(n.status) }}</el-tag></template>
                 </el-table-column>
                 <el-table-column label="重试" width="60"><template #default="{ row: n }">{{ n.retry_count || 0 }}</template></el-table-column>
                 <el-table-column prop="model" label="模型" width="140" show-overflow-tooltip />
@@ -174,7 +174,7 @@
           </el-table-column>
           <el-table-column prop="description" label="任务" min-width="220" show-overflow-tooltip />
           <el-table-column label="状态" width="110">
-            <template #default="{ row }"><el-tag size="small" :type="row.status === 'success' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'">{{ row.status }}</el-tag></template>
+            <template #default="{ row }"><el-tag size="small" :type="row.status === 'success' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'">{{ statusText(row.status) }}</el-tag></template>
           </el-table-column>
           <el-table-column prop="level" label="级别" width="80" />
           <el-table-column label="Token" width="100"><template #default="{ row }">{{ row.tokens.toLocaleString() }}</template></el-table-column>

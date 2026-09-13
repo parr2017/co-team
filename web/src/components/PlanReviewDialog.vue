@@ -98,6 +98,7 @@
 import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { api, type TaskGraph } from '../api';
+import { statusText } from '../utils/events';
 
 const props = defineProps<{ modelValue: boolean; taskId: string }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'started'): void; (e: 'cancelled'): void; (e: 'changed'): void }>();
@@ -125,7 +126,7 @@ const agentOptions = ref<string[]>([]);
 const modelOptions = ref<{ name: string; healthy: boolean; tags: string }[]>([]);
 
 function statusLabel(s?: string) {
-  return ({ planned: '待确认', pending: '待执行', running: '执行中', success: '已完成', failed: '失败', cancelled: '已取消', waiting_approval: '待审批' } as Record<string, string>)[s || ''] || s || '';
+  return statusText(s || '');
 }
 function branchOf(n: EditableNode): string {
   return n.agent === 'orchestrator' ? '' : `⎇ coteam/${n.id}-${n.agent}`;

@@ -226,6 +226,19 @@ export function statusText(s: string): string {
   return STATUS_TEXT[s] || s;
 }
 
+/** 状态 → el-tag type（与 STATUS_TEXT 配套的唯一来源） */
+export const STATUS_TAG_TYPE: Record<string, string> = {
+  completed: 'success', success: 'success', done: 'success',
+  failed: 'danger', error: 'danger',
+  running: 'warning', retrying: 'warning', clarifying: 'warning', waiting_clarify: 'warning',
+  waiting_approval: 'primary', planned: 'primary',
+  pending: 'info', queued: 'info', cancelled: 'info', idle: 'info',
+};
+
+export function statusTagType(s: string): string {
+  return STATUS_TAG_TYPE[s] || 'info';
+}
+
 /** 任务状态 → 当前所处阶段（回答"现在到哪一步了"） */
 export function taskStage(status: string): { label: string; step: number } {
   if (['pending', 'queued'].includes(status)) return { label: '排队等待', step: 0 };

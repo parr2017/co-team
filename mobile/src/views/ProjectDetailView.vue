@@ -5,6 +5,7 @@ import { api, statusLabel } from '../api';
 import type { TaskGraph } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import AgentAvatar from '../components/AgentAvatar.vue';
+import StatusTag from '../components/StatusTag.vue';
 import MdView from '../components/MdView.vue';
 
 const route = useRoute();
@@ -174,8 +175,7 @@ function goCreate() {
             </div>
             <div class="s-line2">
               <span class="s-digest">{{ digest(t) }}</span>
-              <span v-if="['running', 'pending', 'retrying'].includes(t.status)" class="s-tag run">执行中</span>
-              <span v-else-if="['planned', 'clarifying'].includes(t.status)" class="s-tag wait">待处理</span>
+              <StatusTag v-if="t.status" :status="t.status" :label="statusLabel(t.status)" />
             </div>
           </div>
         </div>

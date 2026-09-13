@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showFailToast } from 'vant';
 import { renderMd } from '../utils/md';
+import StatusTag from '../components/StatusTag.vue';
+import { statusLabel } from '../api';
 import { api } from '../api';
 import type { ProjectProgressReport } from '../api';
 
@@ -43,13 +45,6 @@ function openDeliverable(taskId: string, nodeId: string) {
 const deliverableOpen = ref(false);
 const deliverableView = ref<{ title: string; markdown: string } | null>(null);
 
-function statusType(s: string): string {
-  if (s === 'success' || s === 'completed') return 'success';
-  if (s === 'failed') return 'danger';
-  if (['running', 'retrying', 'pending'].includes(s)) return 'warning';
-  return 'default';
-}
-
 function nodeIcon(status: string): string {
   return ({ completed: 'checked', failed: 'close', running: 'clock-o', retrying: 'replay', waiting_approval: 'edit', cancelled: 'cross' } as Record<string, string>)[status] || 'arrow';
 }
@@ -84,7 +79,7 @@ function nodeIcon(status: string): string {
       <div class="wx-group">
         <div v-for="t in report.tasks" :key="t.task_id" class="task-block">
           <div class="t-row" @click="toggle(t.task_id)">
-            <van-tag plain size="medium" :type="statusType(t.status) as any">{{ t.status }}</van-tag>
+            <StatusTag :status="t.status" :label="statusLabel(t.status)" />
             <span class="t-desc">{{ t.description || t.task_id }}</span>
             <span class="t-tok">{{ t.tokens.toLocaleString() }}tok</span>
             <van-icon :name="expanded === t.task_id ? 'arrow-up' : 'arrow-down'" size="13" color="var(--text-3)" />
