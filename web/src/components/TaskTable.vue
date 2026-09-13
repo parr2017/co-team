@@ -2,7 +2,7 @@
   <el-table :data="rows" size="small" class="task-table" empty-text="暂无任务" @row-click="(r: Row) => emit('show-detail', r.task_id)">
     <el-table-column label="任务" min-width="240">
       <template #default="{ row }">
-        <div class="t-name">{{ row.description || '（无描述）' }}</div>
+        <div class="t-name" :title="row.description">{{ row.description || '（无描述）' }}</div>
         <div class="t-sub mono">
           <span>{{ row.task_id }}</span>
           <el-tag v-if="row.project_id" size="small" type="info" class="t-mini-tag">项目</el-tag>
@@ -220,7 +220,7 @@ function fmtTime(ts: string): string {
 
 <style scoped>
 .task-table { width: 100%; cursor: default; }
-.t-name { font-size: 13px; font-weight: 500; color: var(--ct-text); line-height: 1.4; }
+.t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; font-size: 13px; font-weight: 500; color: var(--ct-text); line-height: 1.4; }
 .t-sub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11px; color: var(--ct-text3); }
 .t-mini-tag { transform: scale(0.85); }
 .t-agent { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ct-text2); }
