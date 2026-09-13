@@ -32,6 +32,15 @@ onMounted(async () => {
   loading.value = false;
 });
 
+const refreshing = ref(false);
+async function onRefresh() {
+  try {
+    await Promise.all([loadList(), loadMeta()]);
+  } finally {
+    refreshing.value = false;
+  }
+}
+
 function statusLabel(s: string): string {
   return ({ discussing: '讨论中', converged: '方案已生成', converted: '已转项目' } as Record<string, string>)[s] || s;
 }
@@ -95,7 +104,9 @@ async function doCreate() {
       </div>
     </div>
 
-    <van-empty v-if="!loading && !list.length" description="还没有讨论，点右下角发起第一场">
+    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+    <van-skeleton v-if="loading" :row="4" class="sk" />
+    <van-empty v-else-if="!list.length" description="还没有讨论，点右下角发起第一场">
       <van-button round type="primary" size="small" @click="openCreate">发起讨论</van-button>
     </van-empty>
 
@@ -112,6 +123,8 @@ async function doCreate() {
         <van-tag v-if="d.pending_user" type="warning" class="pend-tag">待拍板</van-tag>
       </template>
     </van-cell>
+
+    </van-pull-refresh>
 
     <van-popup v-model:show="showCreate" position="bottom" round :style="{ maxHeight: '82%' }">
       <div class="sheet">
@@ -170,4 +183,5 @@ async function doCreate() {
 .mem-picker { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0; }
 .mem-chip { font-size: 12px; padding: 3px 10px; border-radius: 12px; border: 1px solid var(--border); color: var(--text-2); background: var(--panel-2); }
 .mem-chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.sk { padding: 16px; }
 </style>

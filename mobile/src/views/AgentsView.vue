@@ -12,17 +12,25 @@ const { agents, tasks, connected } = useDashboard();
 
 const profiles = ref<Record<string, AgentProfileSummary>>({});
 const bindings = ref<Record<string, string[]>>({});
+const loading = ref(true);
+const loadFailed = ref(false);
+const refreshing = ref(false);
 
-onMounted(async () => {
-  try {
-    const d = await api.agentProfiles();
-    profiles.value = d.agents || {};
-  } catch { /* ignore */ }
-  try {
-    const d = await api.listSkills();
-    bindings.value = d.bindings || {};
-  } catch { /* ignore */ }
-});
+async function load() {
+  loadFailed.value = false;
+  const [p, s] = await Promise.allSettled([api.agentProfiles(), api.listSkills()]);
+  if (p.status === 'fulfilled') profiles.value = p.value.agents || {};
+  if (s.status === 'fulfilled') bindings.value = s.value.bindings || {};
+  // 两个都失败才算失败（技能列表缺失不致命）
+  if (p.status === 'rejected' && s.status === 'rejected') loadFailed.value = true;
+  loading.value = false;
+}
+onMounted(() => void load());
+async function onRefresh() {
+  refreshing.value = true;
+  await load();
+  refreshing.value = false;
+}
 
 function skillsOf(name: string): string[] {
   return bindings.value[name] || [];
@@ -100,8 +108,14 @@ function goTaskOf(name: string) {
       </template>
     </van-nav-bar>
 
-    <div class="book">
-      <template v-for="[group, members] in sections" :key="group">
+    <van-pull-refresh v-model="refreshing" class="book" @refresh="onRefresh">
+      <van-skeleton v-if="loading" :row="4" class="sk" />
+      <div v-else-if="loadFailed && !sections.length" class="empty">
+        <van-icon name="warning-o" size="52" color="var(--yellow)" />
+        <div class="empty-text">成员加载失败</div>
+        <button class="wx-btn" @click="load">重新加载</button>
+      </div>
+      <template v-else v-for="[group, members] in sections" :key="group">
         <div class="group-label">{{ group }}</div>
         <div class="wx-group">
           <div
@@ -134,11 +148,7 @@ function goTaskOf(name: string) {
           </div>
         </div>
       </template>
-      <div v-if="!sections.length" class="empty">
-        <van-icon name="friends-o" size="52" color="var(--text-3)" />
-        <div class="empty-text">加载中…</div>
-      </div>
-    </div>
+    </van-pull-refresh>
   </div>
 </template>
 
@@ -148,6 +158,7 @@ function goTaskOf(name: string) {
 .conn-dot.off { background: var(--red);  }
 
 .book { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 20px; }
+.sk { padding: 20px 16px; }
 
 .group-label {
   font-size: 13px; color: var(--text-2);

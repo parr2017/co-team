@@ -128,6 +128,12 @@ async function load() {
   }
 }
 
+const refreshing = ref(false);
+async function onRefresh() {
+  refreshing.value = true;
+  await load();
+  refreshing.value = false;
+}
 function refresh() {
   void load();
 }
@@ -165,7 +171,9 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
     <van-nav-bar safe-area-inset-top title="我的审批" fixed placeholder left-arrow @click-left="router.back()" />
     <div class="body">
       <div class="conn mono" :class="{ ok: connected }">{{ connected ? '实时同步中' : '离线——重连后自动刷新' }}</div>
-      <van-empty v-if="!loading && !items.length" description="当前没有等你处理的事项" />
+      <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+      <van-skeleton v-if="loading && !items.length" :row="3" class="sk" />
+      <van-empty v-else-if="!loading && !items.length" description="当前没有等你处理的事项" />
       <div v-for="it in items" :key="it.key" class="wx-group ap-card">
         <div class="ap-head">
           <StatusTag :status="kindTone[it.kind]" :label="kindLabel[it.kind] || it.kind" />
@@ -182,6 +190,7 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
           <van-button size="small" plain type="primary" @click="goTask(it.taskId)">去处理</van-button>
         </div>
       </div>
+      </van-pull-refresh>
     </div>
   </div>
 </template>
@@ -197,4 +206,6 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
 .ap-title { font-size: var(--fs-md); font-weight: 600; margin-bottom: 4px; }
 .ap-detail { font-size: var(--fs-sm); color: var(--text-2); margin-bottom: 8px; }
 .ap-actions { display: flex; gap: 8px; }
+.sk { padding: 16px; }
+.body .van-pull-refresh { min-height: 40vh; }
 </style>

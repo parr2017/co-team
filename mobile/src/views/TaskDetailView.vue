@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showDialog, showConfirmDialog, showToast } from 'vant';
 import { renderMd as mdShared } from '../utils/md';
@@ -29,6 +29,12 @@ const events = ref<EventEnvelope[]>([]);
 const loadFailed = ref(false);
 // M10-A：聊天长按"引用"→ 介入输入框预填
 const quoteDraft = ref('');
+/** 置空后 nextTick 再填：重复引用同一消息时强制触发 InterventionInput 的 watch（此前第二次引用无效果） */
+async function onQuote(text: string) {
+  quoteDraft.value = '';
+  await nextTick();
+  quoteDraft.value = text;
+}
 
 // M10-C 长内容弹窗化
 const proposalViewOpen = ref(false);
@@ -549,7 +555,7 @@ function nodeIcon(status: string): string {
                 <template v-else>暂无成员</template>
               </div>
             </div>
-            <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" @quote="quoteDraft = $event" @open-node="openNodeFromChat" />
+            <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" @quote="onQuote" @open-node="openNodeFromChat" />
             <InterventionInput :task-id="taskId" :task-status="task.status" :prefill="quoteDraft" />
           </div>
         </van-tab>

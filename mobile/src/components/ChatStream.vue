@@ -53,7 +53,7 @@ function msgSheetSelect(action: any) {
   if (name === 'copy') {
     void copyText(m.text).then((ok) => showToast(ok ? '已复制' : '复制失败（浏览器限制）'));
   } else if (name === 'quote') {
-    void copyText(body).then((ok) => showToast(ok ? '已复制引用，去输入框粘贴' : '复制失败'));
+    // 引用直接预填到介入输入框（此前还复制一份到剪贴板，属冗余动作）
     emit('quote', body);
   } else if (name === 'node') {
     if (m.node_id && m.node_id !== 'intervene') emit('open-node', m.node_id);
@@ -271,7 +271,12 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
       </div>
       <div v-else-if="item.t === 'intervene'" class="row me">
         <div class="me-col">
-          <div class="bubble me-b">
+          <div class="bubble me-b"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
         </div>
@@ -283,7 +288,12 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
         <AgentAvatar name="orchestrator" :size="36" />
         <div class="them-col">
           <div class="who-name">主 Agent</div>
-          <div class="bubble them-b">
+          <div class="bubble them-b"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
           <div v-if="item.entry.model" class="b-meta mono">{{ item.entry.model }}<template v-if="item.entry.tokens"> · {{ item.entry.tokens }} tok</template></div>
@@ -396,7 +406,12 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
           <div class="who-name">
             {{ item.agent }} · 提问<template v-if="item.entry.meta?.to === 'user' && !answeredAskIds.has(String(item.entry.meta?.ask_id))"><span class="ask-live">等你回答</span></template>
           </div>
-          <div class="bubble them-b ask-b">
+          <div class="bubble them-b ask-b"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-text md" v-html="md(item.entry.text)"></div>
             <div v-if="item.entry.meta?.to === 'user' && !answeredAskIds.has(String(item.entry.meta?.ask_id))" class="ask-answer">
               <input
@@ -417,7 +432,12 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
       </div>
       <div v-else-if="item.t === 'answer' && item.entry.meta?.by === 'user'" class="row me">
         <div class="me-col">
-          <div class="bubble me-b">
+          <div class="bubble me-b"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-text md" v-html="md(item.entry.text.replace(/^回答：/, ''))"></div>
           </div>
         </div>
@@ -427,7 +447,12 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <AgentAvatar :name="String(item.entry.meta?.by || item.agent)" :size="36" />
         <div class="them-col">
           <div class="who-name">{{ item.entry.meta?.by || item.agent }} · 回答</div>
-          <div class="bubble them-b answer-b">
+          <div class="bubble them-b answer-b"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-text md" v-html="md(String(item.entry.text || '').replace(/^.*?回答：/, ''))"></div>
           </div>
         </div>
@@ -454,7 +479,12 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <AgentAvatar :name="item.agent" :size="36" />
         <div class="them-col">
           <div class="who-name">{{ item.agent }}</div>
-          <div class="bubble them-b fatal">
+          <div class="bubble them-b fatal"
+            @touchstart="lpStart($event, item.entry)"
+            @touchend="lpCancel"
+            @touchmove="lpMove"
+            @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
+          >
             <div class="b-error">✗ {{ item.entry.text }}</div>
             <details v-if="item.entry.meta?.raw">
               <summary>📄 原始输出</summary>
