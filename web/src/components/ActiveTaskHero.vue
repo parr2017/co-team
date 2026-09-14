@@ -55,7 +55,7 @@ onUnmounted(() => { if (timer !== null) window.clearInterval(timer); });
 
 const hero = computed(() => {
   void nowTick.value;
-  const active = Object.values(tasks.value)
+  const active = Object.values(tasks as Record<string, TaskGraph>)
     .filter((t: TaskGraph) => ACTIVE.includes(t.status))
     .sort((a: TaskGraph, b: TaskGraph) => (PRIORITY[a.status] ?? 9) - (PRIORITY[b.status] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   const t = active[0] as TaskGraph | undefined;
