@@ -8,6 +8,7 @@ export default defineConfig({
     port: 8856,
     proxy: {
       '/api': 'http://localhost:8855',
+      '/media': 'http://localhost:8855',
       '/ws': { target: 'ws://localhost:8855', ws: true },
     },
   },

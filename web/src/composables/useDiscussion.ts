@@ -190,11 +190,11 @@ async function create(payload: { title: string; topic?: string; members: string[
 }
 
 /** 发送用户消息（引擎 v2：busy 期间也受理——服务端循环会消化插话，不再有 409） */
-async function send(text: string, opts?: Pick<PostDiscussionPayload, 'reply_to'>) {
+async function send(text: string, opts?: Pick<PostDiscussionPayload, 'reply_to' | 'images'>) {
   if (!current.value) return;
   error.value = '';
   try {
-    const res = await api.postDiscussionMessage(current.value.id, { text, reply_to: opts?.reply_to });
+    const res = await api.postDiscussionMessage(current.value.id, { text, reply_to: opts?.reply_to, images: opts?.images });
     if (res.message && !current.value.messages.some((m) => m.id === res.message!.id)) {
       current.value.messages.push(res.message);
       current.value.pending_user = false;

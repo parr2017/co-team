@@ -22,6 +22,18 @@
       <div v-else-if="item.t === 'intervene'" class="row me">
         <div class="me-col">
           <div class="bubble me-b">
+            <!-- 用户介入附图（meta.images）：缩略图 + 点击大图 -->
+            <div v-if="(item.entry.meta?.images || []).length" class="img-grid">
+              <el-image
+                v-for="(u, i) in (item.entry.meta?.images || []).map((g: any) => g.url)"
+                :key="i"
+                :src="u"
+                :preview-src-list="(item.entry.meta?.images || []).map((g: any) => g.url)"
+                :initial-index="i"
+                fit="cover"
+                class="img-cell"
+              />
+            </div>
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
         </div>

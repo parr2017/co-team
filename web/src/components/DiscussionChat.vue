@@ -20,9 +20,10 @@
               <input
                 v-model="askDrafts[String(row.m.meta.bridge_ask.ask_id)]"
                 class="ask-input"
-                placeholder="在群里直接回答，agent 将立即继续…"
+                placeholder="在群里直接回答，agent 将立即继续…（可附图）"
                 @keydown.enter="sendAskAnswer(row.m.meta.bridge_ask)"
               />
+              <AttachPicker v-model="askImgs[String(row.m.meta.bridge_ask.ask_id)]" />
               <el-button size="small" type="primary" :loading="answeringAsk === String(row.m.meta.bridge_ask.ask_id)" @click="sendAskAnswer(row.m.meta.bridge_ask)">回答</el-button>
             </div>
             <div v-else class="ask-done">✓ 已回答，agent 继续执行中</div>
@@ -59,7 +60,20 @@
             </div>
             <div class="bubble" :class="{ ask: row.m.needs_user, answered: row.m.needs_user && row.answered, 'me-b': row.side === 'me', 'them-b': row.side === 'them' }">
               <div v-if="row.quote" class="quote-bar mono" :title="row.quote.text">↩ {{ row.quote.who }}：{{ row.quote.text }}</div>
-              <div class="b-text md" v-html="md(row.m.text)"></div>
+              <!-- 用户附图：图片网格（点击大图预览，含视觉模型描述 tooltip） -->
+              <div v-if="rowImgUrls(row.m).length" class="img-grid">
+                <el-image
+                  v-for="(u, i) in rowImgUrls(row.m)"
+                  :key="u"
+                  :src="u"
+                  :preview-src-list="rowImgUrls(row.m)"
+                  :initial-index="i"
+                  fit="cover"
+                  loading="lazy"
+                  class="img-cell"
+                />
+              </div>
+              <div v-if="row.m.text" class="b-text md" v-html="md(row.m.text)"></div>
               <span class="hover-ts mono">{{ fmtHM(row.m.ts) }}</span>
             </div>
             <span v-if="row.tail" class="tail-ts mono">{{ fmtHM(row.m.ts) }}</span>
@@ -132,7 +146,7 @@
         :rows="2"
         resize="none"
         :disabled="converted"
-        :placeholder="busy ? '成员正在处理——插话会即刻受理，当前发言告一段落后优先回应你' : '像群里聊天一样说：可 @成员、可让它动手（如：@launcher 把服务跑起来）、可打断'"
+        :placeholder="busy ? '成员正在处理——插话会即刻受理，当前发言告一段落后优先回应你' : '像群里聊天一样说：可 @成员、可让它动手（如：@launcher 把服务跑起来）、可发图、可打断'"
         @keydown.enter.exact.prevent="sendNow"
       />
       <div class="op-row">
@@ -142,9 +156,10 @@
         </el-radio-group>
         <span class="mode-hint mono">{{ mode === 'auto' ? '自动：一条消息驱动多轮，直到成员收敛或你插话' : '手动：你一句它一句，插话即刻受理' }}</span>
         <div class="ops">
+          <AttachPicker v-model="pendingImages" :disabled="converted || sending" @preview="onPreview" />
           <el-button v-if="busy" size="small" type="warning" plain @click="stop">打断并停止</el-button>
           <el-button v-else size="small" :disabled="converted" @click="moreRound">让成员继续</el-button>
-          <el-button size="small" type="primary" :disabled="!draft.trim() || converted" @click="sendNow">{{ busy ? '插话' : '发送' }}</el-button>
+          <el-button size="small" type="primary" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length) || converted" @click="sendNow">{{ busy ? '插话' : '发送' }}</el-button>
         </div>
       </div>
     </div>
@@ -153,28 +168,33 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElImageViewer } from 'element-plus';
 import { renderMarkdown } from '../utils/md';
 import type { DiscussionMessage } from '../api';
 import { api } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
 import { agentColor } from '../utils/agentColor';
 import AgentAvatar from './AgentAvatar.vue';
+import AttachPicker from './AttachPicker.vue';
 
 const emit = defineEmits<{ (e: 'member-info', agent: string): void }>();
 
 // M5.2 ③：群内直接回答任务的 ask_user 提问
 const answeredAskIds = ref<Set<string>>(new Set());
 const askDrafts = ref<Record<string, string>>({});
+/** ask 回答的待发附图（ask_id -> dataURL 数组），随 answerAsk 提交 */
+const askImgs = ref<Record<string, { name: string; dataUrl: string }[]>>({});
 const answeringAsk = ref('');
 async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
   const text = (askDrafts.value[bridge.ask_id] || '').trim();
-  if (!text || answeringAsk.value) return;
+  const imgs = askImgs.value[bridge.ask_id] || [];
+  if ((!text && !imgs.length) || answeringAsk.value) return;
   answeringAsk.value = bridge.ask_id;
   try {
-    await api.answerAsk(bridge.task_id, bridge.ask_id, text);
+    await api.answerAsk(bridge.task_id, bridge.ask_id, text, imgs.length ? imgs : undefined);
     answeredAskIds.value = new Set([...answeredAskIds.value, bridge.ask_id]);
     askDrafts.value[bridge.ask_id] = '';
+    askImgs.value[bridge.ask_id] = [];
     ElMessage.success('已回答，agent 将继续执行');
   } catch (e: any) {
     ElMessage.error(e?.message || '回答失败');
@@ -294,17 +314,40 @@ function md(text: string): string {
 }
 
 // ---------- 交互 ----------
+// 待发附图 + 发送中标记（视觉描述在服务端生成，等待数秒属正常）
+const pendingImages = ref<{ name: string; dataUrl: string }[]>([]);
+const sending = ref(false);
+function rowImgUrls(m: DiscussionMessage): string[] {
+  const imgs = (m.meta as any)?.images;
+  return Array.isArray(imgs) ? imgs.map((i: any) => String(i.url || '')).filter(Boolean) : [];
+}
+function onPreview(url: string) {
+  // 缩略图点击放大：待发预览无 el-image 组件，手工挂一个 viewer
+  const div = document.createElement('div');
+  div.innerHTML = '';
+  const app = new (ElImageViewer as any)({ propsData: { urlList: [url], onClose: () => (app as any).$el.remove() } });
+  app.$mount();
+  document.body.appendChild(app.$el);
+}
 async function sendNow() {
   const text = draft.value.trim();
-  if (!text) return;
+  if (!text && !pendingImages.value.length) return;
+  if (sending.value) return;
+  sending.value = true;
   try {
-    await send(text, replyTo.value ? { reply_to: replyTo.value } : undefined);
+    await send(text, {
+      ...(replyTo.value ? { reply_to: replyTo.value } : {}),
+      images: pendingImages.value.length ? pendingImages.value : undefined,
+    } as Parameters<typeof send>[1]);
     draft.value = '';
+    pendingImages.value = [];
     replyTo.value = null;
     await nextTick();
     scrollToBottom(true);
   } catch (e: any) {
     ElMessage.error(String(e?.message || e));
+  } finally {
+    sending.value = false;
   }
 }
 
@@ -465,6 +508,10 @@ html.dark .me-b { background: #3eb575; color: #eafff1; }
 .ha-btn:hover { color: var(--ct-text); border-color: var(--ct-border2); }
 
 .b-text { word-break: break-word; color: var(--ct-text); }
+/* 用户附图：气泡内图片网格（最多 3 张，一张撑满两列宽） */
+.img-grid { display: grid; grid-template-columns: repeat(2, 120px); gap: 6px; margin: 2px 0 6px; }
+.img-grid .img-cell { width: 120px; height: 120px; border-radius: 8px; cursor: zoom-in; }
+.img-grid .img-cell:first-child:last-child, .img-grid .img-cell:only-child { grid-column: span 2; width: 240px; height: 200px; }
 .me-b .b-text { color: inherit; }
 .b-text :deep(p) { margin: 0 0 6px; }
 .b-text :deep(p:last-child) { margin-bottom: 0; }

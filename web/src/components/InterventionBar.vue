@@ -10,14 +10,16 @@
       @input="autoGrow"
       ref="taEl"
     ></textarea>
-    <button class="iv-send mono" :disabled="!draft.trim() || sending" @click="send">发送</button>
+    <AttachPicker v-model="pendingImages" :disabled="sending" @preview="onPreview" />
+    <button class="iv-send mono" :disabled="(!draft.trim() && !pendingImages.length) || sending" @click="send">发送</button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElImageViewer } from 'element-plus';
 import { api } from '../api';
+import AttachPicker from './AttachPicker.vue';
 
 const props = defineProps<{ taskId: string; taskStatus?: string }>();
 const emit = defineEmits<{ (e: 'sent'): void }>();
@@ -25,10 +27,18 @@ const emit = defineEmits<{ (e: 'sent'): void }>();
 const draft = ref('');
 const sending = ref(false);
 const taEl = ref<HTMLTextAreaElement | null>(null);
+// 用户附图：随介入消息一起提交，服务端生成视觉描述注入 agent 下一轮
+const pendingImages = ref<{ name: string; dataUrl: string }[]>([]);
 
-const placeholder = '问进度、提醒、或提新想法——运行中的成员会回应（Enter 发送，Shift+Enter 换行）';
+const placeholder = '问进度、提醒、或提新想法——运行中的成员会回应，可发图（Enter 发送，Shift+Enter 换行）';
 
 const RUNNING = ['running', 'pending', 'planned', 'retrying', 'waiting_approval'];
+
+function onPreview(url: string) {
+  const app = new (ElImageViewer as any)({ propsData: { urlList: [url], onClose: () => (app as any).$el.remove() } });
+  app.$mount();
+  document.body.appendChild(app.$el);
+}
 
 function autoGrow() {
   const el = taEl.value;
@@ -40,15 +50,16 @@ function autoGrow() {
 
 async function send() {
   const message = draft.value.trim();
-  if (!message || sending.value) return;
+  if ((!message && !pendingImages.value.length) || sending.value) return;
   if (props.taskStatus && !RUNNING.includes(props.taskStatus)) {
     ElMessage.warning(`任务当前状态为 ${props.taskStatus}，不是执行中，消息不会被消费`);
     return;
   }
   sending.value = true;
   try {
-    const r = await api.interveneTask(props.taskId, message);
+    const r = await api.interveneTask(props.taskId, message, pendingImages.value.length ? pendingImages.value : undefined);
     draft.value = '';
+    pendingImages.value = [];
     if (taEl.value) taEl.value.style.height = 'auto';
     ElMessage.success(r.note || '已送达执行中的成员');
     emit('sent');

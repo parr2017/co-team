@@ -76,6 +76,9 @@ beforeEach(async () => {
   process.env.COTEAM_FORCE_MEMORY = '1';
   closeBus();
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-disc-'));
+  // 用户发图落盘走 process.cwd()/data/media——chdir 到临时目录，测试互不污染
+  process.chdir(tmp);
+  fs.mkdirSync(path.join(tmp, 'data'), { recursive: true });
   for (const name of ['dev', 'test', 'deploy']) {
     const d = path.join(tmp, name);
     fs.mkdirSync(d, { recursive: true });
@@ -109,6 +112,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  process.chdir(path.join(tmp, '..'));
   fs.rmSync(tmp, { recursive: true, force: true });
   closeBus();
   delete process.env.COTEAM_KNOWLEDGE_DIR;
@@ -786,5 +790,63 @@ describe('429 换模兜底（群聊全员沉默复盘）', () => {
     const res = await runDiscussionRound(deps, disc.id);
     expect(res.speakers.length).toBeGreaterThan(0);
     expect(h.lastSpeakerCalls.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------- 用户发图（2026-09-14）：消息 meta.images + transcript 富化 + 纯图消息 ----------
+describe('用户发图：群聊附图消息', () => {
+  // 1x1 PNG：测试池无 image tag 模型 → 视觉描述走"未配置"软失败（desc 缺省不阻塞）
+  const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('带图消息入库：meta.images 存引用（url 可回读、文件落盘），无视觉模型 desc 缺省', async () => {
+    const d = await mkDiscussion(['dev']);
+    const { message } = await postUserMessage(deps, d.id, '看看这个界面', { images: [{ name: 'ui.png', dataUrl: TINY_PNG }] });
+    expect(message).toBeTruthy();
+    const imgs = (message!.meta as any)?.images;
+    expect(Array.isArray(imgs)).toBe(true);
+    expect(imgs).toHaveLength(1);
+    expect(String(imgs[0].url)).toMatch(/^\/media\/img-[a-z0-9]+\.png$/);
+    expect(imgs[0].desc).toBeUndefined(); // 测试池无视觉模型：软失败，不阻塞
+    const file = path.join(process.cwd(), 'data', 'media', path.basename(imgs[0].url));
+    expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it('纯图消息（无文字）放行，不再 400', async () => {
+    const d = await mkDiscussion(['dev']);
+    const { message } = await postUserMessage(deps, d.id, '', { images: [{ name: 'only.png', dataUrl: TINY_PNG }] });
+    expect(message).toBeTruthy();
+    expect(message!.text).toBe('');
+    expect((message!.meta as any)?.images).toHaveLength(1);
+  });
+
+  it('transcript 富化：发言者上下文可见附图标记（描述缺省时降级为自查指引）', async () => {
+    const d = await mkDiscussion(['dev']);
+    await postUserMessage(deps, d.id, '界面长这样', { images: [{ name: 'shot.png', dataUrl: TINY_PNG }] });
+    h.speaker = () => okContent('收到，看了你的图');
+    const res = await runDiscussionRound(deps, d.id);
+    expect(res.speakers).toContain('dev');
+    const call = h.lastSpeakerCalls.find((c) => c.agent === 'dev');
+    expect(call).toBeTruthy();
+    expect(call!.user).toContain('[用户附图 1: shot.png]');
+    expect(call!.user).toMatch(/视觉描述不可用/);
+  });
+
+  it('路由器感知附图：最新用户指示带附图数量提示', async () => {
+    const d = await mkDiscussion(['dev', 'test']);
+    await postUserMessage(deps, d.id, '如图', { images: [{ name: 'a.png', dataUrl: TINY_PNG }, { name: 'b.png', dataUrl: TINY_PNG }] });
+    h.routerSpeakers = ['dev'];
+    h.speaker = () => okContent('看到了');
+    await runDiscussionRound(deps, d.id);
+    expect(h.lastRouterCalls).toHaveLength(1);
+    expect(h.lastRouterCalls[0].user).toContain('用户附图 2 张');
+  });
+
+  it('校验门穿透到群聊 API 层：超量/坏类型给出 400 语义', async () => {
+    const d = await mkDiscussion(['dev']);
+    const tooMany = Array.from({ length: 4 }, (_, i) => ({ name: `i${i}.png`, dataUrl: TINY_PNG }));
+    await expect(postUserMessage(deps, d.id, 'x', { images: tooMany })).rejects.toThrow(/最多/);
+    await expect(postUserMessage(deps, d.id, 'x', { images: [{ name: 't.tiff', dataUrl: 'data:image/tiff;base64,AAAA' }] })).rejects.toThrow(/不支持/);
+    // 无文字无图仍拒绝
+    await expect(postUserMessage(deps, d.id, '')).rejects.toThrow();
   });
 });

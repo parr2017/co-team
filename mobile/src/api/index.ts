@@ -221,11 +221,28 @@ export interface DiscussionMessage {
 }
 
 /** 发用户消息：text 可空但需 react_to；reply_to 做引用回复 */
+/** 用户附图（随消息提交的 dataURL；服务端 ingest 后消息里只存引用） */
+export interface IncomingImage {
+  name: string;
+  dataUrl: string;
+}
+
+/** 服务端落库后的图片引用（消息 meta.images，前端据此渲染气泡） */
+export interface StoredImage {
+  id: string;
+  name: string;
+  url: string;
+  wsPath?: string;
+  desc?: string;
+  descModel?: string;
+}
+
 export interface PostDiscussionPayload {
   text?: string;
   reply_to?: string;
   react_to?: string;
   emoji?: string;
+  images?: IncomingImage[];
 }
 
 /** 群成员资料（署名拟人化：中文角色 + 稳定配色依据） */
@@ -380,11 +397,11 @@ export const api = {
   listAgentInfos: () => request<{ agents: AgentInfo[] }>('/api/agents'),
   executeTask: (id: string) => post(`/api/tasks/${id}/execute`),
   replan: (id: string, feedback: string) => post(`/api/tasks/${id}/replan`, { feedback }),
-  interveneTask: (id: string, message: string) =>
-    post<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${id}/intervene`, { message }),
+  interveneTask: (id: string, message: string, images?: IncomingImage[]) =>
+    post<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${id}/intervene`, { message, images: images?.length ? images : undefined }),
   // M2 全员实时问答：回答 agent 的阻塞式提问
-  answerAsk: (id: string, askId: string, answer: string) =>
-    post<{ ok: boolean; ask_id: string }>(`/api/tasks/${id}/asks/${askId}/answer`, { answer }),
+  answerAsk: (id: string, askId: string, answer: string, images?: IncomingImage[]) =>
+    post<{ ok: boolean; ask_id: string }>(`/api/tasks/${id}/asks/${askId}/answer`, { answer, images: images?.length ? images : undefined }),
   getPendingCommands: (id: string) => request<{ commands: any[] }>(`/api/tasks/${id}/pending-commands`),
   resolveCommand: (id: string, commandId: string, approved: boolean) =>
     post(`/api/tasks/${id}/commands/${commandId}/approve`, { approved }),
@@ -412,7 +429,7 @@ export const api = {
     post<{ status: 'created' | 'needs_clarification' | 'pending'; task_id: string; questions?: string[]; summary?: string; graph?: TaskGraph }>('/api/tasks', payload.profile === 'simple'
       ? { ...payload, auto_run: true, plan_async: true, skip_clarification: true }
       : { ...payload, auto_run: false, plan_async: true }),
-  clarifyTask: (id: string, payload: { answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }) =>
+  clarifyTask: (id: string, payload: { answers?: { question: string; answer: string; images?: IncomingImage[] }[]; confirm?: boolean; text?: string }) =>
     post<{ status: string; questions?: string[]; graph?: TaskGraph }>(`/api/tasks/${id}/clarify`, { ...payload, plan_async: true }),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileSummary> }>('/api/agents/profiles'),
   listSkills: () => request<{ skills: SkillMeta[]; bindings: Record<string, string[]> }>('/api/skills'),

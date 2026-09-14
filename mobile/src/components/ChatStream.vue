@@ -2,7 +2,7 @@
 import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue';
 import { renderMd as mdShared } from '../utils/md';
 import { api, type JournalEntry } from '../api';
-import { showToast } from 'vant';
+import { showToast, showImagePreview } from 'vant';
 import { useDashboard } from '../composables/useDashboard';
 import { copyText } from '../utils/clipboard';
 import AgentAvatar from './AgentAvatar.vue';
@@ -277,6 +277,16 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
             @touchmove="lpMove"
             @contextmenu.prevent="lpCancel(); msgSheet.entry = item.entry; msgSheet.show = true"
           >
+            <!-- 用户介入附图（meta.images）：缩略图 + 点击大图 -->
+            <div v-if="(item.entry.meta?.images || []).length" class="img-grid">
+              <img
+                v-for="(u, i) in (item.entry.meta?.images || []).map((g: any) => g.url)"
+                :key="i"
+                :src="u"
+                class="img-cell"
+                @click="showImagePreview({ images: (item.entry.meta?.images || []).map((g: any) => g.url), startPosition: i })"
+              />
+            </div>
             <div class="b-text md" v-html="md(item.entry.text)"></div>
           </div>
         </div>
@@ -564,6 +574,10 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
   border: 4px solid transparent; border-top-color: var(--border); border-right-color: var(--border);
 }
 .me-b { background: var(--bubble-me); border: none; border-top-right-radius: 2px; color: #fff; font-weight: 500; }
+/* 用户介入附图：气泡内图片网格 */
+.img-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 2px 0 6px; }
+.img-grid .img-cell { width: 100%; height: 84px; object-fit: cover; border-radius: 8px; display: block; }
+.img-grid .img-cell:first-child:last-child, .img-grid .img-cell:only-child { width: 100%; height: 150px; }
 .me-b::before {
   content: ''; position: absolute; top: 0; right: -7px;
   border: 4px solid transparent; border-top-color: var(--accent); border-left-color: var(--accent);

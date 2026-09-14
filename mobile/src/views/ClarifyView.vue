@@ -11,6 +11,10 @@ const router = useRouter();
 const taskId = computed(() => String(route.params.id));
 const task = ref<TaskGraph | null>(null);
 const questions = ref<{ question: string; answer: string }[]>([]);
+/** 每题待发附图（index -> 数组），随回答提交——服务端生成视觉描述进规划上下文 */
+const answerImgs = ref<{ url?: string; name?: string; dataUrl?: string; file?: File }[][]>([]);
+const imgTarget = ref(-1);
+const imgInputEl = ref<HTMLInputElement | null>(null);
 const supplement = ref('');
 const submitting = ref(false);
 const loading = ref(true);
@@ -45,19 +49,53 @@ async function load() {
 
 watch(taskId, () => void load(), { immediate: true });
 
+// ---------- 澄清回答附图（与 web ClarifyDialog 同一行为契约） ----------
+const ACCEPT = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp']);
+function pickImg(i: number) {
+  imgTarget.value = i;
+  imgInputEl.value?.click();
+}
+async function onPickImg(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = [...(input.files || [])];
+  input.value = '';
+  const idx = imgTarget.value;
+  if (idx < 0) return;
+  for (const f of files) {
+    const cur = answerImgs.value[idx] || [];
+    if (cur.length >= 3) { showToast('最多附 3 张图'); break; }
+    if (!ACCEPT.has(f.type)) { showToast(`${f.name}：不支持的图片类型`); continue; }
+    if (f.size > 10 * 1024 * 1024) { showToast(`${f.name} 超过 10MB`); continue; }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(new Error('read failed'));
+      r.readAsDataURL(f);
+    }).catch(() => { showToast(`${f.name} 读取失败`); return ''; });
+    if (!dataUrl) continue;
+    answerImgs.value[idx] = [...cur, { url: dataUrl, name: f.name, dataUrl }];
+  }
+}
+
 async function submit(confirm: boolean) {
   submitting.value = true;
   try {
     // plan_async: the server replies before any LLM work — the follow-up (next round of
     // questions / plan generation) happens in the background and lands via WS events
     const r = await api.clarifyTask(taskId.value, {
-      answers: questions.value.filter((q) => q.answer.trim()),
+      answers: questions.value
+        .map((q, i) => {
+          const imgs = (answerImgs.value[i] || []).filter((p) => p.dataUrl).map((p) => ({ name: p.name || 'image', dataUrl: p.dataUrl as string }));
+          return { question: q.question, answer: q.answer.trim(), images: imgs.length ? imgs : undefined };
+        })
+        .filter((q) => q.answer || q.images?.length),
       confirm,
       text: supplement.value.trim() || undefined,
     });
     if (r.status === 'clarifying' && r.questions?.length) {
       // next clarification round with fresh questions (sync/desktop-parity path)
       questions.value = r.questions.map((q) => ({ question: q, answer: '' }));
+      answerImgs.value = [];
       supplement.value = '';
       showToast('已回复，进入下一轮澄清');
     } else if (r.status === 'planned') {
@@ -114,9 +152,19 @@ async function submit(confirm: boolean) {
             rows="2"
             autosize
             :border="false"
-            placeholder="输入你的回答…"
+            placeholder="输入你的回答…（可附图）"
             class="q-input"
           />
+          <div class="q-img-row">
+            <span class="q-clip" @click="pickImg(i)">📷</span>
+            <van-uploader
+              v-if="(answerImgs[i] || []).length"
+              v-model="answerImgs[i]"
+              :max-count="3"
+              :deletable="true"
+              :show-upload="false"
+            />
+          </div>
         </div>
       </div>
 
@@ -137,6 +185,7 @@ async function submit(confirm: boolean) {
         <button class="wx-btn" :disabled="submitting" @click="submit(false)">{{ submitting ? '提交中…' : '提交回答' }}</button>
         <button class="wx-btn wx-btn-plain" :disabled="submitting" @click="submit(true)">按当前信息直接开始</button>
       </div>
+      <input ref="imgInputEl" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden @change="onPickImg" />
     </div>
   </div>
 </template>
@@ -159,6 +208,13 @@ async function submit(confirm: boolean) {
   height: 1px; background: var(--border); transform: scaleY(0.5);
 }
 .q-text { font-size: 15px; font-weight: 500; color: var(--text); margin-bottom: 8px; line-height: 1.5; }
+.q-img-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.q-clip {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--accent); font-size: 15px;
+}
 .q-input { padding: 0; background: transparent; }
 .q-input :deep(.van-field__control) { font-size: 16px; line-height: 1.5; background: var(--panel-2); border-radius: 6px; padding: 8px 10px; }
 

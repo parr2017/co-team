@@ -173,10 +173,10 @@ async function create(payload: { title: string; topic?: string; members: string[
   return res.discussion;
 }
 
-/** 发用户消息：busy 期间也受理（服务端循环吸收插话，不再有 409） */
-async function send(text: string, opts?: Pick<PostDiscussionPayload, 'reply_to'>) {
+/** 发用户消息：busy 期间也受理（服务端循环吸收插话，不再有 409）；images 为待发附图 */
+async function send(text: string, opts?: Pick<PostDiscussionPayload, 'reply_to' | 'images'>) {
   if (!current.value) return;
-  const res = await api.postDiscussionMessage(current.value.id, { text, reply_to: opts?.reply_to });
+  const res = await api.postDiscussionMessage(current.value.id, { text, reply_to: opts?.reply_to, images: opts?.images });
   if (res.message && !current.value.messages.some((m) => m.id === res.message!.id)) {
     current.value.messages.push(res.message);
     current.value.pending_user = false;

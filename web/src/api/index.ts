@@ -36,6 +36,8 @@ export interface ProgressInfo {
 export interface ClarifyAnswer {
   question: string;
   answer: string;
+  /** 用户附图（随回答提交的 dataURL，服务端富化为视觉描述注入规划） */
+  images?: IncomingImage[];
 }
 
 export interface KnowledgeEntry {
@@ -482,12 +484,31 @@ export interface DiscussionMessage {
   model?: string;
 }
 
-/** 发用户消息：text 可空但需 react_to；reply_to 做引用回复 */
+/** 用户附图（发消息时随 JSON 提交的 dataURL；服务端 ingest 后消息里只存引用） */
+export interface IncomingImage {
+  name: string;
+  dataUrl: string;
+}
+
+/** 服务端落库后的图片引用（消息 meta.images，前端据此渲染气泡） */
+export interface StoredImage {
+  id: string;
+  name: string;
+  url: string;
+  /** workspace 内相对路径（agent 可 look_image；无项目/任务关联时缺省） */
+  wsPath?: string;
+  /** 视觉旁路生成的中文描述（软失败时缺省） */
+  desc?: string;
+  descModel?: string;
+}
+
+/** 发用户消息：text 可空但需 react_to/图片；reply_to 做引用回复 */
 export interface PostDiscussionPayload {
   text?: string;
   reply_to?: string;
   react_to?: string;
   emoji?: string;
+  images?: IncomingImage[];
 }
 
 export interface Discussion {
@@ -694,18 +715,18 @@ export const api = {
     request<{ status: string }>(`/api/skills/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   deleteSkill: (name: string) => request(`/api/skills/${name}`, { method: 'DELETE' }),
   reloadSkills: () => request<{ status: string; total: number }>('/api/skills/reload', { method: 'POST' }),
-  interveneTask: (taskId: string, message: string) =>
+  interveneTask: (taskId: string, message: string, images?: IncomingImage[]) =>
     request<{ status: string; intervention_id: string; note: string }>(`/api/tasks/${taskId}/intervene`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, images: images?.length ? images : undefined }),
     }),
   // M2 全员实时问答：回答 agent 的阻塞式提问
-  answerAsk: (taskId: string, askId: string, answer: string) =>
+  answerAsk: (taskId: string, askId: string, answer: string, images?: IncomingImage[]) =>
     request<{ ok: boolean; ask_id: string }>(`/api/tasks/${taskId}/asks/${askId}/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answer }),
+      body: JSON.stringify({ answer, images: images?.length ? images : undefined }),
     }),
   // M3 监督者提案
   listProposals: (taskId: string) =>

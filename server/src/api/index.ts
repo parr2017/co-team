@@ -82,6 +82,21 @@ export function createApi(ctx: ApiContext): Hono {
   // all task executions go through the project queue: same project runs one task at
   // a time, different projects run concurrently, failures block the lane until resumed
 
+  // 用户附图静态服务：文件名白名单（img-<id>.<ext>）拒绝路径穿越，注册在 SPA static
+  // 之前。本机应用不做鉴权（与 dashboard 同级暴露），content-type 按扩展名映射。
+  app.get('/media/:file', async (c) => {
+    const file = c.req.param('file');
+    const { mediaDir, MEDIA_FILE_RE, IMAGE_MEDIA_TYPES } = await import('../media');
+    if (!MEDIA_FILE_RE.test(file)) return c.json({ detail: 'invalid media file name' }, 400);
+    const full = path.join(mediaDir(), file);
+    if (!fs.existsSync(full)) return c.json({ detail: 'media not found' }, 404);
+    const ext = path.extname(file).toLowerCase();
+    const body = await fs.promises.readFile(full);
+    c.header('Content-Type', IMAGE_MEDIA_TYPES[ext] || 'application/octet-stream');
+    c.header('Cache-Control', 'public, max-age=86400');
+    return c.body(body);
+  });
+
   app.onError((err, c) => {
     // DiscussionError/WorkspaceError carry their own HTTP status (409 busy / 400 validation / ...)
     const status = err instanceof HttpError || err instanceof DiscussionError || err instanceof WorkspaceError ? err.status : 500;
@@ -286,7 +301,18 @@ export function createApi(ctx: ApiContext): Hono {
   // plan_async (mobile): the request returns before any LLM work ('assessing' | 'pending')
   app.post('/api/tasks/:taskId/clarify', async (c) => {
     const taskId = c.req.param('taskId');
-    const body = await c.req.json<{ answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string; plan_async?: boolean }>();
+    const body = await c.req.json<{ answers?: { question: string; answer: string; images?: { name: string; dataUrl: string }[] }[]; confirm?: boolean; text?: string; plan_async?: boolean }>();
+    // 澄清回答附图：逐条富化（视觉描述 + workspace 原图路径），orchestrator.clarify 零改动
+    if (body.answers?.some((a) => a.images?.length)) {
+      const graph = await getTaskGraph(taskId);
+      const { ingestUserImages, renderImagesForContext } = await import('../media');
+      for (const a of body.answers) {
+        if (!a.images?.length) continue;
+        const r = await ingestUserImages(ctx.modelPool, a.images, { workspace: graph?.workspace });
+        if (r.error) throw new HttpError(400, r.error);
+        if (r.stored.length) a.answer = `${a.answer || ''}${a.answer ? '\n' : ''}${renderImagesForContext(r.stored)}`;
+      }
+    }
     try {
       const result = await ctx.orchestrator.clarify(taskId, {
         answers: body.answers,
@@ -454,33 +480,45 @@ export function createApi(ctx: ApiContext): Hono {
   // agent's next conversation round; surfaces in the war room as a green bubble
   app.post('/api/tasks/:taskId/intervene', async (c) => {
     const taskId = c.req.param('taskId');
-    const body = await c.req.json<{ message?: string }>();
+    const body = await c.req.json<{ message?: string; images?: { name: string; dataUrl: string }[] }>();
     const message = (body.message || '').trim();
-    if (!message) throw new HttpError(400, 'message is required');
+    if (!message && !body.images?.length) throw new HttpError(400, 'message is required');
     const graph = await getTaskGraph(taskId);
     if (!graph) throw new HttpError(404, 'task not found');
     // failed 任务也放行：监督者的 retry_failed 提案被批准重试后，队列中的消息会被消费注入
     if (!['running', 'pending', 'planned', 'retrying', 'waiting_approval', 'failed'].includes(graph.status)) {
       throw new HttpError(400, `task is not running (status: ${graph.status}), intervention will never be consumed`);
     }
+    // 用户附图：入口即富化——agent 下一轮拿到的注入文本自带视觉描述与 workspace 原图路径
+    let imageMeta: { id: string; name: string; url: string; wsPath?: string; desc?: string }[] | undefined;
+    let enriched = message;
+    if (body.images?.length) {
+      const { ingestUserImages, renderImagesForContext } = await import('../media');
+      const r = await ingestUserImages(ctx.modelPool, body.images, { workspace: graph.workspace });
+      if (r.error) throw new HttpError(400, r.error);
+      if (r.stored.length) {
+        imageMeta = r.stored;
+        enriched = `${message}${message ? '\n' : ''}${renderImagesForContext(r.stored)}`;
+      }
+    }
     const note = graph.status === 'failed'
       ? '任务已失败：消息已入队，批准「重试」提案后会在下一轮注入 agent'
       : '将在 Agent 下一轮对话注入';
     const { pushIntervention, appendJournal, emitProgress } = await import('../store');
-    const item = await pushIntervention(taskId, message);
+    const item = await pushIntervention(taskId, enriched);
     // war-room journal: the user's message appears immediately as a master-side bubble
     await appendJournal(taskId, 'orchestrator', {
       role: 'master',
       kind: 'intervene',
-      text: message,
+      text: message || `（用户附图 ${imageMeta?.length || 0} 张）`,
       ts: item.ts,
       node_id: 'intervene',
       node_name: '用户介入',
-      meta: { intervention_id: item.id },
+      meta: { intervention_id: item.id, ...(imageMeta ? { images: imageMeta } : {}) },
     });
-    await emitProgress('user_intervened', { task_id: taskId, message: message.slice(0, 500), intervention_id: item.id });
+    await emitProgress('user_intervened', { task_id: taskId, message: enriched.slice(0, 500), intervention_id: item.id });
     const { notify } = await import('../notify');
-    notify('user_intervened', { task_id: taskId }, `[Co-Team] 用户向任务 ${taskId} 发送介入指示：${message.slice(0, 80)}`);
+    notify('user_intervened', { task_id: taskId }, `[Co-Team] 用户向任务 ${taskId} 发送介入指示：${enriched.slice(0, 80)}`);
     return c.json({ status: 'queued', task_id: taskId, intervention_id: item.id, note });
   });
 
@@ -488,14 +526,23 @@ export function createApi(ctx: ApiContext): Hono {
   app.post('/api/tasks/:taskId/asks/:askId/answer', async (c) => {
     const taskId = c.req.param('taskId');
     const askId = c.req.param('askId');
-    const body = await c.req.json<{ answer?: string }>();
+    const body = await c.req.json<{ answer?: string; images?: { name: string; dataUrl: string }[] }>();
     const answer = (body.answer || '').trim();
-    if (!answer) throw new HttpError(400, 'answer is required');
+    if (!answer && !body.images?.length) throw new HttpError(400, 'answer is required');
     const asks = await listAsks(taskId);
     const rec = asks.find((a) => a.id === askId);
     if (!rec) throw new HttpError(404, 'ask not found');
     if (rec.status !== 'pending') throw new HttpError(400, `ask already settled (status: ${rec.status})`);
-    const okDone = await resolveAsk(askId, taskId, answer, 'user');
+    // 用户附图：回答富化后注入等待中的 agent（视觉描述 + workspace 原图路径）
+    let enriched = answer;
+    if (body.images?.length) {
+      const graph = await getTaskGraph(taskId);
+      const { ingestUserImages, renderImagesForContext } = await import('../media');
+      const r = await ingestUserImages(ctx.modelPool, body.images, { workspace: graph?.workspace });
+      if (r.error) throw new HttpError(400, r.error);
+      if (r.stored.length) enriched = `${answer}${answer ? '\n' : ''}${renderImagesForContext(r.stored)}`;
+    }
+    const okDone = await resolveAsk(askId, taskId, enriched, 'user');
     if (!okDone) throw new HttpError(409, 'ask is no longer being waited on');
     return c.json({ ok: true, ask_id: askId, task_id: taskId });
   });
@@ -1141,9 +1188,10 @@ export function createApi(ctx: ApiContext): Hono {
     // 会在每位发言者之间检查新消息并重新路由（轮内真打断）。
     const { postUserMessage, getDiscussion, triggerRound, isDiscussionBusy } = await import('../discussion');
     const id = c.req.param('id');
-    const body = await readJsonAuto<{ text?: string; reply_to?: string; react_to?: string; emoji?: string }>(c);
+    const body = await readJsonAuto<{ text?: string; reply_to?: string; react_to?: string; emoji?: string; images?: { name: string; dataUrl: string }[] }>(c);
     const { message, mentioned } = await postUserMessage(discDeps(), id, body.text || '', {
       reply_to: body.reply_to, react_to: body.react_to, emoji: body.emoji,
+      images: body.images?.length ? body.images : undefined,
     });
     const disc = await getDiscussion(id);
     const busy = await isDiscussionBusy(id);

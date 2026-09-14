@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { showToast } from 'vant';
+import { showToast, showImagePreview } from 'vant';
 import { renderMd as renderMdShared } from '../utils/md';
 import { api } from '../api';
 import type { ProjectSummary, DiscussionMessage } from '../api';
@@ -41,18 +41,48 @@ function agentStreaming(agent: string): boolean {
 
 // ---------- 消息行模型（与 web DiscussionChat 同构：分组/系统卡片/工具条/引用） ----------
 
-// M5.2 ③：群内直接回答任务的 ask_user 提问
+// M5.2 ③：群内直接回答任务的 ask_user 提问（可附图）
 const answeredAskIds = ref<Set<string>>(new Set());
 const askDrafts = ref<Record<string, string>>({});
-const answeringAsk = ref('');
+/** ask 回答的待发附图（ask_id -> 数组），随 answerAsk 提交 */
+const askImgs = ref<Record<string, { url?: string; name?: string; dataUrl?: string; file?: File }[]>>({});
+const askImgInputEl = ref<HTMLInputElement | null>(null);
+const askImgTarget = ref('');
+function pickAskImage(askId: string) {
+  askImgTarget.value = askId;
+  askImgInputEl.value?.click();
+}
+async function onPickAskImage(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = [...(input.files || [])];
+  input.value = '';
+  const askId = askImgTarget.value;
+  const ACCEPT = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp']);
+  for (const f of files) {
+    const cur = askImgs.value[askId] || [];
+    if (cur.length >= 3) { showToast('最多附 3 张图'); break; }
+    if (!ACCEPT.has(f.type)) { showToast(`${f.name}：不支持的图片类型`); continue; }
+    if (f.size > 10 * 1024 * 1024) { showToast(`${f.name} 超过 10MB`); continue; }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(new Error('read failed'));
+      r.readAsDataURL(f);
+    }).catch(() => { showToast(`${f.name} 读取失败`); return ''; });
+    if (!dataUrl) continue;
+    askImgs.value[askId] = [...cur, { url: dataUrl, name: f.name, dataUrl }];
+  }
+}
 async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
   const text = (askDrafts.value[bridge.ask_id] || '').trim();
-  if (!text || answeringAsk.value) return;
+  const imgs = (askImgs.value[bridge.ask_id] || []).filter((p) => p.dataUrl).map((p) => ({ name: p.name || 'image', dataUrl: p.dataUrl as string }));
+  if ((!text && !imgs.length) || answeringAsk.value) return;
   answeringAsk.value = bridge.ask_id;
   try {
-    await api.answerAsk(bridge.task_id, bridge.ask_id, text);
+    await api.answerAsk(bridge.task_id, bridge.ask_id, text, imgs.length ? imgs : undefined);
     answeredAskIds.value = new Set([...answeredAskIds.value, bridge.ask_id]);
     askDrafts.value[bridge.ask_id] = '';
+    askImgs.value[bridge.ask_id] = [];
     showToast('已回答，agent 将继续执行');
   } catch (e: any) {
     showToast(e?.message || '回答失败');
@@ -142,18 +172,64 @@ onMounted(() => {
 });
 
 // ---------- 发送 / 插话 ----------
+// ---------- 用户附图（与 web 同一行为契约：最多 3 张、单张 ≤10MB、纯图消息可发） ----------
+const pendingImages = ref<{ url?: string; name?: string; dataUrl?: string; file?: File }[]>([]);
+const sending = ref(false);
+const imgInputEl = ref<HTMLInputElement | null>(null);
+function rowImgUrls(m: DiscussionMessage): string[] {
+  const imgs = (m.meta as any)?.images;
+  return Array.isArray(imgs) ? imgs.map((i: any) => String(i.url || '')).filter(Boolean) : [];
+}
+function pickImages() {
+  if (converted.value) return;
+  imgInputEl.value?.click();
+}
+async function onPickImages(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = [...(input.files || [])];
+  input.value = '';
+  const ACCEPT = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp']);
+  for (const f of files) {
+    if (pendingImages.value.length >= 3) { showToast('最多附 3 张图'); break; }
+    if (!ACCEPT.has(f.type)) { showToast(`${f.name}：不支持的图片类型`); continue; }
+    if (f.size > 10 * 1024 * 1024) { showToast(`${f.name} 超过 10MB`); continue; }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(new Error('read failed'));
+      r.readAsDataURL(f);
+    }).catch(() => { showToast(`${f.name} 读取失败`); return ''; });
+    if (!dataUrl) continue;
+    pendingImages.value = [...pendingImages.value, { url: dataUrl, name: f.name, dataUrl }];
+  }
+}
+function imagePayload() {
+  return pendingImages.value
+    .filter((p) => p.dataUrl)
+    .map((p) => ({ name: p.name || 'image', dataUrl: p.dataUrl as string }));
+}
+/** 只做路由层的 HTML 转字符串 */
+function escapeHtml(s: string) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 async function sendNow() {
   const text = draft.value.trim();
-  if (!text) return;
+  const imgs = imagePayload();
+  if ((!text && !imgs.length) || sending.value) return;
+  sending.value = true;
   try {
-    await send(text, replyTo.value ? { reply_to: replyTo.value } : undefined);
+    await send(text, { ...(replyTo.value ? { reply_to: replyTo.value } : {}), images: imgs.length ? imgs : undefined });
     draft.value = '';
+    pendingImages.value = [];
     replyTo.value = null;
     stickToBottom.value = true;
     await nextTick();
     scrollToBottom(true);
   } catch (e: any) {
     showToast(String(e?.message || e));
+  } finally {
+    sending.value = false;
   }
 }
 
@@ -359,14 +435,25 @@ const showExp = ref(false);
           <!-- M5.2 ③：任务 ask_user 提问卡片——可在群里直接回答 -->
           <div v-if="row.m.kind === 'card' && row.m.meta?.bridge_ask" class="sys-card ask-card">
             <div class="ask-q">{{ row.m.text }}</div>
-            <div v-if="!answeredAskIds.has(String(row.m.meta.bridge_ask.ask_id))" class="ask-row">
-              <input
-                v-model="askDrafts[String(row.m.meta.bridge_ask.ask_id)]"
-                class="ask-input"
-                placeholder="在群里直接回答，agent 将立即继续…"
-                @keydown.enter="sendAskAnswer(row.m.meta.bridge_ask)"
+            <div v-if="!answeredAskIds.has(String(row.m.meta.bridge_ask.ask_id))" class="ask-col">
+              <div class="ask-row">
+                <input
+                  v-model="askDrafts[String(row.m.meta.bridge_ask.ask_id)]"
+                  class="ask-input"
+                  placeholder="在群里直接回答，agent 将立即继续…"
+                  @keydown.enter="sendAskAnswer(row.m.meta.bridge_ask)"
+                />
+                <span class="at-btn sm" @click="pickAskImage(String(row.m.meta.bridge_ask.ask_id))">📷</span>
+                <van-button size="small" type="primary" :loading="answeringAsk === String(row.m.meta.bridge_ask.ask_id)" @click="sendAskAnswer(row.m.meta.bridge_ask)">回答</van-button>
+              </div>
+              <van-uploader
+                v-if="(askImgs[String(row.m.meta.bridge_ask.ask_id)] || []).length"
+                v-model="askImgs[String(row.m.meta.bridge_ask.ask_id)]"
+                :max-count="3"
+                :deletable="true"
+                :show-upload="false"
+                class="ask-uploader"
               />
-              <van-button size="small" type="primary" :loading="answeringAsk === String(row.m.meta.bridge_ask.ask_id)" @click="sendAskAnswer(row.m.meta.bridge_ask)">回答</van-button>
             </div>
             <div v-else class="ask-done">✓ 已回答，agent 继续执行中</div>
           </div>
@@ -398,7 +485,17 @@ const showExp = ref(false);
               @contextmenu.prevent="lpCancel(); msgSheet.msg = row.m; msgSheet.show = true"
             >
               <div v-if="row.quote" class="quote-bar">↩ {{ row.quote.who }}：{{ row.quote.text }}</div>
-              <div class="b-text" v-html="md(row.m.text)"></div>
+              <!-- 用户附图：图片网格（点击 showImagePreview 大图） -->
+              <div v-if="rowImgUrls(row.m).length" class="img-grid">
+                <img
+                  v-for="(u, i) in rowImgUrls(row.m)"
+                  :key="u"
+                  :src="u"
+                  class="img-cell"
+                  @click="showImagePreview({ images: rowImgUrls(row.m), startPosition: i })"
+                />
+              </div>
+              <div v-if="row.m.text" class="b-text" v-html="md(row.m.text)"></div>
             </div>
             <span v-if="row.tail" class="tail-ts">{{ fmtTime(row.m.ts) }}</span>
             <div v-if="hasReactions(row.m)" class="reactions">
@@ -447,20 +544,32 @@ const showExp = ref(false);
       </div>
       <div class="input-row">
         <span class="at-btn" @click="mentionSheet = true">＠</span>
+        <span class="at-btn" :class="{ dim: converted }" @click="pickImages">📷</span>
         <van-field
           v-model="draft"
           type="textarea"
           rows="1"
           autosize
           maxlength="4000"
-          :placeholder="busy ? '成员在忙，插话即刻受理' : '说点什么…（@成员点名，或让它动手）'"
+          :placeholder="busy ? '成员在忙，插话即刻受理' : '说点什么…（@成员点名、发图、或让它动手）'"
           class="input-field"
           @keydown.enter.exact.prevent="sendNow"
         />
-        <van-button class="send-btn" round type="primary" size="small" :disabled="!draft.trim() || converted" @click="sendNow">
+        <van-button class="send-btn" round type="primary" size="small" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length) || converted" @click="sendNow">
           {{ busy ? '插话' : '发送' }}
         </van-button>
       </div>
+    <!-- 待发图片条：van-uploader 受控（不发不落盘，随消息一起 dataURL 提交） -->
+    <van-uploader
+      v-if="pendingImages.length"
+      v-model="pendingImages"
+      :max-count="3"
+      :deletable="true"
+      :show-upload="false"
+      class="pending-uploader"
+    />
+    <input ref="imgInputEl" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden @change="onPickImages" />
+    <input ref="askImgInputEl" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden @change="onPickAskImage" />
     </div>
 
     <!-- 长按/右键动作 -->
@@ -576,6 +685,9 @@ const showExp = ref(false);
 .ask-card { text-align: left; max-width: 90%; border-color: var(--yellow); }
 .ask-q { margin-bottom: 8px; white-space: pre-wrap; }
 .ask-row { display: flex; gap: 6px; align-items: center; }
+.ask-col { display: flex; flex-direction: column; gap: 4px; }
+.ask-uploader { padding: 2px 0; }
+.at-btn.sm { width: 30px; height: 30px; font-size: 15px; flex-shrink: 0; }
 .ask-input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; font-size: 13px; padding: 6px 8px; outline: none; }
 .ask-done { font-size: 11px; color: var(--green); margin-top: 4px; }
 
@@ -631,6 +743,12 @@ const showExp = ref(false);
 .rb-x { font-size: 16px; padding: 0 6px; color: var(--text-3); }
 .input-row { display: flex; gap: 7px; align-items: flex-end; }
 .at-btn { width: 34px; height: 34px; border-radius: 50%; background: var(--panel); border: 1px solid var(--border); color: var(--accent); font-size: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.at-btn.dim { opacity: 0.45; }
+.pending-uploader { padding: 6px 4px 0; }
+/* 用户附图：气泡内图片网格（单张占整行） */
+.img-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 2px 0 6px; }
+.img-grid .img-cell { width: 100%; height: 84px; object-fit: cover; border-radius: 8px; display: block; }
+.img-grid .img-cell:first-child:last-child, .img-grid .img-cell:only-child { width: 100%; height: 150px; }
 .input-field { flex: 1; background: var(--panel); border-radius: 18px; padding: 4px 12px; }
 .input-field :deep(.van-field__body) { padding: 2px 0; }
 .send-btn { flex-shrink: 0; height: 34px; }

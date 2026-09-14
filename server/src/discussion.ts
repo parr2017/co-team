@@ -34,6 +34,7 @@ import { writeKnowledge, relevantKnowledge, listKnowledge } from './knowledge';
 import { scaffoldProject, initGitOnly } from './scaffold';
 import { applyToolCalls, checkPage } from './tools';
 import { analyzeImages } from './vision';
+import { ingestUserImages, renderImagesForContext, type IncomingImage, type StoredImage } from './media';
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { discussionTaskDigest } from './discussionBridge';
@@ -399,7 +400,10 @@ function renderTranscript(messages: DiscussionMessage[]): string {
     .map((m) => {
       const who = m.from === 'user' ? '用户（决策方）' : m.from === 'system' ? '系统' : m.from;
       const ask = m.needs_user ? '[待用户拍板] ' : '';
-      return `${who}: ${ask}${m.text}`;
+      // 用户附图：视觉描述（或路径自查指引）直接进 transcript——文字模型靠它"看见"
+      const imgs = (m.from === 'user' && Array.isArray((m.meta as any)?.images) && (m.meta as any).images.length)
+        ? `\n${renderImagesForContext((m.meta as any).images as StoredImage[])}` : '';
+      return `${who}: ${ask}${m.text}${imgs}`;
     })
     .join('\n');
 }
@@ -921,7 +925,7 @@ export async function routeSpeakers(
       },
       {
         role: 'user',
-        content: `话题：${disc.title}\n${latestUser ? `用户最新指示：${latestUser.text.slice(0, 500)}` : '（用户尚未发言）'}\n讨论记录：\n${renderTranscript(messages).slice(-4000) || '（空）'}`,
+        content: `话题：${disc.title}\n${latestUser ? `用户最新指示：${latestUser.text.slice(0, 500)}${(latestUser.meta as any)?.images?.length ? `（用户附图 ${(latestUser.meta as any).images.length} 张，视觉描述见讨论记录）` : ''}` : '（用户尚未发言）'}\n讨论记录：\n${renderTranscript(messages).slice(-4000) || '（空）'}`,
       },
     // 路由/主持是幕后辅助调用：宁可判错（回退全员轮转/停止）也不能让用户等它——
     // 推理模型可能长时间只吐 reasoning_content 不出正文（glm-5.3-flash 实测），
@@ -1380,6 +1384,8 @@ export interface UserPostOptions {
   /** react to a message instead of (or besides) posting text */
   react_to?: string;
   emoji?: string;
+  /** 用户附图（dataURL 数组）：服务端 ingest 即富化（视觉描述+路径），消息存 meta.images */
+  images?: IncomingImage[];
 }
 
 /** Post a user message (the user is the decision-maker; its direction fixes bind all members). */
@@ -1409,10 +1415,20 @@ export async function postUserMessage(
     return { message: null, mentioned: [] };
   }
 
-  if (!clean) throw new DiscussionError(400, 'message text is required');
+  if (!clean && !opts?.images?.length) throw new DiscussionError(400, 'message text is required');
   if (clean.length > MAX_MESSAGE_LENGTH) throw new DiscussionError(400, `message too long (>${MAX_MESSAGE_LENGTH})`);
   const { mentioned, invalid } = parseMentions(clean, disc.members);
   if (invalid.length) throw new DiscussionError(400, `@ 了不在讨论中的成员：${invalid.join('、')}；有效成员：${disc.members.join('、')}`);
+  // 用户附图：入口即富化（校验→落盘→视觉描述）；文字可缺省（纯图消息），路由器按 meta.images 感知
+  let storedImages: StoredImage[] = [];
+  if (opts?.images?.length) {
+    const proj = disc.project_id ? await getProject(disc.project_id) : null;
+    const r = await ingestUserImages(deps.pool, opts.images, { workspace: proj?.workspace || undefined });
+    if (r.error) throw new DiscussionError(400, r.error);
+    storedImages = r.stored;
+    if (!storedImages.length) throw new DiscussionError(400, '附图处理失败，请重试或改为文字描述');
+    deps.logger.info('discussion user images ingested', { discId: disc.id, count: storedImages.length, described: storedImages.filter((i) => i.desc).length });
+  }
   let reply_to: string | undefined;
   if (opts?.reply_to) {
     const list = await getMessages(discId);
@@ -1426,6 +1442,7 @@ export async function postUserMessage(
     ts: new Date().toISOString(),
     mentioned: mentioned.length ? mentioned : undefined,
     reply_to,
+    meta: storedImages.length ? { images: storedImages } : undefined,
   });
   // 不再有"点名 XX 发言"的 system 印章：路由器按用户指示选人（点名=只跑被点名者）
   return { message: msg, mentioned };
