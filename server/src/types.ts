@@ -10,7 +10,11 @@ export type TaskStatus =
   | 'cancelled'
   | 'waiting_approval'
   /** node-level pre-execution clarification gate (实施前澄清) */
-  | 'waiting_clarify';
+  | 'waiting_clarify'
+  /** 永续开发（2026-09-15）：服务重启中断的在途节点/任务——待自动续跑，非终态 */
+  | 'interrupted'
+  /** 永续开发（2026-09-15）：节点全部完成后的收尾阶段（同步/验收/git/最终闸） */
+  | 'finalizing';
 
 /** Per-node pre-execution clarification gate (feature: 每步骤实施前澄清). */
 export type ClarifyMode = 'off' | 'brief' | 'confirm';
@@ -179,6 +183,8 @@ export interface TaskGraph {
   selfdev_path?: string;
   /** P0-2 backlink: this task was created to fix a defect found in task_id/node_id */
   fix_for?: { task_id: string; node_id: string };
+  /** 永续开发（2026-09-15）：基础设施类失败（模型池不稳/上下文超限/服务重启）的自动重排次数 */
+  infra_retries?: number;
 }
 
 export interface EventEnvelope {

@@ -127,6 +127,13 @@ export const LEGIT_BLOCKER_RE = /\[blocker\]|需要人类|需要人工|需要.{0
 export const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
 export const CAPACITY_RE = /429|503|rate.?limit|too many requests|tpm|rpm|quota/i;
 /**
+ * 上下文超限（2026-09-15，c2g0ya6d 复盘）：413/payload too large 是"请求体 vs 模型窗口/网关上限"
+ * 的确定性拒绝——不是模型的错（markFailure 会毒化健康分让全池假死），也不是容量问题（换模不解决，
+ * 得折叠瘦身或换更大窗口）。c2g0ya6d 节点 6 连续 413 烧光降级链、把 10 个模型全部拖进冷却，
+ * 最后只剩一个免费模型独木桥——本分型就是那条根因。
+ */
+export const CONTEXT_OVERFLOW_RE = /413|payload too large|request too large|context length|maximum context|context_length_exceeded/i;
+/**
  * 群聊化（批次一）：用户插话的三分支处理模板——attempt 开头与工具轮之间两处注入共用，
  * 语义单点。纪律与讨论引擎同源：引擎只陈述事实（送达/接力/重放），agent 态度只能来自模型输出；
  * 先核实再决定跳过/执行/接力，禁止未核实空口应承。
@@ -327,33 +334,83 @@ export class Orchestrator {
     return [...this.plugins.keys()];
   }
 
-  /** E7: 服务重启会杀掉在途执行循环，发现的 running 任务背后已没有进程驱动，
-   *  不清扫就永远僵尸。节点不可重入（沙箱/模型调用状态未知），不做自动续跑，
-   *  诚实标记 failed 并留痕，已完成节点的成果保留。 */
-  async sweepInterruptedTasks(): Promise<string[]> {
-    const swept: string[] = [];
+  /**
+   * E7 重做（2026-09-15）：服务重启不再宣判死刑。
+   *  - running/finalizing 任务的在途节点 → `interrupted`（新状态，诚实反映"被中断"而非"失败"），
+   *    任务整体标 interrupted，由调用方（index.ts）重新入队续跑——execute 的节点复位逻辑
+   *    会把 interrupted 复位为 pending，completed 节点不重做；
+   *  - 同一任务被中断次数达 infra_retries 上限 → 停靠人工（failed），防重启死循环；
+   *  - 返回三类孤儿清单：resume（可自动续跑）、queued（重启丢车道的排队任务）、
+   *    planning（planAsync 后台规划被打断的任务）。
+   */
+  async sweepInterruptedTasks(): Promise<{ resume: string[]; queued: string[]; planning: string[] }> {
+    const resume: string[] = [];
+    const queued: string[] = [];
+    const planning: string[] = [];
     for (const graph of await listTaskGraphs()) {
-      if (graph.status !== 'running') continue;
+      if (graph.status === 'queued') {
+        // 车道状态纯内存（taskQueue），重启即丢——queued 任务重启后无人驱动，
+        // 不清就是"永远挂在进行中"的僵尸（用户实测多个任务如此）
+        queued.push(graph.task_id);
+        continue;
+      }
+      if (graph.status === 'pending' && (graph.nodes?.length ?? 0) === 0) {
+        // plan_async 的后台规划随上一进程死亡——任务停在 pending 无节点，重新规划
+        planning.push(graph.task_id);
+        continue;
+      }
+      if (graph.status !== 'running' && graph.status !== 'finalizing') continue;
+      const interruptedNodeIds: string[] = [];
       for (const node of graph.nodes) {
         if (node.status === 'running' || node.status === 'retrying' || node.status === 'waiting_approval') {
-          node.status = 'failed';
+          node.status = 'interrupted';
           node.error = node.error || '服务重启导致执行中断';
           node.finished_at = new Date().toISOString();
+          interruptedNodeIds.push(node.id);
         }
       }
-      graph.status = 'failed';
+      const retries = (graph.infra_retries ?? 0) + 1;
+      graph.infra_retries = retries;
+      graph.status = 'interrupted';
       graph.updated_at = new Date().toISOString();
       await persistGraph(graph);
+      if (retries > 3) {
+        // 重启死循环保护：连续多次中断不再自动续跑，诚实停靠人工
+        graph.status = 'failed';
+        await persistGraph(graph);
+        await appendJournal(graph.task_id, 'orchestrator', {
+          role: 'master', kind: 'error',
+          text: `服务重启中断已达 ${retries} 次，停止自动续跑转人工（已完成 ${graph.nodes.filter((n) => n.status === 'completed').length} 节点的成果保留）`,
+          ts: new Date().toISOString(), node_id: '', node_name: '',
+        });
+        notify('task_interrupted', { task_id: graph.task_id, reason: 'server_restart', retries }, `[Co-Team] 任务 ${graph.task_id} 因反复重启中断 ${retries} 次，已停靠人工`);
+        this.logger.warn('Startup sweep parked repeatedly interrupted task', { taskId: graph.task_id, retries });
+        continue;
+      }
       await appendJournal(graph.task_id, 'orchestrator', {
         role: 'master', kind: 'error',
-        text: '服务重启导致任务执行中断，已将任务标记为失败（节点不可安全续跑）。已完成节点的成果保留，可基于它们重新发起任务。',
-        ts: new Date().toISOString(), node_id: '', node_name: '',
+        text: `服务重启导致执行中断（第 ${retries} 次），已标记 interrupted 并自动续跑——已完成节点的成果保留，中断节点将重新执行`,
+        ts: new Date().toISOString(), node_id: interruptedNodeIds[0] || '', node_name: '',
+        meta: { interrupted_nodes: interruptedNodeIds, auto_resume: true },
       });
-      notify('task_interrupted', { task_id: graph.task_id, reason: 'server_restart' }, `[Co-Team] 任务 ${graph.task_id} 因服务重启被中断，已标记为失败`);
-      this.logger.warn('Startup sweep marked interrupted task as failed', { taskId: graph.task_id });
-      swept.push(graph.task_id);
+      notify('task_interrupted', { task_id: graph.task_id, reason: 'server_restart', auto_resume: true }, `[Co-Team] 任务 ${graph.task_id} 因服务重启中断，将自动续跑`);
+      this.logger.warn('Startup sweep marked interrupted task for auto-resume', { taskId: graph.task_id, retries, nodes: interruptedNodeIds.length });
+      resume.push(graph.task_id);
     }
-    return swept;
+    return { resume, queued, planning };
+  }
+
+  /** planAsync 后台规划被打断的任务：重建规划流程（不自动执行，规划完等用户审阅/既有 autoRun 语义） */
+  async resumeInterruptedPlanning(taskId: string): Promise<void> {
+    const graph = await loadGraph(taskId);
+    if (!graph || graph.nodes.length > 0) return;
+    this.logger.info('Resuming interrupted background planning', { taskId });
+    await this.planInBackground(taskId, graph.description, graph.workspace, graph.project_id, {
+      level: graph.level || 'standard',
+      mainModelId: graph.main_model_id,
+      executionPolicy: graph.execution_policy,
+      nodeClarify: graph.node_clarify,
+    });
   }
 
   private makeLlmRouter() {
@@ -971,6 +1028,11 @@ export class Orchestrator {
     } finally {
       if (this.sandboxEnabled && sandbox !== workspace) {
         if (result?.status === 'success') {
+          // 1.6 收尾黑洞可见化（2026-09-15）：节点全 completed 后还有同步/验收/git 一长串
+          // 无进度条的收尾——落 finalizing 状态并广播，UI 不再把 100%+running 误读为卡死
+          graph.status = 'finalizing';
+          await persistGraph(graph);
+          await emitProgress('task_finalizing', { task_id: taskId, stage: 'merge' });
           try {
             if (this.branchWorkflow && this.gitEnabled) {
               // merged result lives on the sandbox base branch; sync files to the real workspace.
@@ -1066,6 +1128,9 @@ export class Orchestrator {
         }
       } else if (result?.status === 'success') {
         // 非沙箱模式（产物直接写在工作区）：同样过合并后全量验收闸
+        graph.status = 'finalizing';
+        await persistGraph(graph);
+        await emitProgress('task_finalizing', { task_id: taskId, stage: 'acceptance' });
         const acc = await runPostMergeAcceptance(workspace);
         result.acceptance = acc;
         if (acc.status === 'failed') {
@@ -1082,6 +1147,7 @@ export class Orchestrator {
     // M5 最终验收闸：滚动任务 success 后跑清单机审（构建/单测/E2E 平台矩阵）——
     // 红灯或降级项 → waiting_approval + 派生任务提案（一键批准全自动派生）；全绿 → success
     if (result.status === 'success' && graph.rolling) {
+      await emitProgress('task_finalizing', { task_id: taskId, stage: 'final_gate' });
       result = await this.finalAcceptanceGate(taskId, graph, workspace, result);
     }
 
@@ -1248,6 +1314,8 @@ export class Orchestrator {
       }
 
       // 3) replanner 裁定：基于实际产出决定下一阶段或声明完成
+      // 1.6 收尾黑洞可见化：规划间隙（免费模型下可达数分钟）广播"规划下一阶段中"
+      await emitProgress('stage_planning', { task_id: taskId, next_stage: stage + 1, stage_goal: graph.stage_goal || '' });
       const decision = await generateStagePlan(graph.description, this.pool, this.router, {
         stage: stage + 1,
         globalGoal: graph.description,
@@ -1705,6 +1773,7 @@ export class Orchestrator {
     if (e.startsWith(NODE_BUDGET_PREFIX)) return 'budget';
     if (PRECONDITION_FAIL_RE.test(e)) return 'precondition';
     if (LEGIT_BLOCKER_RE.test(e)) return 'blocker';
+    if (CONTEXT_OVERFLOW_RE.test(e)) return 'context_overflow';
     if (CAPACITY_RE.test(e)) return 'capacity';
     if (CONTENT_FAIL_RE.test(e)) return 'content';
     if (SYSTEM_DEFECT_RE.test(e)) return 'system';
@@ -2427,6 +2496,9 @@ export class Orchestrator {
     // SAME model once with the failure text as feedback before burning the fallback chain
     const sameModelRetries = new Map<string, number>();
     const capacityRetries = new Map<string, number>();
+    // 上下文超限瘦身重试：整个 dispatch 至多折叠重试一次（prompt 是链上共享的，
+    // 折叠一次对所有模型生效；仍超限就换更大窗口，不该反复折叠浪费轮次）
+    let overflowFoldRetried = false;
     for (let ci = 0; ci < chain.length; ci++) {
       const entry = chain[ci];
       // Check for cancellation before trying each model in fallback chain
@@ -2441,7 +2513,7 @@ export class Orchestrator {
       triedCount++;
       const attemptStartedAt = Date.now();
       try {
-        const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastErr || lastError, attemptLabel, policy);
+        const result = await this.callAgent(taskId, node, plugin, entry, workspace, escalate, lastErr || lastError, attemptLabel, policy, overflowFoldRetried);
         if (result.status === 'success') {
           const attemptMs = Date.now() - attemptStartedAt;
           if (this.slowSuccessMs > 0 && attemptMs > this.slowSuccessMs) {
@@ -2498,6 +2570,28 @@ export class Orchestrator {
         if (SYSTEM_DEFECT_RE.test(lastErr)) {
           this.logger.error('System defect (harness/env), NOT counting model health', { taskId, nodeId: node.id, model: entry.name, error: lastErr });
           return { status: 'failed', error: `${ENV_DEFECT_PREFIX} ${lastErr}` };
+        }
+        // 上下文超限（413）：不是模型的错（不记健康）、换模也不解决（请求体没变）——
+        // 先折叠历史瘦身同模型重试一次；仍超限说明请求本体就超过该模型窗口，
+        // 剩余链按 context_length 降序重排（大窗口优先），全超窗才转人工
+        if (CONTEXT_OVERFLOW_RE.test(lastErr)) {
+          if (!overflowFoldRetried) {
+            overflowFoldRetried = true;
+            this.logger.warn('Context overflow (413) — folding history and retrying same model', { taskId, nodeId: node.id, model: entry.name, error: lastErr });
+            await emitProgress('llm_overflow', { task_id: taskId, node_id: node.id, model: entry.name, action: 'fold_retry', error: lastErr.slice(0, 120) });
+            await appendJournal(taskId, plugin.name, {
+              role: 'master', kind: 'round',
+              text: `📦 ${entry.name} 上下文超限（413），折叠历史瘦身重试——不是模型故障`,
+              ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+            });
+            ci--;
+            continue;
+          }
+          const rest = chain.slice(ci + 1).sort((a, b) => (b.context_length ?? 0) - (a.context_length ?? 0));
+          chain.splice(ci + 1, chain.length - ci - 1, ...rest);
+          this.logger.warn('Context overflow persists after fold — reordering rest of chain by larger context window', { taskId, nodeId: node.id, model: entry.name, rest: rest.map((m) => m.name).slice(0, 3) });
+          await emitProgress('llm_overflow', { task_id: taskId, node_id: node.id, model: entry.name, action: 'larger_window', error: lastErr.slice(0, 120) });
+          continue; // 跳过该模型但不 markFailure：窗口装不下≠模型无能
         }
         // M3：限流类错误退避重试同模型（tpm 窗口分钟级自愈），不记模型失败不烧链
         if (CAPACITY_RE.test(lastErr)) {
@@ -2565,7 +2659,8 @@ export class Orchestrator {
     escalate: boolean,
     lastError: string,
     attemptLabel: string,
-    policy: PermissionPolicy = this.policy
+    policy: PermissionPolicy = this.policy,
+    aggressiveFold = false
   ): Promise<AgentResult> {
     const context = await this.upstreamContext(taskId, node);
     // M2 实时问答：登记本 agent 在执行中——ask_agent 据此选择"实时投递"还是"图外咨询"
@@ -2743,6 +2838,12 @@ export class Orchestrator {
       ...compacted,
       { role: 'user', content: userMsg },
     ];
+    // 413 瘦身重试（2026-09-15）：出发前先断崖折叠一次（会话历史是超限最常见来源），
+    // 折叠线减半让轮内压缩更早触发；纯历史不足折叠时由"更大窗口模型重排"兜底（dispatch 侧）
+    if (aggressiveFold && foldMessagesInto(messages)) {
+      foldLimit = Math.floor(foldLimit / 2);
+      this.logger.info('Aggressive pre-fold applied (413 slimming retry)', { taskId, nodeId: node.id, model: entry.name, fold_limit: foldLimit });
+    }
 
     // 观测（i6efv5h2 复盘：44k token 单轮请求里没人知道谁贡献了多少）：
     // 分段尺寸写进会话存档，供直方图校准 context 预算

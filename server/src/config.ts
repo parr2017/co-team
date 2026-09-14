@@ -22,6 +22,8 @@ export interface OrchestrationConfig {
   self_mod_gate?: SelfModGateConfig;
   /** M2 全员实时问答：阻塞式 ask 等待回答的超时秒数（缺省 900） */
   ask_timeout_sec?: number;
+  /** 永续开发：infra 类失败的自动重排上限（缺省 3，超限锁车道转人工） */
+  auto_requeue_max?: number;
   /** M3 监督者：事件驱动 + 周期心跳的有边界处置 */
   supervisor?: {
     enabled?: boolean;
@@ -190,6 +192,8 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       // M4 滚动规划
       planning_mode: ['rolling', 'static'].includes(raw.orchestrator?.planning_mode) ? raw.orchestrator.planning_mode : 'rolling',
       rolling_max_stages: raw.orchestrator?.rolling_max_stages ?? 5,
+      // 永续开发（2026-09-15）：infra 类失败的自动重排上限（超限才锁车道转人工）
+      auto_requeue_max: raw.orchestrator?.auto_requeue_max ?? 3,
       self_mod_gate: {
         enabled: raw.orchestrator?.self_mod_gate?.enabled ?? true,
         test_command: raw.orchestrator?.self_mod_gate?.test_command || 'npm test',

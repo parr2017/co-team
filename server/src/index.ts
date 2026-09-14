@@ -67,15 +67,38 @@ async function main(): Promise<void> {
   });
 
   // 全局错误处理
-  process.on('uncaughtException', (error) => {
-    logger.error('Uncaught Exception:', error);
-    console.error('Uncaught Exception:', error);
+  // 2026-09-15 熔断重做：同签名异常 60s 窗口内只记首条 + 计数汇报。09-14 的 EPIPE 风暴
+  // （单日 2433 万条、2.7GB）就是"每条异常都全量记日志、而记日志本身又抛 EPIPE"的
+  // 自我喂养死循环——限速去重是最后一道闸（logger 侧 consoleDead 是第一道）。
+  let lastErrorSig = '';
+  let lastErrorAt = 0;
+  let suppressedCount = 0;
+  process.on('uncaughtException', (error: any) => {
+    const sig = `${error?.code || ''}|${error?.errno ?? ''}|${error?.syscall || ''}|${String(error?.message || error).slice(0, 120)}`;
+    const now = Date.now();
+    if (sig === lastErrorSig && now - lastErrorAt < 60_000) {
+      suppressedCount += 1;
+      return;
+    }
+    if (suppressedCount > 0) {
+      logger.error(`Uncaught Exception（此前 60s 内已压制同类异常 ${suppressedCount} 条）:`, error);
+      suppressedCount = 0;
+    } else {
+      logger.error('Uncaught Exception:', error);
+    }
+    lastErrorSig = sig;
+    lastErrorAt = now;
     // 不立即退出，让错误处理有机会执行
   });
 
+  // stdout/stderr 管道对端死亡（终端关闭、launcher 退出）时的标准静默：
+  // 阻断 EPIPE 以 uncaughtException 形态进入进程（Windows errno -4047 实测）
+  for (const std of [process.stdout, process.stderr]) {
+    try { std?.on?.('error', (e: any) => { if (e?.code === 'EPIPE') return; throw e; }); } catch { /* 非 stream 环境忽略 */ }
+  }
+
   process.on('unhandledRejection', (reason, promise) => {
     logger.error('Unhandled Rejection:', reason);
-    console.error('Unhandled Rejection:', reason);
     // 不立即退出，让错误处理有机会执行
   });
 
@@ -165,10 +188,13 @@ async function main(): Promise<void> {
   const { initDiscussionBridge } = await import('./discussionBridge');
   initDiscussionBridge();
 
-  // E7: tasks still 'running' at boot have no executor behind them (the previous
-  // process died mid-dispatch) — mark them failed so they never zombie.
-  const interrupted = await orchestrator.sweepInterruptedTasks();
-  if (interrupted.length) logger.warn('Startup sweep: interrupted tasks marked failed', { tasks: interrupted });
+  // E7 重做（2026-09-15）：任务仍在 'running'/'finalizing' 的背后已没有进程驱动——
+  // 标 interrupted 并自动续跑；queued 孤儿重新排队；planAsync 规划孤儿重新规划。
+  // 旧语义（直接标 failed 等人工）是"经常需要人工重启"体验的根因之一。
+  const orphans = await orchestrator.sweepInterruptedTasks();
+  if (orphans.resume.length) logger.warn('Startup sweep: interrupted tasks marked for auto-resume', { tasks: orphans.resume });
+  if (orphans.queued.length) logger.warn('Startup sweep: orphaned queued tasks re-queued', { tasks: orphans.queued });
+  if (orphans.planning.length) logger.warn('Startup sweep: interrupted plan_async tasks re-planning', { tasks: orphans.planning });
 
   // 群组讨论：引擎 v2 配置（组内执行策略/轮数上限/背景注入预算）+ 上一进程死在轮次中
   // 会遗留 busy/stop 锁（无属主，TTL 内会卡住讨论）——启动即清
@@ -196,7 +222,7 @@ async function main(): Promise<void> {
 
   // project-scoped execution lanes: same project serial, cross-project parallel,
   // failures block the lane until the user resumes it
-  const taskQueue = new TaskQueueManager(orchestrator, modelPool);
+  const taskQueue = new TaskQueueManager(orchestrator, modelPool, config.orchestrator.auto_requeue_max ?? 3);
   logger.info('Task queue initialized (one running task per project)');
 
   // E20：plan_async + auto_run 的入队补链——后台规划落到 planned 即入队（此前被路由 early-return 吞掉）
@@ -205,6 +231,26 @@ async function main(): Promise<void> {
       logger.warn('auto-run enqueue after planning failed', { taskId, error: String(e) })
     );
   };
+
+  // 永续开发（2026-09-15）：重启孤儿重建——interrupted 自动续跑、queued 孤儿重新排队、
+  // planAsync 规划孤儿重新规划。全部走既有车道（容量探针照常限流）
+  const { getTaskGraph } = await import('./store');
+  for (const taskId of [...orphans.resume, ...orphans.queued]) {
+    try {
+      const g = await getTaskGraph(taskId);
+      if (!g) continue;
+      if (g.status === 'failed') continue; // 反复中断已停靠人工
+      await taskQueue.enqueue(taskId, g.project_id ?? null, g.workspace);
+      logger.info('Startup orphan re-enqueued', { taskId, kind: orphans.resume.includes(taskId) ? 'interrupted' : 'queued' });
+    } catch (e) {
+      logger.warn('Startup orphan re-enqueue failed', { taskId, error: String(e).slice(0, 200) });
+    }
+  }
+  for (const taskId of orphans.planning) {
+    await orchestrator.resumeInterruptedPlanning(taskId).catch((e) =>
+      logger.warn('Startup planning resume failed', { taskId, error: String(e).slice(0, 200) })
+    );
+  }
 
   // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
   await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger });

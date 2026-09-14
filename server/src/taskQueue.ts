@@ -1,5 +1,5 @@
 import { getLogger } from './logger';
-import { getTaskGraph, persistGraph, emitProgress } from './store';
+import { getTaskGraph, persistGraph, emitProgress, appendJournal } from './store';
 import { busSet } from './bus';
 import type { TaskStatus } from './types';
 
@@ -40,6 +40,17 @@ interface Lane {
 const CAPACITY_RETRY_MS = 10_000;
 
 /**
+ * 永续开发（2026-09-15，c2g0ya6d / 5wkawk89 / r6fn2mbb 复盘）：基础设施类失败
+ * （模型池不稳/上下文超限/服务重启）自动重排，content 类失败才停靠人工。
+ * 分类看节点 error_type：内容类任一出现即整体按 content 处理（人该看）；
+ * 其余（capacity/context_overflow/other 未知模型侧）都算 infra——免费模型池的
+ * 连接死亡/断流大多落在 other。
+ */
+export const CONTENT_ERROR_TYPES = new Set(['precondition', 'blocker', 'content', 'budget', 'system']);
+/** infra 失败自动重排的递增延时（1min → 5min → 15min，封顶） */
+export const INFRA_REQUEUE_BACKOFF_MS = [60_000, 300_000, 900_000];
+
+/**
  * Project-scoped task queues. Rules:
  * - one lane per project (project_id; tasks without a project share the `default` lane) —
  *   within a lane tasks run strictly one at a time, in enqueue order;
@@ -56,9 +67,14 @@ export class TaskQueueManager {
   private lanes = new Map<string, Lane>();
   private taskLane = new Map<string, string>();
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private infraRequeueTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private logger = getLogger();
 
-  constructor(private executor: TaskExecutor, private capacity: CapacityProbe) {}
+  constructor(
+    private executor: TaskExecutor,
+    private capacity: CapacityProbe,
+    private maxInfraRetries = 3
+  ) {}
 
   private keyFor(projectId?: string | null): string {
     return projectId || 'default';
@@ -153,10 +169,31 @@ export class TaskQueueManager {
     }
     lane.running = null;
     if (status === 'failed') {
+      const failure = await this.classifyFailure(taskId);
+      if (failure.kind === 'infra' && (failure.retries ?? 0) < this.maxInfraRetries) {
+        // 永续开发：infra 失败不锁车道——递增延时自动重排（execute 重跑会自动复位
+        // 非 completed 节点），车道让给后续任务，模型池恢复后本任务自动续命
+        const attempt = (failure.retries ?? 0) + 1;
+        const delayMs = INFRA_REQUEUE_BACKOFF_MS[Math.min(attempt - 1, INFRA_REQUEUE_BACKOFF_MS.length - 1)];
+        const delaySec = Math.round(delayMs / 1000);
+        this.logger.warn('Infra failure — auto requeue (lane stays open)', { lane: key, taskId, attempt, max: this.maxInfraRetries, delay_sec: delaySec });
+        await appendJournal(taskId, 'orchestrator', {
+          role: 'master', kind: 'error',
+          text: `⚡ 模型池/基础设施不稳导致失败，第 ${attempt}/${this.maxInfraRetries} 次自动重排（${delaySec}s 后）——内容无问题，无需人工`,
+          ts: new Date().toISOString(), node_id: '', node_name: '',
+        });
+        await emitProgress('queue_auto_requeue', { lane: key, task_id: taskId, attempt, max: this.maxInfraRetries, delay_sec: delaySec });
+        this.scheduleInfraRequeue(taskId, failure.projectId ?? null, failure.workspace, delayMs);
+        await emitProgress('queue_update', { lane: key, ...this.snapshot(key) });
+        this.tryStart(key); // 车道已让空：后续排队任务照常启动
+        return;
+      }
       lane.blocked = true;
       lane.blockedBy = taskId;
-      lane.blockedReason = `任务 ${taskId} 执行失败（含模型分配失败），队列已阻塞，请处理后手动恢复`;
-      this.logger.warn('Queue blocked by failed task', { lane: key, taskId });
+      lane.blockedReason = failure.kind === 'infra'
+        ? `任务 ${taskId} 基础设施类失败且自动重排已达上限（${this.maxInfraRetries} 次），队列已阻塞，请处理后手动恢复`
+        : `任务 ${taskId} 内容/需求类失败，队列已阻塞，请处理后手动恢复`;
+      this.logger.warn('Queue blocked by failed task', { lane: key, taskId, failure_class: failure.kind });
       await emitProgress('queue_update', { lane: key, ...this.snapshot(key) });
       return; // do not start the next task — user decides when to resume
     }
@@ -228,6 +265,54 @@ export class TaskQueueManager {
       this.retryTimer = null;
       for (const key of this.lanes.keys()) this.tryStart(key);
     }, CAPACITY_RETRY_MS);
+  }
+
+  /** 任务失败分型：看节点 error_type 汇总——任一内容类即 content，否则 infra。 */
+  private async classifyFailure(taskId: string): Promise<{
+    kind: 'infra' | 'content';
+    retries?: number;
+    projectId?: string | null;
+    workspace?: string;
+  }> {
+    try {
+      const graph = await getTaskGraph(taskId);
+      if (!graph) return { kind: 'content' };
+      // 未记录 error_type（历史图/异常路径）保守按 content 处理——只有明确分型的才走 infra 自动重排
+      const hasContent = (graph.nodes || []).some((n) => {
+        if (n.status !== 'failed') return false;
+        const t = String((n as any).error_type || '');
+        return !t || CONTENT_ERROR_TYPES.has(t);
+      });
+      return {
+        kind: hasContent ? 'content' : 'infra',
+        retries: graph.infra_retries ?? 0,
+        projectId: graph.project_id ?? null,
+        workspace: graph.workspace,
+      };
+    } catch {
+      return { kind: 'content' };
+    }
+  }
+
+  /** infra 失败的延时自动重排：到点重新 enqueue（车道此时已让空，其他任务先行）。 */
+  private scheduleInfraRequeue(taskId: string, projectId: string | null, workspace: string | undefined, delayMs: number): void {
+    const prev = this.infraRequeueTimers.get(taskId);
+    if (prev) clearTimeout(prev);
+    const timer = setTimeout(async () => {
+      this.infraRequeueTimers.delete(taskId);
+      try {
+        const graph = await getTaskGraph(taskId);
+        // 用户在等待窗口里删了任务/手动改了状态/手动重发——不抢跑
+        if (!graph || graph.status !== 'failed') return;
+        graph.infra_retries = (graph.infra_retries ?? 0) + 1;
+        await persistGraph(graph);
+        await this.enqueue(taskId, projectId, workspace || graph.workspace);
+        this.logger.info('Infra requeue fired', { taskId, attempt: graph.infra_retries });
+      } catch (e) {
+        this.logger.error('Infra requeue failed', { taskId, error: String(e).slice(0, 200) });
+      }
+    }, delayMs);
+    this.infraRequeueTimers.set(taskId, timer);
   }
 
   private async setGraphStatus(taskId: string, status: TaskStatus): Promise<void> {
