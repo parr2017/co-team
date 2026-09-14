@@ -40,6 +40,10 @@ export function makeEntry(cfg: ModelConfig): ModelEntry {
 export class ModelPool {
   private models: ModelEntry[];
   private usage = new Map<string, UsageEntry>();
+  /** endpoint 组最近一次容量信号（429）时间戳。不落健康分——容量≠无能，到期自愈。 */
+  private capacityHits = new Map<string, number>();
+  /** 同端点组 429 的软避让窗口 */
+  static readonly CAPACITY_AVOID_MS = 60_000;
 
   constructor(configs: ModelConfig[]) {
     this.models = configs.map(makeEntry);
@@ -48,6 +52,26 @@ export class ModelPool {
   /** Hot-replace the pool from new config, preserving usage stats. */
   replaceModels(configs: ModelConfig[]): void {
     this.models = configs.map(makeEntry);
+    this.capacityHits.clear();
+  }
+
+  /**
+   * 配额是跟 key/端点走的，不是跟模型名走的（2026-09-14 群聊全员沉默复盘：池里多个模型
+   * 共享一个 api_key，"个别模型 429"实际是整组限流）。同 base_url+api_key 视为一组。
+   */
+  private endpointKey(m: ModelEntry): string {
+    return `${m.base_url}|${m.api_key}`;
+  }
+
+  /** 外部报告：该模型所在端点组刚吃了 429（软信号，只影响选择顺序，不进冷却/健康度）。 */
+  noteCapacityHit(m: ModelEntry): void {
+    this.capacityHits.set(this.endpointKey(m), Date.now());
+  }
+
+  /** 该模型所在端点组是否处于限流避让窗口内。 */
+  capacityBlocked(m: ModelEntry): boolean {
+    const t = this.capacityHits.get(this.endpointKey(m));
+    return !!t && Date.now() - t < ModelPool.CAPACITY_AVOID_MS;
   }
 
   /** Cooldown for a model with >=3 consecutive failures, doubling per extra failure (capped at 15 min). */
@@ -92,6 +116,9 @@ export class ModelPool {
     let available = healthy.filter((m) => this.availableSlots(m) > 0);
     if (available.length === 0) available = this.models.filter((m) => this.isHealthy(m) && this.availableSlots(m) > 0);
     if (available.length === 0) return null;
+    // 容量软避让：有未限流的端点组可用就绕开刚吃 429 的组（组全灭则照常返回，由调用方退避）
+    const open = available.filter((m) => !this.capacityBlocked(m));
+    if (open.length > 0) available = open;
 
     if (complexity === 'simple') {
       // cost optimization: cheapest healthy model
@@ -138,11 +165,16 @@ export class ModelPool {
     return top[top.length - 1];
   }
 
-  /** Ordered degradation list: primary first, then remaining healthy models by priority. */
+  /** Ordered degradation list: primary first, then remaining healthy models by priority (capacity-hit endpoint groups sink, 不剔除——全灭时仍可硬撞). */
   fallbackChain(primary: ModelEntry, tags?: string[]): ModelEntry[] {
     const rest = this.filterByTags(this.models, tags)
       .filter((m) => m.name !== primary.name && this.isHealthy(m))
-      .sort((a, b) => this.effectivePriority(a) - this.effectivePriority(b) || b.professional_weight - a.professional_weight);
+      .sort(
+        (a, b) =>
+          Number(this.capacityBlocked(a)) - Number(this.capacityBlocked(b)) ||
+          this.effectivePriority(a) - this.effectivePriority(b) ||
+          b.professional_weight - a.professional_weight
+      );
     return [primary, ...rest];
   }
 

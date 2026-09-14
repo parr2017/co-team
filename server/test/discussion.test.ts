@@ -7,14 +7,15 @@ import * as path from 'node:path';
 // speaker=「项目规划群组讨论」, moderator=「判断讨论是否还有必要」, router=「群聊调度路由器」,
 // scheme=「收敛为一份结构化」。发言者身份现在在 user 消息里（共享 system 前缀换缓存）。
 const h = vi.hoisted(() => ({
-  speaker: null as null | ((sys: string, user: string) => string | Promise<string>),
   moderatorContinue: false,
   /** null → router returns all members (legacy behavior); 'throw' → router failure fallback test */
   routerSpeakers: null as null | string[] | 'throw',
   schemeText: '',
   lastSchemeUser: '',
-  lastSpeakerCalls: [] as { agent: string; sys: string; user: string }[],
+  lastSpeakerCalls: [] as { agent: string; model: string; sys: string; user: string }[],
   lastRouterCalls: [] as { user: string }[],
+  /** speaker handler 新增第三参 = 本次调用的模型名（429 换模用例用）；旧用例少写参数兼容 */
+  speaker: null as null | ((sys: string, user: string, model: string) => string | Promise<string>),
 }));
 
 vi.mock('../src/llm', async (importOriginal) => {
@@ -22,7 +23,7 @@ vi.mock('../src/llm', async (importOriginal) => {
   const ok = (content: string) => ({ content, promptTokens: 5, completionTokens: 8 });
   return {
     ...actual,
-    chat: async (_entry: any, messages: { role: string; content: string }[]) => {
+    chat: async (entry: any, messages: { role: string; content: string }[]) => {
       const sys = messages.find((m) => m.role === 'system')?.content || '';
       const userAll = messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n\n');
       if (sys.includes('判断讨论是否还有必要')) return ok(JSON.stringify({ continue: h.moderatorContinue, reason: 'test' }));
@@ -40,9 +41,10 @@ vi.mock('../src/llm', async (importOriginal) => {
       if (sys.includes('项目规划群组讨论')) {
         const m = userAll.match(/你是群组讨论中的「(.+?)」Agent/);
         const agent = m ? m[1] : '?';
-        h.lastSpeakerCalls.push({ agent, sys, user: userAll });
+        const model = String(entry?.name ?? '');
+        h.lastSpeakerCalls.push({ agent, model, sys, user: userAll });
         if (!h.speaker) return ok(JSON.stringify({ speak: false }));
-        return ok(await h.speaker(sys, userAll));
+        return ok(await h.speaker(sys, userAll, model));
       }
       if (sys.includes('task planner')) {
         return ok(JSON.stringify({ nodes: [{ id: '1', name: '实现方案', agent: 'dev', complexity: 'normal', goal_link: '按方案实现' }], edges: [], summary: 'plan' }));
@@ -60,7 +62,7 @@ import { listKnowledge, writeKnowledge } from '../src/knowledge';
 import {
   createDiscussion, DiscussionError, parseMentions, hasPendingUserQuestion, unansweredQuestions,
   getDiscussion, getMessages, runDiscussionRound, runAutoDiscussion, runResponseLoop, generateScheme, updateDiscussion,
-  convertToProject, postUserMessage, isDiscussionBusy, extractReplyStreaming,
+  convertToProject, postUserMessage, isDiscussionBusy, extractReplyStreaming, SPEAKER_RETRY_POLICY,
 } from '../src/discussion';
 import type { DiscussionMessage } from '../src/discussion';
 
@@ -91,6 +93,9 @@ beforeEach(async () => {
   h.lastSchemeUser = '';
   h.lastSpeakerCalls = [];
   h.lastRouterCalls = [];
+  // 换模退避在测试里压到 0：行为断言不变，但不让全链限流用例真等 20/40s
+  SPEAKER_RETRY_POLICY.capacityWaitSec = [0, 0];
+  SPEAKER_RETRY_POLICY.quickRetryDelayMs = 0;
   const pool = new ModelPool([{ name: 'fake-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
   const orchestrator = new Orchestrator({
     agentsDir: tmp, modelPool: pool, policy: { whitelistCommands: null, maxTimeSec: 10 },
@@ -107,6 +112,8 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
   closeBus();
   delete process.env.COTEAM_KNOWLEDGE_DIR;
+  SPEAKER_RETRY_POLICY.capacityWaitSec = [20, 40];
+  SPEAKER_RETRY_POLICY.quickRetryDelayMs = 3000;
 });
 
 async function mkDiscussion(members = ['dev', 'test'], extra: { project_id?: string } = {}) {
@@ -234,12 +241,17 @@ describe('router: dynamic speakers replace full rotation', () => {
     expect(h.lastRouterCalls).toHaveLength(0);
   });
 
-  it('empty router selection converges the round as all_silent (no wasted LLM trips)', async () => {
+  it('later-round empty router selection still converges as all_silent (no wasted LLM trips)', async () => {
+    // 2026-09-14 语义调整：开场轮空选视为弱路由误判→全员轮转兜底（见 429 复盘 describe）；
+    // "空选即收敛、不浪费 LLM"的保证保留在非开场轮。
     const d = await mkDiscussion();
+    h.speaker = () => okContent('开场观点');
+    await runDiscussionRound(deps, d.id);
     h.routerSpeakers = [];
+    const before = h.lastSpeakerCalls.length;
     const res = await runDiscussionRound(deps, d.id);
     expect(res.all_silent).toBe(true);
-    expect(h.lastSpeakerCalls).toHaveLength(0);
+    expect(h.lastSpeakerCalls).toHaveLength(before);
   });
 
   it('router failure falls back to the legacy full rotation', async () => {
@@ -695,5 +707,84 @@ describe('convert scheme → project + dev task', () => {
     const res = await convertToProject(deps, c.id, { target: 'existing', project_id: 'ex1' }, validateWs);
     expect(res.project_id).toBe('ex1');
     expect((await getDiscussion(c.id))!.project_id).toBe('ex1');
+  });
+});
+
+// 2026-09-14「资源篮全员沉默」复盘（discussion:hyygf4zb）：429 只在个别模型，
+// 但群聊选中它后只会死磕同一模型——全员沉默。以下用例锁住修复后的行为。
+describe('429 换模兜底（群聊全员沉默复盘）', () => {
+  it('主选模型限流 → 立即换健康模型顶上，不空转退避', async () => {
+    // flaky: 优先级更高但权重决定首撞（weight 0 的候选永不被首选）→ 确定性主选
+    deps.pool.replaceModels([
+      { name: 'flaky', api_key: 'k1', base_url: 'http://flaky/v1', priority: 1, professional_weight: 1, tags: ['code'] },
+      { name: 'solid', api_key: 'k2', base_url: 'http://solid/v1', priority: 2, professional_weight: 0, tags: ['code'] },
+    ]);
+    h.routerSpeakers = ['dev'];
+    h.speaker = (_s, _u, model) => {
+      if (model === 'flaky') throw new Error('429 inference exceeds tpm/rpm limit');
+      return okContent('solid 顶上来了');
+    };
+    const disc = await mkDiscussion(['dev', 'test']);
+    const res = await runDiscussionRound(deps, disc.id);
+    expect(res.speakers).toContain('dev');
+    // 换模过程以 notice 落到讨论流
+    const notices = (await getMessages(disc.id)).filter((m) => m.from === 'system').map((m) => m.text);
+    expect(notices.some((t) => t.includes('flaky 限流（429）') && t.includes('立即切换 solid'))).toBe(true);
+    const msgs = await getMessages(disc.id);
+    const spoke = plainAgentMsgs(msgs, 'dev');
+    expect(spoke.some((m) => m.text.includes('solid 顶上来了'))).toBe(true);
+    // 实际应答的必须是 solid（消息头记录的模型名跟着换模走）
+    expect(spoke[spoke.length - 1].model).toBe('solid');
+  });
+
+  it('整链容量耗尽 → 换模 notice 与退避 notice 落进讨论流，本轮以根因判死', async () => {
+    h.routerSpeakers = ['dev'];
+    h.speaker = () => {
+      throw new Error('429 inference exceeds tpm/rpm limit');
+    };
+    const disc = await mkDiscussion(['dev']);
+    const res = await runDiscussionRound(deps, disc.id);
+    expect(res.silent).toContain('dev');
+    const notices = (await getMessages(disc.id)).filter((m) => m.from === 'system');
+    const all = notices.map((m) => m.text).join('\n');
+    // 群聊限流链只有一个模型 → 退避重跑 notice + 失败根因 notice 都可见
+    expect(all).toMatch(/限流（429）/);
+    expect(all).toMatch(/本轮发言未完成：.*(429|限流)/);
+  });
+
+  it('整链只剩一个端点组：容量退避期间同组模型也照常可撞（软避让不误伤）', async () => {
+    deps.pool.replaceModels([
+      { name: 's1', api_key: 'shared-key', base_url: 'http://one-gateway/v1', priority: 1, professional_weight: 1, tags: ['code'] },
+      { name: 's2', api_key: 'shared-key', base_url: 'http://one-gateway/v1', priority: 2, professional_weight: 0, tags: ['code'] },
+    ]);
+    h.routerSpeakers = ['dev'];
+    h.speaker = (_s, _u, model) => {
+      if (model === 's1') throw new Error('HTTP 429 Too Many Requests');
+      return okContent('同组兄弟顶上');
+    };
+    const disc = await mkDiscussion(['dev']);
+    const res = await runDiscussionRound(deps, disc.id);
+    // 两个模型共享同一端点组：避让只改顺序，不能把唯一候选过滤成空
+    expect(res.speakers).toContain('dev');
+    expect(h.lastSpeakerCalls.some((c) => c.model === 's1')).toBe(true);
+    expect(h.lastSpeakerCalls.some((c) => c.model === 's2')).toBe(true);
+  });
+
+  it('被 @ 点名后模型拒答：系统公告写明原因，不再无痕静默', async () => {
+    h.speaker = () => JSON.stringify({ speak: false });
+    const disc = await mkDiscussion(['dev']);
+    await runDiscussionRound(deps, disc.id, { forced: ['dev'] });
+    const notices = (await getMessages(disc.id)).filter((m) => m.from === 'system').map((m) => m.text).join('\n');
+    expect(notices).toMatch(/被点名后模型.*仍未给出实质发言/);
+    expect(plainAgentMsgs(await getMessages(disc.id), 'dev')).toHaveLength(0);
+  });
+
+  it('开场轮路由器一个都不选 → 回退全员轮转，不把用户的话晾在群里', async () => {
+    h.routerSpeakers = [];
+    h.speaker = () => okContent('初始观点');
+    const disc = await mkDiscussion(['dev', 'test']);
+    const res = await runDiscussionRound(deps, disc.id);
+    expect(res.speakers.length).toBeGreaterThan(0);
+    expect(h.lastSpeakerCalls.length).toBeGreaterThan(0);
   });
 });

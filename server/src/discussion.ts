@@ -25,7 +25,8 @@ import { busGet, busSet, busDel, busKeys } from './bus';
 import { emitProgress, addProjectMemory, addAgentMemory, getAgentMemory, getProjectMemory, saveProject, getProject, getTaskGraph } from './store';
 import type { ProjectRecord } from './store';
 import { chat, extractJson, stripCodeFence, salvageToolCalls } from './llm';
-import type { ModelPool } from './scheduler';
+import type { LlmResponse } from './llm';
+import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
 import type { TaskQueueManager } from './taskQueue';
 import type { Logger } from './logger';
@@ -302,6 +303,92 @@ function pickModel(deps: DiscussionDeps, agent: string) {
 
 function cheapModel(deps: DiscussionDeps) {
   return deps.pool.selectModel(undefined, 'simple') ?? deps.pool.selectModel(undefined, 'normal');
+}
+
+/** 成员发言最多尝试的模型数：再多候选也不该让一句话排队等太久 */
+const MAX_SPEAKER_MODEL_CHAIN = 3;
+
+/**
+ * 整链都被容量打死后的重跑预算：两次，间隔 20s/40s（与 2026-09-14 之前的旧语义一致）。
+ * 换模是即时的，只有"链上全灭"才值得让用户等。测试可缩短等待。
+ */
+export const SPEAKER_RETRY_POLICY = { capacityWaitSec: [20, 40], quickRetryDelayMs: 3000 };
+
+/** 发言者换模链：主选在前，健康后备按优先级跟进（同端点组限流者已在 pool 里沉底）。 */
+function speakerModelChain(deps: DiscussionDeps, agent: string, primary: ModelEntry): ModelEntry[] {
+  const plugin = deps.orchestrator.plugins.get(agent);
+  return deps.pool.fallbackChain(primary, plugin?.tags).slice(0, MAX_SPEAKER_MODEL_CHAIN);
+}
+
+/**
+ * 沿模型链执行一次发言 LLM 调用（2026-09-14 群聊全员沉默复盘的核心修复）：
+ * - 容量错误换新，其他错误先快重试再换，最后一个模型失败才判死；
+ * - chain 全灭且出现过容量信号时，按 SPEAKER_RETRY_POLICY 退避后重跑整链；
+ * - 每个容量错误都上报 pool.noteCapacityHit（端点组级软避让，不落健康分）；
+ * - 换模/退避都以 notice 落进讨论流——失败过程可见、可追责。
+ */
+async function chatOnModelChain(
+  deps: DiscussionDeps,
+  disc: Discussion,
+  agent: string,
+  round: number,
+  iter: number,
+  convo: { role: string; content: string }[],
+  chain: ModelEntry[],
+  onAttempt: (sid: string) => (d: string) => void,
+): Promise<{ res: LlmResponse; entry: ModelEntry; failed?: undefined } | { res?: undefined; entry: ModelEntry; failed: string }> {
+  const notice = (text: string) =>
+    appendMessage(disc.id, { id: newId(), from: 'system', round, kind: 'notice', text, ts: new Date().toISOString() });
+  let lastReason = '';
+  for (let pass = 0; ; pass++) {
+    if (pass > 0) {
+      const waitSec = SPEAKER_RETRY_POLICY.capacityWaitSec[pass - 1];
+      await notice(`⏳ ${agent} 的模型链全部限流（429），${waitSec}s 后自动重跑整链（第 ${pass}/${SPEAKER_RETRY_POLICY.capacityWaitSec.length} 次）`);
+      await new Promise((r) => setTimeout(r, waitSec * 1000));
+    }
+    let sawCapacity = false;
+    for (let mi = 0; mi < chain.length; mi++) {
+      const entry = chain[mi];
+      for (let attempt = 0; ; attempt++) {
+        const sid = `${disc.id}:${agent}:r${round}#${iter}#p${pass}m${mi}a${attempt}`;
+        const onDelta = onAttempt(sid);
+        try {
+          await emitProgress('discussion_round', { discussion_id: disc.id, round, phase: 'speaker', agent, activity: iter === 0 ? 'thinking' : 'tool_followup' });
+          // 每一轮 LLM 调用都流式：工具轮会以 discarded 事件清掉误显示的片段
+          const res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta);
+          return { res, entry };
+        } catch (e) {
+          const reason = String((e as Error)?.message || e);
+          void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: sid, discarded: true });
+          lastReason = reason;
+          const capacity = CAPACITY_RE.test(reason);
+          if (capacity) {
+            deps.pool.noteCapacityHit(entry);
+            sawCapacity = true;
+          }
+          const next = chain[mi + 1];
+          if (next) {
+            // 还有健康模型：立即换乘，不让用户干等限流配额回血
+            await notice(capacity
+              ? `⏳ ${agent}：${entry.name} 限流（429），立即切换 ${next.name} 重试`
+              : `⏳ ${agent}：${entry.name} 调用出错（${reason.slice(0, 80)}），切换 ${next.name} 重试`);
+            break;
+          }
+          if (capacity) break; // 链尾也撞容量：交给 pass 级退避重跑整链
+          if (attempt === 0) {
+            await notice(`⏳ ${agent} 的模型调用出错（${reason.slice(0, 80)}），${SPEAKER_RETRY_POLICY.quickRetryDelayMs / 1000}s 后自动重试一次`);
+            await new Promise((r) => setTimeout(r, SPEAKER_RETRY_POLICY.quickRetryDelayMs));
+            continue;
+          }
+          return { entry, failed: reason };
+        }
+      }
+    }
+    // 整链失败：本轮见过容量信号且退避次数未用尽 → 退避后重跑整链；否则判死
+    if (!sawCapacity || pass >= SPEAKER_RETRY_POLICY.capacityWaitSec.length) {
+      return { entry: chain[chain.length - 1], failed: lastReason };
+    }
+  }
 }
 
 // ---------- static context (项目背景 + 全量经验，所有成员共享前缀) ----------
@@ -673,6 +760,9 @@ async function runSpeakerTurn(
 
   let parsed: Record<string, any> | null = null;
   let toolUsed = false;
+  // 换模链：主选 + 健康后备（同端点组沉底），本轮实际应答的模型记在 chosen 上
+  const chain = speakerModelChain(deps, agent, entry);
+  let chosen: ModelEntry = chain[0];
 
   for (let iter = 0; iter < MAX_TOOL_ITER; iter++) {
     const last = iter === MAX_TOOL_ITER - 1;
@@ -693,33 +783,19 @@ async function runSpeakerTurn(
       convo.push({ role: 'user', content: '工具迭代次数已用完：不要再调用工具，立即用形态 B 基于已获得的信息给出你的发言（如实反映已执行与未执行的部分）。' });
     }
     let res;
-    // M5.2 补课（用户实测反馈）：429/错误不再一击即溃——容量错误按任务管线同款退避（20s/40s 两次），
-    // 其他错误快重试一次。重试过程以系统 notice 落进讨论流，过程可见。
-    for (let attempt = 0; ; attempt++) {
-      stream = { acc: '', emitted: 0, lastAt: 0, sid: `${disc.id}:${agent}:r${round}#${iter}#${attempt}` };
-      try {
-        await emitProgress('discussion_round', { discussion_id: disc.id, round, phase: 'speaker', agent, activity: iter === 0 ? 'thinking' : 'tool_followup' });
-        // 每一轮 LLM 调用都流式：工具轮会以 discarded 事件清掉误显示的片段
-        res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta);
-        break;
-      } catch (e) {
-        const reason = String((e as Error)?.message || e);
-        void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
-        const capacity = CAPACITY_RE.test(reason);
-        if (capacity && attempt < 2) {
-          const waitSec = 20 * (attempt + 1);
-          await appendMessage(disc.id, { id: newId(), from: 'system', round, kind: 'notice', text: `⏳ ${agent} 遇到模型限流（429），${waitSec}s 后自动重试（第 ${attempt + 1}/2 次）`, ts: new Date().toISOString() });
-          await new Promise((r) => setTimeout(r, waitSec * 1000));
-          continue;
-        }
-        if (!capacity && attempt < 1) {
-          await appendMessage(disc.id, { id: newId(), from: 'system', round, kind: 'notice', text: `⏳ ${agent} 的模型调用出错（${reason.slice(0, 80)}），3s 后自动重试一次`, ts: new Date().toISOString() });
-          await new Promise((r) => setTimeout(r, 3000));
-          continue;
-        }
-        return { spoke: false, asked: false, silent: true, failed: reason, toolUsed };
-      }
+    // M5.2 + 2026-09-14「群聊全员沉默」复盘：429 是容量信号不是能力失败——对齐任务管线，
+    // 不死磕单一模型：沿降级链**换模立即重试**（同 key 端点组软避让由 ModelPool 负责），
+    // 整链都 429 后才做 20s/40s 退避重跑整链；其他错误快试一次/换下一个模型。
+    // 每次换模/退避都以系统 notice 落进讨论流，过程可见、失败原因可追责。
+    const outcome = await chatOnModelChain(deps, disc, agent, round, iter, convo, chain, sid => {
+      stream = { acc: '', emitted: 0, lastAt: 0, sid };
+      return onDelta;
+    });
+    if (outcome.failed !== undefined) {
+      return { spoke: false, asked: false, silent: true, failed: outcome.failed, toolUsed };
     }
+    res = outcome.res;
+    chosen = outcome.entry;
     parsed = extractJson(res.content);
     let calls: Record<string, any>[] = Array.isArray(parsed?.tool_calls) ? parsed.tool_calls.filter((c: any) => c && typeof c.tool === 'string') : [];
     if (!calls.length && !parsed && res.content.includes('"tool"')) {
@@ -730,7 +806,7 @@ async function runSpeakerTurn(
       toolUsed = true;
       const results = await runSpeakerToolCalls(deps, disc, agent, calls);
       const line = toolActivityLine(calls, results);
-      await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true, model: entry.name });
+      await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true, model: chosen.name });
       await emitProgress('discussion_tool', { discussion_id: disc.id, agent, round, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results });
       // M5.2 ④：同一批工具 ≥2 次失败时提示转任务——讨论的工具面（≤90s 命令、≤80 行小改）有天花板
       const failedCalls = results.filter((r) => (r as Record<string, any>)?.ok === false).length;
@@ -760,13 +836,22 @@ async function runSpeakerTurn(
     }
     return { spoke: false, asked: false, silent: true, failed: '输出无法解析', toolUsed };
   }
-  // forced speakers must speak: a weak model returning speak:false is nudged once
+  // forced speakers must speak: a weak model returning speak:false is nudged once.
+  // 2026-09-14 复盘：点名轮的结果不许无痕静默——nudge 调用失败或模型仍然拒答，都以失败
+  // 上报（runRoundCore 会落「本轮发言未完成」notice），用户至少能看到根因。
   if (forced && parsed.speak !== true) {
-    const retry = await chat(entry, [...convo, { role: 'user', content: '注意：用户直接 @ 了你提问，你必须给出实质性发言（speak=true）。' }], undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS)
-      .catch(() => null);
-    if (retry) parsed = extractJson(retry.content) || parsed;
+    let retryContent: string | null = null;
+    try {
+      retryContent = (await chat(chosen, [...convo, { role: 'user', content: '注意：用户直接 @ 了你提问，你必须给出实质性发言（speak=true）。' }], undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS)).content;
+    } catch (e) {
+      return { spoke: false, asked: false, silent: true, failed: `点名强制发言重试失败：${String((e as Error)?.message || e).slice(0, 120)}`, toolUsed };
+    }
+    if (retryContent) parsed = extractJson(retryContent) || parsed;
   }
   if (parsed.speak !== true) {
+    if (forced) {
+      return { spoke: false, asked: false, silent: true, failed: `被点名后模型（${chosen.name}）仍未给出实质发言`, toolUsed };
+    }
     return { spoke: false, asked: false, silent: true, toolUsed };
   }
   const reply = String(parsed.reply || '').trim().slice(0, MAX_MESSAGE_LENGTH);
@@ -782,7 +867,8 @@ async function runSpeakerTurn(
     ts: new Date().toISOString(),
     round,
     needs_user: !!askUser,
-    model: entry.name,
+    // 实际应答模型（可能已在换模链上切过）——复盘时能看出这轮话是谁的模型说的
+    model: chosen.name,
   };
   await appendMessage(disc.id, msg);
   void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: `${disc.id}:${agent}:r${round}#*`, discarded: true });
@@ -846,9 +932,14 @@ export async function routeSpeakers(
       ? [...new Set(parsed.speakers.map(String))].filter((s) => disc.members.includes(s)).slice(0, MAX_ROUND_SPEAKERS)
       : null;
     if (!picked) throw new Error('router output unparseable');
+    // 开场轮一个都不选：用户刚把问题抛进群，"没人接"几乎必然是弱路由模型的误判
+    //（2026-09-14 复盘：开场轮空选直接以"暂无新进展"收场，成员连试都没试）——回退全员轮转。
+    if (!picked.length && firstSubstantive) throw new Error('router declined the opening round');
     return { speakers: picked, reason: String(parsed?.reason || ''), fallback: false };
   } catch (e) {
-    deps.logger.warn('discussion router failed, fallback to full rotation', { discId: disc.id, error: String((e as Error)?.message || e) });
+    const reason = String((e as Error)?.message || e);
+    if (CAPACITY_RE.test(reason)) deps.pool.noteCapacityHit(entry!);
+    deps.logger.warn('discussion router failed, fallback to full rotation', { discId: disc.id, error: reason });
     return { speakers: [...disc.members], reason: '路由失败回退全员轮转', fallback: true };
   }
 }
