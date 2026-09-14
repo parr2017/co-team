@@ -85,6 +85,8 @@ function digest(t: TaskGraph): string {
   const done = t.nodes.filter((x) => x.status === 'completed').length;
   if (t.status === 'clarifying') return '等待你回复澄清问题';
   if (t.status === 'queued') return '等待前面的任务执行完成';
+  if (t.status === 'finalizing') return '节点已全部完成，正在合并/验收';
+  if (t.status === 'interrupted') return '服务重启中断，将自动续跑';
   if (!n) return '尚未生成执行计划';
   const running = t.nodes.find((x) => ['running', 'retrying'].includes(x.status));
   if (running) return `正在执行 ${running.name}`;
@@ -180,7 +182,8 @@ async function refreshStats() {
     const all = d.tasks || [];
     stats.value = {
       total: d.total,
-      running: all.filter((t) => ['running', 'retrying', 'queued'].includes(t.status)).length,
+      // 永续开发（2026-09-15）：finalizing（收尾验收）与 interrupted（中断待续跑）都算在途
+      running: all.filter((t) => ['running', 'retrying', 'queued', 'finalizing', 'interrupted'].includes(t.status)).length,
       waiting: all.filter((t) => ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned', 'pending'].includes(t.status)).length,
       failed: all.filter((t) => t.status === 'failed').length,
       done: all.filter((t) => ['success', 'completed'].includes(t.status)).length,
@@ -198,7 +201,7 @@ const chips = [
 
 function matchesFilter(t: TaskGraph): boolean {
   if (!statusFilter.value) return true;
-  if (statusFilter.value === 'running') return ['running', 'retrying', 'queued'].includes(t.status);
+  if (statusFilter.value === 'running') return ['running', 'retrying', 'queued', 'finalizing', 'interrupted'].includes(t.status);
   if (statusFilter.value === 'waiting') return ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned', 'pending'].includes(t.status);
   if (statusFilter.value === 'failed') return t.status === 'failed';
   if (statusFilter.value === 'done') return ['success', 'completed'].includes(t.status);

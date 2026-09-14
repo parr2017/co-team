@@ -44,6 +44,7 @@ function agentStreaming(agent: string): boolean {
 // M5.2 ③：群内直接回答任务的 ask_user 提问（可附图）
 const answeredAskIds = ref<Set<string>>(new Set());
 const askDrafts = ref<Record<string, string>>({});
+const answeringAsk = ref('');
 /** ask 回答的待发附图（ask_id -> 数组），随 answerAsk 提交 */
 const askImgs = ref<Record<string, { url?: string; name?: string; dataUrl?: string; file?: File }[]>>({});
 const askImgInputEl = ref<HTMLInputElement | null>(null);
@@ -208,11 +209,6 @@ function imagePayload() {
     .filter((p) => p.dataUrl)
     .map((p) => ({ name: p.name || 'image', dataUrl: p.dataUrl as string }));
 }
-/** 只做路由层的 HTML 转字符串 */
-function escapeHtml(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 async function sendNow() {
   const text = draft.value.trim();
   const imgs = imagePayload();

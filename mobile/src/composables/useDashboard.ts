@@ -13,6 +13,8 @@ const taskPage = ref(1);
 const taskPageSize = ref(20);
 const agents = ref<Record<string, AgentLiveState>>({});
 const connected = ref(false);
+/** 2.1 生成直播（2026-09-15）：agent_delta 节流事件的末段文本，key `${taskId}:${nodeId}` */
+const deltas = ref<Record<string, { text: string; at: number; model?: string }>>({});
 
 const { ensureStarted, onEvent, onResync } = useWs();
 
@@ -26,6 +28,7 @@ const REFRESH_EVENTS = new Set([
   'execute_start', 'execute_failed', 'execute_waiting_approval',
   'task_needs_clarification', 'task_clarified', 'task_replanned', 'task_model_changed',
   'goal_updated', 'stage_started', 'acceptance_report',
+  'task_finalizing', 'task_interrupted', 'queue_auto_requeue', 'stage_planning',
   'command_pending_approval', 'command_resolved',
   'ask_created', 'ask_resolved',
   'supervisor_proposal', 'supervisor_proposal_executed',
@@ -37,7 +40,7 @@ async function loadTasks(page = 1, q?: string) {
   taskTotal.value = d.total;
   taskPage.value = d.page;
   const map: Record<string, TaskGraph> = { ...tasks.value };
-  for (const t of d.tasks) map[t.task_id] = t;
+  for (const t of d.tasks) if (t.task_id) map[t.task_id] = t; // 空 id 条目会引发 /api/tasks//asks 404 轮询噪音
   tasks.value = map;
 }
 
@@ -85,6 +88,20 @@ function handleEvent(msg: EventEnvelope) {
 
   // task/node lifecycle events → refresh the affected task + bump live statuses
   if (tid && REFRESH_EVENTS.has(msg.type)) void fetchSingleTask(tid);
+  if (msg.type === 'agent_delta' && tid && p.node_id) {
+    deltas.value = {
+      ...deltas.value,
+      [`${tid}:${p.node_id}`]: { text: String(p.text || ''), at: Date.now(), model: p.model ? String(p.model) : undefined },
+    };
+    return;
+  }
+  if (tid && p.node_id && ['node_complete', 'node_error', 'node_cancelled'].includes(msg.type)) {
+    if (deltas.value[`${tid}:${p.node_id}`]) {
+      const next = { ...deltas.value };
+      delete next[`${tid}:${p.node_id}`];
+      deltas.value = next;
+    }
+  }
   if (msg.type.startsWith('node_') && tid && p.node_id) {
     const t = tasks.value[tid];
     if (t) {
@@ -115,6 +132,12 @@ export function useDashboard() {
   return {
     tasks, taskTotal, taskPage, taskPageSize, agents, connected,
     loadTasks, fetchSingleTask, loadAgents, putTask,
+    /** 2.1 生成直播：3s 内的 delta 视为"正在生成"，返回末段文本 */
+    liveDelta(taskId: string, nodeId: string): string | null {
+      const d = deltas.value[`${taskId}:${nodeId}`];
+      if (!d || Date.now() - d.at >= 3000) return null;
+      return d.text;
+    },
     onEvent(fn: (msg: EventEnvelope) => void) { return onEvent(fn); },
     onResync(fn: () => void): () => void { return onResync(fn); },
     onTaskStatus(fn: (t: TaskGraph) => void): () => void {

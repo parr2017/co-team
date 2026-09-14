@@ -177,6 +177,7 @@ async function main(): Promise<void> {
       heartbeatSec: config.orchestrator.supervisor?.heartbeat_sec ?? 600,
       minIntervalSec: config.orchestrator.supervisor?.min_interval_sec ?? 120,
       availableAgents: () => [...orchestrator.plugins.keys()],
+      milestoneNotify: config.orchestrator.supervisor?.milestone_notify ?? false,
     });
     supervisor.start();
   }

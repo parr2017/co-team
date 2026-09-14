@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { showToast, showImagePreview } from 'vant';
+import { showToast } from 'vant';
 import { api } from '../api';
 
 const props = defineProps<{ taskId: string; taskStatus?: string; prefill?: string }>();

@@ -93,6 +93,7 @@ orchestrator:
     enabled: true
     heartbeat_sec: 600      # 心跳评估周期（秒）；0 = 关闭心跳仅事件驱动
     min_interval_sec: 120   # 同任务同原因的最小评估间隔（防自激）
+    milestone_notify: false # 2.4 中程里程碑通知：每节点完成即推 notify（飞书/webhook/移动端）
   # M4 滚动规划：rolling（缺省）= 按阶段滚动生成子图+全局验收清单，阶段闸门三出口；
   # static = 一次性整图（旧行为回退）。rolling_max_stages 防打转，达上限转人工。
   planning_mode: rolling

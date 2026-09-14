@@ -206,6 +206,52 @@
           </div>
         </el-tab-pane>
 
+        <!-- 2.3 驾驶舱：实时执行动态（WS 事件流 + 滚动阶段 + 验收清单） -->
+        <el-tab-pane label="实时" name="cockpit">
+          <div class="cockpit">
+            <div class="cp-row">
+              <div class="cp-card">
+                <div class="cp-title">滚动阶段</div>
+                <template v-if="task?.rolling">
+                  <div class="cp-big mono">{{ task.stage ? `第 ${task.stage} 阶段` : '规划中' }}</div>
+                  <div class="cp-goal">{{ task.stage_goal || '—' }}</div>
+                </template>
+                <div v-else class="cp-goal">静态规划任务（无阶段滚动）</div>
+              </div>
+              <div class="cp-card" v-if="task?.checklist?.length">
+                <div class="cp-title">验收清单</div>
+                <div class="cp-big mono">{{ checklistDone }}/{{ task.checklist.length }}</div>
+                <div class="cp-bar"><div class="fill" :style="{ width: checklistPct + '%' }"></div></div>
+                <div class="cp-items">
+                  <div v-for="c in task.checklist.slice(0, 6)" :key="c.id" class="cp-item" :class="c.status">
+                    <span>{{ c.status === 'done' ? '✓' : c.status === 'failed' ? '✗' : '·' }}</span>{{ c.requirement }}
+                  </div>
+                </div>
+              </div>
+              <div class="cp-card">
+                <div class="cp-title">今日执行动态</div>
+                <div class="cp-counters mono">
+                  <span class="cp-c warn">换模 {{ cockpitCounters.failover }}</span>
+                  <span class="cp-c warn">退避 {{ cockpitCounters.backoff }}</span>
+                  <span class="cp-c">慢成功 {{ cockpitCounters.slow }}</span>
+                  <span class="cp-c">重试 {{ cockpitCounters.retry }}</span>
+                  <span class="cp-c" v-if="cockpitCounters.overflow">超限 {{ cockpitCounters.overflow }}</span>
+                  <span class="cp-c" v-if="cockpitCounters.requeue">自动重排 {{ cockpitCounters.requeue }}</span>
+                </div>
+                <div class="cp-note">来自实时事件流（本次会话窗口）</div>
+              </div>
+            </div>
+            <div class="cp-feed">
+              <div class="cp-title">实时事件</div>
+              <div v-if="!cockpitFeed.length" class="cp-empty">暂无实时事件——任务执行时这里会滚动直播节点动态</div>
+              <div v-for="(e, i) in cockpitFeed" :key="i" class="cp-ev mono">
+                <span class="cp-ts">{{ new Date(e.ts).toLocaleTimeString() }}</span>
+                <span>{{ describeEvent(e.type, e.data).text }}</span>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
         <!-- 事件归档（全部事件，可筛选） -->
         <el-tab-pane :label="`事件归档 (${events.length})`" name="archive">
           <div class="arch">
@@ -460,6 +506,7 @@ import ChatStream from './ChatStream.vue';
 import InterventionBar from './InterventionBar.vue';
 import DiffDialog from './DiffDialog.vue';
 import { describeEvent, statusText, taskStage, type EventView } from '../utils/events';
+import { useDashboard } from '../composables/useDashboard';
 
 const props = defineProps<{ modelValue: boolean; taskId: string; liveAgents?: Record<string, { model?: string; currentAction?: string }> }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -471,6 +518,8 @@ const selectedAgent = ref('');
 const tab = ref('warroom');
 /** 任务频道右栏检视器：成员会话 / 节点详情 */
 const wrView = ref<'chat' | 'node'>('chat');
+// 2.3 驾驶舱：实时事件流（WS）聚合今日执行动态
+const { events: liveEvents } = useDashboard();
 let pollTimer: number | undefined;
 
 // manage tab state (improvements 6/9/10/11)
@@ -726,6 +775,32 @@ async function convertDefect(n: TaskNode, defectIndex: number) {
 }
 const completedCount = computed(() => task.value?.nodes.filter((n) => n.status === 'completed').length || 0);
 const progressPct = computed(() => (task.value?.nodes.length ? Math.round((completedCount.value / task.value.nodes.length) * 100) : 0));
+
+// ---------- 2.3 驾驶舱（实时事件聚合） ----------
+const cockpitCounters = computed(() => {
+  const c = { failover: 0, backoff: 0, slow: 0, retry: 0, overflow: 0, requeue: 0 };
+  for (const e of liveEvents.value) {
+    const d = e.data || {};
+    if (d.task_id && d.task_id !== props.taskId) continue;
+    if (e.type === 'model_failover') c.failover += 1;
+    else if (e.type === 'llm_backoff') c.backoff += 1;
+    else if (e.type === 'model_slow') c.slow += 1;
+    else if (e.type === 'node_retry') c.retry += 1;
+    else if (e.type === 'llm_overflow') c.overflow += 1;
+    else if (e.type === 'queue_auto_requeue') c.requeue += 1;
+  }
+  return c;
+});
+const cockpitFeed = computed(() =>
+  liveEvents.value
+    .filter((e) => {
+      const d = e.data || {};
+      return (!d.task_id || d.task_id === props.taskId) && !describeEvent(e.type, d).noisy;
+    })
+    .slice(0, 40)
+);
+const checklistDone = computed(() => (task.value?.checklist || []).filter((c) => c.status === 'done').length);
+const checklistPct = computed(() => (task.value?.checklist?.length ? Math.round((checklistDone.value / task.value.checklist.length) * 100) : 0));
 
 function dur(n: TaskNode): string {
   if (!n.started_at) return '';
@@ -998,6 +1073,34 @@ onUnmounted(() => window.clearInterval(pollTimer));
 
 <style scoped>
 .detail { font-size: 13px; }
+
+/* ---- 2.3 驾驶舱 ---- */
+.cockpit { display: flex; flex-direction: column; gap: 12px; }
+.cp-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.cp-card {
+  background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 8px;
+  padding: 12px 14px; animation: cpIn 0.25s ease;
+}
+@keyframes cpIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.cp-title { font-size: 11px; color: var(--ct-text3); margin-bottom: 8px; letter-spacing: 0.05em; }
+.cp-big { font-size: 20px; font-weight: 700; color: var(--ct-text); }
+.cp-goal { font-size: 12px; color: var(--ct-text2); margin-top: 6px; line-height: 1.5; }
+.cp-bar { height: 6px; border-radius: 3px; background: var(--ct-bg2, rgba(127,127,127,0.12)); overflow: hidden; margin: 8px 0; }
+.cp-bar .fill { height: 100%; background: var(--ct-accent); border-radius: 3px; transition: width 0.4s ease; }
+.cp-items { display: flex; flex-direction: column; gap: 3px; }
+.cp-item { font-size: 11px; color: var(--ct-text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-item.done { color: var(--ct-green); }
+.cp-item.failed { color: var(--ct-red); }
+.cp-counters { display: flex; gap: 6px; flex-wrap: wrap; }
+.cp-c { border: 1px solid var(--ct-border2); border-radius: 999px; padding: 2px 10px; font-size: 11px; color: var(--ct-text2); }
+.cp-c.warn { color: var(--ct-yellow); border-color: var(--ct-yellow); }
+.cp-note { font-size: 10px; color: var(--ct-text3); margin-top: 8px; }
+.cp-feed { background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 8px; padding: 12px 14px; max-height: 320px; overflow: auto; }
+.cp-feed .cp-title { margin-bottom: 6px; }
+.cp-empty { font-size: 12px; color: var(--ct-text3); padding: 12px 0; text-align: center; }
+.cp-ev { font-size: 11px; color: var(--ct-text2); padding: 3px 0; border-bottom: 1px dashed var(--ct-border); display: flex; gap: 8px; }
+.cp-ev:last-child { border-bottom: none; }
+.cp-ts { color: var(--ct-text3); flex-shrink: 0; }
 .meta { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
 .meta-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .merge-msg { font-size: 11px; color: var(--ct-text3); }

@@ -45,6 +45,7 @@
               <el-button size="small" @click="onReloadAgents">重载 Agent</el-button>
             </div>
           </div>
+          <ActiveTaskHero @open="detailTaskId = $event" />
           <TaskForm @planned="openReview" @needs-clarify="(tid: string) => openClarify(tid)" />
           <MetricsPanel ref="metricsRef" />
         </main>
@@ -127,6 +128,7 @@ import TaskForm from './components/TaskForm.vue';
 import AgentCards from './components/AgentCards.vue';
 import TaskCenterView from './components/TaskCenterView.vue';
 import EventLog from './components/EventLog.vue';
+import ActiveTaskHero from './components/ActiveTaskHero.vue';
 import ModelPoolPanel from './components/ModelPoolPanel.vue';
 import MetricsPanel from './components/MetricsPanel.vue';
 import AgentDetail from './components/AgentDetail.vue';

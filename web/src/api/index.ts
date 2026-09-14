@@ -1,6 +1,6 @@
 // Shared API client + types mirroring the server contract.
 
-export type TaskStatus = 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval' | 'waiting_clarify';
+export type TaskStatus = 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval' | 'waiting_clarify' | 'interrupted' | 'finalizing';
 
 export type TaskLevel = 'light' | 'standard' | 'heavy';
 
@@ -210,6 +210,14 @@ export interface TaskGraph {
   git_commit?: { branch: string; commit: string | null };
   merged_branches?: string[];
   fix_for?: { task_id: string; node_id: string };
+  /** M4 滚动规划 */
+  rolling?: boolean;
+  stage?: number;
+  stage_count?: number;
+  stage_goal?: string;
+  checklist?: { id: string; requirement: string; status?: string; evidence?: string }[];
+  /** 永续开发（2026-09-15）：infra 类自动重排计数 */
+  infra_retries?: number;
 }
 
 export interface QualitySummary {

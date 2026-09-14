@@ -57,7 +57,8 @@ function post<T>(url: string, payload?: unknown): Promise<T> {
 
 export type TaskStatus =
   | 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'success'
-  | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval' | 'waiting_clarify';
+  | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval' | 'waiting_clarify'
+  | 'interrupted' | 'finalizing';
 
 export interface TaskNode {
   id: string;

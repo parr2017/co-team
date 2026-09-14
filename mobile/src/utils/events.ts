@@ -218,6 +218,8 @@ export const STATUS_TEXT: Record<string, string> = {
   clarifying: '澄清中',
   running: '执行中',
   retrying: '重试中',
+  interrupted: '已中断·自动续跑',
+  finalizing: '收尾验收中',
   waiting_approval: '待审批',
   waiting_clarify: '待澄清',
   completed: '已完成',
@@ -238,7 +240,7 @@ export function taskStage(status: string): { label: string; step: number } {
   if (['pending', 'queued'].includes(status)) return { label: '排队等待', step: 0 };
   if (['clarifying'].includes(status)) return { label: '需求澄清', step: 0 };
   if (['planned'].includes(status)) return { label: '计划待审核', step: 1 };
-  if (['running', 'retrying'].includes(status)) return { label: '节点执行', step: 2 };
+  if (['running', 'retrying', 'interrupted', 'finalizing'].includes(status)) return { label: status === 'finalizing' ? '收尾验收' : '节点执行', step: 2 };
   if (['waiting_approval'].includes(status)) return { label: '等待审批', step: 2 };
   if (['waiting_clarify'].includes(status)) return { label: '实施前澄清', step: 2 };
   if (['completed', 'success'].includes(status)) return { label: '已完成', step: 3 };

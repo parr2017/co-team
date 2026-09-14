@@ -20,6 +20,25 @@ export interface EventItem {
   data: Record<string, any>;
 }
 
+/** 2.2 节点心跳卡数据源：运行中节点的实时执行态（事件流聚合，刷新后靠节点状态回填起步） */
+export interface NodeRuntime {
+  taskId: string;
+  nodeId: string;
+  agent: string;
+  name?: string;
+  model?: string;
+  startedAt?: string;
+  round?: number;
+  tokens?: number;
+  retryCount?: number;
+  backoffSec?: number;
+  failoverFrom?: string;
+  deltaText?: string;
+  /** 最近一次 delta 事件时间戳（前端 3s 内视为"正在生成"） */
+  deltaAt?: number;
+  finishedAt?: number;
+}
+
 export interface TaskListFilter {
   scope?: 'external';
   projectId?: string;
@@ -37,6 +56,8 @@ const taskPage = ref(1);
 const taskPageSize = ref(20);
 /** current task-creation stage (assessing/planning) for submit-button feedback (#P1-3) */
 const createStage = ref('');
+/** key: `${taskId}:${nodeId}` — 2.2 心跳卡 + 2.1 生成直播的实时执行态 */
+const nodeRuntime = reactive<Record<string, NodeRuntime>>({});
 const eventListeners = new Set<(msg: EventEnvelope) => void>();
 let ws: WebSocket | null = null;
 let started = false;
@@ -62,6 +83,34 @@ function ensureAgent(name: string): AgentLiveState {
   }
   return agents[name];
 }
+
+function runtimeKey(taskId: string, nodeId: string): string {
+  return `${taskId}:${nodeId}`;
+}
+
+function ensureRuntime(taskId: string, nodeId: string, agent?: string): NodeRuntime {
+  const k = runtimeKey(taskId, nodeId);
+  if (!nodeRuntime[k]) {
+    nodeRuntime[k] = { taskId, nodeId, agent: agent || '' };
+  } else if (agent && !nodeRuntime[k].agent) {
+    nodeRuntime[k].agent = agent;
+  }
+  return nodeRuntime[k];
+}
+
+/** 2.1/2.2：组件读取节点实时执行态（心跳卡/打字机） */
+export function getNodeRuntime(taskId: string, nodeId: string): NodeRuntime | null {
+  return nodeRuntime[runtimeKey(taskId, nodeId)] || null;
+}
+
+/** 2.1：任务内是否有节点正在生成（打字机指示器），且 delta 新鲜（3s 内） */
+export function liveDelta(taskId: string, nodeId: string): string | null {
+  const r = nodeRuntime[runtimeKey(taskId, nodeId)];
+  if (!r?.deltaText || !r.deltaAt) return null;
+  return Date.now() - r.deltaAt < 3000 ? r.deltaText : null;
+}
+
+const RT = (p: Record<string, any>) => nodeRuntime[runtimeKey(String(p.task_id || ''), String(p.node_id || ''))];
 
 function handleEvent(msg: EventEnvelope) {
   const ev = msg.type || '';
@@ -98,6 +147,45 @@ function handleEvent(msg: EventEnvelope) {
     else if (ev === 'execute_waiting_approval') task.status = 'waiting_approval';
     else if (ev === 'task_needs_clarification') task.status = 'clarifying';
     else if (ev === 'task_clarified') task.status = 'planned';
+    // 永续开发（2026-09-15）：收尾阶段与自动重排事件驱动状态
+    else if (ev === 'task_finalizing') task.status = 'finalizing';
+  }
+
+  // 2.2 节点心跳卡：实时执行态聚合
+  if (p.task_id && p.node_id) {
+    const r = RT(p);
+    if (ev === 'node_start') {
+      const nr = ensureRuntime(String(p.task_id), String(p.node_id), p.agent as string);
+      nr.name = p.name as string;
+      nr.startedAt = new Date().toISOString();
+      nr.tokens = 0;
+      nr.retryCount = 0;
+      nr.backoffSec = undefined;
+      nr.failoverFrom = undefined;
+      nr.deltaText = undefined;
+      nr.finishedAt = undefined;
+    } else if (r && ev === 'agent_first_token') {
+      r.model = p.model as string;
+    } else if (r && ev === 'agent_round') {
+      r.model = p.model as string;
+      r.round = Number(p.round || r.round || 0);
+      r.tokens = (r.tokens || 0) + Number(p.tokens || 0);
+    } else if (r && ev === 'node_retry') {
+      r.retryCount = Number(p.attempt || (r.retryCount || 0) + 1);
+    } else if (r && ev === 'llm_backoff') {
+      r.backoffSec = Number(p.backoff_sec || 0);
+      r.model = p.model as string;
+    } else if (r && ev === 'model_failover') {
+      r.failoverFrom = String(p.model || '');
+      r.backoffSec = undefined;
+    } else if (r && ev === 'agent_delta') {
+      r.deltaText = String(p.text || '');
+      r.deltaAt = Date.now();
+      if (p.model) r.model = p.model as string;
+    } else if (r && ['node_complete', 'node_error', 'node_cancelled'].includes(ev)) {
+      r.finishedAt = Date.now();
+      r.deltaText = undefined;
+    }
   }
 
   // fine-grained agent life events: keep the "what is it doing right now" line fresh
@@ -220,6 +308,7 @@ async function loadTasks(page = 1, pageSize = 20, filter?: TaskListFilter) {
     for (const raw of d.tasks) {
       const t = raw as Record<string, any>;
       const taskId = String(t.task_id || t.id);
+      if (!taskId) continue; // 空 id 条目会让下游轮询打出 /api/tasks//asks 404 噪音
       const normalized = { ...t, id: taskId, task_id: taskId } as unknown as TaskGraph;
       tasks[taskId] = normalized;
     }
@@ -270,5 +359,5 @@ function ensureStarted() {
 /** Shared dashboard store — safe to call from any component; opens the WS only once. */
 export function useDashboard() {
   ensureStarted();
-  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, createStage, includeProjects, setTaskScope, loadTasks, loadAgents, loadJournals, onEvent, reconnectWs, clearEvents: () => { events.value = []; } };
+  return { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, createStage, includeProjects, setTaskScope, loadTasks, loadAgents, loadJournals, onEvent, reconnectWs, getNodeRuntime, liveDelta, clearEvents: () => { events.value = []; } };
 }

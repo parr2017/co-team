@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showDialog, showConfirmDialog, showToast } from 'vant';
 import { renderMd as mdShared } from '../utils/md';
@@ -17,7 +17,17 @@ import { copyText } from '../utils/clipboard';
 
 const route = useRoute();
 const router = useRouter();
-const { tasks, putTask, onTaskStatus } = useDashboard();
+const { tasks, putTask, onTaskStatus, liveDelta } = useDashboard();
+
+// 2.1 生成直播：每秒心跳刷新 delta 新鲜度（3s 窗口）
+const liveTick = ref(0);
+let liveTimer: ReturnType<typeof setInterval> | null = null;
+onMounted(() => { liveTimer = setInterval(() => { liveTick.value += 1; }, 1000); });
+onUnmounted(() => { if (liveTimer) clearInterval(liveTimer); });
+function liveText(n: TaskGraph['nodes'][number]): string | null {
+  void liveTick.value;
+  return liveDelta(taskId.value, n.id);
+}
 
 const taskId = computed(() => String(route.params.id));
 const task = computed<TaskGraph | null>(() => tasks.value[taskId.value] || null);
@@ -494,7 +504,7 @@ function fmtTime(ts: string) {
 }
 
 function nodeIcon(status: string): string {
-  return ({ completed: 'checked', failed: 'close', running: 'clock-o', retrying: 'replay', waiting_approval: 'edit', cancelled: 'cross' } as Record<string, string>)[status] || 'arrow';
+  return ({ completed: 'checked', failed: 'close', running: 'clock-o', retrying: 'replay', interrupted: 'replay', waiting_approval: 'edit', cancelled: 'cross' } as Record<string, string>)[status] || 'arrow';
 }
 </script>
 
@@ -661,6 +671,8 @@ function nodeIcon(status: string): string {
                     <span class="n-st" :class="n.status">{{ statusText(n.status) }}</span>
                     <span v-if="n.retry_count" class="n-retry">重试{{ n.retry_count }}</span>
                   </div>
+                  <!-- 2.1 生成直播：运行中节点的打字机预览（3s 新鲜窗口） -->
+                  <div v-if="['running', 'retrying'].includes(n.status) && liveText(n)" class="n-live mono">{{ liveText(n) }}</div>
                 </div>
                 <van-button
                   v-if="n.status === 'waiting_approval'"
@@ -1036,6 +1048,14 @@ function nodeIcon(status: string): string {
 .n-st.running, .n-st.retrying { color: var(--wx-orange); }
 .n-st.waiting_approval { color: var(--accent); }
 .n-retry { color: var(--wx-orange); }
+/* 2.1 生成直播打字机 */
+.n-live {
+  margin-top: 6px; padding: 6px 8px; font-size: 11px; line-height: 1.5;
+  color: var(--text-2); background: var(--panel-2);
+  border-left: 2px solid var(--accent); border-radius: 0 6px 6px 0;
+  white-space: pre-wrap; word-break: break-all; max-height: 56px; overflow: hidden;
+  animation: wx-pop-in 0.25s ease;
+}
 
 .n-detail { flex-basis: 100%; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 12px; animation: wx-pop-in 0.2s ease; }
 .n-obs { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); background: var(--panel-2); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; }

@@ -144,9 +144,11 @@ const rows = computed<Row[]>(() =>
       const done = t.nodes.filter((n) => n.status === 'completed').length;
       const failed = t.nodes.find((n) => n.status === 'failed');
       const cancelled = t.nodes.find((n) => n.status === 'cancelled');
+      const interrupted = t.nodes.find((n) => n.status === 'interrupted');
       const error = failed?.error
         || (failed ? `节点「${failed.name}」执行失败` : '')
-        || (cancelled ? `下游节点「${cancelled.name}」因上游失败被取消` : '');
+        || (cancelled ? `下游节点「${cancelled.name}」因上游失败被取消` : '')
+        || (interrupted ? `节点「${interrupted.name}」因服务重启中断，将自动续跑` : '');
       return {
         task_id: t.task_id,
         description: t.description || '',
@@ -169,8 +171,8 @@ function fmtTok(n: number): string {
   return n >= 1000 ? (Math.round(n / 100) / 10) + 'k' : String(n);
 }
 
-const canRestart = (s: string) => ['failed', 'completed', 'success', 'cancelled'].includes(s);
-const canCancel = (s: string) => ['running', 'retrying', 'queued', 'pending', 'waiting_approval', 'waiting_clarify', 'clarifying'].includes(s);
+const canRestart = (s: string) => ['failed', 'completed', 'success', 'cancelled', 'interrupted'].includes(s);
+const canCancel = (s: string) => ['running', 'retrying', 'queued', 'pending', 'waiting_approval', 'waiting_clarify', 'clarifying', 'interrupted', 'finalizing'].includes(s);
 
 async function onRestart(row: Row) {
   try {

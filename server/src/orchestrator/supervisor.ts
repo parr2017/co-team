@@ -42,6 +42,9 @@ export interface SupervisorOptions {
   minIntervalSec?: number;
   /** 可用 agent 名（insert_node 提案校验用） */
   availableAgents?: () => string[];
+  /** 2.4 中程里程碑通知（2026-09-15）：每节点完成即推 notify（飞书/webhook/事件流），
+   *  把长等待切成小步反馈；同任务 30s 节流防并行节点完成风暴。缺省关闭。 */
+  milestoneNotify?: boolean;
 }
 
 const SYSTEM_PROMPT = `你是任务监督者（主 Agent 的监督角色）。你收到一份任务状态摘要，任务是「用多个 agent 协作开发软件」的多节点 DAG。
@@ -101,6 +104,10 @@ export class Supervisor {
     const p = (env?.payload || {}) as Record<string, any>;
     const taskId = String(p.task_id || '');
     if (!taskId) return;
+    if (type === 'node_complete') {
+      if (this.opts.milestoneNotify) void this.milestone(taskId, p);
+      return;
+    }
     let reason = '';
     if (type === 'node_error') reason = `node_error:${p.node_id}`;
     else if (type === 'node_retry' && Number(p.attempt || 0) >= 2) reason = `retry_streak:${p.node_id}`;
@@ -109,6 +116,33 @@ export class Supervisor {
     else if (type === 'stage_gate_failed') reason = `stage_gate:${p.stage || ''}`;
     if (!reason) return;
     await this.evaluate(taskId, reason);
+  }
+
+  /** 2.4 节点级里程碑通知：不经 LLM，确定性推送（同任务 30s 节流防完成风暴）。 */
+  private lastMilestoneAt = new Map<string, number>();
+  private async milestone(taskId: string, p: Record<string, any>): Promise<void> {
+    const now = Date.now();
+    const last = this.lastMilestoneAt.get(taskId) || 0;
+    if (now - last < 30_000) return;
+    try {
+      const graph = await getTaskGraph(taskId);
+      if (!graph) return;
+      this.lastMilestoneAt.set(taskId, now);
+      const total = graph.nodes.filter((n) => n.agent !== 'orchestrator').length;
+      const completed = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').length;
+      const name = String(p.name || p.node_id || '');
+      const agent = String(p.agent || '');
+      notify('task_milestone', { task_id: taskId, node: name, agent, completed, total },
+        `[Co-Team] 任务 ${taskId} 节点完成 ${completed}/${total}：${agent} 「${name}」`);
+      await appendJournal(taskId, 'orchestrator', {
+        role: 'master', kind: 'round',
+        text: `📣 里程碑通知：${agent} 完成「${name}」（${completed}/${total} 节点）`,
+        ts: new Date().toISOString(), node_id: String(p.node_id || ''), node_name: name,
+        meta: { milestone: true },
+      }).catch(() => {});
+    } catch (e) {
+      this.logger.warn('milestone notify failed', { taskId, error: String(e).slice(0, 200) });
+    }
   }
 
   private async heartbeat(): Promise<void> {

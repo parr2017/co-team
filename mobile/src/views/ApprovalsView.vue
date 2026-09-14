@@ -36,7 +36,7 @@ const NEED_HUMAN_STATUSES = ['waiting_approval', 'clarifying', 'running', 'retry
 async function load() {
   loading.value = true;
   const out: ApprovalItem[] = [];
-  const graphs = Object.values(tasks.value).filter((t) => NEED_HUMAN_STATUSES.includes(t.status));
+  const graphs = Object.values(tasks.value).filter((t) => NEED_HUMAN_STATUSES.includes(t.status) && !!t.task_id);
   try {
     await Promise.all(
       graphs.map(async (t) => {

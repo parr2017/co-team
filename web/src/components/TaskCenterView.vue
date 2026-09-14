@@ -103,7 +103,8 @@ async function refreshStats() {
     const all = d.tasks || [];
     stats.value = {
       total: d.total,
-      running: all.filter((t) => t.status === 'running' || t.status === 'retrying').length,
+      // 永续开发（2026-09-15）：finalizing（收尾验收）与 interrupted（中断待续跑）都算在途
+      running: all.filter((t) => ['running', 'retrying', 'finalizing', 'interrupted'].includes(t.status)).length,
       queued: all.filter((t) => t.status === 'queued').length,
       waiting: all.filter((t) => t.status === 'waiting_approval' || (t.nodes || []).some((n: any) => n.status === 'waiting_approval')).length,
       pending: all.filter((t) => t.status === 'pending' || t.status === 'planned').length,
@@ -120,7 +121,7 @@ const keyword = ref('');
 
 const chips = computed(() => [
   { key: 'all', label: '全部', count: stats.value.total, value: '' },
-  { key: 'running', label: '执行中', count: stats.value.running, value: 'running,retrying' },
+  { key: 'running', label: '执行中', count: stats.value.running, value: 'running,retrying,finalizing,interrupted' },
   { key: 'queued', label: '排队中', count: stats.value.queued, value: 'queued' },
   { key: 'waiting', label: '待审批', count: stats.value.waiting, value: 'waiting_approval' },
   { key: 'pending', label: '待执行', count: stats.value.pending, value: 'pending,planned' },

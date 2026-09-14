@@ -84,8 +84,29 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
       return { text: `🐌 ${p.model} 慢成功（${p.elapsed_sec}s），已降权`, level: 'info', category: 'agent', noisy: false };
     case 'model_failover':
       return { text: `↯ ${p.model} 失败，切换下一候选`, level: 'warn', category: 'agent', noisy: false };
+    case 'llm_overflow':
+      return p.action === 'fold_retry'
+        ? { text: `📦 ${p.model || '模型'} 上下文超限（413），折叠历史瘦身重试`, level: 'warn', category: 'agent', noisy: false }
+        : { text: `📦 上下文超限仍装不下，剩余链改按更大窗口模型优先`, level: 'warn', category: 'agent', noisy: false };
+    case 'agent_first_token':
+      return { text: `${p.agent || ''} 首字返回 · ${p.model || '?'}`, level: 'info', category: 'agent', noisy: true };
+    case 'agent_delta':
+      return { text: `${p.agent || ''} 正在生成… ${CLIP(p.text, 60)}`, level: 'info', category: 'agent', noisy: true };
     case 'stage_started':
       return { text: `📋 第 ${p.stage} 阶段启动：${CLIP(p.stage_goal || '', 60)}`, level: 'accent', category: 'task', noisy: true };
+    case 'stage_planning':
+      return { text: `🧭 正在规划第 ${p.next_stage ?? '?'} 阶段（replanner 裁定中）…`, level: 'info', category: 'task', noisy: true };
+    case 'task_finalizing': {
+      const stageText: Record<string, string> = { merge: '合并沙箱产物到工作区', acceptance: '合并后全量验收', final_gate: '最终验收清单机审', git: 'git 提交' };
+      return { text: `🧹 任务收尾：${stageText[String(p.stage || '')] || CLIP(p.stage, 20)}`, level: 'info', category: 'task', noisy: true };
+    }
+    case 'queue_auto_requeue':
+      return { text: `⚡ 模型池不稳自动重排（第 ${p.attempt}/${p.max} 次，${p.delay_sec}s 后）——内容无问题，无需人工`, level: 'accent', category: 'task', noisy: false };
+    case 'task_interrupted':
+      return { text: p.auto_resume ? '服务重启中断，将自动续跑（已完成节点成果保留）' : '任务因服务重启中断', level: 'warn', category: 'task', noisy: false };
+    case 'task_milestone': {
+      return { text: `📣 节点完成 ${p.completed ?? '?'}/${p.total ?? '?'}：${p.agent || ''} 「${CLIP(p.node, 30)}」`, level: 'success', category: 'task', noisy: true };
+    }
     case 'acceptance_report':
       return { text: `🏁 最终验收：红灯 ${p.failed}、待人工 ${p.open}`, level: p.failed > 0 ? 'warn' : 'accent', category: 'task', noisy: true };
     case 'supervisor_evaluated':
@@ -211,6 +232,8 @@ export const STATUS_TEXT: Record<string, string> = {
   clarifying: '澄清中',
   running: '执行中',
   retrying: '重试中',
+  interrupted: '已中断·自动续跑',
+  finalizing: '收尾验收中',
   waiting_approval: '待审批',
   waiting_clarify: '待澄清',
   completed: '已完成',
@@ -231,6 +254,7 @@ export const STATUS_TAG_TYPE: Record<string, string> = {
   completed: 'success', success: 'success', done: 'success',
   failed: 'danger', error: 'danger',
   running: 'warning', retrying: 'warning', clarifying: 'warning', waiting_clarify: 'warning',
+  interrupted: 'warning', finalizing: 'warning',
   waiting_approval: 'primary', planned: 'primary',
   pending: 'info', queued: 'info', cancelled: 'info', idle: 'info',
 };
@@ -244,7 +268,7 @@ export function taskStage(status: string): { label: string; step: number } {
   if (['pending', 'queued'].includes(status)) return { label: '排队等待', step: 0 };
   if (['clarifying'].includes(status)) return { label: '需求澄清', step: 0 };
   if (['planned'].includes(status)) return { label: '计划待审核', step: 1 };
-  if (['running', 'retrying'].includes(status)) return { label: '节点执行', step: 2 };
+  if (['running', 'retrying', 'interrupted', 'finalizing'].includes(status)) return { label: status === 'finalizing' ? '收尾验收' : '节点执行', step: 2 };
   if (['waiting_approval'].includes(status)) return { label: '等待审批', step: 2 };
   if (['waiting_clarify'].includes(status)) return { label: '实施前澄清', step: 2 };
   if (['completed', 'success'].includes(status)) return { label: '已完成', step: 3 };

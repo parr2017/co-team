@@ -2893,6 +2893,25 @@ export class Orchestrator {
       let parsed: Record<string, any> | null = null;
       let content = '';
       let parseErrorLogged = false;
+      // 2.1 生成直播（2026-09-15）：token 级 delta 节流广播——此前一轮 LLM 生成期间
+      // （几分钟级）作战室完全静默，是"扔下去只能等"的最大来源。onDelta 是旁路读取，
+      // 不进消息数组、不影响前缀缓存。1s 节流 ≈ 每分钟 ≤60 条护栏。
+      let deltaBuf = '';
+      let lastDeltaAt = 0;
+      let firstDeltaSent = false;
+      const onDelta = (delta: string) => {
+        if (!firstDeltaSent) {
+          firstDeltaSent = true;
+          void emitProgress('agent_first_token', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name });
+        }
+        deltaBuf += delta;
+        const now = Date.now();
+        if (now - lastDeltaAt >= 1000) {
+          lastDeltaAt = now;
+          const text = deltaBuf.slice(-200);
+          void emitProgress('agent_delta', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, text });
+        }
+      };
       // improvement #4: SSOT docs this agent updated via write_doc during this dispatch
       const docUpdates: { type: string; version: number }[] = [];
       // 缓存优先裁剪：断崖压缩每尝试至多一次（触发后重新 append-only，不逐轮重写历史）
@@ -2916,7 +2935,7 @@ export class Orchestrator {
           task_id: taskId, node_id: node.id, agent: plugin.name,
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,
         });
-        const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
+        const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, undefined, onDelta);
         this.pool!.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
         record.tokens += resp.promptTokens + resp.completionTokens;
@@ -3038,7 +3057,7 @@ export class Orchestrator {
           messages.push({ role: 'assistant', content });
           messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
           // Do one more round to get final output
-          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0);
+          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, undefined, onDelta);
           this.pool!.recordUsage(entry.name, finalResp.promptTokens, finalResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + finalResp.promptTokens + finalResp.completionTokens);
           record.tokens += finalResp.promptTokens + finalResp.completionTokens;

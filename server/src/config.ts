@@ -29,6 +29,8 @@ export interface OrchestrationConfig {
     enabled?: boolean;
     heartbeat_sec?: number;
     min_interval_sec?: number;
+    /** 2.4 中程里程碑通知：每节点完成即推 notify（缺省关闭） */
+    milestone_notify?: boolean;
   };
   /** M4 滚动规划：rolling（缺省）| static */
   planning_mode?: 'rolling' | 'static';
@@ -188,6 +190,7 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
         enabled: raw.orchestrator?.supervisor?.enabled ?? true,
         heartbeat_sec: raw.orchestrator?.supervisor?.heartbeat_sec ?? 600,
         min_interval_sec: raw.orchestrator?.supervisor?.min_interval_sec ?? 120,
+        milestone_notify: raw.orchestrator?.supervisor?.milestone_notify ?? false,
       },
       // M4 滚动规划
       planning_mode: ['rolling', 'static'].includes(raw.orchestrator?.planning_mode) ? raw.orchestrator.planning_mode : 'rolling',

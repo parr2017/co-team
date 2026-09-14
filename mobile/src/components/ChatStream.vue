@@ -284,7 +284,7 @@ onUnmounted(() => unsubFns.forEach((u) => u()));
                 :key="i"
                 :src="u"
                 class="img-cell"
-                @click="showImagePreview({ images: (item.entry.meta?.images || []).map((g: any) => g.url), startPosition: i })"
+                @click="showImagePreview({ images: (item.entry.meta?.images || []).map((g: any) => g.url), startPosition: Number(i) })"
               />
             </div>
             <div class="b-text md" v-html="md(item.entry.text)"></div>
