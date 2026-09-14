@@ -71,6 +71,11 @@ export function getLlmPolicy(): LlmPolicy {
 
 const clientCache = new Map<string, OpenAI>();
 
+/** 流洪水分型阈值：输出预算换算的字符上限（×40 为含 CJK 的极宽裕系数，下限 1M 字符） */
+export function streamFloodChars(maxTokens: number): number {
+  return Math.max(1_000_000, maxTokens * 40);
+}
+
 /** Streaming keeps bytes flowing so relay gateways (e.g. tokenrhythm's ALB) don't cut
  *  idle non-streaming connections at ~60s while a reasoning model thinks. Disable with
  *  COTEAM_LLM_STREAM=0 for upstreams that don't support SSE. */
@@ -183,6 +188,13 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
         content += choice.delta.content;
         if (onDelta) {
           try { onDelta(choice.delta.content); } catch { /* delta consumers never break the stream */ }
+        }
+        // 流洪水分型（2026-09-15，两次 4GB OOM 复盘）：上游故障时可能无限灌垃圾 chunk，
+        // "慢但活着"的 idle watchdog 拦不住它（chunk 一直在来）——content 无上限累积直到
+        // 堆爆炸。合法回复永远到不了 max_tokens×40 字符（含 CJK 的宽裕换算），超线即判
+        // 确定性死亡（与 connection_died 同族），由上层换模兜底。
+        if (content.length > streamFloodChars(maxTokens)) {
+          throw new Error(`LLM 调用失败：stream_flooded(流式响应超过 ${Math.round(streamFloodChars(maxTokens) / 1e6)}M 字符仍在增长——上游流故障，不是慢生成)`);
         }
       }
       if (choice?.finish_reason) finishReason = choice.finish_reason;

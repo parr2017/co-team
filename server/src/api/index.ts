@@ -553,9 +553,29 @@ export function createApi(ctx: ApiContext): Hono {
     const lines = Math.min(800, Math.max(1, Number(c.req.query('lines') || 120)));
     const file = path.join(PROJECT_ROOT, 'logs', `co-team-${date}.log`);
     if (!fs.existsSync(file)) return c.json({ date, lines: [] });
-    const content = fs.readFileSync(file, 'utf-8');
-    const all = content.split('\n');
-    return c.json({ date, total: all.length, lines: all.slice(-lines) });
+    // 2026-09-15 OOM 复盘：此前 readFileSync 全量读入——2.7GB 的 09-14 EPIPE 风暴日志
+    // 撞 V8 字符串上限（500），且被日志查看器 5s 轮询反复分配巨型缓冲，最终把进程堆打到
+    // 4GB OOM 杀死。日志查看只需要尾部：定长窗口读，永不随文件大小膨胀。
+    const TAIL_BYTES = 512 * 1024;
+    const stat = fs.statSync(file);
+    const start = Math.max(0, stat.size - TAIL_BYTES);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const len = Math.min(TAIL_BYTES, stat.size);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, start);
+      // 丢弃首个可能被截断的半行（tail 窗口切在行中间时）
+      let text = buf.toString('utf-8');
+      if (start > 0) {
+        const nl = text.indexOf('\n');
+        if (nl >= 0) text = text.slice(nl + 1);
+      }
+      const all = text.split('\n').filter((l) => l.length > 0);
+      const truncated = start > 0;
+      return c.json({ date, total: truncated ? null : all.length, truncated, lines: all.slice(-lines) });
+    } finally {
+      fs.closeSync(fd);
+    }
   });
 
   app.get('/api/tasks/:taskId/asks', async (c) => {

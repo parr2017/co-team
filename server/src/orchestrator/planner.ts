@@ -228,6 +228,9 @@ async function llmPlan(request: string, pool: ModelPool, router: Router, model: 
     const graph = extractJson(stripCodeFence(resp.content));
     return normalizePlan(graph, available, skillMap);
   } catch (e) {
+    // 2026-09-15 流洪水 OOM 复盘：规划模型故障（如 stream_flooded）必须记健康分，
+    // 否则 selectModel 加权随机反复抽中同一坏模型，每次重建 4GB 垃圾流
+    try { pool.markFailure(model); } catch { /* pool 缺省路径 */ }
     if (pinnedModel) {
       // pinned main-agent model failed: degradation is allowed but must be traceable
       const { getLogger } = await import('../logger');
@@ -340,8 +343,9 @@ export async function generateStagePlan(request: string, pool: ModelPool | null,
       summary: String(parsed.summary || ''),
     };
   } catch (e) {
+    try { pool.markFailure(model); } catch { /* pool 缺省路径 */ }
     const { getLogger } = await import('../logger');
-    getLogger().warn('stage plan failed', { stage: opts.stage, error: String(e).slice(0, 200) });
+    getLogger().warn('stage plan failed', { stage: opts.stage, model: model.name, error: String(e).slice(0, 200) });
     return null;
   }
 }
