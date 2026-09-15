@@ -6,6 +6,7 @@ import {
   deleteKnowledge,
   getKnowledge,
   listKnowledge,
+  recordKnowledgeHits,
   searchKnowledge,
   updateKnowledge,
   writeKnowledge,
@@ -72,5 +73,46 @@ describe('knowledge base (improvement 3)', () => {
     const root = kbRoot();
     expect(() => writeKnowledge({ title: '', content: 'x' }, root)).toThrow();
     expect(() => writeKnowledge({ title: 't', content: '  ' }, root)).toThrow();
+  });
+});
+
+describe('转义翻倍循环回归（2026-09-15 193MB 怪兽复盘）', () => {
+  it('write → 多次 recordKnowledgeHits → 标题稳定不翻倍、文件体积有界', () => {
+    const root = kbRoot();
+    const { id } = writeKnowledge(
+      { title: '任务复盘 t1：UI 重构\前端分层', content: '教训正文', category: 'project', project_id: 'p1' },
+      root
+    );
+    const file = path.join(root, 'projects', 'p1', `${id}.md`);
+    const size0 = fs.statSync(file).size;
+    for (let i = 0; i < 5; i++) {
+      const n = recordKnowledgeHits([id], root);
+      expect(n).toBe(1);
+    }
+    const entry = getKnowledge(id, root)!;
+    expect(entry.title).toBe('任务复盘 t1：UI 重构\前端分层');
+    const size5 = fs.statSync(file).size;
+    expect(size5).toBe(size0); // 体积恒定——不再指数翻倍
+    expect(size5).toBeLessThan(100_000);
+  });
+
+  it('超尺寸知识文件被 readAll 体积门跳过（损坏条目不进管线）', () => {
+    const root = kbRoot();
+    writeKnowledge({ title: 'healthy entry', content: 'ok', category: 'general-tech' }, root);
+    // 伪造一个 3MB 的损坏条目（超过 2MB 体积门）
+    const dir = path.join(root, 'general-tech');
+    fs.writeFileSync(path.join(dir, '99999999-monster-md.md'), '---\nid: monster\ntitle: "monster"\ncategory: general-tech\n---\n\n' + 'x'.repeat(3 * 1024 * 1024), 'utf-8');
+    const listed = listKnowledge({}, root);
+    expect(listed.map((e) => e.title)).toContain('healthy entry');
+    expect(listed.map((e) => e.title)).not.toContain('monster');
+  });
+
+  it('writeKnowledge 净化：失控反斜杠坍缩、标题封顶 200 字', () => {
+    const root = kbRoot();
+    const runAway = '标题' + String.fromCharCode(92).repeat(5000);
+    const { id } = writeKnowledge({ title: runAway, content: 'c', category: 'general-tech' }, root);
+    const entry = getKnowledge(id, root)!;
+    expect(entry.title.length).toBeLessThanOrEqual(200);
+    expect(entry.title).not.toContain('\\\\');
   });
 });

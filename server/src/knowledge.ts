@@ -120,7 +120,11 @@ function parseFrontmatter(block: string): Record<string, any> {
       const inner = value.slice(1, -1).trim();
       out[key] = inner ? inner.match(/(?:[^,\[\]"']+|"[^"]*"|'[^']*')+/g)!.map((s) => s.trim().replace(/^["']|["']$/g, '')) : [];
     } else if (value.startsWith('"') && value.endsWith('"')) {
-      out[key] = value.slice(1, -1);
+      // 2026-09-15 转义翻倍循环修复：写入用 JSON.stringify（\→\），读取必须对称反转义——
+      // 此前只 slice 去引号，recordKnowledgeHits 每次命中重写都让标题里的反斜杠翻倍，
+      // 指数膨胀出 193MB 的知识条目，readAll 全量读取 + 逐字分词直接 OOM
+      try { out[key] = JSON.parse(value); }
+      catch { out[key] = value.slice(1, -1); }
     } else if (value.startsWith("'") && value.endsWith("'")) {
       out[key] = value.slice(1, -1);
     } else {
@@ -131,6 +135,18 @@ function parseFrontmatter(block: string): Record<string, any> {
 }
 
 // ---------- core operations (file-based, synchronous) ----------
+
+/** 知识条目净化（2026-09-15 193MB 怪兽复盘）：反斜杠跑马（转义翻倍循环的产物）一律坍缩，标题/内容封顶 */
+function sanitizeKnowledgeTitle(raw: string): string {
+  const collapsed = raw.replace(/\\{2,}/g, '\\').replace(/\s+/g, ' ').trim();
+  return collapsed.slice(0, 200);
+}
+function sanitizeKnowledgeContent(raw: string): string {
+  return raw.replace(/\\{8,}/g, '').trim().slice(0, 200_000);
+}
+
+/** 单条知识文件上限：超过即视为损坏（转义翻倍/写穿），跳过并告警——绝不进读取管线 */
+const MAX_KNOWLEDGE_FILE_BYTES = 2 * 1024 * 1024;
 
 function readAll(root?: string): KnowledgeEntry[] {
   const base = rootDir(root);
@@ -145,6 +161,12 @@ function readAll(root?: string): KnowledgeEntry[] {
       }
       if (!entry.name.endsWith('.md')) continue;
       try {
+        // 体积门：超大知识文件 = 转义翻倍/写穿损坏，绝不读入（193MB 怪兽曾把每轮
+        // relevantKnowledge 变成 4GB 瞬时分配的直接来源）
+        if (fs.statSync(full).size > MAX_KNOWLEDGE_FILE_BYTES) {
+          try { require('../logger').getLogger().warn('Oversized knowledge entry skipped (corrupted?)', { file: full }); } catch { /* test env */ }
+          continue;
+        }
         const parsed = markdownToEntry(entry.name, fs.readFileSync(full, 'utf-8'));
         if (parsed) entries.push(parsed);
       } catch {
@@ -164,7 +186,7 @@ function matchQuery(entry: KnowledgeEntry, query: KnowledgeQuery): boolean {
 
 /** Write a knowledge entry; deduplicates by title within the same category+project (updates in place). */
 export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id: string; updated: boolean } {
-  const title = (input.title || '').trim();
+  const title = sanitizeKnowledgeTitle(input.title || '');
   if (!title) throw new Error('knowledge title is required');
   if (!input.content || !input.content.trim()) throw new Error('knowledge content is required');
   const category: KnowledgeCategory = input.category === 'project' ? 'project' : 'general-tech';
@@ -176,7 +198,7 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
     (e) => e.title === title && e.category === category && (e.project_id ?? undefined) === (input.project_id ?? undefined)
   );
   if (existing) {
-    const updated: KnowledgeEntry = { ...existing, content: input.content.trim(), tags: input.tags ?? existing.tags, updated_at: now };
+    const updated: KnowledgeEntry = { ...existing, title, content: sanitizeKnowledgeContent(input.content), tags: input.tags ?? existing.tags, updated_at: now };
     fs.writeFileSync(path.join(categoryDir(existing.category, existing.project_id, root), `${existing.id}.md`), entryToMarkdown(updated), 'utf-8');
     return { id: existing.id, updated: true };
   }
@@ -192,7 +214,7 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
     source: input.source || 'system',
     created_at: now,
     updated_at: now,
-    content: input.content.trim(),
+    content: sanitizeKnowledgeContent(input.content),
   };
   fs.writeFileSync(path.join(dir, `${id}.md`), entryToMarkdown(entry), 'utf-8');
   return { id, updated: false };

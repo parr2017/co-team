@@ -103,6 +103,35 @@ async function main(): Promise<void> {
   });
 
   logger.info('Starting co-team...');
+
+  // 内存看门狗（2026-09-15 OOM 四连复盘）：1s 高频采样；>250MB 立即 heap snapshot
+  // （增长速度 ~130MB/s 时 10s 采样太慢，快照永远追不上 OOM）；诊断行走 appendSync
+  // 旁路文件——stream.write 是异步缓冲的，OOM 崩溃会吞掉缓冲里未落盘的最后几行
+  let heapSnapTaken = false;
+  const diagSync = (line: string) => {
+    try { fs.appendFileSync(path.join(PROJECT_ROOT, 'logs', 'mem-diag.log'), `${new Date().toISOString()} ${line}
+`); } catch { /* ignore */ }
+  };
+  const memWatch = setInterval(() => {
+    const m = process.memoryUsage();
+    const probes = (globalThis as any).__coteamProbes || {};
+    if (m.heapUsed > 250 * 1e6 && !heapSnapTaken) {
+      heapSnapTaken = true;
+      const snapPath = path.join(PROJECT_ROOT, 'logs', `heapsnapshot-${Date.now()}.heapsnapshot`);
+      diagSync(`HEAP>250MB (${Math.round(m.heapUsed / 1e6)}MB) — snapshot → ${snapPath} | probes=${JSON.stringify(probes)}`);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const v8 = require('node:v8') as typeof import('node:v8');
+        v8.writeHeapSnapshot(snapPath);
+        diagSync(`snapshot written: ${snapPath}`);
+      } catch (e) {
+        diagSync(`snapshot FAILED: ${String(e).slice(0, 200)}`);
+      }
+    } else if (m.heapUsed > 120 * 1e6) {
+      diagSync(`heap=${Math.round(m.heapUsed / 1e6)}MB rss=${Math.round(m.rss / 1e6)}MB probes=${JSON.stringify(probes)}`);
+    }
+  }, 1_000);
+  memWatch.unref?.();
   
   const config = loadConfig(process.env.COTEAM_ROOT || PROJECT_ROOT);
   logger.info('Configuration loaded', { 

@@ -220,10 +220,15 @@ async function llmPlan(request: string, pool: ModelPool, router: Router, model: 
   );
 
   try {
+    const plannerUserMsg = buildPlanMessages(request, available, agentDesc, memory, previousPlan, feedbacks, level, knowledge);
+    const { getLogger } = await import('../logger');
+    getLogger().info('Planner dispatch', { model: model.name, prompt_chars: plannerUserMsg.length, pinned: !!pinnedModel });
+    (globalThis as any).__coteamProbes = { ...(globalThis as any).__coteamProbes, plannerDispatch: { model: model.name, prompt_chars: plannerUserMsg.length, at: Date.now() } };
     const resp = await chat(model, [
       { role: 'system', content: 'You are a task planner. Use ONLY the given agent names. Output valid JSON only.' },
-      { role: 'user', content: buildPlanMessages(request, available, agentDesc, memory, previousPlan, feedbacks, level, knowledge) },
+      { role: 'user', content: plannerUserMsg },
     ]);
+    getLogger().info('Planner response', { model: model.name, content_chars: resp.content.length, elapsed_ms: resp.elapsedMs, completion_tokens: resp.completionTokens });
     pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
     const graph = extractJson(stripCodeFence(resp.content));
     return normalizePlan(graph, available, skillMap);
@@ -307,10 +312,14 @@ export async function generateStagePlan(request: string, pool: ModelPool | null,
   ].join('\n');
 
   try {
+    const { getLogger } = await import('../logger');
+    getLogger().info('Planner dispatch', { model: model.name, prompt_chars: content.length, stage: opts.stage });
+    (globalThis as any).__coteamProbes = { ...(globalThis as any).__coteamProbes, plannerDispatch: { model: model.name, prompt_chars: content.length, stage: opts.stage, at: Date.now() } };
     const resp = await chat(model, [
       { role: 'system', content: 'You are a rolling task planner. Use ONLY the given agent names. Output valid JSON only.' },
       { role: 'user', content },
     ]);
+    getLogger().info('Planner response', { model: model.name, content_chars: resp.content.length, elapsed_ms: resp.elapsedMs, completion_tokens: resp.completionTokens });
     pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
     const parsed = extractJson(stripCodeFence(resp.content));
     if (!parsed) return null;

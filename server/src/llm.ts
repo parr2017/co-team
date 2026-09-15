@@ -76,6 +76,41 @@ export function streamFloodChars(maxTokens: number): number {
   return Math.max(1_000_000, maxTokens * 40);
 }
 
+/** 字节级流护栏阈值：响应体原始字节总量上限（128MB——任何合法生成的百倍以上） */
+const RAW_BODY_CAP_BYTES = 128 * 1024 * 1024;
+
+/**
+ * 字节级流护栏（2026-09-15 四连 OOM 复盘）：stream_flooded 只数 delta.content，
+ * 但洪水可以藏在解析层看不见的地方——reasoning_content 疯狂推理、畸形 SSE 帧让
+ * SDK 行缓冲无限囤积（一个 chunk 都不吐，idle watchdog 和 content 守卫全瞎）。
+ * 在 fetch 层数原始字节，超限即掐断并抛 raw_body_flooded，上层换模兜底。
+ */
+async function byteCappedFetch(input: any, init?: any): Promise<Response> {
+  const upstream = new AbortController();
+  const outer: AbortSignal | undefined = init?.signal;
+  const onAbort = () => upstream.abort(outer?.reason ?? new Error('LLM 调用被中止'));
+  if (outer) {
+    if (outer.aborted) onAbort();
+    else outer.addEventListener('abort', onAbort, { once: true });
+  }
+  const res = await fetch(input, { ...init, signal: upstream.signal });
+  if (!res.body) return res;
+  let bytes = 0;
+  const TS = (globalThis as any).TransformStream;
+  const body = res.body.pipeThrough(new TS({
+    transform(chunk: any, ctrl: any) {
+      bytes += chunk?.byteLength ?? chunk?.length ?? 0;
+      if (bytes > RAW_BODY_CAP_BYTES) {
+        upstream.abort(new Error('raw_body_flooded'));
+        ctrl.error(new Error(`LLM 调用失败：raw_body_flooded(响应体超过 ${Math.round(RAW_BODY_CAP_BYTES / 1e6)}MB 仍在增长——上游流故障，不是慢生成)`));
+        return;
+      }
+      ctrl.enqueue(chunk);
+    },
+  }));
+  return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+}
+
 /** Streaming keeps bytes flowing so relay gateways (e.g. tokenrhythm's ALB) don't cut
  *  idle non-streaming connections at ~60s while a reasoning model thinks. Disable with
  *  COTEAM_LLM_STREAM=0 for upstreams that don't support SSE. */
@@ -90,7 +125,7 @@ function getClient(entry: ModelEntry): OpenAI {
     // timeout = 24h 哨兵值：SDK 的请求级计时器正是"时长=死刑"的旧语义，全部杀伐
     // 改由我们的 watchdog（idle/cap/connection）接管。注意 SDK 对 timeout: 0 的
     // 处理是"立即超时"而非"禁用"（llmTimeout 实测），所以用超大值等效禁用。
-    client = new OpenAI({ apiKey: entry.api_key, baseURL: entry.base_url.replace(/\/+$/, ''), timeout: 86_400_000, maxRetries: 0 });
+    client = new OpenAI({ apiKey: entry.api_key, baseURL: entry.base_url.replace(/\/+$/, ''), timeout: 86_400_000, maxRetries: 0, fetch: byteCappedFetch as any });
     clientCache.set(key, client);
   }
   return client;
@@ -164,6 +199,7 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
   let cachedTokens: number | undefined;
   let firstTokenMs: number | undefined;
   try {
+    (globalThis as any).__coteamProbes = { ...(globalThis as any).__coteamProbes, chatStart: { model: entry.name, max_tokens: maxTokens, at: Date.now() } };
     const stream = await client.chat.completions.create(
       {
         model: entry.name,
