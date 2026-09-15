@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
+import { simpleGit } from 'simple-git';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 
 /** Command execution levels (feature: 命令执行分级), from most to least restrictive. */
@@ -58,7 +59,7 @@ export function canExecute(policy: PermissionPolicy, command: string): boolean {
   return policy.whitelistCommands.includes(bin);
 }
 
-const IGNORE = new Set(['.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'logs', '.history']);
+const IGNORE = new Set(['.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'logs', '.history', '.coteam']);
 /** Runtime artifacts, never deliverables: caches and databases carry execution state
  *  that breaks repeat runs when committed (tests then hit their own leftover rows). */
 const IGNORE_EXT = new Set(['.pyc', '.pyo', '.db', '.sqlite', '.sqlite3']);
@@ -69,11 +70,95 @@ export function isIgnoredRelPath(rel: string): boolean {
   return IGNORE_EXT.has(path.extname(norm).toLowerCase());
 }
 
-export function createSandbox(workspace: string): string {
+// ---------- worktree 沙箱（o3xmkraj 复盘） ----------
+// %TEMP% 全量拷贝绑定服务进程生命周期：服务重启 = 沙箱作废 = 中间态丢失（实测重启
+// 4 次绞断恢复链）。git 仓库改用项目目录内 worktree：重启安全、产物 git 原生可审、
+// 分支合并/部分抢救语义全部保留（ensureBase/createNodeBranch/syncToWorkspace 不变）。
+
+/** 任务 worktree 根：<workspace>/.coteam/worktrees/<taskId>（目录监狱天然覆盖） */
+export function worktreeRoot(workspace: string): string {
+  return path.join(path.resolve(workspace), '.coteam', 'worktrees');
+}
+
+/** 创建任务沙箱：git 仓库 → worktree 模式；否则回退 %TEMP% 全量拷贝（legacy） */
+export async function createSandbox(workspace: string, taskId = ''): Promise<string> {
   if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
+  if (taskId && fs.existsSync(path.join(workspace, '.git'))) {
+    try {
+      return await createWorktreeSandbox(workspace, taskId);
+    } catch (e) {
+      console.error('[sandbox] worktree creation failed, falling back to temp copy:', String((e as Error)?.message || e));
+    }
+  }
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coteam-sbx-'));
   fs.cpSync(workspace, sandboxDir, { recursive: true, force: true, filter: (src) => !isIgnoredRelPath(path.relative(workspace, src)) });
   return sandboxDir;
+}
+
+async function createWorktreeSandbox(workspace: string, taskId: string): Promise<string> {
+  const safeId = taskId.replace(/[^a-zA-Z0-9_-]/g, '-') || 'task';
+  const wtPath = path.join(worktreeRoot(workspace), safeId);
+  const g = simpleGit({ baseDir: workspace });
+
+  // 先清扫本仓库内所有遗留任务 worktree（崩溃残留会占住 coteam/base 分支）
+  const wtList = await g.raw(['worktree', 'list', '--porcelain']).catch(() => '');
+  for (const line of wtList.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const p = line.slice('worktree '.length).trim();
+    if (path.resolve(p) !== path.resolve(workspace) && p.startsWith(worktreeRoot(workspace))) {
+      await g.raw(['worktree', 'remove', '--force', p]).catch(() => { fs.rmSync(p, { recursive: true, force: true }); });
+    }
+  }
+  await g.raw(['worktree', 'prune']).catch(() => {});
+  if (fs.existsSync(wtPath)) fs.rmSync(wtPath, { recursive: true, force: true });
+
+  const taskBranch = `coteam/task-${safeId}`;
+  const hasCommits = !!(await g.log({ maxCount: 1 }).catch(() => null))?.latest;
+  let baseSha = '';
+  if (!hasCommits) {
+    // 空仓库：直接在当前（未出生）分支打基线提交，不折腾 HEAD
+    await g.add(['-A']).catch(() => {});
+    const st = await g.status();
+    if (st.staged.length || st.files.length) await g.commit(`coteam: task baseline ${safeId}`);
+    baseSha = (await g.revparse(['HEAD']).catch(() => ''))?.trim() || '';
+  } else {
+    // 基线舞步：临时切任务分支提交当前工作树（含未提交改动），再回切用户 HEAD——
+    // 用户脏改动从"合并时被 mtime 覆盖"变为"进 git 基线可追溯"
+    const status = await g.status();
+    const orig = status.current;
+    const headSha = (await g.log({ maxCount: 1 })).latest!.hash;
+    const branches = await g.branchLocal();
+    if (branches.all.includes(taskBranch)) await g.branch(['-D', taskBranch]).catch(() => {});
+    await g.checkout(['-B', taskBranch]);
+    await g.add(['-A']).catch(() => {});
+    const st = await g.status();
+    if (st.staged.length || st.files.length) await g.commit(`coteam: task baseline ${safeId}`);
+    // 清掉上一任务的节点分支：产物已合并/抢救到工作区，残留会让 createNodeBranch
+    // 误 checkout 旧内容（worktree 模式下分支跨任务存活，与旧"删沙箱即删分支"不同）。
+    // 此刻 HEAD 已在任务分支上——即使用户 HEAD 停在节点分支（崩溃残留）也能删干净。
+    const blBefore = await g.branchLocal();
+    for (const b of blBefore.all) {
+      if (b === taskBranch || b === 'coteam/base' || b.startsWith('coteam/task-')) continue;
+      if (b.startsWith('coteam/')) await g.branch(['-D', b]).catch(() => {});
+    }
+    const blAfter = await g.branchLocal();
+    if (orig && orig !== taskBranch && blAfter.all.includes(orig)) await g.checkout(orig).catch(() => {});
+    else if (!orig && headSha) await g.checkout(headSha).catch(() => {});
+    baseSha = (await g.revparse([taskBranch]).catch(() => ''))?.trim() || '';
+  }
+  if (!baseSha) throw new Error('workspace repo has no baseline commit (empty directory?)');
+
+  // coteam/base 重指向本任务基线（车道单槽位串行，同仓库一次只有一个任务）
+  await g.raw(['branch', '-f', 'coteam/base', baseSha]);
+  await g.raw(['worktree', 'add', wtPath, 'coteam/base']);
+
+  // worktree 目录不进用户仓库版本管理
+  const gitignore = path.join(workspace, '.gitignore');
+  try {
+    const cur = fs.existsSync(gitignore) ? fs.readFileSync(gitignore, 'utf-8') : '';
+    if (!/^\.coteam\/?\s*$/m.test(cur)) fs.writeFileSync(gitignore, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + '.coteam/\n');
+  } catch { /* best effort */ }
+  return wtPath;
 }
 
 export function mergeChanges(sandbox: string, target: string): string[] {
@@ -99,8 +184,23 @@ export function mergeChanges(sandbox: string, target: string): string[] {
   return changes;
 }
 
-export function cleanupSandbox(sandbox: string): void {
-  if (sandbox && fs.existsSync(sandbox)) fs.rmSync(sandbox, { recursive: true, force: true });
+/** 清理沙箱：worktree（.git 是文件指针）走 git worktree remove，legacy 临时目录直接删 */
+export async function cleanupSandbox(sandbox: string): Promise<void> {
+  if (!sandbox || !fs.existsSync(sandbox)) return;
+  const dotGit = path.join(sandbox, '.git');
+  let isWorktree = false;
+  try { isWorktree = fs.existsSync(dotGit) && fs.statSync(dotGit).isFile(); } catch { /* ignore */ }
+  if (isWorktree) {
+    try {
+      await simpleGit({ baseDir: sandbox }).raw(['worktree', 'remove', '--force', sandbox]);
+      return;
+    } catch {
+      // Windows EBUSY 等文件占用：直接删目录，worktree 元数据由下次任务的 prune 兜底
+      fs.rmSync(sandbox, { recursive: true, force: true });
+      return;
+    }
+  }
+  fs.rmSync(sandbox, { recursive: true, force: true });
 }
 
 /** Write agent-produced files into the workspace; refuses path traversal. */

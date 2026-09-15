@@ -46,10 +46,10 @@ describe('sandbox & tools', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('sandbox isolates and merges changes', () => {
+  it('sandbox isolates and merges changes', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-'));
     fs.writeFileSync(path.join(tmp, 'base.txt'), 'v1');
-    const sandbox = createSandbox(tmp);
+    const sandbox = await createSandbox(tmp);
     try {
       writeFiles(sandbox, [{ path: 'base.txt', content: 'v2' }, { path: 'new.txt', content: 'n' }]);
       const merged = mergeChanges(sandbox, tmp);

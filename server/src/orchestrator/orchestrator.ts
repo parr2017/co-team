@@ -938,7 +938,7 @@ export class Orchestrator {
 
     let sandbox: string;
     try {
-      sandbox = this.sandboxEnabled ? createSandbox(workspace) : workspace;
+      sandbox = this.sandboxEnabled ? await createSandbox(workspace, taskId) : workspace;
       this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled });
       // A1 实时产出视图: remember where the work is happening so the API can browse it
       graph.sandbox_path = sandbox;
@@ -1123,7 +1123,7 @@ export class Orchestrator {
           }
           if (recovered || completedNodes === 0) {
             try {
-              cleanupSandbox(sandbox);
+              await cleanupSandbox(sandbox);
               this.logger.debug('Sandbox cleaned up', { taskId });
             } catch (cleanupError) {
               // cleanup failures (e.g. fs.rmSync EBUSY on Windows) must not swallow the final status write
