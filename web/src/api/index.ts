@@ -218,6 +218,8 @@ export interface TaskGraph {
   checklist?: { id: string; requirement: string; status?: string; evidence?: string }[];
   /** 永续开发（2026-09-15）：infra 类自动重排计数 */
   infra_retries?: number;
+  /** 环境预检（o3xmkraj 复盘）：执行前对计划所需命令的白名单/PATH 探测结果 */
+  preflight?: { checked_at: string; ok: boolean; missing_whitelist?: string[]; missing_path?: string[] };
 }
 
 export interface QualitySummary {
@@ -654,6 +656,8 @@ export const api = {
   // 人工门续跑：needs_human 节点在人工修复后重置该节点及下游并重新入队
   retryNode: (taskId: string, nodeId: string) =>
     request<{ status: string; reset_nodes: string[] }>(`/api/tasks/${taskId}/nodes/${nodeId}/retry`, { method: 'POST' }),
+  // 环境预检停靠后的人工放行（补授白名单后一键开跑）
+  runTask: (taskId: string) => request<{ status: string; task_id: string }>(`/api/tasks/${taskId}/run`, { method: 'POST' }),
   // feature: 实施前澄清
   getNodeClarify: (taskId: string, nodeId: string) =>
     request<{ task_id: string; node_id: string; mode: string; brief: { approach: string; files: string[]; risks: string[]; questions: string[] }; answers: { question: string; answer: string }[] }>(

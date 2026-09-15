@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { generateTaskGraph, generateStagePlan, PlannedGraph } from './planner';
 import type { ChecklistItem } from '../types';
 import type { ModelPool, ModelEntry } from '../scheduler';
@@ -881,6 +882,68 @@ export class Orchestrator {
     return (await busGet(`task:goal:${taskId}`)) || { content: '' };
   }
 
+  // ---------- 环境预检（o3xmkraj 复盘：规划零环境接地的根治） ----------
+
+  /** 技术栈关键词 → 所需命令：规划文本命中即纳入预检。不预设"应该有 python/node"——
+   *  一切以任务级/全局白名单与机器 PATH 的实际探测为准。 */
+  private static readonly TECH_HINTS: [RegExp, string][] = [
+    [/flutter/i, 'flutter'],
+    [/\bdart\b/i, 'dart'],
+    [/\brust\b|\bcargo\b/i, 'cargo'],
+    [/\bgolang\b|\bgo\s+(开发|语言)|\bgo\b/i, 'go'],
+    [/\bjava\b|maven|gradle|spring/i, 'java'],
+    [/dotnet|\.net\b|c#\b/i, 'dotnet'],
+  ];
+
+  /** 命令是否存在于执行环境 PATH（win32 用 where，其余 which） */
+  private commandExists(cmd: string): boolean {
+    const checker = process.platform === 'win32' ? 'where' : 'which';
+    try {
+      const r = spawnSync(checker, [cmd], { encoding: 'utf-8', timeout: 5000 });
+      return r.status === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 发车前预检：计划所需命令 vs 白名单 vs PATH。不齐 → 停靠人工门（waiting_approval），
+   *  缺白名单可由双端"补授白名单并开跑"一键续跑；机器未装的工具链明确告知需人工安装。 */
+  private async preflightEnvironment(taskId: string, graph: TaskGraph, policy: PermissionPolicy): Promise<boolean> {
+    const required = new Set<string>();
+    for (const n of graph.nodes) for (const c of n.required_commands || []) required.add(String(c));
+    const text = [graph.description, ...graph.nodes.map((n) => `${n.name} ${n.reason || ''} ${n.goal_link || ''}`)].join('\n');
+    for (const [re, cmd] of Orchestrator.TECH_HINTS) if (re.test(text)) required.add(cmd);
+    if (!required.size) {
+      graph.preflight = { checked_at: new Date().toISOString(), ok: true };
+      return true;
+    }
+
+    const missingWhitelist: string[] = [];
+    const missingPath: string[] = [];
+    for (const cmd of [...required].sort()) {
+      if (!this.commandExists(cmd)) { missingPath.push(cmd); continue; }
+      if (policy.level !== 'full' && policy.whitelistCommands && !policy.whitelistCommands.includes(cmd)) missingWhitelist.push(cmd);
+    }
+    graph.preflight = { checked_at: new Date().toISOString(), ok: !missingWhitelist.length && !missingPath.length, missing_whitelist: missingWhitelist, missing_path: missingPath };
+    if (graph.preflight.ok) {
+      this.logger.info('Preflight passed', { taskId, checked: [...required] });
+      return true;
+    }
+
+    this.logger.warn('Preflight found missing commands — parking task at human gate', { taskId, missingWhitelist, missingPath });
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master', kind: 'error',
+      text: `⛔ 环境预检未通过：` +
+        (missingWhitelist.length ? `白名单缺 ${missingWhitelist.join('、')}（机器上已安装，可一键补授后开跑）` : '') +
+        (missingPath.length ? `${missingWhitelist.length ? '；' : ''}机器未安装 ${missingPath.join('、')}（需人工安装，或调整任务技术栈）` : '') +
+        '——任务已停靠，处理后点「开跑」',
+      ts: new Date().toISOString(), node_id: '', node_name: '',
+    });
+    await emitProgress('task_preflight', { task_id: taskId, ok: false, missing_whitelist: missingWhitelist, missing_path: missingPath });
+    notify('task_preflight', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 环境预检未通过（${[...missingWhitelist, ...missingPath].join('、') || '未知缺失'}），已停靠待人工处理`);
+    return false;
+  }
+
   async execute(taskId: string, workspace: string): Promise<Record<string, any>> {
     this.logger.taskStart(taskId, '');
     
@@ -932,13 +995,23 @@ export class Orchestrator {
       }
     }
     graph.workspace = execWorkspace;
+    // 环境预检（o3xmkraj 复盘）：发车前确定性对齐"计划所需"与"环境现实"——
+    // 工具链不在 PATH / 不在白名单即停靠人工门，不再让 13 个节点在执行中逐个撞墙
+    const policy = policyWithLevel(this.policy, graph.execution_policy);
+    const preflightOk = await this.preflightEnvironment(taskId, graph, policy);
+    if (!preflightOk) {
+      graph.status = 'waiting_approval';
+      await persistGraph(graph);
+      await emitProgress('execute_failed', { task_id: taskId, completed: 0, total: graph.nodes.length, status: 'waiting_approval', error: '环境预检未通过：所需命令缺失，已停靠人工门' });
+      return { status: 'waiting_approval', changes: [] };
+    }
     graph.status = 'running';
     await persistGraph(graph);
     await emitProgress('execute_start', { task_id: taskId, workspace, total_nodes: graph.nodes.length });
 
     let sandbox: string;
     try {
-      sandbox = this.sandboxEnabled ? await createSandbox(workspace, taskId) : workspace;
+      sandbox = this.sandboxEnabled ? await createSandbox(execWorkspace, taskId) : execWorkspace;
       this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled });
       // A1 实时产出视图: remember where the work is happening so the API can browse it
       graph.sandbox_path = sandbox;
@@ -1014,9 +1087,6 @@ export class Orchestrator {
     await createSnapshot(taskId, { tag: 'task-start', workspace, sandbox }).catch((e) => this.logger.warn('task-start snapshot failed', { taskId, error: String(e) }));
     await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
 
-    // feature: 命令执行分级 — task-level policy overrides the global default
-    const policy = policyWithLevel(this.policy, graph.execution_policy);
-
     let result: Record<string, any> = { status: 'failed', error: 'execution did not run' };
     try {
       result = await this.runGraph(taskId, graph, sandbox, policy);
@@ -1045,15 +1115,15 @@ export class Orchestrator {
               // merged result lives on the sandbox base branch; sync files to the real workspace.
               // a failed sync must NOT stay 'success' — the deliverables would stay trapped
               // in the sandbox and the user would never see them (observed in task gnq6h5p6)
-              const synced = await gitTool.syncToWorkspace(sandbox, workspace, 'coteam/base');
+              const synced = await gitTool.syncToWorkspace(sandbox, execWorkspace, 'coteam/base');
               if (!synced) throw new Error('syncToWorkspace returned false (copy failed, e.g. a locked target file)');
               result.merged_branches = result.merged_branches || [];
             } else {
-              result.merged_files = mergeChanges(sandbox, workspace);
+              result.merged_files = mergeChanges(sandbox, execWorkspace);
             }
             // post-merge acceptance：合并后的真实工作区跑项目自身测试套件——每个节点
             // 验证自己的切片 ≠ 整体能跑（jr3gdkxq：验证节点全绿但页面全崩的根因补闸）
-            const acc = await runPostMergeAcceptance(workspace);
+            const acc = await runPostMergeAcceptance(execWorkspace);
             result.acceptance = acc;
             if (acc.status === 'failed') {
               // M5：滚动任务的最终裁决交给 finalAcceptanceGate（清单机审 + 派生提案），
@@ -1103,15 +1173,15 @@ export class Orchestrator {
                 if (branches.length > 0) await gitTool.mergeAllNodes(sandbox, branches).catch(() => null);
                 // syncToWorkspace (not mergeChanges): the sandbox here has its own .git,
                 // which must never leak into the workspace repo
-                await gitTool.syncToWorkspace(sandbox, workspace, 'coteam/base');
+                await gitTool.syncToWorkspace(sandbox, execWorkspace, 'coteam/base');
                 const dirty = await simpleGit({ baseDir: workspace }).status();
                 changes = dirty.files.map((f) => f.path);
               } else {
-                changes = mergeChanges(sandbox, workspace);
+                changes = mergeChanges(sandbox, execWorkspace);
               }
               if (changes.length > 0) {
                 const commit = this.gitEnabled
-                  ? await this.gitCommit(taskId, workspace, changes, `coteam: task ${taskId} partial recovery (${completedNodes} nodes, failed: ${String(result?.error || 'unknown').slice(0, 60)})`)
+                  ? await this.gitCommit(taskId, execWorkspace, changes, `coteam: task ${taskId} partial recovery (${completedNodes} nodes, failed: ${String(result?.error || 'unknown').slice(0, 60)})`)
                   : null;
                 result.merged_files = changes;
                 result.recovered_partial = { nodes: completedNodes, files: changes.length, commit: commit?.commit ?? null };
@@ -1138,7 +1208,7 @@ export class Orchestrator {
         graph.status = 'finalizing';
         await persistGraph(graph);
         await emitProgress('task_finalizing', { task_id: taskId, stage: 'acceptance' });
-        const acc = await runPostMergeAcceptance(workspace);
+        const acc = await runPostMergeAcceptance(execWorkspace);
         result.acceptance = acc;
         if (acc.status === 'failed') {
           // M5：滚动任务延迟到最终闸统一裁决
@@ -1170,7 +1240,7 @@ export class Orchestrator {
     });
 
     if (status === 'success' && this.gitEnabled && (result.changes || []).length) {
-      result.git_commit = await this.gitCommit(taskId, workspace, result.changes as string[]);
+      result.git_commit = await this.gitCommit(taskId, execWorkspace, result.changes as string[]);
     }
 
     graph.status = status === 'success' ? 'success' : status;

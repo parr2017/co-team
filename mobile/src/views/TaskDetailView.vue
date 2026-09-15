@@ -432,6 +432,27 @@ async function savePolicy() {
   }
 }
 
+// 环境预检放行：缺失命令并入任务白名单后一键开跑
+const preflightRunning = ref(false);
+async function grantWhitelistAndRun() {
+  preflightRunning.value = true;
+  try {
+    const missing = task.value?.preflight?.missing_whitelist || [];
+    if (missing.length) {
+      const merged = [...new Set([...policyWhitelist.value, ...missing])];
+      await api.setTaskPolicy(taskId.value, policyLevel.value || null, merged);
+      policyWhitelist.value = merged;
+    }
+    await api.runTask(taskId.value);
+    showToast('白名单已补授，任务已发车');
+    void refresh();
+  } catch (e: any) {
+    showToast(e.message || '发车失败');
+  } finally {
+    preflightRunning.value = false;
+  }
+}
+
 watch(taskId, () => {
   selectedAgent.value = '';
   selectedNodeId.value = '';
@@ -711,6 +732,20 @@ function nodeIcon(status: string): string {
                   <span class="sup-reason clamp">{{ p.reason || p.type }}</span>
                   <span class="tap-more">全文 ›</span>
                 </div>
+              </div>
+            </div>
+
+            <!-- 环境预检（双端一致）：停靠人工门时给出缺失清单与一键放行 -->
+            <div v-if="task.status === 'waiting_approval' && task.preflight && !task.preflight.ok" class="wx-group">
+              <div class="wx-cell">
+                <div class="sup-title">环境预检未通过 · 任务已停靠</div>
+                <div v-if="task.preflight.missing_whitelist?.length" class="sup-row">
+                  <span class="sup-reason clamp">白名单缺：{{ task.preflight.missing_whitelist.join(' ') }}（机器上已安装）</span>
+                </div>
+                <div v-if="task.preflight.missing_path?.length" class="sup-row">
+                  <span class="sup-reason clamp">机器未安装：{{ task.preflight.missing_path.join(' ') }}（需人工安装 SDK）</span>
+                </div>
+                <van-button size="small" round type="primary" :loading="preflightRunning" @click="grantWhitelistAndRun">补授白名单并开跑</van-button>
               </div>
             </div>
 

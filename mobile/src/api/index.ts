@@ -118,6 +118,8 @@ export interface TaskGraph {
   edges: [string, string][];
   created_at?: string;
   updated_at?: string;
+  /** 环境预检（o3xmkraj 复盘）：执行前对计划所需命令的白名单/PATH 探测结果 */
+  preflight?: { checked_at: string; ok: boolean; missing_whitelist?: string[]; missing_path?: string[] };
 }
 
 export interface ProgressInfo {
@@ -386,6 +388,8 @@ export const api = {
   approveNode: (taskId: string, nodeId: string) => post(`/api/tasks/${taskId}/approve/${nodeId}`),
   // 人工门续跑：needs_human 节点在人工修复后重置该节点及下游并重新入队
   retryNode: (taskId: string, nodeId: string) => post<{ status: string; reset_nodes: string[] }>(`/api/tasks/${taskId}/nodes/${nodeId}/retry`, {}),
+  // 环境预检停靠后的人工放行（补授白名单后一键开跑）
+  runTask: (taskId: string) => post<{ status: string; task_id: string }>(`/api/tasks/${taskId}/run`, {}),
   convertDefect: (taskId: string, nodeId: string, defectIndex: number, autoRun = false) =>
     post<{ status: string; fix_task_id: string; questions?: string[] }>(`/api/tasks/${taskId}/defects/convert`, { node_id: nodeId, defect_index: defectIndex, auto_run: autoRun }),
   cancelTask: (id: string) => post(`/api/tasks/${id}/cancel`),

@@ -833,6 +833,21 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'requeued', task_id: taskId, node_id: nodeId, reset_nodes: [...reset] });
   });
 
+  // 环境预检停靠后的人工放行（o3xmkraj 复盘）：补授白名单/装好工具链后一键开跑
+  app.post('/api/tasks/:taskId/run', async (c) => {
+    const taskId = c.req.param('taskId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    if (['running', 'queued', 'finalizing'].includes(graph.status)) throw new HttpError(400, `任务正在执行中（${graph.status}），无需重复发车`);
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master', kind: 'round',
+      text: '人工放行：任务重新发车（将再次执行环境预检）',
+      ts: new Date().toISOString(), node_id: '', node_name: '',
+    });
+    await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, validateWorkspace(graph.workspace || ''));
+    return c.json({ status: 'enqueued', task_id: taskId });
+  });
+
   // P0-2: convert a structured defect from a node's result into a fix task with a backlink
   app.post('/api/tasks/:taskId/defects/convert', async (c) => {
     const taskId = c.req.param('taskId');

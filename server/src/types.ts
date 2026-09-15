@@ -111,6 +111,8 @@ export interface TaskNode {
   reason?: string;
   /** one-line contribution of this node to the global goal (improvement 9) */
   goal_link?: string;
+  /** 环境预检：本节点工作所需的命令工具链（planner 声明优先，缺省由执行前正则识别） */
+  required_commands?: string[];
   branch?: string;
   /** the branch this node's branch was cut from — diff base for node changes */
   branch_base?: string;
@@ -186,6 +188,15 @@ export interface TaskGraph {
   fix_for?: { task_id: string; node_id: string };
   /** 永续开发（2026-09-15）：基础设施类失败（模型池不稳/上下文超限/服务重启）的自动重排次数 */
   infra_retries?: number;
+  /** 环境预检（o3xmkraj 复盘）：执行前对计划所需命令做白名单/PATH 确定性探测的结果 */
+  preflight?: {
+    checked_at: string;
+    ok: boolean;
+    /** 白名单缺（可由用户一键补授） */
+    missing_whitelist?: string[];
+    /** 机器上未安装（需人工安装或换技术栈） */
+    missing_path?: string[];
+  };
 }
 
 export interface EventEnvelope {

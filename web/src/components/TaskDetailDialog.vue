@@ -376,6 +376,24 @@
               </div>
             </div>
 
+            <!-- 环境预检（o3xmkraj 复盘）：任务停靠人工门时给出缺失清单与一键放行 -->
+            <div v-if="task.status === 'waiting_approval' && task.preflight && !task.preflight.ok" class="mg-card">
+              <div class="mg-title mono">PREFLIGHT · 环境预检未通过（任务已停靠）</div>
+              <div class="mg-body">
+                <div v-if="task.preflight.missing_whitelist?.length" class="pf-row">
+                  <span class="mini-label">白名单缺</span>
+                  <el-tag v-for="cmd in task.preflight.missing_whitelist" :key="cmd" size="small" type="warning" class="mono">{{ cmd }}</el-tag>
+                  <span class="mg-hint">机器上已安装，可一键补授</span>
+                </div>
+                <div v-if="task.preflight.missing_path?.length" class="pf-row">
+                  <span class="mini-label">机器未安装</span>
+                  <el-tag v-for="cmd in task.preflight.missing_path" :key="cmd" size="small" type="danger" class="mono">{{ cmd }}</el-tag>
+                  <span class="mg-hint">需人工安装 SDK 后重试，或调整任务技术栈</span>
+                </div>
+                <el-button size="small" type="primary" :loading="preflightRunning" @click="grantWhitelistAndRun">补授白名单并开跑</el-button>
+              </div>
+            </div>
+
             <div class="mg-card">
               <div class="mg-title mono">EXECUTION POLICY · 执行策略（命令执行分级）</div>
               <div class="mg-body mg-row">
@@ -520,6 +538,8 @@ import { useDashboard } from '../composables/useDashboard';
 
 const props = defineProps<{ modelValue: boolean; taskId: string; liveAgents?: Record<string, { model?: string; currentAction?: string }> }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'refresh'): void }>();
+// .pf-row：预检缺失清单行
+
 
 const task = ref<TaskGraph | null>(null);
 const events = ref<TaskEvent[]>([]);
@@ -904,6 +924,27 @@ async function retrySelectedNode(n: { id: string; name: string }) {
     ElMessage.error(e.message);
   } finally {
     retryingNode.value = '';
+  }
+}
+
+// 环境预检放行：把缺失命令并入任务白名单后一键开跑
+const preflightRunning = ref(false);
+async function grantWhitelistAndRun() {
+  preflightRunning.value = true;
+  try {
+    const missing = task.value?.preflight?.missing_whitelist || [];
+    if (missing.length) {
+      const merged = [...new Set([...policyWhitelist.value, ...missing])];
+      await api.setTaskPolicy(props.taskId, policyLevel.value || null, merged);
+      policyWhitelist.value = merged;
+    }
+    await api.runTask(props.taskId);
+    ElMessage.success('白名单已补授，任务已发车');
+    emit('refresh');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    preflightRunning.value = false;
   }
 }
 
@@ -1304,6 +1345,7 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .manage { display: flex; flex-direction: column; gap: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
 .mg-card { border: 1px solid var(--ct-border); border-radius: 8px; padding: 12px 14px; }
 .mg-title { font-size: 10px; color: var(--ct-text3); letter-spacing: 1px; margin-bottom: 10px; }
+.pf-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .mg-body { display: flex; flex-direction: column; gap: 8px; }
 .mg-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mg-line { font-size: 12px; color: var(--ct-text2); }
