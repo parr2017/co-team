@@ -294,6 +294,14 @@ export class Orchestrator {
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
   /** plan_async+auto_run：后台规划落到 planned 后的入队钩子（index.ts 装配 taskQueue.enqueue） */
   onTaskPlanned: ((taskId: string, projectId: string | null, workspace: string) => void) | null = null;
+  /** 并行加固（Phase 2）：活跃任务数探针（index.ts 装配 taskQueue.activeTaskCount）——
+   *  runGraph 据此把模型池槽位均分给并行任务，单任务行为不变 */
+  private activeTaskCount: (() => number) | null = null;
+
+  /** 注入活跃任务数探针（taskQueue 晚于 orchestrator 构造，经 setter 回接） */
+  setActiveTaskCount(fn: () => number): void {
+    this.activeTaskCount = fn;
+  }
 
   constructor(opts: OrchestratorOptions) {
     this.plugins = new Map();
@@ -1494,7 +1502,13 @@ export class Orchestrator {
     for (const node of graph.nodes) upstream.set(node.id, []);
     for (const [src, dst] of graph.edges) upstream.get(dst)?.push(src);
 
-    const maxWorkers = Math.max(1, this.pool ? this.pool.totalAvailable() : 2);
+    // 并行加固（Phase 2，2026-09-16）：多任务并行时把模型池槽位均分给活跃任务——
+    // 此前单任务 maxWorkers=全池总槽位可独占模型池，并行任务互相抢槽
+    // （acquireWithWait 200ms 轮询 + 429 端点组避让）会放大限流风暴。单任务
+    // floor(total/1)=total 行为不变。
+    const totalSlots = this.pool ? this.pool.totalAvailable() : 2;
+    const activeTasks = Math.max(1, this.activeTaskCount?.() ?? 1);
+    const maxWorkers = Math.max(1, Math.floor(totalSlots / activeTasks));
     const inflight = new Set<Promise<void>>();
     let failedNode: TaskNode | null = null;
 

@@ -148,6 +148,17 @@ function sanitizeKnowledgeContent(raw: string): string {
 /** 单条知识文件上限：超过即视为损坏（转义翻倍/写穿），跳过并告警——绝不进读取管线 */
 const MAX_KNOWLEDGE_FILE_BYTES = 2 * 1024 * 1024;
 
+// ---------- 并行加固（Phase 2，2026-09-16）：readAll 按 mtime+size 缓存 ----------
+// 每次 agent dispatch 都会 readAll 全量读盘（当前 111 个文件），并行任务 ×N 后读放大；
+// mtime+size 双键失效，所有写点（write/update/recordHits/delete）显式 delete 兜底
+// 同毫秒重写 mtime 不变的边缘。recordKnowledgeHits 的读-改-写是纯同步函数，
+// Node 单线程内天然原子，无需额外互斥。
+const entryCache = new Map<string, { mtimeMs: number; size: number; entry: KnowledgeEntry }>();
+
+function invalidateEntryCache(file: string): void {
+  entryCache.delete(file);
+}
+
 function readAll(root?: string): KnowledgeEntry[] {
   const base = rootDir(root);
   const entries: KnowledgeEntry[] = [];
@@ -163,12 +174,21 @@ function readAll(root?: string): KnowledgeEntry[] {
       try {
         // 体积门：超大知识文件 = 转义翻倍/写穿损坏，绝不读入（193MB 怪兽曾把每轮
         // relevantKnowledge 变成 4GB 瞬时分配的直接来源）
-        if (fs.statSync(full).size > MAX_KNOWLEDGE_FILE_BYTES) {
+        const st = fs.statSync(full);
+        if (st.size > MAX_KNOWLEDGE_FILE_BYTES) {
           try { require('../logger').getLogger().warn('Oversized knowledge entry skipped (corrupted?)', { file: full }); } catch { /* test env */ }
           continue;
         }
+        const cached = entryCache.get(full);
+        if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+          entries.push(cached.entry);
+          continue;
+        }
         const parsed = markdownToEntry(entry.name, fs.readFileSync(full, 'utf-8'));
-        if (parsed) entries.push(parsed);
+        if (parsed) {
+          entryCache.set(full, { mtimeMs: st.mtimeMs, size: st.size, entry: parsed });
+          entries.push(parsed);
+        }
       } catch {
         /* skip unreadable entries */
       }
@@ -199,7 +219,9 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
   );
   if (existing) {
     const updated: KnowledgeEntry = { ...existing, title, content: sanitizeKnowledgeContent(input.content), tags: input.tags ?? existing.tags, updated_at: now };
-    fs.writeFileSync(path.join(categoryDir(existing.category, existing.project_id, root), `${existing.id}.md`), entryToMarkdown(updated), 'utf-8');
+    const file = path.join(categoryDir(existing.category, existing.project_id, root), `${existing.id}.md`);
+    fs.writeFileSync(file, entryToMarkdown(updated), 'utf-8');
+    invalidateEntryCache(file);
     return { id: existing.id, updated: true };
   }
 
@@ -216,7 +238,9 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
     updated_at: now,
     content: sanitizeKnowledgeContent(input.content),
   };
-  fs.writeFileSync(path.join(dir, `${id}.md`), entryToMarkdown(entry), 'utf-8');
+  const newFile = path.join(dir, `${id}.md`);
+  fs.writeFileSync(newFile, entryToMarkdown(entry), 'utf-8');
+  invalidateEntryCache(newFile);
   return { id, updated: false };
 }
 
@@ -228,7 +252,9 @@ export function recordKnowledgeHits(ids: string[], root?: string): number {
   for (const e of readAll(root)) {
     if (!ids.includes(e.id)) continue;
     const updated: KnowledgeEntry = { ...e, hits: (e.hits || 0) + 1, last_hit_at: now };
-    fs.writeFileSync(path.join(categoryDir(updated.category, updated.project_id, root), `${updated.id}.md`), entryToMarkdown(updated), 'utf-8');
+    const file = path.join(categoryDir(updated.category, updated.project_id, root), `${updated.id}.md`);
+    fs.writeFileSync(file, entryToMarkdown(updated), 'utf-8');
+    invalidateEntryCache(file);
     n += 1;
   }
   return n;
@@ -368,7 +394,9 @@ export function updateKnowledge(id: string, patch: { title?: string; content?: s
     updated_by: 'user',
   };
   // title change may move the file into a different slug — keep the same id (filename)
-  fs.writeFileSync(path.join(dir, `${existing.id}.md`), entryToMarkdown(updated), 'utf-8');
+  const file = path.join(dir, `${existing.id}.md`);
+  fs.writeFileSync(file, entryToMarkdown(updated), 'utf-8');
+  invalidateEntryCache(file);
   return updated;
 }
 
@@ -378,6 +406,7 @@ export function deleteKnowledge(id: string, root?: string): boolean {
   const file = path.join(categoryDir(existing.category, existing.project_id, root), `${existing.id}.md`);
   if (!fs.existsSync(file)) return false;
   fs.rmSync(file);
+  invalidateEntryCache(file);
   return true;
 }
 

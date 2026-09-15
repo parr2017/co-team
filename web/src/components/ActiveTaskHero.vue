@@ -9,6 +9,14 @@
     <div class="hero-title">{{ hero.description || hero.task_id }}</div>
     <div class="hero-bar"><div class="fill" :style="{ width: hero.percent + '%' }"></div></div>
 
+    <!-- 并行任务徽标（Phase 2）：hero 之外的其他活跃任务，点击直达对应战情室 -->
+    <div v-if="others.length" class="hero-par">
+      <span class="par-label">另有 {{ others.length }} 个任务并行中：</span>
+      <button v-for="o in others" :key="o.task_id" class="par-chip mono" :title="o.description" @click="$emit('open', o.task_id)">
+        {{ o.task_id }} · {{ o.description }}
+      </button>
+    </div>
+
     <!-- 正在执行的节点（心跳卡串联） -->
     <div v-if="activeNodes.length" class="hero-nodes">
       <div v-for="n in activeNodes" :key="n.id" class="hero-node">
@@ -53,12 +61,15 @@ let timer: number | null = null;
 onMounted(() => { timer = window.setInterval(() => { nowTick.value += 1; }, 1000); });
 onUnmounted(() => { if (timer !== null) window.clearInterval(timer); });
 
-const hero = computed(() => {
+const activeList = computed(() => {
   void nowTick.value;
-  const active = Object.values(tasks as Record<string, TaskGraph>)
+  return Object.values(tasks as Record<string, TaskGraph>)
     .filter((t: TaskGraph) => ACTIVE.includes(t.status))
     .sort((a: TaskGraph, b: TaskGraph) => (PRIORITY[a.status] ?? 9) - (PRIORITY[b.status] ?? 9) || (b.updated_at || '').localeCompare(a.updated_at || ''));
-  const t = active[0] as TaskGraph | undefined;
+});
+
+const hero = computed(() => {
+  const t = activeList.value[0] as TaskGraph | undefined;
   if (!t) return null;
   const done = t.nodes.filter((n) => n.status === 'completed').length;
   return {
@@ -71,6 +82,15 @@ const hero = computed(() => {
     stageGoal: t.stage_goal || '',
     infraRetries: t.infra_retries || 0,
   };
+});
+
+// 并行加固（Phase 2）：hero 之外的活跃任务——车道并行后首页必须看得见"还有谁在跑"
+const others = computed(() => {
+  return (activeList.value.slice(1) as TaskGraph[]).map((t) => ({
+    task_id: t.task_id,
+    status: t.status,
+    description: (t.description || '').split('\n')[0].slice(0, 30),
+  }));
 });
 
 const activeNodes = computed(() => {
@@ -153,6 +173,14 @@ function fmtTok(n: number): string {
 }
 .hero-note { margin-top: 8px; font-size: 12px; }
 .hero-note.warn { color: var(--ct-yellow, #d29922); }
+.hero-par { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.par-label { font-size: 11px; color: var(--ct-text3, #666b75); }
+.par-chip {
+  border: 1px solid var(--ct-border2, #26272c); background: transparent; color: var(--ct-text2);
+  font-size: 11px; border-radius: 999px; padding: 2px 10px; cursor: pointer; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.par-chip:hover { border-color: var(--ct-accent, #4a8dff); color: var(--ct-accent, #4a8dff); }
 .hero-empty { border-color: var(--ct-border, #26272c); box-shadow: none; }
 .hero-empty-title { font-size: 13px; font-weight: 600; color: var(--ct-text2); }
 .hero-empty-sub { font-size: 12px; color: var(--ct-text3); margin-top: 4px; }

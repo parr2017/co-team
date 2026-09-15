@@ -292,6 +292,14 @@ export class TaskQueueManager {
     return [...this.lanes.keys()].map((k) => this.snapshot(k));
   }
 
+  /** 并行加固（Phase 2）：当前执行中（含人工门持槽）任务数——orchestrator 的
+   *  runGraph 用它把模型池槽位均分给并行任务（公平分配） */
+  activeTaskCount(): number {
+    let n = 0;
+    for (const lane of this.lanes.values()) if (lane.running) n += 1;
+    return n;
+  }
+
   private snapshot(key: string): QueueSnapshot {
     const lane = this.lane(key);
     return {

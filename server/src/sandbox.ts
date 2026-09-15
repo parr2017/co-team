@@ -302,6 +302,15 @@ export function executeCommandAsync(
     let stderr = '';
     let killed = false;
 
+    // 并行加固（Phase 2，2026-09-16）：输出滚动截尾（各保留尾部 1MB）——此前 stdout/stderr
+    // 无界累积（同步版有 8MB maxBuffer，异步版裸奔），大输出命令（构建/日志回放）在并行
+    // 任务 ×N 下是隐性 OOM 源（历史两次 4GB OOM 治理后的残留面）
+    const COMMAND_OUTPUT_CAP = 1_000_000;
+    const capTail = (acc: string, chunk: string): string => {
+      acc += chunk;
+      return acc.length > COMMAND_OUTPUT_CAP ? acc.slice(-COMMAND_OUTPUT_CAP) : acc;
+    };
+
     const proc = spawn(command, {
       shell: true,
       cwd,
@@ -309,11 +318,11 @@ export function executeCommandAsync(
     });
 
     proc.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString();
+      stdout = capTail(stdout, data.toString());
     });
 
     proc.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString();
+      stderr = capTail(stderr, data.toString());
     });
 
     const cleanup = () => {

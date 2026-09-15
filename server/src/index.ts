@@ -254,6 +254,8 @@ async function main(): Promise<void> {
   // failures block the lane until the user resumes it
   const taskQueue = new TaskQueueManager(orchestrator, modelPool, config.orchestrator.auto_requeue_max ?? 3);
   logger.info('Task queue initialized (one running task per workspace)');
+  // 并行加固（Phase 2）：把活跃任务数探针回接给 orchestrator——runGraph 据此均分模型池槽位
+  orchestrator.setActiveTaskCount(() => taskQueue.activeTaskCount());
 
   // E20：plan_async + auto_run 的入队补链——后台规划落到 planned 即入队（此前被路由 early-return 吞掉）
   orchestrator.onTaskPlanned = (taskId, projectId, workspace) => {
