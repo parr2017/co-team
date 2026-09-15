@@ -2678,7 +2678,12 @@ export class Orchestrator {
     const tierCap = this.outputTiers
       ? this.outputTiers[node.complexity === 'complex' ? 'complex' : node.complexity === 'simple' ? 'simple' : 'normal']
       : undefined;
-    const maxTokens = tierCap ? Math.min(entry.max_tokens ?? 128000, tierCap) : entry.max_tokens ?? 128000;
+    // o3xmkraj 复盘：思考随任务深度膨胀（实测同节点 8k 档烧 8k、32k 档烧 38k），
+    // 固定档位会让"思考+正文"挤爆单轮。动态预算：档位为基座按轮次阶梯放大（×2/轮，
+    // 封顶模型上限与 128k）——早轮维持小预算守 KV 约束（i6efv5h2），深轮给足思考空间。
+    const baseBudget = tierCap ? Math.min(entry.max_tokens ?? 128000, tierCap) : entry.max_tokens ?? 128000;
+    const roundBudgetFor = (round: number): number =>
+      Math.min(entry.max_tokens ?? 128000, Math.min(baseBudget * Math.pow(2, round), 128000));
     // M7 折叠线按模型上下文窗口动态化：min(窗口×0.6, 窗口−4096 预留)；窗口未知回退全局常量；
     // complex 侦查型节点上浮 1.5 档。保持"每尝试至多折叠一次+确定性折叠"原则不变。
     const ctxWindow = (entry as any).context_length ?? 0;
@@ -2854,7 +2859,7 @@ export class Orchestrator {
       user_chars: userMsg.length,
       skills_indexed: picks.length,
       knowledge_hits: knowledgeHits.length,
-      max_output_tokens: maxTokens,
+      max_output_tokens: baseBudget,
       est_base_tokens:
         estimateTokens(systemMsg) + estimateTokens(userMsg) + estimateTokens(compacted.map((m) => m.content).join('')),
     };
@@ -2931,11 +2936,13 @@ export class Orchestrator {
           await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
           return { status: 'failed', error: record.error, tokens: record.tokens };
         }
+        // 动态输出预算：本轮可用输出 = 档位基座 × 2^轮次（封顶模型上限/128k）
+        const roundBudget = roundBudgetFor(round);
         await emitProgress('agent_activity', {
           task_id: taskId, node_id: node.id, agent: plugin.name,
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,
         });
-        const resp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, undefined, onDelta);
+        const resp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, undefined, undefined, onDelta);
         this.pool!.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
         record.tokens += resp.promptTokens + resp.completionTokens;
@@ -2945,6 +2952,7 @@ export class Orchestrator {
           nodeId: node.id,
           model: entry.name,
           round: round + 1,
+          max_tokens: roundBudget,
           prompt_tokens: resp.promptTokens,
           cached_tokens: resp.cachedTokens ?? null,
           completion_tokens: resp.completionTokens,
@@ -2956,7 +2964,7 @@ export class Orchestrator {
         // whole output budget — not a format problem. Skip the format-repair round and
         // fail over (the budget won't grow by re-prompting the same model).
         if (!content.trim() && resp.finishReason === 'length') {
-          record.error = `输出预算耗尽（finish_reason=length）：思考消耗了全部 ${maxTokens} 输出 token，正文为空`;
+          record.error = `输出预算耗尽（finish_reason=length）：思考消耗了全部 ${roundBudget} 输出 token，正文为空`;
           await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
           await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
           return { status: 'failed', error: record.error, tokens: record.tokens };
@@ -3057,7 +3065,7 @@ export class Orchestrator {
           messages.push({ role: 'assistant', content });
           messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
           // Do one more round to get final output
-          const finalResp = await chat(entry, messages, maxTokens, escalate ? 0.3 : 0, undefined, undefined, onDelta);
+          const finalResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, undefined, undefined, onDelta);
           this.pool!.recordUsage(entry.name, finalResp.promptTokens, finalResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + finalResp.promptTokens + finalResp.completionTokens);
           record.tokens += finalResp.promptTokens + finalResp.completionTokens;
