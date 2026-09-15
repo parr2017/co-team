@@ -13,6 +13,7 @@ export interface QueueEntry {
 export interface QueueSnapshot {
   key: string;
   project_id: string | null;
+  workspace: string;
   running_task_id: string | null;
   pending: QueueEntry[];
   blocked: boolean;

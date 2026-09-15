@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { TaskQueueManager } from '../src/taskQueue';
+import { TaskQueueManager, laneKeyForWorkspace } from '../src/taskQueue';
 import { saveTaskGraph, getTaskGraph, persistGraph } from '../src/store';
 import { initBus, closeBus } from '../src/bus';
 
@@ -12,6 +12,10 @@ afterAll(async () => {
 });
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
+
+// Phase 1：车道键按工作区——所有用例的车道查找都经 laneKeyForWorkspace 计算
+const WS = '/tmp/ws';
+const LANE = laneKeyForWorkspace(WS);
 
 function makeQueue(initialCapacity = 10, maxInfraRetries = 3) {
   const probe = { capacity: initialCapacity, usableCapacity: () => probe.capacity };
@@ -39,23 +43,23 @@ async function seedTask(taskId: string, projectId?: string, nodeExtra: Record<st
     taskId,
     [{ id: 'n1', task_id: taskId, name: '节点', status: 'pending', agent: 'dev', result: null, error: '', retry_count: 0, complexity: 'normal', requires_approval: false, needs_human: false, ...nodeExtra } as any],
     [],
-    { description: `任务 ${taskId}`, workspace: '/tmp/ws', status: 'planned', project_id: projectId }
+    { description: `任务 ${taskId}`, workspace: WS, status: 'planned', project_id: projectId }
   );
 }
 
 describe('TaskQueueManager', () => {
-  it('same project: second task waits in queue until the first finishes', async () => {
+  it('same workspace: second task waits in queue until the first finishes', async () => {
     const { mgr, calls, finish } = makeQueue();
     await seedTask('qa', 'p1');
     await seedTask('qb', 'p1');
 
-    await mgr.enqueue('qa', 'p1', '/tmp/ws');
-    await mgr.enqueue('qb', 'p1', '/tmp/ws');
+    await mgr.enqueue('qa', 'p1', WS);
+    await mgr.enqueue('qb', 'p1', WS);
     await tick();
     // B stays queued while A runs
     expect(calls).toEqual(['qa']);
     expect((await getTaskGraph('qb'))!.status).toBe('queued');
-    const snap = mgr.snapshots().find((s) => s.key === 'p1')!;
+    const snap = mgr.snapshots().find((s) => s.key === LANE)!;
     expect(snap.running_task_id).toBe('qa');
     expect(snap.pending.map((e) => e.task_id)).toEqual(['qb']);
     expect(snap.blocked).toBe(false);
@@ -70,22 +74,22 @@ describe('TaskQueueManager', () => {
     await seedTask('qa', 'p1', { status: 'failed', error_type: 'precondition' });
     await seedTask('qb', 'p1');
 
-    await mgr.enqueue('qa', 'p1', '/tmp/ws');
-    await mgr.enqueue('qb', 'p1', '/tmp/ws');
+    await mgr.enqueue('qa', 'p1', WS);
+    await mgr.enqueue('qb', 'p1', WS);
     await tick();
 
     finish('qa', 'failed');
     await tick();
     // B must NOT auto-start after A failed (content failure = human decision)
     expect(calls).toEqual(['qa']);
-    const snap = mgr.snapshots().find((s) => s.key === 'p1')!;
+    const snap = mgr.snapshots().find((s) => s.key === LANE)!;
     expect(snap.blocked).toBe(true);
     expect(snap.blocked_by).toBe('qa');
 
-    mgr.resume('p1');
+    mgr.resume(LANE);
     await tick();
     expect(calls).toEqual(['qa', 'qb']);
-    expect(mgr.snapshots().find((s) => s.key === 'p1')!.blocked).toBe(false);
+    expect(mgr.snapshots().find((s) => s.key === LANE)!.blocked).toBe(false);
   });
 
   it('infra-class failure (model side) auto-requeues without blocking the lane', async () => {
@@ -96,8 +100,8 @@ describe('TaskQueueManager', () => {
       await seedTask('qi', 'p1', { status: 'failed', error_type: 'other' });
       await seedTask('qb', 'p1');
 
-      await mgr.enqueue('qi', 'p1', '/tmp/ws');
-      await mgr.enqueue('qb', 'p1', '/tmp/ws');
+      await mgr.enqueue('qi', 'p1', WS);
+      await mgr.enqueue('qb', 'p1', WS);
       await vi.advanceTimersByTimeAsync(10);
       expect(calls).toEqual(['qi']);
 
@@ -110,12 +114,12 @@ describe('TaskQueueManager', () => {
       await vi.advanceTimersByTimeAsync(10);
       // 车道不锁：qb 立即启动；qi 进入 60s 自动重排
       expect(calls).toEqual(['qi', 'qb']);
-      expect(mgr.snapshots().find((s) => s.key === 'p1')!.blocked).toBe(false);
+      expect(mgr.snapshots().find((s) => s.key === LANE)!.blocked).toBe(false);
 
       // 60s 到点：qi 重新排队（此时 qb 在跑，qi 排队等待）
       await vi.advanceTimersByTimeAsync(60_000);
       expect((await getTaskGraph('qi'))!.infra_retries).toBe(1);
-      expect(mgr.snapshots().find((s) => s.key === 'p1')!.pending.map((e) => e.task_id)).toEqual(['qi']);
+      expect(mgr.snapshots().find((s) => s.key === LANE)!.pending.map((e) => e.task_id)).toEqual(['qi']);
 
       finish('qb', 'success');
       await vi.advanceTimersByTimeAsync(10);
@@ -133,47 +137,84 @@ describe('TaskQueueManager', () => {
     seeded!.infra_retries = 2;
     await persistGraph(seeded!);
 
-    await mgr.enqueue('qx', 'p9', '/tmp/ws');
+    await mgr.enqueue('qx', 'p9', WS);
     await tick();
     finish('qx', 'failed');
     await tick();
     // 已达上限（infra_retries=2 >= max=2）：锁车道
     expect(calls).toEqual(['qx']);
-    expect(mgr.snapshots().find((s) => s.key === 'p9')!.blocked).toBe(true);
+    expect(mgr.snapshots().find((s) => s.key === LANE)!.blocked).toBe(true);
   });
 
   it('legacy graphs without error_type keep the conservative block behavior', async () => {
     const { mgr, calls, finish } = makeQueue();
     await seedTask('ql', 'p8', { status: 'failed' }); // 无 error_type
-    await mgr.enqueue('ql', 'p8', '/tmp/ws');
+    await mgr.enqueue('ql', 'p8', WS);
     await tick();
     finish('ql', 'failed');
     await tick();
-    expect(mgr.snapshots().find((s) => s.key === 'p8')!.blocked).toBe(true);
+    expect(mgr.snapshots().find((s) => s.key === LANE)!.blocked).toBe(true);
   });
 
-  it('different projects run concurrently', async () => {
+  it('different projects on different workspaces run concurrently', async () => {
     const { mgr, calls } = makeQueue();
     await seedTask('qa', 'p1');
     await seedTask('qb', 'p2');
 
-    await mgr.enqueue('qa', 'p1', '/tmp/ws');
-    await mgr.enqueue('qb', 'p2', '/tmp/ws');
+    await mgr.enqueue('qa', 'p1', '/tmp/ws-p1');
+    await mgr.enqueue('qb', 'p2', '/tmp/ws-p2');
     await tick();
     expect(calls).toEqual(['qa', 'qb']);
+  });
+
+  it('Phase 1: 不同工作区、未绑项目的任务并行（此前全挤 default 车道被迫串行）', async () => {
+    const { mgr, calls } = makeQueue();
+    await seedTask('wa');
+    await seedTask('wb');
+
+    await mgr.enqueue('wa', null, '/tmp/ws-a');
+    await mgr.enqueue('wb', null, '/tmp/ws-b');
+    await tick();
+    expect(calls).toEqual(['wa', 'wb']);
+    // 两条独立车道，各带自己的 workspace
+    const lanes = mgr.snapshots().sort((a, b) => a.key.localeCompare(b.key));
+    expect(lanes.length).toBe(2);
+    expect(lanes[0].workspace).toBe('/tmp/ws-a');
+    expect(lanes[1].workspace).toBe('/tmp/ws-b');
+    expect(lanes[0].project_id).toBeNull();
+  });
+
+  it('Phase 1: 同工作区混用绑/不绑项目——同车道串行，绕不过收尾互踩保护', async () => {
+    const { mgr, calls, finish } = makeQueue();
+    await seedTask('wa', 'p1');
+    await seedTask('wb');
+
+    await mgr.enqueue('wa', 'p1', '/tmp/ws-same');
+    await mgr.enqueue('wb', null, '/tmp/ws-same');
+    await tick();
+    expect(calls).toEqual(['wa']);
+    expect((await getTaskGraph('wb'))!.status).toBe('queued');
+
+    finish('wa', 'success');
+    await tick();
+    expect(calls).toEqual(['wa', 'wb']);
+    // 同车道快照：project_id 保留绑定过的项目名，workspace 指向工作区
+    const snap = mgr.snapshots().find((s) => s.key === laneKeyForWorkspace('/tmp/ws-same'))!;
+    expect(snap.project_id).toBe('p1');
+    expect(snap.workspace).toBe('/tmp/ws-same');
   });
 
   it('no model capacity defers the start instead of failing the task', async () => {
     const { mgr, probe, calls } = makeQueue(0);
     await seedTask('qa', 'p1');
 
-    await mgr.enqueue('qa', 'p1', '/tmp/ws');
+    await mgr.enqueue('qa', 'p1', WS);
     await tick();
     expect(calls).toEqual([]);
     expect((await getTaskGraph('qa'))!.status).toBe('queued');
 
     probe.capacity = 5;
-    mgr.resume('p1');
+    mgr.resume(LANE);
     await tick();
     expect(calls).toEqual(['qa']);
   });
@@ -183,14 +224,14 @@ describe('TaskQueueManager', () => {
     await seedTask('qa', 'p1');
     await seedTask('qb', 'p1');
 
-    await mgr.enqueue('qa', 'p1', '/tmp/ws');
-    await mgr.enqueue('qb', 'p1', '/tmp/ws');
+    await mgr.enqueue('qa', 'p1', WS);
+    await mgr.enqueue('qb', 'p1', WS);
     await mgr.removePending('qb');
     await tick();
 
     finish('qa', 'success');
     await tick();
     expect(calls).toEqual(['qa']);
-    expect(mgr.snapshots().find((s) => s.key === 'p1')!.pending).toEqual([]);
+    expect(mgr.snapshots().find((s) => s.key === LANE)!.pending).toEqual([]);
   });
 });

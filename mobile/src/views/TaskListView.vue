@@ -212,11 +212,18 @@ function toggleFilter(key: string) {
   statusFilter.value = statusFilter.value === key ? '' : key;
 }
 
-// ---------- execution queues (project lanes) ----------
+// ---------- execution queues (workspace lanes) ----------
 
 const queues = ref<QueueSnapshot[]>([]);
 let queueTimer: number | null = null;
 const visibleQueues = computed(() => queues.value.filter((q) => q.running_task_id || q.pending.length || q.blocked));
+
+// 车道键按工作区（Phase 1）：绑项目的显示项目名，纯工作区车道显示目录名
+function queueLabel(q: QueueSnapshot): string {
+  if (q.project_id) return `项目队列 ${q.project_id}`;
+  const base = (q.workspace || '').replace(/\\/g, '/').split('/').filter(Boolean).pop();
+  return base ? `工作区队列 ${base}` : '工作区队列';
+}
 
 async function refreshQueues() {
   try {
@@ -318,7 +325,7 @@ onUnmounted(() => {
     <!-- execution queues: one lane per project, blocked lanes wait for the user -->
     <div v-for="q in visibleQueues" :key="q.key" class="queue-strip" :class="{ 'queue-blocked': q.blocked }">
       <div class="q-head">
-        <span class="q-tag" :class="{ bad: q.blocked }">{{ q.project_id ? '项目队列' : '默认队列' }}</span>
+        <span class="q-tag" :class="{ bad: q.blocked }">{{ queueLabel(q) }}</span>
         <span class="q-info mono">
           {{ q.running_task_id ? `执行中: ${q.running_task_id}` : '空闲' }}<template v-if="q.pending.length"> · 排队 {{ q.pending.length }}</template>
         </span>

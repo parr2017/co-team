@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { getLogger } from './logger';
 import { getTaskGraph, persistGraph, emitProgress, appendJournal } from './store';
 import { busSet } from './bus';
@@ -23,6 +24,8 @@ export interface QueueEntry {
 export interface QueueSnapshot {
   key: string;
   project_id: string | null;
+  /** 车道对应的工作区目录（Phase 1 起车道键按工作区划分） */
+  workspace: string;
   running_task_id: string | null;
   pending: QueueEntry[];
   blocked: boolean;
@@ -36,9 +39,24 @@ interface Lane {
   blocked: boolean;
   blockedReason: string;
   blockedBy: string | null;
+  projectId: string | null;
+  workspace: string;
 }
 
 const CAPACITY_RETRY_MS = 10_000;
+
+/**
+ * 车道键按工作区（Phase 1，2026-09-16）：互斥的真实单位是"同一工作区"——收尾回写、
+ * git HEAD、验收都落在工作区上，项目只是它的近似。此前车道键只看 project_id，未绑
+ * 项目的任务全挤 default 车道，不同工作区也被迫串行（纯损失）。路径规范化
+ * （resolve + 正斜杠 + 小写 + 去尾斜杠）归一 Windows 盘符大小写与斜杠差异；
+ * 绑定项目的任务映射到其工作区键，"绑项目"与"不绑项目但同工作区"不会绕过串行保护。
+ */
+export function laneKeyForWorkspace(workspace: string): string {
+  const resolved = path.resolve(workspace || '.');
+  const norm = resolved.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return `ws:${norm}`;
+}
 
 /**
  * 永续开发（2026-09-15，c2g0ya6d / 5wkawk89 / r6fn2mbb 复盘）：基础设施类失败
@@ -55,10 +73,13 @@ export const HUMAN_GATE_ERROR_TYPES = new Set(['human_gate']);
 export const INFRA_REQUEUE_BACKOFF_MS = [60_000, 300_000, 900_000];
 
 /**
- * Project-scoped task queues. Rules:
- * - one lane per project (project_id; tasks without a project share the `default` lane) —
- *   within a lane tasks run strictly one at a time, in enqueue order;
- * - different lanes run concurrently;
+ * Workspace-scoped task queues (Phase 1, 2026-09-16). Rules:
+ * - one lane per workspace (normalized path) — within a lane tasks run strictly
+ *   one at a time, in enqueue order; the mutual-exclusion unit is the workspace
+ *   because finalize/write-back/git HEAD/acceptance all land on it. Project-bound
+ *   tasks map onto their workspace lane (same project ⇒ same workspace ⇒ same lane),
+ *   so mixing bound/unbound tasks on one workspace cannot bypass serialization;
+ * - different lanes run concurrently (different workspaces run in parallel now);
  * - a lane only starts its next task when the model pool has usable capacity,
  *   otherwise the start is retried shortly instead of failing the task;
  * - a failed task (including model-allocation failure) BLOCKS its lane — the user
@@ -80,14 +101,10 @@ export class TaskQueueManager {
     private maxInfraRetries = 3
   ) {}
 
-  private keyFor(projectId?: string | null): string {
-    return projectId || 'default';
-  }
-
   private lane(key: string): Lane {
     let lane = this.lanes.get(key);
     if (!lane) {
-      lane = { running: null, pending: [], blocked: false, blockedReason: '', blockedBy: null };
+      lane = { running: null, pending: [], blocked: false, blockedReason: '', blockedBy: null, projectId: null, workspace: '' };
       this.lanes.set(key, lane);
     }
     return lane;
@@ -99,8 +116,10 @@ export class TaskQueueManager {
    * tail and starts only when it reaches the head of an unblocked lane.
    */
   async enqueue(taskId: string, projectId: string | null | undefined, workspace: string): Promise<QueueSnapshot> {
-    const key = this.keyFor(projectId);
+    const key = laneKeyForWorkspace(workspace);
     const lane = this.lane(key);
+    if (projectId) lane.projectId = projectId;
+    if (workspace) lane.workspace = workspace;
     this.taskLane.set(taskId, key);
 
     if (lane.running === taskId) {
@@ -277,7 +296,8 @@ export class TaskQueueManager {
     const lane = this.lane(key);
     return {
       key,
-      project_id: key === 'default' ? null : key,
+      project_id: lane.projectId,
+      workspace: lane.workspace,
       running_task_id: lane.running,
       pending: [...lane.pending],
       blocked: lane.blocked,

@@ -1,7 +1,7 @@
 <template>
   <div>
     <div v-for="q in visibleQueues" :key="q.key" class="queue-strip" :class="{ 'queue-blocked': q.blocked }">
-      <el-tag size="small" :type="q.blocked ? 'danger' : 'primary'">{{ q.project_id ? `项目队列 ${q.project_id}` : '默认队列' }}</el-tag>
+      <el-tag size="small" :type="q.blocked ? 'danger' : 'primary'">{{ queueLabel(q) }}</el-tag>
       <span class="queue-info mono">
         {{ q.running_task_id ? `执行中: ${q.running_task_id}` : '空闲' }}
         <template v-if="q.pending.length"> · 排队 {{ q.pending.length }}: {{ q.pending.map((e) => e.task_id).join('、') }}</template>
@@ -21,6 +21,13 @@ import { api, type QueueSnapshot } from '../api';
 const queues = ref<QueueSnapshot[]>([]);
 let queueTimer: number | null = null;
 const visibleQueues = computed(() => queues.value.filter((q) => q.running_task_id || q.pending.length || q.blocked));
+
+// 车道键按工作区（Phase 1）：绑项目的显示项目名，纯工作区车道显示目录名
+function queueLabel(q: QueueSnapshot): string {
+  if (q.project_id) return `项目队列 ${q.project_id}`;
+  const base = (q.workspace || '').replace(/\\/g, '/').split('/').filter(Boolean).pop();
+  return base ? `工作区队列 ${base}` : '工作区队列';
+}
 
 async function refreshQueues() {
   try {
