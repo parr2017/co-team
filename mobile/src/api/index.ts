@@ -69,6 +69,8 @@ export interface TaskNode {
   reason?: string;
   retry_count?: number;
   requires_approval?: boolean;
+  /** 人工门标记：环境/前置/审批类失败，双端展示"已处理，从此节点继续" */
+  needs_human?: boolean;
   result?: { summary?: string; changes?: string[]; verification?: string; report?: TestReport; model?: string; tokens?: number; defects?: DefectReport[] } | null;
   started_at?: string;
   finished_at?: string;
