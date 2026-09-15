@@ -152,6 +152,8 @@ function handleEvent(msg: EventEnvelope) {
   }
 
   // 2.2 节点心跳卡：实时执行态聚合
+  // 注意：页面可能在节点启动之后才打开（错过 node_start）——delta/退避/换模/重试事件
+  // 都要能自举创建 runtime 条目，否则打开晚的用户永远看不到心跳与直播（实测教训）
   if (p.task_id && p.node_id) {
     const r = RT(p);
     if (ev === 'node_start') {
@@ -164,24 +166,28 @@ function handleEvent(msg: EventEnvelope) {
       nr.failoverFrom = undefined;
       nr.deltaText = undefined;
       nr.finishedAt = undefined;
-    } else if (r && ev === 'agent_first_token') {
-      r.model = p.model as string;
+    } else if (ev === 'agent_first_token' || ev === 'agent_delta' || ev === 'llm_backoff' || ev === 'model_failover' || ev === 'node_retry') {
+      // 自举：无论是否见过 node_start，都补建条目（startedAt 缺省由任务水合回填）
+      const nr = r || ensureRuntime(String(p.task_id), String(p.node_id), p.agent as string);
+      if (ev === 'agent_first_token') {
+        nr.model = p.model as string;
+      } else if (ev === 'agent_delta') {
+        nr.deltaText = String(p.text || '');
+        nr.deltaAt = Date.now();
+        if (p.model) nr.model = p.model as string;
+      } else if (ev === 'node_retry') {
+        nr.retryCount = Number(p.attempt || (nr.retryCount || 0) + 1);
+      } else if (ev === 'llm_backoff') {
+        nr.backoffSec = Number(p.backoff_sec || 0);
+        nr.model = p.model as string;
+      } else if (ev === 'model_failover') {
+        nr.failoverFrom = String(p.model || '');
+        nr.backoffSec = undefined;
+      }
     } else if (r && ev === 'agent_round') {
       r.model = p.model as string;
       r.round = Number(p.round || r.round || 0);
       r.tokens = (r.tokens || 0) + Number(p.tokens || 0);
-    } else if (r && ev === 'node_retry') {
-      r.retryCount = Number(p.attempt || (r.retryCount || 0) + 1);
-    } else if (r && ev === 'llm_backoff') {
-      r.backoffSec = Number(p.backoff_sec || 0);
-      r.model = p.model as string;
-    } else if (r && ev === 'model_failover') {
-      r.failoverFrom = String(p.model || '');
-      r.backoffSec = undefined;
-    } else if (r && ev === 'agent_delta') {
-      r.deltaText = String(p.text || '');
-      r.deltaAt = Date.now();
-      if (p.model) r.model = p.model as string;
     } else if (r && ['node_complete', 'node_error', 'node_cancelled'].includes(ev)) {
       r.finishedAt = Date.now();
       r.deltaText = undefined;
@@ -320,6 +326,11 @@ async function loadTasks(page = 1, pageSize = 20, filter?: TaskListFilter) {
         if (n.status === 'running' || n.status === 'retrying') {
           a.status = 'running';
           a.task = { id: n.id, taskId: t.task_id, name: n.name };
+          // 2.2 水合：页面打开晚于节点启动时，从节点状态回填心跳卡（耗时从此刻起算）
+          const k = `${t.task_id}:${n.id}`;
+          if (!nodeRuntime[k]) {
+            nodeRuntime[k] = { taskId: t.task_id, nodeId: n.id, agent: n.agent, name: n.name, startedAt: n.started_at };
+          }
         } else if (n.status === 'failed') {
           if (a.status !== 'running') a.status = 'error';
         } else if (n.status === 'completed' && a.status === 'idle') {
