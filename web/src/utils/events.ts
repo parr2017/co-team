@@ -138,6 +138,14 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
     case 'node_added':
       return { text: '计划插入新节点', level: 'info', category: 'task', noisy: false };
 
+    // ---- 协作可视化（2026-09-16）：agent 间留言与上游接力 ----
+    case 'agent_message':
+      if (p.kind === 'received') return { text: `${p.agent || '成员'} 收到来自 ${p.from || '同伴'} 的留言`, level: 'info', category: 'agent', noisy: false };
+      if (p.kind === 'doc') return { text: `${p.agent || '成员'} 更新协同文档 docs/${p.doc_type}.md → v${p.version ?? '?'}`, level: 'info', category: 'agent', noisy: false };
+      return { text: `${p.agent || '成员'} 给 ${p.to === 'user' ? '用户' : p.to === 'orchestrator' ? '主 Agent' : (p.to || '同伴')} 留言`, level: 'info', category: 'agent', noisy: false };
+    case 'node_handoff':
+      return { text: `${p.agent || '成员'} 接力上游：${CLIP(p.handoff || '', 80)}`, level: 'info', category: 'agent', noisy: false };
+
     case 'knowledge_deposited':
       return { text: `${p.agent || ''}沉淀知识到知识库${p.updated ? '（更新已有条目）' : ''}`, level: 'success', category: 'agent', noisy: false };
 

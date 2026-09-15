@@ -158,7 +158,11 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
 
     // ---- 监督者 / 阻塞问答 / 阶段与验收（对齐服务端 emitProgress 全量清单）----
     case 'agent_message':
+      if (p.kind === 'received') return { text: `${p.agent || '成员'} 收到来自 ${p.from || '同伴'} 的留言`, level: 'info', category: 'agent', noisy: false };
+      if (p.kind === 'doc') return { text: `${p.agent || '成员'} 更新协同文档 docs/${p.doc_type}.md → v${p.version ?? '?'}`, level: 'info', category: 'agent', noisy: false };
       return { text: `${p.agent || '成员'}${p.direct ? '定向' : '广播'}发言：${CLIP(p.text, 70)}`, level: 'info', category: 'agent', noisy: false };
+    case 'node_handoff':
+      return { text: `${p.agent || '成员'} 接力上游：${CLIP(p.handoff || '', 80)}`, level: 'info', category: 'agent', noisy: false };
     case 'ask_created':
       return { text: `${p.from || 'Agent'} 向你提问：${CLIP(p.question, 70)}`, level: 'accent', category: 'agent', noisy: false };
     case 'ask_delivered':

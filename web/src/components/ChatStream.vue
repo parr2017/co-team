@@ -115,9 +115,24 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         <AgentAvatar :name="item.agent" :size="36" class="av" />
       </div>
 
-      <!-- Agent 留言（send_message，延迟派发）：左侧气泡，标注收件人；direct=对用户插话的直接回应 -->
-      <div v-else-if="item.t === 'message'" class="row them">
+      <!-- 协作可视化：上游→下游接力交接（引擎事实陈述，居中灰条；悬停看完整交接内容） -->
+      <div v-else-if="item.t === 'handoff'" class="sys-row">
+        <span class="sys-text mono handoff" :title="item.entry.meta?.handoff">{{ item.entry.text }}</span>
+      </div>
+
+      <!-- 协作可视化：收到其他 agent 的留言（接收方引用气泡，发送→接收链路闭合） -->
+      <div v-else-if="item.t === 'message_received'" class="row them">
         <div class="them-col">
+          <div class="who-name mono">{{ item.agent }} · 收到留言<template v-if="item.entry.meta?.from"> · 自 {{ item.entry.meta.from }}</template></div>
+          <div class="bubble them-b recv-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
+          </div>
+        </div>
+        <AgentAvatar :name="item.agent" :size="36" class="av" />
+      </div>
+
+      <!-- Agent 留言（send_message，延迟派发）：左侧气泡，标注收件人；direct=对用户插话的直接回应 -->
+      <div v-else-if="item.t === 'message'" class="row them">        <div class="them-col">
           <div class="who-name mono">
             {{ item.agent }}<template v-if="item.entry.meta?.direct"> · {{ item.entry.node_name }}<template v-if="item.entry.meta?.round"> · 第 {{ item.entry.meta.round }} 轮</template></template><template v-else-if="item.entry.meta?.to"> → {{ item.entry.meta.to === 'user' ? '用户' : (item.entry.meta.to === 'orchestrator' ? '主 Agent' : item.entry.meta.to) }}</template><template v-if="item.entry.meta?.undelivered"> · 未送达</template>
             <span v-if="item.entry.meta?.direct" class="direct-tag mono">回复你</span>
@@ -258,7 +273,7 @@ type Entry = JournalEntry & { agent: string };
 type RenderItem =
   | { t: 'time'; label: string }
   | { t: 'node'; name: string; models: string[] }
-  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc' | 'ask' | 'answer'; entry: Entry; agent: string };
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'message_received' | 'handoff' | 'doc' | 'ask' | 'answer'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 
@@ -580,6 +595,8 @@ html.dark .me-b::before { border-top-color: var(--ct-green); border-left-color: 
 /* 群聊化：送达回执/接力灰条 + direct 回复气泡强调 */
 .sys-text.ack { color: #178a3e; background: rgba(23, 138, 62, 0.08); border: 1px solid rgba(23, 138, 62, 0.25); }
 .sys-text.relay { color: #b8860b; background: rgba(184, 134, 11, 0.08); border: 1px solid rgba(184, 134, 11, 0.25); }
+.sys-text.handoff { color: var(--ct-accent, #4a8dff); background: rgba(74, 141, 255, 0.07); border: 1px solid rgba(74, 141, 255, 0.3); max-width: 90%; text-align: left; }
+.bubble.recv-b { border-left: 3px solid var(--ct-accent, #4a8dff); }
 .direct-tag { font-size: 9px; color: #fff; background: var(--ct-accent); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
 .bubble.them-b.direct { border-color: var(--ct-accent); box-shadow: 0 0 0 1px rgba(24, 144, 255, 0.25); }
 

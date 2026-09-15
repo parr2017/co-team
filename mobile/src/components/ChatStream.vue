@@ -11,7 +11,7 @@ type Entry = JournalEntry & { agent: string };
 type RenderItem =
   | { t: 'time'; label: string }
   | { t: 'node'; name: string }
-  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'doc' | 'ask' | 'answer'; entry: Entry; agent: string };
+  | { t: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'message_received' | 'handoff' | 'doc' | 'ask' | 'answer'; entry: Entry; agent: string };
 
 const props = defineProps<{ taskId: string; filterAgent?: string; filterNodeId?: string }>();
 const emit = defineEmits<{ (e: 'quote', text: string): void; (e: 'open-node', nodeId: string): void }>();
@@ -390,6 +390,22 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
         </div>
       </div>
 
+      <!-- 协作可视化：上游→下游接力交接（引擎事实陈述，居中灰条） -->
+      <div v-else-if="item.t === 'handoff'" class="sys-row">
+        <span class="sys-text handoff">{{ item.entry.text }}</span>
+      </div>
+
+      <!-- 协作可视化：收到其他 agent 的留言（接收方引用气泡，发送→接收链路闭合） -->
+      <div v-else-if="item.t === 'message_received'" class="row them">
+        <AgentAvatar :name="item.agent" :size="36" />
+        <div class="them-col">
+          <div class="who-name">{{ item.agent }} · 收到留言<template v-if="item.entry.meta?.from"> · 自 {{ item.entry.meta.from }}</template></div>
+          <div class="bubble them-b recv-b">
+            <div class="b-text md" v-html="md(item.entry.text)"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Agent 留言（send_message，延迟派发）：左侧气泡；direct=对用户插话的直接回应（角标+署名） -->
       <div v-else-if="item.t === 'message'" class="row them">
         <AgentAvatar :name="item.agent" :size="36" />
@@ -620,6 +636,9 @@ details summary { font-size: 12px; color: var(--text-3); }
 .sys-meta { font-size: 10px; color: rgba(255, 255, 255, 0.55); }
 /* 群聊化：送达回执/接力灰条 + direct 回复气泡强调 */
 .sys-text.ack { background: rgba(7, 193, 96, 0.85); }
+/* 协作可视化：接力交接灰条 + 收到留言引用气泡 */
+.sys-text.handoff { background: rgba(74, 141, 255, 0.22); border: 1px solid rgba(74, 141, 255, 0.35); text-align: left; }
+.bubble.recv-b { border-left: 3px solid #4a8dff; }
 .sys-text.relay { background: rgba(184, 134, 11, 0.85); }
 .direct-tag { font-size: 10px; color: #fff; background: var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
 .bubble.them-b.direct { border: 1px solid var(--accent); box-shadow: 0 0 0 1px rgba(25, 137, 250, 0.25); }

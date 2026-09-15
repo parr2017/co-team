@@ -2813,6 +2813,17 @@ export class Orchestrator {
     aggressiveFold = false
   ): Promise<AgentResult> {
     const context = await this.upstreamContext(taskId, node);
+    // 协作可视化（2026-09-16）：上游→下游的接力此前只注入提示词、界面完全无感知——
+    // 首次尝试时落一条作战室记录 + node_handoff 事件（重试/接管/换模不重复刷屏）
+    if (context.trim() && !lastError) {
+      await appendJournal(taskId, plugin.name, {
+        role: 'agent', kind: 'handoff',
+        text: `↳ 接力上游：${context.replace(/\n/g, ' ').slice(0, 300)}`,
+        ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+        meta: { handoff: context.slice(0, 2000) },
+      });
+      await emitProgress('node_handoff', { task_id: taskId, node_id: node.id, node_name: node.name, agent: plugin.name, handoff: context.slice(0, 1000) });
+    }
     // M2 实时问答：登记本 agent 在执行中——ask_agent 据此选择"实时投递"还是"图外咨询"
     const activeKey = `${taskId}:${plugin.name}`;
     this.activeAgents.set(activeKey, (this.activeAgents.get(activeKey) || 0) + 1);
@@ -2929,6 +2940,17 @@ export class Orchestrator {
     // improvement #4 (C4): deferred agent-to-agent messages consumed here so the
     // recipient answers them in this dispatch (mirrors the interventions contract)
     const agentMessages = await consumeAgentMessages(taskId, plugin.name);
+    // 协作可视化（2026-09-16）：收件侧此前纯提示词注入、界面无感知——每条留言落
+    // 作战室记录 + 事件，让"发送→接收→接力"在战况室形成完整可见链路
+    for (const m of agentMessages) {
+      await appendJournal(taskId, plugin.name, {
+        role: 'agent', kind: 'message_received',
+        text: `收到来自 ${m.from} 的留言：${String(m.text || '').slice(0, 200)}`,
+        ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+        meta: { from: m.from, text: String(m.text || '') },
+      });
+      await emitProgress('agent_message', { task_id: taskId, node_id: node.id, node_name: node.name, agent: plugin.name, kind: 'received', from: m.from });
+    }
     const agentMessageBlock = agentMessages.length
       ? `\n\n## 来自其他 Agent 的留言（必须响应，并在汇报中说明如何落实）\n${agentMessages.map((m, i) => `${i + 1}. [${m.from}] ${m.text}`).join('\n')}`
       : '';
