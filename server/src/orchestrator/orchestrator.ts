@@ -279,6 +279,9 @@ export class Orchestrator {
   private planningMode: 'rolling' | 'static';
   private rollingMaxStages: number;
   private taskTokens = new Map<string, number>();
+  /** E5 软重试防浪费记忆（o3xmkraj 复盘）：本任务内已"降思考强度重试仍烧穿"的模型——
+   *  同模型只软重试一次，命中记忆直接换模（网关不认 reasoning_effort 时避免双倍烧） */
+  private thinkingBurned = new Map<string, Set<string>>();
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
   /** plan_async+auto_run：后台规划落到 planned 后的入队钩子（index.ts 装配 taskQueue.enqueue） */
@@ -1026,6 +1029,8 @@ export class Orchestrator {
       this.logger.error('Task execution failed', { taskId, error: String(error) });
       result = { status: 'failed', error: `Execution failed: ${error}` };
     } finally {
+      // E5 软重试防浪费记忆随任务收尾清理（记忆语义 = 本任务内）
+      this.thinkingBurned.delete(taskId);
       if (this.sandboxEnabled && sandbox !== workspace) {
         if (result?.status === 'success') {
           // 1.6 收尾黑洞可见化（2026-09-15）：节点全 completed 后还有同步/验收/git 一长串
@@ -2924,6 +2929,9 @@ export class Orchestrator {
       const midRunWritten: string[] = [];
       // 缓存优先裁剪：断崖压缩每尝试至多一次（触发后重新 append-only，不逐轮重写历史）
       let foldedOnce = false;
+      // 空正文快速失败计数（o3xmkraj 节点4 实测：连续 4 轮秒回 completion=0，
+      // 修正循环全白烧）——连续 2 轮非 length 的空正文判模型确定性故障，直接换模
+      let emptyRounds = 0;
       // 重复调用指针化：同工具+同参数不再读盘回显
       const seenToolCalls = new Map<string, number>();
       for (let round = 0; round < maxRounds; round++) {
@@ -2963,14 +2971,49 @@ export class Orchestrator {
           elapsed_ms: resp.elapsedMs,
         });
         content = stripCodeFence(resp.content);
-        // E5: empty content with finish_reason=length means the reasoning burned the
-        // whole output budget — not a format problem. Skip the format-repair round and
-        // fail over (the budget won't grow by re-prompting the same model).
+        // 空正文快速失败：非 length 的空正文（秒回 completion=0 类）连发 2 轮 → 模型
+        // 确定性故障直接换模，不烧修正循环
+        if (!content.trim() && resp.finishReason !== 'length') {
+          emptyRounds += 1;
+          if (emptyRounds >= 2) {
+            record.error = `空正文连续 ${emptyRounds} 轮返回（finish_reason=${resp.finishReason ?? 'none'}）——模型确定性故障，换模`;
+            await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
+            await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
+            return { status: 'failed', error: record.error, tokens: record.tokens };
+          }
+        } else {
+          emptyRounds = 0;
+        }
+        // E5（o3xmkraj 复盘）：思考烧穿整轮输出预算且正文为空。聚合网关对推理通道常
+        // 不受 max_tokens 约束（实测 32000 档返回 38369 token），重发同请求不会变大——
+        // 但可以软重试：同模型降思考强度（reasoning_effort low，非关闭）+ 续写指令。
+        // 防浪费：本任务内同模型只软重试一次，仍烧穿记入记忆直接换模。
         if (!content.trim() && resp.finishReason === 'length') {
-          record.error = `输出预算耗尽（finish_reason=length）：思考消耗了全部 ${roundBudget} 输出 token，正文为空`;
-          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
-          await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
-          return { status: 'failed', error: record.error, tokens: record.tokens };
+          const burnedSet = this.thinkingBurned.get(taskId);
+          if (burnedSet?.has(entry.name)) {
+            record.error = `输出预算耗尽（finish_reason=length）：${entry.name} 本任务软重试仍烧穿过，直接换模`;
+            await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
+            await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
+            return { status: 'failed', error: record.error, tokens: record.tokens };
+          }
+          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: `输出预算耗尽：思考烧穿 ${resp.completionTokens} token（请求上限 ${roundBudget}）正文为空——同模型降思考强度软重试一次`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
+          await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: '思考烧穿输出预算，降强度软重试…', model: entry.name });
+          messages.push({ role: 'user', content: `你上一轮的思考耗尽了全部输出预算（${roundBudget} token）且没有输出任何正文。不要重新展开长思考：基于已有信息直接输出最终 JSON 结果；文件内容用 write_file 工具分批落盘，最终 JSON 的 files 留空数组。` });
+          const retryResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, undefined, undefined, onDelta, { extraBody: { reasoning_effort: 'low' } });
+          this.pool!.recordUsage(entry.name, retryResp.promptTokens, retryResp.completionTokens);
+          this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + retryResp.promptTokens + retryResp.completionTokens);
+          record.tokens += retryResp.promptTokens + retryResp.completionTokens;
+          this.logger.info('LLM round telemetry', { taskId, nodeId: node.id, model: entry.name, round: round + 1, max_tokens: roundBudget, prompt_tokens: retryResp.promptTokens, cached_tokens: retryResp.cachedTokens ?? null, completion_tokens: retryResp.completionTokens, first_token_ms: retryResp.firstTokenMs ?? null, elapsed_ms: retryResp.elapsedMs, soft_retry: true });
+          content = stripCodeFence(retryResp.content);
+          if (!content.trim()) {
+            if (!burnedSet) this.thinkingBurned.set(taskId, new Set());
+            this.thinkingBurned.get(taskId)!.add(entry.name);
+            record.error = `输出预算耗尽（finish_reason=length）：软重试（降思考强度）仍烧穿，两轮共 ${resp.completionTokens + retryResp.completionTokens} token 正文为空`;
+            await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: retryResp.completionTokens });
+            await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
+            return { status: 'failed', error: record.error, tokens: record.tokens };
+          }
+          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'round', text: `✅ E5 软重试成功（降思考强度后输出 ${retryResp.completionTokens} token）`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
         }
         parsed = extractJson(content);
         // malformed tool-call JSON (nested/unclosed tool_calls) is recoverable:
