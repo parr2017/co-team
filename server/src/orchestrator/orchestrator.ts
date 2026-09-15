@@ -108,6 +108,13 @@ export interface OrchestratorOptions {
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
 
+/** 失败验尸用（2026-09-16）：堆栈头部若干行。此前 planStage1/failGraph 只记 String(e) 一行
+ *  文字，"RangeError: Invalid array length" 五连败时无处定位抛点。meta 走 JSON 序列化，
+ *  换行转义为 \n 保持单行可 grep。 */
+function errorStackHead(e: unknown, lines = 10): string {
+  return String((e as any)?.stack || '').split('\n').slice(0, lines).join(' | ').trim();
+}
+
 // ---------- i6efv5h2 复盘：错误分型（2026-09-09） ----------
 // 时长/环境/前置类失败与"模型能力"无关：重试必复发，烧完整条模型阶梯只是浪费。
 // 三类标记由 dispatch 打在 error 前缀上，executeNodeInner 命中即停止重试与接管、转人工。
@@ -463,7 +470,7 @@ export class Orchestrator {
         return { planned: stage.planned, rolling: true, stageGoal: stage.stage_goal, checklist: stage.checklist, summary: stage.summary };
       }
     } catch (e) {
-      this.logger.warn('stage-1 rolling plan failed, falling back to static', { error: String(e).slice(0, 200) });
+      this.logger.warn('stage-1 rolling plan failed, falling back to static', { error: String(e).slice(0, 200), stack: errorStackHead(e) });
     }
     const planned = await this.planFor(request, opts);
     return { planned, rolling: false, stageGoal: '', checklist: synthesizeChecklist(request), summary: planned.summary };
@@ -698,7 +705,7 @@ export class Orchestrator {
 
   /** plan_async background failure: park the task in `failed` so the UI never waits forever */
   private async failGraph(taskId: string, e: unknown): Promise<void> {
-    this.logger.error('Background task flow failed', { taskId, error: String((e as any)?.message || e) });
+    this.logger.error('Background task flow failed', { taskId, error: String((e as any)?.message || e), stack: errorStackHead(e) });
     const g = await loadGraph(taskId);
     if (g && g.status !== 'cancelled') {
       g.status = 'failed';

@@ -208,12 +208,38 @@ export async function generateTaskGraph(request: string, pool: ModelPool | null,
   return fallbackGraph(request, router.getAvailable());
 }
 
+/** 告警辅助：logger 懒加载自身失败也不外抛（降级路径绝不二次引爆） */
+function warnPlannerDegradation(msg: string, meta?: Record<string, unknown>): void {
+  import('../logger').then(({ getLogger }) => getLogger().warn(msg, meta)).catch(() => {});
+}
+
+/**
+ * 规划辅助上下文守卫（2026-09-16）：记忆/知识库是"锦上添花"的注入数据，读取失败必须
+ * 降级为空继续规划，绝不杀死规划主流程。09-14/15 五任务连败复盘：getMemory/relevantKnowledge
+ * 裸奔在 llmPlan 的 try 之外（generateStagePlan 则整段无守卫），知识库损坏时一个
+ * RangeError: Invalid array length 双路崩掉滚动与静态规划。
+ */
+async function loadPlannerContext(request: string, projectId?: string): Promise<{ memory: string; knowledge: string[] }> {
+  let memory = '（暂无历史经验）';
+  try {
+    memory = (await getMemory()).map((m) => `- ${m}`).join('\n') || memory;
+  } catch (e) {
+    warnPlannerDegradation('Planner memory load failed, degrading to empty', { error: String(e).slice(0, 200) });
+  }
+  let knowledge: string[] = [];
+  try {
+    knowledge = (await relevantKnowledge(request, { project_id: projectId, limit: 4 })).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
+  } catch (e) {
+    warnPlannerDegradation('Planner knowledge load failed, degrading to empty', { error: String(e).slice(0, 200) });
+  }
+  return { memory, knowledge };
+}
+
 async function llmPlan(request: string, pool: ModelPool, router: Router, model: any, previousPlan: PlannedGraph | null, feedbacks: string[], level?: TaskLevel, pinnedModel?: string, projectId?: string): Promise<PlannedGraph | null> {
   const available = [...router.getAvailable().keys()];
   const agentDesc =
     [...router.getAvailable().values()].map((p) => `- ${p.name}: ${p.role || p.description} (tags: ${p.tags.join(',')})`).join('\n') || '- dev: 开发实现';
-  const memory = (await getMemory()).map((m) => `- ${m}`).join('\n') || '（暂无历史经验）';
-  const knowledge = (await relevantKnowledge(request, { project_id: projectId, limit: 4 })).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
+  const { memory, knowledge } = await loadPlannerContext(request, projectId);
   // skill map (R2): normalizePlan needs the agents' tags to enforce required_skills
   const skillMap = new Map<string, AgentSkillInfo>(
     [...router.getAvailable().values()].map((p) => [p.name, { name: p.name, tags: p.tags as string[] }])
@@ -269,8 +295,7 @@ export async function generateStagePlan(request: string, pool: ModelPool | null,
   const available = [...router.getAvailable().keys()];
   const agentDesc =
     [...router.getAvailable().values()].map((p) => `- ${p.name}: ${p.role || p.description} (tags: ${p.tags.join(',')})`).join('\n') || '- dev: 开发实现';
-  const memory = (await getMemory()).map((m) => `- ${m}`).join('\n') || '（暂无历史经验）';
-  const knowledge = (await relevantKnowledge(request, { project_id: opts.projectId, limit: 4 })).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
+  const { memory, knowledge } = await loadPlannerContext(request, opts.projectId);
 
   const historyBlock = opts.stageHistory.length
     ? '已完成阶段（这些工作不需要重做，除非清单项未达成）：\n' +
