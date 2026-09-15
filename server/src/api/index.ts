@@ -776,10 +776,61 @@ export function createApi(ctx: ApiContext): Hono {
     const body = await readJsonAuto<{ approved?: boolean }>(c);
     try {
       const result = await ctx.orchestrator.resolvePendingCommand(taskId, commandId, body.approved !== false);
+      // o3xmkraj 复盘：批准 → 节点已重置 pending，重新入队续跑；拒绝 → 释放车道槽位
+      if ((result as { node_resumed?: boolean }).node_resumed) {
+        const graph = await getTaskGraph(taskId);
+        if (graph) await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, validateWorkspace(graph.workspace || ''));
+      } else if (body.approved === false) {
+        ctx.taskQueue.releaseStalled(taskId);
+      }
       return c.json({ task_id: taskId, command_id: commandId, ...result });
     } catch (e: any) {
       throw new HttpError(400, String(e.message || e));
     }
+  });
+
+  // 人工门续跑（o3xmkraj 复盘）：needs_human 节点在人工修复环境/补充信息后，
+  // 一键重置该节点及被连带取消的下游 → 重新入队，不再"整任务报废"
+  app.post('/api/tasks/:taskId/nodes/:nodeId/retry', async (c) => {
+    const taskId = c.req.param('taskId');
+    const nodeId = c.req.param('nodeId');
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new HttpError(404, 'task not found');
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node) throw new HttpError(404, 'node not found');
+    if (node.status !== 'failed' || !node.needs_human) throw new HttpError(400, '节点不是"需人工介入"的失败态，无需续跑');
+    const upstream = new Map<string, string[]>();
+    for (const n of graph.nodes) upstream.set(n.id, []);
+    for (const [src, dst] of graph.edges) upstream.get(dst)?.push(src);
+    const reset = new Set<string>([nodeId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const n of graph.nodes) {
+        if ((n.status === 'pending' || n.status === 'cancelled') && (upstream.get(n.id) || []).some((d) => reset.has(d))) {
+          reset.add(n.id);
+          changed = true;
+        }
+      }
+    }
+    for (const n of graph.nodes) {
+      if (reset.has(n.id) && n.status !== 'pending') {
+        n.status = 'pending';
+        n.error = '';
+        (n as any).error_type = undefined;
+        n.needs_human = false;
+        n.finished_at = '';
+      }
+    }
+    await persistGraph(graph);
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master', kind: 'round',
+      text: `人工已处理：节点「${node.name}」及其下游共 ${reset.size} 个节点重置待跑，任务重新入队`,
+      ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+    });
+    await emitProgress('node_retried', { task_id: taskId, node_id: node.id, name: node.name, reset_nodes: [...reset] });
+    await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, validateWorkspace(graph.workspace || ''));
+    return c.json({ status: 'requeued', task_id: taskId, node_id: nodeId, reset_nodes: [...reset] });
   });
 
   // P0-2: convert a structured defect from a node's result into a fix task with a backlink

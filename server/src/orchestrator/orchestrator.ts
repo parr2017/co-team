@@ -1031,6 +1031,8 @@ export class Orchestrator {
     } finally {
       // E5 软重试防浪费记忆随任务收尾清理（记忆语义 = 本任务内）
       this.thinkingBurned.delete(taskId);
+      // 已批准命令登记同样随任务收尾清理（续跑轮次消费后即失效）
+      await busSet(`task:approved_commands:${taskId}`, []).catch(() => {});
       if (this.sandboxEnabled && sandbox !== workspace) {
         if (result?.status === 'success') {
           // 1.6 收尾黑洞可见化（2026-09-15）：节点全 completed 后还有同步/验收/git 一长串
@@ -2083,6 +2085,8 @@ export class Orchestrator {
         node.error = `需人工介入（${stopReason}）：${error}`;
         node.result = { status: 'failed', error: node.error, summary: `节点停止（${stopReason}），未产出变更` };
         node.needs_human = true;
+        // 人工门分型：车道不锁（taskQueue onFinished 保槽放行），等人在节点上"已处理，继续"
+        node.error_type = 'human_gate';
         await saveDeliverable(taskId, node).catch(() => {});
         await persistGraph(graph);
         await this.recordAgentLife(taskId, graph, node, false, 0);
@@ -2158,12 +2162,28 @@ export class Orchestrator {
   /** Shared success tail: persist result, commit branch, capture diff, bookkeeping.
    *  approve_required 策略下暂存的命令在节点完成的同时登记到任务级待审批队列。 */
   private async finalizeNodeSuccess(taskId: string, graph: TaskGraph, node: TaskNode, result: AgentResult, useBranch: boolean, sandbox: string, escalated: boolean): Promise<void> {
+    const pendingCommands = ((result as Record<string, any>).pending_commands || []) as string[];
+    if (pendingCommands.length) {
+      // o3xmkraj 复盘：approve_required park 的命令此前不暂停任务——节点带着
+      // "命令没跑"的状态照常完成，验证缺席、批准结果无处回流。挂起等人工，
+      // 批准后命令结果回流会话、节点重置 pending 续跑（API 层重新入队）。
+      // 注意：本节点未提交的 write_file 落盘会被任务收尾的 recovery reset 丢弃，
+      // 续跑轮次会基于批准命令的真实输出重新生成——语义正确，代价是重做一遍。
+      await this.registerPendingCommands(taskId, node, pendingCommands);
+      node.status = 'waiting_approval';
+      node.finished_at = new Date().toISOString();
+      node.result = { status: 'waiting_approval', summary: `命令待人工审批后节点续跑：${pendingCommands.join('；').slice(0, 300)}`, changes: (result as Record<string, any>).changes || [] };
+      node.error = '';
+      await saveDeliverable(taskId, node).catch(() => {});
+      await persistGraph(graph);
+      await emitProgress('node_waiting_approval', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, commands: pendingCommands });
+      notify('approval_required', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」命令待审批（${pendingCommands.length} 条），批准后自动续跑`);
+      return;
+    }
     node.status = 'completed';
     node.finished_at = new Date().toISOString();
     node.result = escalated ? { ...result, escalated: true } : result;
     node.error = '';
-    const pendingCommands = ((result as Record<string, any>).pending_commands || []) as string[];
-    if (pendingCommands.length) await this.registerPendingCommands(taskId, node, pendingCommands);
     await saveDeliverable(taskId, node).catch(() => {});
     if (useBranch && node.branch) {
       // M2：全量提交节点工作树（不再依赖模型申报的 changes——漏报是常态，产物丢失才是灾难）
@@ -2206,7 +2226,7 @@ export class Orchestrator {
   }
 
   /** feature: 命令执行分级 — 用户批准/拒绝一条待审批命令；批准后在任务工作区执行并留痕。 */
-  async resolvePendingCommand(taskId: string, commandId: string, approved: boolean): Promise<{ ok: boolean; returncode?: number }> {
+  async resolvePendingCommand(taskId: string, commandId: string, approved: boolean): Promise<{ ok: boolean; returncode?: number; node_resumed?: boolean }> {
     const graph = await loadGraph(taskId);
     if (!graph) throw new Error('Task graph not found');
     const key = `task:pending_commands:${taskId}`;
@@ -2215,6 +2235,7 @@ export class Orchestrator {
     if (idx === -1) throw new Error('pending command not found');
     const [item] = queue.splice(idx, 1);
     await busSet(key, queue);
+    const node = graph.nodes.find((n) => n.id === item.node_id);
 
     if (!approved) {
       await appendJournal(taskId, 'orchestrator', {
@@ -2225,12 +2246,31 @@ export class Orchestrator {
         node_id: item.node_id,
         node_name: item.node_name,
       });
+      // o3xmkraj 复盘：拒绝后节点不能再悬在 waiting_approval——落 failed
+      // （human_gate 分型：车道不锁，等人在任务上决定重试或放弃）
+      if (node && node.status === 'waiting_approval') {
+        node.status = 'failed';
+        node.error_type = 'human_gate';
+        node.needs_human = true;
+        node.finished_at = new Date().toISOString();
+        node.error = `命令被人工拒绝：${item.command}`;
+        node.result = { status: 'failed', error: node.error, summary: '人工拒绝执行待批命令，节点未完成' };
+        graph.status = 'failed';
+        await persistGraph(graph);
+      }
       await emitProgress('command_resolved', { task_id: taskId, command_id: item.id, approved: false, command: item.command });
       return { ok: true };
     }
 
     const policy = policyWithLevel(this.policy, graph.execution_policy);
     const result = await executeCommandAsync(item.command, graph.workspace || '.', policy);
+    // 批准登记：节点续跑时若再次产出同一命令，直接放行执行（不再二次 park）
+    const approvedKey = `task:approved_commands:${taskId}`;
+    const approvedCmds = (await busGet<string[]>(approvedKey)) || [];
+    if (!approvedCmds.includes(item.command)) {
+      approvedCmds.push(item.command);
+      await busSet(approvedKey, approvedCmds);
+    }
     await appendJournal(taskId, 'orchestrator', {
       role: 'master',
       kind: 'tool_results',
@@ -2242,8 +2282,22 @@ export class Orchestrator {
       node_name: item.node_name,
       meta: { command: item.command, returncode: result.returncode },
     });
-    await emitProgress('command_resolved', { task_id: taskId, command_id: item.id, approved: true, command: item.command, returncode: result.returncode });
-    return { ok: true, returncode: result.returncode };
+    let nodeResumed = false;
+    if (node && node.status === 'waiting_approval') {
+      // 结果回流（o3xmkraj 复盘：批准后命令结果无处可去，agent 已离场）——
+      // 写进该节点 agent 的会话历史，续跑轮次直接引用真实输出
+      const sessionKey = `task:${taskId}:agent:${node.agent}:session`;
+      const session = (await busGet<{ role: 'user' | 'assistant'; content: string }[]>(sessionKey)) || [];
+      session.push({ role: 'user', content: `人工已批准并执行命令 \`${item.command}\`：\n退出码 ${result.returncode}\nstdout: ${result.stdout.slice(-1200) || '（无）'}\nstderr: ${result.stderr.slice(-800) || '（无）'}\n请基于以上真实结果继续完成本节点工作（文件用 write_file 渐进落盘）。` });
+      await busSet(sessionKey, session.slice(-20));
+      node.status = 'pending';
+      node.result = null;
+      node.error = '';
+      await persistGraph(graph);
+      nodeResumed = true;
+    }
+    await emitProgress('command_resolved', { task_id: taskId, command_id: item.id, approved: true, command: item.command, returncode: result.returncode, node_resumed: nodeResumed });
+    return { ok: true, returncode: result.returncode, node_resumed: nodeResumed };
   }
 
   /** feature: 实施前澄清 — 记录用户对节点简报的确认/答复，节点回到待执行状态。 */
@@ -3318,6 +3372,22 @@ export class Orchestrator {
 
       let result: AgentResult = parsed as AgentResult;
       result = applyFinalOutput(workspace, result as Record<string, any>, policy) as AgentResult;
+      // 人工已批准的命令直接放行执行（不再二次 park）——目录监狱仍生效
+      const approvedCmds = (await busGet<string[]>(`task:approved_commands:${taskId}`)) || [];
+      const cmdResults = (result as Record<string, any>).command_results as { command: string; needs_approval: boolean; returncode: number; stdout: string; stderr: string }[] | undefined;
+      if (cmdResults?.length && approvedCmds.length) {
+        for (const cr of cmdResults) {
+          if (!cr.needs_approval || !approvedCmds.includes(cr.command)) continue;
+          const r2 = await executeCommandAsync(cr.command, workspace, { level: 'full', whitelistCommands: null, maxTimeSec: policy.maxTimeSec });
+          cr.needs_approval = false;
+          cr.returncode = r2.returncode;
+          cr.stdout = r2.stdout;
+          cr.stderr = r2.stderr;
+          const pc = (result as Record<string, any>).pending_commands as string[] | undefined;
+          if (pc) (result as Record<string, any>).pending_commands = pc.filter((c) => c !== cr.command);
+          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'tool_results', text: `已批准命令自动放行执行：${cr.command}\n退出码 ${r2.returncode}`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { command: cr.command, returncode: r2.returncode } });
+        }
+      }
       // 渐进落盘：轮内 write_file/edit_file 的产物计入申报，交付一致性检查不再误报 unreported
       if (midRunWritten.length) {
         (result as Record<string, any>).changes = [...new Set([...((result as Record<string, any>).changes || []), ...midRunWritten])];

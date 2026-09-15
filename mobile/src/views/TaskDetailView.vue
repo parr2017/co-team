@@ -478,6 +478,21 @@ function approve(nodeId: string) {
     .catch((e) => showToast(e.message));
 }
 
+// 人工门续跑（o3xmkraj 复盘）：环境/前置修复后一键重置失败节点及下游并重新入队
+const retryingNodeId = ref('');
+async function retryNode(nodeId: string) {
+  retryingNodeId.value = nodeId;
+  try {
+    const r = await api.retryNode(taskId.value, nodeId);
+    showToast(`已重新入队（${r.reset_nodes.length} 个节点重置）`);
+    void refresh();
+  } catch (e: any) {
+    showToast(e.message || '续跑失败');
+  } finally {
+    retryingNodeId.value = '';
+  }
+}
+
 // P0-2: convert a structured defect into a fix task with a backlink
 const converting = ref('');
 function convertDefect(nodeId: string, defectIndex: number) {
@@ -740,6 +755,14 @@ function nodeIcon(status: string): string {
                   type="primary"
                   @click.stop="approve(n.id)"
                 >审批</van-button>
+                <van-button
+                  v-else-if="n.status === 'failed' && n.needs_human"
+                  size="small"
+                  round
+                  type="warning"
+                  :loading="retryingNodeId === n.id"
+                  @click.stop="retryNode(n.id)"
+                >已处理，继续</van-button>
                 <van-icon v-else name="arrow" size="14" color="var(--text-3)" />
 
                 <div v-if="selectedNodeId === n.id" class="n-detail">

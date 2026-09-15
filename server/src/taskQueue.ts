@@ -1,6 +1,7 @@
 import { getLogger } from './logger';
 import { getTaskGraph, persistGraph, emitProgress, appendJournal } from './store';
 import { busSet } from './bus';
+import { notify } from './notify';
 import type { TaskStatus } from './types';
 
 /** Minimal execution surface (satisfied by Orchestrator). */
@@ -47,6 +48,9 @@ const CAPACITY_RETRY_MS = 10_000;
  * 连接死亡/断流大多落在 other。
  */
 export const CONTENT_ERROR_TYPES = new Set(['precondition', 'blocker', 'content', 'budget', 'system']);
+/** 人工门失败（o3xmkraj 复盘）：环境/前置/审批类 needs_human——车道不锁、不自动重排，
+ *  等人在任务上"已处理，从此节点继续"（POST /nodes/:id/retry） */
+export const HUMAN_GATE_ERROR_TYPES = new Set(['human_gate']);
 /** infra 失败自动重排的递增延时（1min → 5min → 15min，封顶） */
 export const INFRA_REQUEUE_BACKOFF_MS = [60_000, 300_000, 900_000];
 
@@ -170,6 +174,15 @@ export class TaskQueueManager {
     lane.running = null;
     if (status === 'failed') {
       const failure = await this.classifyFailure(taskId);
+      if (failure.kind === 'human_gate') {
+        // 人工门失败（o3xmkraj 复盘）：环境/前置问题，锁车道只会堵死整个项目——
+        // 保槽放行，等人在任务上"已处理，从此节点继续"（POST /nodes/:id/retry）
+        this.logger.warn('Human-gate failure — lane released, awaiting manual node retry', { lane: key, taskId, nodes: (await getTaskGraph(taskId))?.nodes.filter((n) => n.status === 'failed').length });
+        await emitProgress('queue_human_gate', { lane: key, task_id: taskId, message: '任务停在人工门：修复环境后在任务详情点「已处理，从此节点继续」' });
+        await notify('queue_human_gate', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 停在人工门（需人工介入），车道已放行——处理后请在任务详情点「从此节点继续」`);
+        this.tryStart(key);
+        return;
+      }
       if (failure.kind === 'infra' && (failure.retries ?? 0) < this.maxInfraRetries) {
         // 永续开发：infra 失败不锁车道——递增延时自动重排（execute 重跑会自动复位
         // 非 completed 节点），车道让给后续任务，模型池恢复后本任务自动续命
@@ -212,6 +225,20 @@ export class TaskQueueManager {
     lane.blockedBy = null;
     this.logger.info('Queue resumed by user', { lane: key });
     this.tryStart(key);
+    return this.snapshot(key);
+  }
+
+  /** 人工门任务收场（命令被拒绝/任务转失败）后释放车道槽位——waiting_approval
+   *  期间 lane.running 仍指向本任务，不释放会让同车道后续任务永久排队。 */
+  releaseStalled(taskId: string): QueueSnapshot | null {
+    const key = this.taskLane.get(taskId);
+    if (!key) return null;
+    const lane = this.lane(key);
+    if (lane.running === taskId) {
+      lane.running = null;
+      this.logger.info('Stalled human-gate task released its lane slot', { lane: key, taskId });
+      this.tryStart(key);
+    }
     return this.snapshot(key);
   }
 
@@ -269,7 +296,7 @@ export class TaskQueueManager {
 
   /** 任务失败分型：看节点 error_type 汇总——任一内容类即 content，否则 infra。 */
   private async classifyFailure(taskId: string): Promise<{
-    kind: 'infra' | 'content';
+    kind: 'infra' | 'content' | 'human_gate';
     retries?: number;
     projectId?: string | null;
     workspace?: string;
@@ -278,13 +305,14 @@ export class TaskQueueManager {
       const graph = await getTaskGraph(taskId);
       if (!graph) return { kind: 'content' };
       // 未记录 error_type（历史图/异常路径）保守按 content 处理——只有明确分型的才走 infra 自动重排
-      const hasContent = (graph.nodes || []).some((n) => {
-        if (n.status !== 'failed') return false;
+      const failedNodes = (graph.nodes || []).filter((n) => n.status === 'failed');
+      const hasContent = failedNodes.some((n) => {
         const t = String((n as any).error_type || '');
         return !t || CONTENT_ERROR_TYPES.has(t);
       });
+      const hasHumanGate = failedNodes.some((n) => HUMAN_GATE_ERROR_TYPES.has(String((n as any).error_type || '')));
       return {
-        kind: hasContent ? 'content' : 'infra',
+        kind: hasContent ? 'content' : hasHumanGate ? 'human_gate' : 'infra',
         retries: graph.infra_retries ?? 0,
         projectId: graph.project_id ?? null,
         workspace: graph.workspace,

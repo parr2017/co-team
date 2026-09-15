@@ -384,6 +384,8 @@ export const api = {
   metricsTrend: (days = 7) => request<{ trend: { date: string; tasks: number; defects_total: number; success_rate: number }[] }>(`/api/metrics/trend?days=${days}`),
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   approveNode: (taskId: string, nodeId: string) => post(`/api/tasks/${taskId}/approve/${nodeId}`),
+  // 人工门续跑：needs_human 节点在人工修复后重置该节点及下游并重新入队
+  retryNode: (taskId: string, nodeId: string) => post<{ status: string; reset_nodes: string[] }>(`/api/tasks/${taskId}/nodes/${nodeId}/retry`, {}),
   convertDefect: (taskId: string, nodeId: string, defectIndex: number, autoRun = false) =>
     post<{ status: string; fix_task_id: string; questions?: string[] }>(`/api/tasks/${taskId}/defects/convert`, { node_id: nodeId, defect_index: defectIndex, auto_run: autoRun }),
   cancelTask: (id: string) => post(`/api/tasks/${id}/cancel`),

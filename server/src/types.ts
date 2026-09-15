@@ -63,7 +63,8 @@ export interface DefectReport {
 }
 
 export interface AgentResult {
-  status: 'success' | 'failed';
+  /** waiting_approval：approve_required 下有命令 park，节点挂起等人工批准后续跑 */
+  status: 'success' | 'failed' | 'waiting_approval';
   error?: string;
   changes?: string[];
   summary?: string;

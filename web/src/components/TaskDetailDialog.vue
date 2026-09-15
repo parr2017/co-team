@@ -133,6 +133,13 @@
                   >
                     <el-option v-for="a in agentOptions" :key="a" :label="a" :value="a" />
                   </el-select>
+                  <el-button
+                    v-if="selected.status === 'failed' && (selected as any).needs_human"
+                    size="small"
+                    type="warning"
+                    :loading="retryingNode === selected.id"
+                    @click="retrySelectedNode(selected)"
+                  >已处理，从此节点继续</el-button>
                 </div>
                 <div class="n-obs mono">
                   <span>{{ selected.result?.model || '模型未记录' }}</span>
@@ -512,7 +519,7 @@ import { describeEvent, statusText, taskStage, type EventView } from '../utils/e
 import { useDashboard } from '../composables/useDashboard';
 
 const props = defineProps<{ modelValue: boolean; taskId: string; liveAgents?: Record<string, { model?: string; currentAction?: string }> }>();
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{ (e: 'close'): void; (e: 'refresh'): void }>();
 
 const task = ref<TaskGraph | null>(null);
 const events = ref<TaskEvent[]>([]);
@@ -885,8 +892,22 @@ async function savePolicyWhitelist() {
   }
 }
 
-async function resolveCommand(c: { id: string; command: string }, approved: boolean) {
+// 人工门续跑（o3xmkraj 复盘）：环境/前置修复后重置失败节点及下游并重新入队
+const retryingNode = ref('');
+async function retrySelectedNode(n: { id: string; name: string }) {
+  retryingNode.value = n.id;
   try {
+    const r = await api.retryNode(props.taskId, n.id);
+    ElMessage.success(`已重新入队（${r.reset_nodes.length} 个节点重置）`);
+    emit('refresh');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    retryingNode.value = '';
+  }
+}
+
+async function resolveCommand(c: { id: string; command: string }, approved: boolean) {  try {
     const r = await api.resolveCommand(props.taskId, c.id, approved);
     if (approved) {
       ElMessage.success(r.returncode === 0 ? `命令已执行（退出码 0）` : `命令已执行但退出码为 ${r.returncode}，请查看任务频道`);

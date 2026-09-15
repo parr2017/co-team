@@ -651,6 +651,9 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
+  // 人工门续跑：needs_human 节点在人工修复后重置该节点及下游并重新入队
+  retryNode: (taskId: string, nodeId: string) =>
+    request<{ status: string; reset_nodes: string[] }>(`/api/tasks/${taskId}/nodes/${nodeId}/retry`, { method: 'POST' }),
   // feature: 实施前澄清
   getNodeClarify: (taskId: string, nodeId: string) =>
     request<{ task_id: string; node_id: string; mode: string; brief: { approach: string; files: string[]; risks: string[]; questions: string[] }; answers: { question: string; answer: string }[] }>(
