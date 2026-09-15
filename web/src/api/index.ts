@@ -694,6 +694,14 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled, hour }),
     }),
+  // 包 D：全局命令权限（级别 + 白名单）
+  getPermissions: () => request<{ permissions: { level: string; whitelist_commands: string[]; max_time_sec?: number }; levels: string[] }>('/api/config/permissions'),
+  savePermissions: (level: string, whitelist_commands: string[], max_time_sec?: number) =>
+    request<{ status: string; permissions: { level: string; whitelist_commands: string[]; max_time_sec?: number } }>('/api/config/permissions', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level, whitelist_commands, ...(max_time_sec !== undefined ? { max_time_sec } : {}) }),
+    }),
   listDailyReports: (limit = 30) => request<{ reports: DailyReport[] }>(`/api/reports/daily?limit=${limit}`),
   resolveReportItem: (date: string, itemId: string, action: 'fix_now' | 'create_task' | 'skip') =>
     request<{ status: string; action: string; task_id?: string }>(`/api/reports/daily/${date}/resolve`, {

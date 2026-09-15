@@ -35,6 +35,27 @@ export function saveDailyReport(cfg: { enabled: boolean; hour: number }, root: s
   writeRaw(raw, root);
 }
 
+/** 包 D（2026-09-16）：全局命令权限（permissions 节）读写——设置界面替代手改 config.yaml */
+export function readPermissions(root: string = PROJECT_ROOT): { level: string; whitelist_commands: string[]; max_time_sec?: number } {
+  const raw = readRaw(root);
+  const p = (raw.permissions || {}) as Record<string, any>;
+  return {
+    level: typeof p.level === 'string' ? p.level : '',
+    whitelist_commands: Array.isArray(p.whitelist_commands) ? p.whitelist_commands.map(String) : [],
+    ...(typeof p.max_time_sec === 'number' ? { max_time_sec: p.max_time_sec } : {}),
+  };
+}
+
+export function savePermissions(cfg: { level: string; whitelist_commands: string[]; max_time_sec?: number }, root: string = PROJECT_ROOT): void {
+  const raw = readRaw(root);
+  raw.permissions = {
+    level: cfg.level,
+    whitelist_commands: cfg.whitelist_commands,
+    ...(cfg.max_time_sec !== undefined ? { max_time_sec: cfg.max_time_sec } : {}),
+  };
+  writeRaw(raw, root);
+}
+
 // ---------- agent file management ----------
 
 const DEFAULT_PROMPT = (name: string, role: string) =>

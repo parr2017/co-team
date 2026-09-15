@@ -1500,6 +1500,30 @@ export function createApi(ctx: ApiContext): Hono {
     }
   });
 
+  // 包 D（2026-09-16）：全局命令权限——设置界面替代手改 config.yaml
+  app.get('/api/config/permissions', async (c) => {
+    const { readPermissions } = await import('../configStore');
+    const { PERMISSION_LEVELS } = await import('../sandbox');
+    return c.json({ permissions: readPermissions(), levels: PERMISSION_LEVELS });
+  });
+
+  app.put('/api/config/permissions', async (c) => {
+    const { savePermissions } = await import('../configStore');
+    const { policyFromConfig, isPermissionLevel, PERMISSION_LEVELS } = await import('../sandbox');
+    const body = await c.req.json<{ level?: string; whitelist_commands?: string[]; max_time_sec?: number }>();
+    const level = String(body.level || '').trim();
+    if (!isPermissionLevel(level)) throw new HttpError(400, `level 必须是以下之一: ${PERMISSION_LEVELS.join(' | ')}`);
+    if (!Array.isArray(body.whitelist_commands)) throw new HttpError(400, 'whitelist_commands must be an array');
+    const whitelist = body.whitelist_commands.map((s) => String(s).trim()).filter(Boolean);
+    const maxTime = body.max_time_sec !== undefined ? Math.max(1, Math.floor(Number(body.max_time_sec) || 300)) : undefined;
+    const permissions = { level, whitelist_commands: whitelist, ...(maxTime !== undefined ? { max_time_sec: maxTime } : {}) };
+    savePermissions(permissions);
+    ctx.config.permissions = permissions;
+    // 运行时热更：新任务立即按新策略执行（无需重启）
+    ctx.orchestrator.setPolicy(policyFromConfig(permissions));
+    return c.json({ status: 'saved', permissions });
+  });
+
   // ---------- feature: 每日问题报告 ----------
 
   app.get('/api/config/daily-report', (c) => {

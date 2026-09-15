@@ -811,6 +811,31 @@ function nodeIcon(status: string): string {
                     <van-button size="mini" plain type="primary">更换 Agent</van-button>
                   </div>
                   <div v-if="n.error" class="n-error">✗ {{ n.error }}</div>
+                  <!-- 包 D：执行档案——与 web 对齐，手机上直接看 skill 是否生效 -->
+                  <div v-if="(n.result as any)?.execution" class="n-exec mono">
+                    <div class="ne-title">EXECUTION · 执行档案</div>
+                    <div class="ne-grid">
+                      <span>轮次 {{ (n.result as any).execution.rounds }}</span>
+                      <span v-if="(n.result as any).execution.duration_sec">耗时 {{ (n.result as any).execution.duration_sec }}s</span>
+                      <span v-if="(n.result as any).execution.context">ctx {{ fmtTok((n.result as any).execution.context?.est_base_tokens || 0) }} est</span>
+                      <span>知识命中 {{ ((n.result as any).execution.knowledge_hits || []).length }}</span>
+                    </div>
+                    <div v-if="Object.keys((n.result as any).execution.tools || {}).length" class="ne-row">
+                      工具：
+                      <span v-for="(st, tool) in (n.result as any).execution.tools" :key="tool" class="ne-chip" :class="{ bad: st.fail > 0 }">
+                        {{ tool }}×{{ st.count }}<template v-if="st.fail"> ({{ st.fail }} 失败)</template>
+                      </span>
+                    </div>
+                    <div v-if="((n.result as any).execution.skills_indexed || []).length" class="ne-row">
+                      技能索引：{{ ((n.result as any).execution.skills_indexed || []).join('、') }}
+                    </div>
+                    <div v-if="((n.result as any).execution.skills_loaded || []).length" class="ne-row ne-loaded">
+                      实际加载：{{ ((n.result as any).execution.skills_loaded || []).join('、') }}
+                    </div>
+                    <div v-else-if="((n.result as any).execution.skills_indexed || []).length" class="ne-row dim">
+                      模型未拉取技能正文（仅注入了索引）
+                    </div>
+                  </div>
                   <MdView v-if="n.result?.summary" class="n-summary" :source="n.result.summary" />
                   <div v-if="n.result?.verification" class="n-verify">验证 · {{ n.result.verification }}</div>
                   <div v-if="(n.result?.changes || []).length" class="n-changes">
@@ -1209,6 +1234,15 @@ function nodeIcon(status: string): string {
 .n-swap { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
 .n-swap-label { font-size: 12px; color: var(--text-2); }
 .n-error { color: var(--red); font-size: 14px; margin-bottom: 8px; white-space: pre-wrap; line-height: 1.5; }
+/* 包 D：执行档案（对齐 web EXECUTION 卡） */
+.n-exec { background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent, #4a8dff); border-radius: 8px; padding: 9px 11px; margin-bottom: 10px; font-size: 12px; color: var(--text-2); }
+.ne-title { font-size: 10px; color: var(--text-3); letter-spacing: 0.6px; margin-bottom: 5px; }
+.ne-grid { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.ne-row { margin-top: 5px; line-height: 1.5; }
+.ne-chip { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-right: 4px; font-size: 11px; }
+.ne-chip.bad { color: var(--red); border-color: var(--red); }
+.ne-loaded { color: var(--green); }
+.ne-row.dim { color: var(--text-3); }
 .n-summary { font-size: 14px; color: var(--text-2); margin-bottom: 8px; line-height: 1.55; }
 .change { font-size: 13px; color: var(--green); margin-bottom: 3px; }
 .n-report { background: var(--panel-2); border-radius: 9px; padding: 11px 12px; margin-bottom: 10px; }

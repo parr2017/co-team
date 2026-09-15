@@ -43,6 +43,34 @@
           </div>
         </div>
       </el-tab-pane>
+      <!-- 包 D：全局命令权限（级别 + 白名单），保存即热更 -->
+      <el-tab-pane label="命令权限" name="permissions">
+        <div class="perm">
+          <div class="perm-row">
+            <div class="gen-info">
+              <div class="gen-title">默认权限级别</div>
+              <div class="gen-desc">所有新任务的缺省命令执行策略（单个任务可在创建时或任务详情里覆盖）。高危命令（删除/系统级/内联代码/强推）任何级别都强制人工审批，越界路径一律拒绝。</div>
+            </div>
+            <el-select v-model="perm.level" size="small" style="width: 180px">
+              <el-option v-for="lv in PERMISSION_LEVELS" :key="lv" :value="lv" :label="PERMISSION_LEVEL_LABELS[lv] || lv" />
+            </el-select>
+          </div>
+          <div class="perm-row">
+            <div class="gen-info">
+              <div class="gen-title">白名单命令</div>
+              <div class="gen-desc">「白名单自动」级别下免审批直接执行的命令首词；「改动需审批」级别下白名单内命令免审批、其余待你批准。</div>
+            </div>
+          </div>
+          <div class="perm-tags">
+            <el-tag v-for="(cmd, i) in perm.whitelist" :key="cmd + i" closable size="small" class="perm-tag mono" @close="perm.whitelist.splice(i, 1)">{{ cmd }}</el-tag>
+            <el-input v-model="permDraft" size="small" style="width: 170px" placeholder="输入命令回车添加" @keydown.enter.prevent="addWhitelist" />
+          </div>
+          <div class="perm-actions">
+            <el-button size="small" type="primary" :loading="permSaving" @click="savePerm">保存权限配置</el-button>
+            <el-button size="small" @click="loadPerm">放弃修改</el-button>
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="模型池" name="models">
         <div class="provider-list">
           <div v-for="(g, gi) in providers" :key="gi" class="provider-card">
@@ -233,7 +261,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, getApiToken, setApiToken, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
+import { api, getApiToken, setApiToken, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
 // 模型池按「服务接入点」分组编辑：同一 base_url + api_key 下可挂任意多个模型；
@@ -262,6 +290,35 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void; (e: 'notify
 
 const tab = ref('general');
 const providers = ref<ProviderGroup[]>([]);
+
+// 包 D（2026-09-16）：全局命令权限——级别 + 白名单，保存即热更（orchestrator.setPolicy）
+const perm = ref<{ level: string; whitelist: string[] }>({ level: 'approve_required', whitelist: [] });
+const permDraft = ref('');
+const permSaving = ref(false);
+async function loadPerm() {
+  try {
+    const d = await api.getPermissions();
+    perm.value = { level: d.permissions.level || 'approve_required', whitelist: d.permissions.whitelist_commands || [] };
+  } catch {
+    /* 保持默认值 */
+  }
+}
+function addWhitelist() {
+  const cmd = permDraft.value.trim().split(/\s+/)[0];
+  if (cmd && !perm.value.whitelist.includes(cmd)) perm.value.whitelist.push(cmd);
+  permDraft.value = '';
+}
+async function savePerm() {
+  permSaving.value = true;
+  try {
+    await api.savePermissions(perm.value.level, perm.value.whitelist);
+    ElMessage.success('权限配置已保存并即时生效');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存失败');
+  } finally {
+    permSaving.value = false;
+  }
+}
 // 拉取/导入上游模型
 const pullingIndex = ref(-1);
 const importVisible = ref(false);
@@ -360,7 +417,7 @@ const editingOriginal = ref<string | null>(null);
 const editing = ref<Partial<AgentDefinition> & { tagsText?: string; skills?: string[] }>({});
 
 async function loadAll() {
-  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport()]);
+  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport(), loadPerm()]);
 }
 
 async function loadDailyReport() {
@@ -702,4 +759,11 @@ async function removeAgent(row: AgentDefinition) {
 .gen-desc { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
 .gen-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .gen-time { font-size: 11px; color: var(--ct-text3); }
+
+/* 包 D：命令权限 */
+.perm { display: flex; flex-direction: column; gap: 12px; }
+.perm-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--ct-border); border-radius: 8px; }
+.perm-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px; border: 1px dashed var(--ct-border); border-radius: 8px; }
+.perm-tag { font-family: var(--ct-mono); }
+.perm-actions { display: flex; gap: 8px; }
 </style>

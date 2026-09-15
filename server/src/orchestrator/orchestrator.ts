@@ -303,6 +303,11 @@ export class Orchestrator {
     this.activeTaskCount = fn;
   }
 
+  /** 包 D（2026-09-16）：全局权限策略热更——设置界面保存后立即生效，无需重启 */
+  setPolicy(policy: PermissionPolicy): void {
+    this.policy = policy;
+  }
+
   constructor(opts: OrchestratorOptions) {
     this.plugins = new Map();
     this.agentsDir = opts.agentsDir;

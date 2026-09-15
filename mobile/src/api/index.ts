@@ -506,6 +506,11 @@ export const api = {
     if (params.source) sp.set('source', params.source);
     return request<{ entries: KnowledgeEntry[] }>(`/api/knowledge?${sp}`);
   },
+  // 包 D：全局命令权限（级别 + 白名单）
+  getPermissions: () =>
+    request<{ permissions: { level: string; whitelist_commands: string[]; max_time_sec?: number }; levels: string[] }>('/api/config/permissions'),
+  savePermissions: (level: string, whitelist_commands: string[]) =>
+    post<{ status: string; permissions: { level: string; whitelist_commands: string[] } }>('/api/config/permissions', { level, whitelist_commands }),
 };
 
 export function statusLabel(s: string): string {

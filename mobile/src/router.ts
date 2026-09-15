@@ -13,6 +13,7 @@ export const router = createRouter({
     { path: '/project/:id', component: () => import('./views/ProjectDetailView.vue'), props: true },
     { path: '/project/:id/report', component: () => import('./views/ProjectReportView.vue'), props: true },
     { path: '/approvals', component: () => import('./views/ApprovalsView.vue') },
+    { path: '/settings', component: () => import('./views/SettingsView.vue'), meta: { tab: 'settings' } },
     { path: '/task/new', component: () => import('./views/TaskCreateView.vue') },
     { path: '/task/:id', component: () => import('./views/TaskDetailView.vue'), props: true },
     { path: '/clarify/:id', component: () => import('./views/ClarifyView.vue'), props: true },
