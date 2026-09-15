@@ -1014,7 +1014,7 @@ export class Orchestrator {
     }
     graph.status = 'running';
     await persistGraph(graph);
-    await emitProgress('execute_start', { task_id: taskId, workspace, total_nodes: graph.nodes.length });
+    await emitProgress('execute_start', { task_id: taskId, workspace: execWorkspace, total_nodes: graph.nodes.length });
 
     let sandbox: string;
     try {
@@ -1062,7 +1062,7 @@ export class Orchestrator {
     const clarifyState = await busGet<{ answers?: ClarifyAnswer[] }>(`task:clarify:${taskId}`);
     const goalContent = [graph.description, ...(clarifyState?.answers || []).map((a) => `- ${a.question} → ${a.answer}`)].join('\n');
     await busSet(`task:goal:${taskId}`, { content: goalContent, updated_at: new Date().toISOString(), updated_by: 'system' });
-    const goalDir = this.sandboxEnabled && sandbox !== workspace ? sandbox : null;
+    const goalDir = this.sandboxEnabled && sandbox !== execWorkspace ? sandbox : null;
     if (goalDir) {
       try { fs.writeFileSync(path.join(sandbox, 'GLOBAL_GOAL.md'), `# GLOBAL_GOAL\n\n${goalContent}\n`, 'utf-8'); } catch { /* best effort */ }
     }
@@ -1070,7 +1070,7 @@ export class Orchestrator {
     // improvement 4: SSOT documents — the single source of truth for agent collaboration.
     // improvement 7: light-level tasks skip the doc pipeline entirely (LEVEL_PROFILES.docs)
     const levelProfile = LEVEL_PROFILES[graph.level ?? 'standard'];
-    const docTarget = this.sandboxEnabled && sandbox !== workspace ? sandbox : undefined;
+    const docTarget = this.sandboxEnabled && sandbox !== execWorkspace ? sandbox : undefined;
     if (levelProfile.docs) {
       try {
         await writeDoc(taskId, 'TASK_SPEC', buildTaskSpec(
@@ -1091,7 +1091,7 @@ export class Orchestrator {
     }
 
     // improvement 10: task-start snapshot (git ref + collaboration state)
-    await createSnapshot(taskId, { tag: 'task-start', workspace, sandbox }).catch((e) => this.logger.warn('task-start snapshot failed', { taskId, error: String(e) }));
+    await createSnapshot(taskId, { tag: 'task-start', workspace: execWorkspace, sandbox }).catch((e) => this.logger.warn('task-start snapshot failed', { taskId, error: String(e) }));
     await emitProgress('progress_update', { task_id: taskId, progress: computeProgress(graph) });
 
     let result: Record<string, any> = { status: 'failed', error: 'execution did not run' };
@@ -1181,7 +1181,7 @@ export class Orchestrator {
                 // syncToWorkspace (not mergeChanges): the sandbox here has its own .git,
                 // which must never leak into the workspace repo
                 await gitTool.syncToWorkspace(sandbox, execWorkspace, 'coteam/base');
-                const dirty = await simpleGit({ baseDir: workspace }).status();
+                const dirty = await simpleGit({ baseDir: execWorkspace }).status();
                 changes = dirty.files.map((f) => f.path);
               } else {
                 changes = mergeChanges(sandbox, execWorkspace);
@@ -1232,7 +1232,7 @@ export class Orchestrator {
     // 红灯或降级项 → waiting_approval + 派生任务提案（一键批准全自动派生）；全绿 → success
     if (result.status === 'success' && graph.rolling) {
       await emitProgress('task_finalizing', { task_id: taskId, stage: 'final_gate' });
-      result = await this.finalAcceptanceGate(taskId, graph, workspace, result);
+      result = await this.finalAcceptanceGate(taskId, graph, execWorkspace, result);
     }
 
     const status = String(result.status);
@@ -1276,7 +1276,7 @@ export class Orchestrator {
     }
 
     // improvement 10: task-end snapshot for post-hoc rollback / audit
-    await createSnapshot(taskId, { tag: 'task-end', workspace, note: `status=${status}` }).catch(() => {});
+    await createSnapshot(taskId, { tag: 'task-end', workspace: execWorkspace, note: `status=${status}` }).catch(() => {});
     clearProgressThrottle(taskId);
 
     // improvement 3: post-task review deposits a structured lesson into the knowledge base
