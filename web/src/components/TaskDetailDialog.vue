@@ -376,6 +376,9 @@
                   <el-option label="跟随全局设置" value="" />
                   <el-option v-for="lv in PERMISSION_LEVELS" :key="lv" :label="PERMISSION_LEVEL_LABELS[lv]" :value="lv" />
                 </el-select>
+                <el-select v-model="policyWhitelist" size="small" style="width: 300px" multiple filterable allow-create default-first-option :reserve-keyword="false" placeholder="白名单命令（留空跟随全局）" @change="savePolicyWhitelist">
+                  <el-option v-for="c in COMMON_WHITELIST" :key="c" :label="c" :value="c" />
+                </el-select>
                 <span class="mg-hint">
                   只出方案：不写代码只给方案 · 改动需审批：白名单外命令等你批准 · 白名单自动：仅白名单命令自动执行 · 完全控制：全部自动执行
                 </span>
@@ -536,6 +539,9 @@ const creatingSnap = ref(false);
 const diffNodeId = ref<string | null>(null);
 // feature: 命令执行分级
 const policyLevel = ref('');
+// 白名单命令（o3xmkraj 复盘：API 早已支持任务级 whitelist_commands，UI 从未暴露）
+const policyWhitelist = ref<string[]>([]);
+const COMMON_WHITELIST = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java', 'ls', 'cat', 'mkdir', 'cp', 'mv', 'rm', 'chmod'];
 const pendingCommands = ref<{ id: string; node_id: string; node_name: string; command: string; ts: string }[]>([]);
 // feature: 实施前澄清
 const clarifyNode = computed(() => task.value?.nodes.find((n) => n.status === 'waiting_clarify') || null);
@@ -852,7 +858,9 @@ async function refreshManage() {
   } catch { /* ignore */ }
   // feature: 命令执行分级
   try {
-    policyLevel.value = (await api.getTaskPolicy(props.taskId)).execution_policy?.level || '';
+    const p = (await api.getTaskPolicy(props.taskId)).execution_policy;
+    policyLevel.value = p?.level || '';
+    policyWhitelist.value = p?.whitelist_commands || [];
   } catch { /* ignore */ }
   try {
     pendingCommands.value = (await api.getPendingCommands(props.taskId)).commands;
@@ -861,8 +869,17 @@ async function refreshManage() {
 
 async function savePolicy() {
   try {
-    await api.setTaskPolicy(props.taskId, policyLevel.value || null);
+    await api.setTaskPolicy(props.taskId, policyLevel.value || null, policyWhitelist.value.length ? policyWhitelist.value : undefined);
     ElMessage.success(policyLevel.value ? `执行策略已切换为「${PERMISSION_LEVEL_LABELS[policyLevel.value]}」` : '已恢复跟随全局设置');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
+async function savePolicyWhitelist() {
+  try {
+    await api.setTaskPolicy(props.taskId, policyLevel.value || null, policyWhitelist.value.length ? policyWhitelist.value : undefined);
+    ElMessage.success(`白名单已更新（${policyWhitelist.value.length} 条命令）`);
   } catch (e: any) {
     ElMessage.error(e.message);
   }

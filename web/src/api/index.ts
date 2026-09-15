@@ -560,7 +560,7 @@ export const api = {
     workspace: string,
     autoRun = true,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string }; nodeClarify?: string; profile?: 'simple' | 'expert'; allowSelfRef?: boolean }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: string; profile?: 'simple' | 'expert'; allowSelfRef?: boolean }
   ) =>
     request<{ task_id: string; status?: string; questions?: string[]; summary?: string; level?: string; graph?: TaskGraph }>('/api/tasks', {
       method: 'POST',
@@ -664,11 +664,11 @@ export const api = {
     }),
   // feature: 命令执行分级
   getTaskPolicy: (taskId: string) => request<{ task_id: string; execution_policy: { level: string; whitelist_commands?: string[] } | null }>(`/api/tasks/${taskId}/policy`),
-  setTaskPolicy: (taskId: string, level: string | null) =>
-    request<{ status: string; execution_policy: { level: string } | null }>(`/api/tasks/${taskId}/policy`, {
+  setTaskPolicy: (taskId: string, level: string | null, whitelistCommands?: string[]) =>
+    request<{ status: string; execution_policy: { level: string; whitelist_commands?: string[] } | null }>(`/api/tasks/${taskId}/policy`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ level }),
+      body: JSON.stringify({ level, whitelist_commands: whitelistCommands }),
     }),
   getPendingCommands: (taskId: string) =>
     request<{ task_id: string; commands: { id: string; node_id: string; node_name: string; command: string; ts: string }[] }>(`/api/tasks/${taskId}/pending-commands`),

@@ -378,10 +378,58 @@ async function refresh() {
   void loadProposals();
   void loadGoal();
   void loadSnapshots();
+  void loadPolicy();
   try {
     const ev = await api.taskEvents(taskId.value);
     events.value = ev.events;
   } catch { /* ignore */ }
+}
+
+// ---------- 执行策略（o3xmkraj 复盘补齐移动端：level + 白名单命令） ----------
+const POLICY_LEVELS = [
+  { text: '跟随全局设置', value: '' },
+  { text: '只出方案', value: 'plan_only' },
+  { text: '只读', value: 'readonly' },
+  { text: '改动需审批', value: 'approve_required' },
+  { text: '白名单自动', value: 'whitelist_auto' },
+  { text: '完全控制', value: 'full' },
+];
+const COMMON_COMMANDS = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java'];
+const policyLevel = ref('');
+const policyWhitelist = ref<string[]>([]);
+const policyOpen = ref(false);
+const policyWhitelistInput = ref('');
+const policyText = computed(() => {
+  const lv = POLICY_LEVELS.find((l) => l.value === policyLevel.value)?.text || '跟随全局设置';
+  return policyWhitelist.value.length ? `${lv} · ${policyWhitelist.value.join(' ')}` : lv;
+});
+async function loadPolicy() {
+  try {
+    const p = (await api.getTaskPolicy(taskId.value)).execution_policy;
+    policyLevel.value = p?.level || '';
+    policyWhitelist.value = p?.whitelist_commands || [];
+  } catch { /* ignore */ }
+}
+function openPolicyEditor() {
+  policyWhitelistInput.value = policyWhitelist.value.join(' ');
+  policyOpen.value = true;
+}
+function togglePolicyCmd(cmd: string) {
+  const list = policyWhitelistInput.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+  const idx = list.indexOf(cmd);
+  if (idx >= 0) list.splice(idx, 1); else list.push(cmd);
+  policyWhitelistInput.value = list.join(' ');
+}
+async function savePolicy() {
+  try {
+    const list = policyWhitelistInput.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+    await api.setTaskPolicy(taskId.value, policyLevel.value || null, list.length ? list : undefined);
+    policyWhitelist.value = list;
+    policyOpen.value = false;
+    showToast('执行策略已保存');
+  } catch (e: any) {
+    showToast(e.message || '保存失败');
+  }
 }
 
 watch(taskId, () => {
@@ -651,6 +699,17 @@ function nodeIcon(status: string): string {
               </div>
             </div>
 
+            <!-- 执行策略（双端一致）：level + 白名单命令 -->
+            <div class="wx-group">
+              <div class="wx-cell link" @click="openPolicyEditor">
+                <div class="sup-title">执行策略 · 白名单命令</div>
+                <div class="sup-row">
+                  <span class="sup-reason clamp">{{ policyText }}</span>
+                  <span class="tap-more">编辑 ›</span>
+                </div>
+              </div>
+            </div>
+
             <div class="wx-group">
               <div
                 v-for="n in task.nodes"
@@ -850,6 +909,34 @@ function nodeIcon(status: string): string {
           <van-icon name="cross" size="18" @click="docView = null" />
         </div>
         <div class="dl-body md" v-html="renderMd(docView?.content || '')"></div>
+      </div>
+    </van-popup>
+
+    <!-- 执行策略编辑弹层 -->
+    <van-popup v-model:show="policyOpen" position="bottom" round>
+      <div style="padding: 16px; max-height: 70vh; overflow-y: auto">
+        <div style="font-weight: 600; margin-bottom: 10px">执行策略</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px">
+          <span
+            v-for="l in POLICY_LEVELS"
+            :key="l.value"
+            class="wl-chip"
+            :class="{ on: policyLevel === l.value }"
+            @click="policyLevel = l.value"
+          >{{ l.text }}</span>
+        </div>
+        <div style="font-weight: 600; margin: 10px 0 8px">白名单命令</div>
+        <van-field v-model="policyWhitelistInput" placeholder="输入命令首词，空格/逗号分隔" clearable />
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0">
+          <span
+            v-for="c in COMMON_COMMANDS"
+            :key="c"
+            class="wl-chip"
+            :class="{ on: policyWhitelistInput.split(/[,，\s]+/).includes(c) }"
+            @click="togglePolicyCmd(c)"
+          >{{ c }}</span>
+        </div>
+        <button class="wx-btn" @click="savePolicy">保存</button>
       </div>
     </van-popup>
 
@@ -1167,6 +1254,16 @@ function nodeIcon(status: string): string {
 
 <style scoped>
 /* M10-C 长内容弹窗化 */
+.wl-chip {
+  padding: 4px 12px; border-radius: 14px; font-size: 13px;
+  background: var(--panel-2, #f5f5f5); color: var(--text-2, #666);
+  border: 1px solid transparent;
+}
+.wl-chip.on { background: rgba(7, 193, 96, 0.12); color: var(--green, #07c160); border-color: var(--green, #07c160); }
+.wx-btn {
+  width: 100%; padding: 10px 0; border: none; border-radius: 8px;
+  background: var(--green, #07c160); color: #fff; font-size: 15px; font-weight: 600;
+}
 .clamp { min-width: 0; overflow-wrap: anywhere; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tap-cell { cursor: pointer; }
 .tap-cell:active { background: var(--panel-2); }

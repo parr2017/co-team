@@ -64,6 +64,15 @@
         <span class="opt-hint">工作区在 co-team 内时必勾：任务在隔离克隆中执行，不碰主副本</span>
       </div>
     </div>
+    <div v-if="!simpleMode" class="form-row opts-row">
+      <div class="opt opt-grow">
+        <span class="opt-label">白名单命令</span>
+        <el-select v-model="whitelist" size="small" style="width: 320px" multiple filterable allow-create default-first-option :reserve-keyword="false" placeholder="留空跟随全局设置">
+          <el-option v-for="c in COMMON_WHITELIST" :key="c" :label="c" :value="c" />
+        </el-select>
+        <span class="opt-hint">执行策略非 full 时仅放行这些命令首词（如 flutter、dart）——按任务技术栈勾选或直接输入</span>
+      </div>
+    </div>
     <div class="form-hint">{{ hint }}</div>
 
     <DirPickerDialog v-model:show="pickerVisible" :start-path="workspace" @pick="workspace = $event" />
@@ -100,7 +109,10 @@ const simpleMode = ref(false);
 const level = ref('auto');
 const mainModel = ref('');
 const policy = ref('');
+const whitelist = ref<string[]>([]);
 const nodeClarify = ref('brief');
+// 高频命令建议清单：任务技术栈所需（如 Flutter 的 flutter/dart）直接勾选，或手动输入任意命令
+const COMMON_WHITELIST = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java', 'ls', 'cat', 'mkdir', 'cp', 'mv', 'rm', 'chmod'];
 const modelOptions = ref<{ name: string; healthy: boolean; label: string }[]>([]);
 const modelsLoading = ref(false);
 
@@ -145,7 +157,7 @@ async function submit() {
     const d = await api.createTask(description.value.trim(), workspace.value.trim(), simpleMode.value, undefined, {
       level: level.value === 'auto' ? undefined : level.value,
       mainModelId: mainModel.value || undefined,
-      executionPolicy: policy.value ? { level: policy.value } : undefined,
+      executionPolicy: policy.value ? { level: policy.value, whitelist_commands: whitelist.value.length ? whitelist.value : undefined } : undefined,
       nodeClarify: nodeClarify.value === 'off' ? undefined : nodeClarify.value,
       profile: simpleMode.value ? 'simple' : undefined,
       allowSelfRef: allowSelfRef.value || undefined,
@@ -178,6 +190,7 @@ async function submit() {
 .form-row { display: flex; gap: 12px; margin-top: 12px; }
 .opts-row { align-items: center; flex-wrap: wrap; }
 .opt { display: flex; align-items: center; gap: 8px; }
+.opt-grow { flex: 1 1 100%; }
 .opt-label { font-size: 12px; color: var(--ct-text3); white-space: nowrap; }
 .opt-hint { font-size: 11px; color: var(--ct-text3); }
 .model-opt { display: inline-flex; align-items: center; gap: 6px; }

@@ -20,9 +20,17 @@ export interface PermissionPolicy {
   maxTimeSec: number;
 }
 
+/** 已告警过的非法 level（每进程每值一次——o3xmkraj 实测 `level: normal` 静默回退
+ *  whitelist_auto，用户想要的审批语义从未生效却无人知晓） */
+const warnedInvalidLevels = new Set<string>();
+
 export function policyFromConfig(permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number } | null): PermissionPolicy {
   const whitelistCommands = permissions?.whitelist_commands ?? null;
   const raw = (permissions?.level || '').trim();
+  if (raw && !isPermissionLevel(raw) && !warnedInvalidLevels.has(raw)) {
+    warnedInvalidLevels.add(raw);
+    console.warn(`[config] permissions.level "${raw}" 不是合法值（可选：${PERMISSION_LEVELS.join(' | ')}）——已按 ${whitelistCommands ? 'whitelist_auto' : 'approve_required'} 回退，请修正 config.yaml`);
+  }
   // back-compat: an old config with a whitelist but no level behaved as whitelist_auto
   const level = isPermissionLevel(raw) ? raw : whitelistCommands ? 'whitelist_auto' : 'approve_required';
   return {

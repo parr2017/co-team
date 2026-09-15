@@ -409,6 +409,14 @@ export const api = {
   getPendingCommands: (id: string) => request<{ commands: any[] }>(`/api/tasks/${id}/pending-commands`),
   resolveCommand: (id: string, commandId: string, approved: boolean) =>
     post(`/api/tasks/${id}/commands/${commandId}/approve`, { approved }),
+  // 命令执行分级：任务级 level + 白名单命令（o3xmkraj 复盘补齐移动端入口）
+  getTaskPolicy: (id: string) => request<{ task_id: string; execution_policy: { level: string; whitelist_commands?: string[] } | null }>(`/api/tasks/${id}/policy`),
+  setTaskPolicy: (id: string, level: string | null, whitelistCommands?: string[]) =>
+    request<{ status: string; execution_policy: { level: string; whitelist_commands?: string[] } | null }>(`/api/tasks/${id}/policy`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level, whitelist_commands: whitelistCommands }),
+    }),
   listAsks: (id: string) => request<{ asks: any[] }>(`/api/tasks/${id}/asks`),
   status: () => request<any>('/api/status'),
   // M10-C 管理面补齐
@@ -429,7 +437,7 @@ export const api = {
     request<{ proposals: any[] }>(`/api/tasks/${id}/proposals`),
   decideProposal: (id: string, proposalId: string, approved: boolean) =>
     post<{ ok: boolean; status: string }>(`/api/tasks/${id}/proposals/${proposalId}/decide`, { approved }),
-  createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string; profile?: 'simple' | 'expert'; allow_self_ref?: boolean }) =>
+  createTask: (payload: { description: string; workspace: string; level?: string; main_model_id?: string; project_id?: string; profile?: 'simple' | 'expert'; allow_self_ref?: boolean; execution_policy?: { level?: string; whitelist_commands?: string[] } }) =>
     post<{ status: 'created' | 'needs_clarification' | 'pending'; task_id: string; questions?: string[]; summary?: string; graph?: TaskGraph }>('/api/tasks', payload.profile === 'simple'
       ? { ...payload, auto_run: true, plan_async: true, skip_clarification: true }
       : { ...payload, auto_run: false, plan_async: true }),

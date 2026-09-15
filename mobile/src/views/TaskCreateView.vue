@@ -18,6 +18,27 @@ const submitting = ref(false);
 const simpleMode = ref(false);
 const allowSelfRef = ref(false);
 
+// 白名单命令（o3xmkraj 复盘补齐移动端入口）：逗号/空格分隔，留空跟随全局设置
+const whitelistText = ref('');
+const whitelistInput = ref('');
+const showWhitelistPicker = ref(false);
+const COMMON_COMMANDS = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java'];
+const whitelistList = computed(() => whitelistText.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean));
+function openWhitelistPicker() {
+  whitelistInput.value = whitelistText.value;
+  showWhitelistPicker.value = true;
+}
+function toggleCommon(cmd: string) {
+  const list = whitelistInput.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+  const idx = list.indexOf(cmd);
+  if (idx >= 0) list.splice(idx, 1); else list.push(cmd);
+  whitelistInput.value = list.join(' ');
+}
+function confirmWhitelist() {
+  whitelistText.value = whitelistInput.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean).join(' ');
+  showWhitelistPicker.value = false;
+}
+
 // project binding (task can be dispatched into a project)
 const projects = ref<ProjectSummary[]>([]);
 const projectId = ref('');
@@ -144,6 +165,7 @@ async function submit() {
       project_id: projectId.value || undefined,
       profile: simpleMode.value ? 'simple' : undefined,
       allow_self_ref: allowSelfRef.value || undefined,
+      execution_policy: whitelistList.value.length ? { whitelist_commands: whitelistList.value } : undefined,
     });
     if (r.status === 'needs_clarification') {
       showToast('需求需澄清');
@@ -232,6 +254,15 @@ async function submit() {
         </div>
       </div>
 
+      <!-- 白名单命令（高级模式）：按任务技术栈放行命令首词 -->
+      <div v-if="!simpleMode" class="wx-group">
+        <div class="wx-cell link" @click="openWhitelistPicker">
+          <span class="cell-label">白名单命令</span>
+          <span class="cell-value">{{ whitelistList.length ? whitelistList.join(' ') : '留空跟随全局设置' }}</span>
+          <van-icon name="arrow" size="14" color="var(--text-3)" />
+        </div>
+      </div>
+
       <!-- 自指任务（工作区在 co-team 内时必开） -->
       <div v-if="!simpleMode" class="wx-caption">高级</div>
       <div v-if="!simpleMode" class="wx-group">
@@ -267,6 +298,24 @@ async function submit() {
       />
     </van-popup>
 
+    <!-- 白名单命令编辑 -->
+    <van-popup v-model:show="showWhitelistPicker" position="bottom" round>
+      <div style="padding: 16px">
+        <div style="font-weight: 600; margin-bottom: 8px">白名单命令</div>
+        <van-field v-model="whitelistInput" placeholder="输入命令首词，空格/逗号分隔" clearable />
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0">
+          <span
+            v-for="c in COMMON_COMMANDS"
+            :key="c"
+            class="wl-chip"
+            :class="{ on: whitelistInput.split(/[,，\s]+/).includes(c) }"
+            @click="toggleCommon(c)"
+          >{{ c }}</span>
+        </div>
+        <button class="wx-btn" @click="confirmWhitelist">确定</button>
+      </div>
+    </van-popup>
+
     <!-- 目录级联选择：共享组件 -->
     <DirPicker v-model:show="showPicker" @pick="workspace = $event" />
   </div>
@@ -289,4 +338,11 @@ async function submit() {
 .wx-cell.chosen { background: var(--panel-2); }
 
 .submit { margin: 28px 16px 0; }
+
+.wl-chip {
+  padding: 4px 12px; border-radius: 14px; font-size: 13px;
+  background: var(--panel-2, #f5f5f5); color: var(--text-2, #666);
+  border: 1px solid transparent;
+}
+.wl-chip.on { background: rgba(7, 193, 96, 0.12); color: var(--green, #07c160); border-color: var(--green, #07c160); }
 </style>
