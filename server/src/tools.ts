@@ -489,7 +489,7 @@ export async function lookImage(workspace: string, imagePath: string, question: 
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number; find?: string; replace?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -659,6 +659,31 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
         results.push({ tool: 'answer', ok: okDone, ...(okDone ? {} : { error: '提问不存在或已收场' }) });
       } catch (e: any) {
         results.push({ tool: 'answer', ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
+    } else if (name === 'write_file' || name === 'write') {
+      // o3xmkraj 复盘：渐进落盘——文件边想边写，最终 JSON 不再憋全量内容（单轮输出爆炸的根源）
+      const rel = String(call.path || '').trim();
+      if (!rel) {
+        results.push({ tool: 'write_file', ok: false, error: 'path 不能为空' });
+      } else {
+        const written = writeFiles(workspace, [{ path: rel, content: String(call.content ?? '') }]);
+        if (written.length) {
+          results.push({ tool: 'write_file', ok: true, path: written[0], bytes: Buffer.byteLength(String(call.content ?? ''), 'utf-8') });
+        } else {
+          results.push({ tool: 'write_file', ok: false, path: rel, error: '路径被拒绝（越界或为空）' });
+        }
+      }
+    } else if (name === 'edit_file' || name === 'edit') {
+      const rel = String(call.path || '').trim();
+      if (!rel) {
+        results.push({ tool: 'edit_file', ok: false, error: 'path 不能为空' });
+      } else {
+        const { edited, failures } = applyEdits(workspace, [{ path: rel, find: call.find, replace: call.replace }]);
+        if (edited.length) {
+          results.push({ tool: 'edit_file', ok: true, path: edited[0] });
+        } else {
+          results.push({ tool: 'edit_file', ok: false, path: rel, error: failures[0] || 'edit failed' });
+        }
       }
     } else {
       results.push({ tool: name, ok: false, error: `tool '${name}' not allowed mid-run` });

@@ -2919,6 +2919,9 @@ export class Orchestrator {
       };
       // improvement #4: SSOT docs this agent updated via write_doc during this dispatch
       const docUpdates: { type: string; version: number }[] = [];
+      // 渐进落盘（o3xmkraj 复盘）：轮内 write_file/edit_file 落盘的文件，合并进最终
+      // changes 申报——交付一致性检查以"申报 vs 实际"对账，漏了就被标 unreported
+      const midRunWritten: string[] = [];
       // 缓存优先裁剪：断崖压缩每尝试至多一次（触发后重新 append-only，不逐轮重写历史）
       let foldedOnce = false;
       // 重复调用指针化：同工具+同参数不再读盘回显
@@ -3126,7 +3129,7 @@ export class Orchestrator {
           const tName = String(t.tool || '').toLowerCase();
           // screenshot/look_image 虽只读，但每次都是独立的视觉分析（页面随节点推进在变，
           // 且消耗 vision 配额）——"同参结果从略"的契约对它们不成立，豁免去重
-          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image';
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file';
           const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}`;
           if (!sideEffect && seenToolCalls.has(dedupKey)) {
             positioned[ti] = { tool: t.tool, ok: true, dedup: `与第 ${seenToolCalls.get(dedupKey)} 轮完全相同的调用，结果从略（可信任上轮结果）` };
@@ -3181,6 +3184,9 @@ export class Orchestrator {
               meta: { to: r.to, text: call?.text },
             });
             await emitProgress('agent_message', { task_id: taskId, node_id: node.id, agent: plugin.name, kind: 'message', to: r.to });
+          }
+          if ((r?.tool === 'write_file' || r?.tool === 'edit_file') && r.ok && r.path) {
+            midRunWritten.push(String(r.path));
           }
         }
         roundEntry.tool_results = results;
@@ -3269,6 +3275,10 @@ export class Orchestrator {
 
       let result: AgentResult = parsed as AgentResult;
       result = applyFinalOutput(workspace, result as Record<string, any>, policy) as AgentResult;
+      // 渐进落盘：轮内 write_file/edit_file 的产物计入申报，交付一致性检查不再误报 unreported
+      if (midRunWritten.length) {
+        (result as Record<string, any>).changes = [...new Set([...((result as Record<string, any>).changes || []), ...midRunWritten])];
+      }
       result = plugin.handler.postRun ? plugin.handler.postRun(result) : result;
       delete (result as Record<string, any>).tool_calls;
       result.tokens = record.tokens;
