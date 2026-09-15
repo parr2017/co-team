@@ -66,7 +66,7 @@ function subscribe() {
     const did = p.discussion_id;
     if (!current.value || did !== current.value.id) {
       // still track list-level events
-      if (['discussion_started', 'discussion_scheme_updated', 'discussion_converted', 'discussion_ask_user'].includes(msg.type)) void loadList();
+      if (['discussion_started', 'discussion_scheme_updated', 'discussion_converted', 'discussion_ask_user', 'discussion_convert_resolved'].includes(msg.type)) void loadList();
       return;
     }
     reArm();
@@ -114,6 +114,12 @@ function subscribe() {
         if (busyWatchdog) { clearTimeout(busyWatchdog); busyWatchdog = null; }
         void loadList();
       }
+    } else if (msg.type === 'discussion_convert_resolved') {
+      // 转任务确认卡已拍板：本地回写卡片状态 + 重拉详情（status 可能已变 converted）
+      const target = current.value.messages.find((x) => x.id === p.message_id);
+      if (target?.meta?.convert_confirm) target.meta.convert_confirm = { ...target.meta.convert_confirm, state: p.state, task_id: p.task_id };
+      void open(current.value.id, true);
+      void loadList();
     } else if (['discussion_scheme_updated', 'discussion_status', 'discussion_converted'].includes(msg.type)) {
       void open(current.value.id, true);
       void loadList();

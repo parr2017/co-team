@@ -1,6 +1,17 @@
 <template>
   <el-dialog v-model="visible" title="方案转项目开发" width="520px">
     <el-form label-width="96px" size="small">
+      <!-- 任务内容预览：转任务前先看清要建的是什么任务（2026-09-15） -->
+      <el-form-item label="任务内容">
+        <div class="scheme-preview">
+          <div v-if="schemeDigest" class="sp-text">{{ schemeDigest }}</div>
+          <div v-else class="sp-empty">方案尚未生成——请先关闭本窗，在讨论里「生成方案」后再转任务</div>
+          <div class="sp-meta mono">
+            方案 v{{ disc?.scheme_version || 0 }} · 共 {{ disc?.scheme?.length || 0 }} 字
+            <template v-if="pendingCount"> · 未拍板事项 {{ pendingCount }} 个（执行到相关决策点时按方案默认取向推进）</template>
+          </div>
+        </div>
+      </el-form-item>
       <el-form-item label="项目归属">
         <el-radio-group v-model="target">
           <el-radio value="new">新建项目</el-radio>
@@ -48,6 +59,13 @@
   </el-dialog>
 </template>
 
+<style scoped>
+.scheme-preview { width: 100%; background: var(--ct-bg, #f7f7f8); border: 1px solid var(--ct-border, #e0e0e6); border-radius: 6px; padding: 8px 10px; }
+.sp-text { font-size: 12px; line-height: 1.7; color: var(--ct-text, #303133); max-height: 132px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.sp-empty { font-size: 12px; color: var(--ct-text3, #909399); }
+.sp-meta { font-size: 10px; color: var(--ct-text3, #909399); margin-top: 6px; }
+</style>
+
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
@@ -61,6 +79,20 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'conv
 const { current, convert } = useDiscussion();
 const visible = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });
 const disc = computed(() => current.value);
+
+/** 方案纯文摘（去 markdown，前 400 字）：让用户在确认前看到任务大概内容 */
+const schemeDigest = computed(() => {
+  const s = disc.value?.scheme || '';
+  if (!s) return '';
+  const plain = s.replace(/```[\s\S]*?```/g, ' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[#>*`]+/g, '').replace(/\s+/g, ' ').trim();
+  return plain.slice(0, 400) + (plain.length > 400 ? '…' : '');
+});
+/** 未拍板事项数（最后一条用户消息之后的 needs_user 消息） */
+const pendingCount = computed(() => {
+  const msgs = disc.value?.messages || [];
+  const lastUser = msgs.map((m) => m.from).lastIndexOf('user');
+  return msgs.slice(lastUser + 1).filter((m) => m.needs_user).length;
+});
 
 const target = ref<'new' | 'existing'>('new');
 const name = ref('');

@@ -243,6 +243,10 @@ export const STATUS_TEXT: Record<string, string> = {
   idle: '空闲',
   done: '已完成',
   error: '出错',
+  // 群组讨论三态（此前 web 列表显示英文原文，mobile 才有中文——统一收口到这里）
+  discussing: '讨论中',
+  converged: '方案已生成',
+  converted: '已转项目',
 };
 
 export function statusText(s: string): string {

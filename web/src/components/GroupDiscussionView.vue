@@ -37,7 +37,7 @@
               <template v-else>
                 <span class="gh-hint">未绑定项目：挂接后成员才能动手（讨论设置里可选）</span>
               </template>
-              <template v-if="current.task_id"> · 任务 {{ current.task_id }}</template>
+              <template v-if="current.task_id"> · 任务 {{ current.task_id }}<template v-if="taskCount > 1">（共 {{ taskCount }} 个）</template></template>
               <template v-if="current.scheme_version"> · 方案 v{{ current.scheme_version }}</template>
             </div>
           </div>
@@ -63,8 +63,14 @@
           <div class="gh-ops">
             <el-button size="small" :disabled="!current.scheme" @click="schemeVisible = true">查看方案</el-button>
             <el-button size="small" :loading="genLoading" :disabled="converted" @click="onGenScheme">生成方案</el-button>
-            <el-button v-if="!converted" size="small" type="success" :disabled="!current.scheme" @click="convertVisible = true">转为项目开发</el-button>
-            <el-button v-else size="small" @click="emit('open-task', current.task_id!)">查看开发任务 ›</el-button>
+            <!-- 转任务不封存（2026-09-15）：converted 时按钮保留但需先发消息复活讨论 -->
+            <el-button
+              size="small" type="success"
+              :disabled="!current.scheme || converted"
+              :title="converted ? '发一条消息重新开启群聊后，即可再转后续任务' : ''"
+              @click="convertVisible = true"
+            >转为项目开发</el-button>
+            <el-button v-if="current.task_id" size="small" @click="emit('open-task', current.task_id!)">查看开发任务 ›</el-button>
             <el-button size="small" @click="expOpen = !expOpen">沉淀经验{{ experiences.length ? ` (${experiences.length})` : '' }}</el-button>
             <el-popconfirm title="删除该讨论及其记录？" @confirm="remove(current.id)">
               <template #reference><el-button size="small" type="danger" plain>删除</el-button></template>
@@ -155,6 +161,7 @@ const genLoading = ref(false);
 const form = reactive({ title: '', topic: '', members: [] as string[], mode: 'manual' as 'manual' | 'auto', project_id: '' });
 
 const converted = computed(() => current.value?.status === 'converted');
+const taskCount = computed(() => current.value?.task_ids?.length || (current.value?.task_id ? 1 : 0));
 const boundProject = computed(() => projects.value.find((p) => p.id === current.value?.project_id) || null);
 
 function roleOf(name: string): string {

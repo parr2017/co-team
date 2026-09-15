@@ -11,12 +11,12 @@ vi.mock('../src/llm', async (importOriginal) => {
   };
 });
 
-import { initBus, closeBus } from '../src/bus';
+import { initBus, closeBus, busSet } from '../src/bus';
 import { ModelPool } from '../src/scheduler';
 import { Orchestrator } from '../src/orchestrator/orchestrator';
 import { TaskQueueManager } from '../src/taskQueue';
-import { discussionTaskDigest } from '../src/discussionBridge';
-import { createDiscussion, getMessages, postTaskNotice } from '../src/discussion';
+import { discussionTaskDigest, postToProjectDiscussions } from '../src/discussionBridge';
+import { createDiscussion, getDiscussion, getMessages, postTaskNotice } from '../src/discussion';
 import { saveTaskGraph, getProject, saveProject } from '../src/store';
 import type { TaskNode } from '../src/types';
 
@@ -86,5 +86,29 @@ describe('M5.2 任务↔群聊互通', () => {
     expect(last.kind).toBe('card');
     expect(last.meta?.bridge_ask).toMatchObject({ task_id: 't-x', ask_id: 'abc123' });
     expect(last.text).toContain('用哪个端口');
+  });
+
+  it('②转任务不封存：converted 讨论仍收到自己转出任务的事件（task_ids 命中）', async () => {
+    const disc = await createDiscussion(deps() as any, { title: '一聊多任务', members: ['dev'], project_id: 'p-bridge' });
+    const d = await getDiscussion(disc.id);
+    await busSet(`discussion:${disc.id}`, { ...d, status: 'converted', task_id: 't-own', task_ids: ['t-own'] });
+    await postToProjectDiscussions('p-bridge', 't-own', '📋 任务 t-own 第 1 阶段启动：骨架搭建');
+    const msgs = await getMessages(disc.id);
+    expect(msgs.some((m) => m.text.includes('任务 t-own 第 1 阶段启动'))).toBe(true);
+  });
+
+  it('②非自身任务仍走项目内 discussing 路由；converted 且非自身任务则不回流', async () => {
+    const active = await createDiscussion(deps() as any, { title: '活跃讨论', members: ['dev'], project_id: 'p-bridge' });
+    await postToProjectDiscussions('p-bridge', 't-other', '📋 项目事件给活跃讨论');
+    expect((await getMessages(active.id)).some((m) => m.text.includes('项目事件给活跃讨论'))).toBe(true);
+
+    const sealed = await createDiscussion(deps() as any, { title: '已转讨论', members: ['dev'], project_id: 'p-bridge' });
+    const d = await getDiscussion(sealed.id);
+    await busSet(`discussion:${sealed.id}`, { ...d, status: 'converted', task_id: 't-own', task_ids: ['t-own'] });
+    await postToProjectDiscussions('p-bridge', 't-stranger', '📋 无关任务事件不应进入');
+    const sealedMsgs = (await getMessages(sealed.id)).map((m) => m.text).join('\n');
+    // 无关任务不进 converted 讨论；但活跃讨论也没有 t-stranger 的 project_id 事件路径吗？
+    // 有——它 project_id 命中且 discussing，会收到（项目级广播语义保留）
+    expect(sealedMsgs).not.toContain('无关任务事件不应进入');
   });
 });

@@ -28,6 +28,17 @@
             </div>
             <div v-else class="ask-done">✓ 已回答，agent 继续执行中</div>
           </div>
+          <!-- 2026-09-15 转任务确认卡：agent 发起转任务先过用户拍板，确认才开工 -->
+          <div v-else-if="row.m.kind === 'card' && row.m.meta?.convert_confirm" class="sys-card cv-card">
+            <div class="cv-text">{{ row.m.text }}</div>
+            <div v-if="String(row.m.meta.convert_confirm.state) === 'pending'" class="cv-row">
+              <el-button size="small" type="primary" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'confirm')">确认转任务</el-button>
+              <el-button size="small" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'cancel')">暂不转</el-button>
+            </div>
+            <div v-else class="cv-done" :class="{ off: String(row.m.meta.convert_confirm.state) === 'cancelled' }">
+              {{ String(row.m.meta.convert_confirm.state) === 'confirmed' ? `✓ 已确认开工${row.m.meta.convert_confirm.task_id ? `，任务 ${row.m.meta.convert_confirm.task_id}` : ''}` : '✕ 已取消，继续讨论' }}
+            </div>
+          </div>
           <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
           <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
           <span v-else class="sys-text">{{ row.m.text }}</span>
@@ -137,7 +148,7 @@
       </div>
       <div class="chips-row" v-if="members.length">
         <span class="chip-label mono">@点名（只唤被点名者）：</span>
-        <button v-for="m in members" :key="m" class="mention-chip mono" :disabled="converted" @click="insertMention(m)">@{{ m }}</button>
+        <button v-for="m in members" :key="m" class="mention-chip mono" @click="insertMention(m)">@{{ m }}</button>
       </div>
       <el-input
         ref="inputEl"
@@ -145,21 +156,20 @@
         type="textarea"
         :rows="2"
         resize="none"
-        :disabled="converted"
-        :placeholder="busy ? '成员正在处理——插话会即刻受理，当前发言告一段落后优先回应你' : '像群里聊天一样说：可 @成员、可让它动手（如：@launcher 把服务跑起来）、可发图、可打断'"
+        :placeholder="converted ? '本群聊已转任务——输入消息将重新开启群聊，继续沟通或再转新任务' : busy ? '成员正在处理——插话会即刻受理，当前发言告一段落后优先回应你' : '像群里聊天一样说：可 @成员、可让它动手（如：@launcher 把服务跑起来）、可发图、可打断'"
         @keydown.enter.exact.prevent="sendNow"
       />
       <div class="op-row">
-        <el-radio-group v-model="mode" size="small" :disabled="converted" @change="onModeChange">
+        <el-radio-group v-model="mode" size="small" @change="onModeChange">
           <el-radio-button value="manual">手动</el-radio-button>
           <el-radio-button value="auto">自动</el-radio-button>
         </el-radio-group>
         <span class="mode-hint mono">{{ mode === 'auto' ? '自动：一条消息驱动多轮，直到成员收敛或你插话' : '手动：你一句它一句，插话即刻受理' }}</span>
         <div class="ops">
-          <AttachPicker v-model="pendingImages" :disabled="converted || sending" @preview="onPreview" />
+          <AttachPicker v-model="pendingImages" :disabled="sending" @preview="onPreview" />
           <el-button v-if="busy" size="small" type="warning" plain @click="stop">打断并停止</el-button>
-          <el-button v-else size="small" :disabled="converted" @click="moreRound">让成员继续</el-button>
-          <el-button size="small" type="primary" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length) || converted" @click="sendNow">{{ busy ? '插话' : '发送' }}</el-button>
+          <el-button v-else size="small" @click="moreRound">让成员继续</el-button>
+          <el-button size="small" type="primary" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length)" @click="sendNow">{{ busy ? '插话' : '发送' }}</el-button>
         </div>
       </div>
     </div>
@@ -205,6 +215,25 @@ async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
 
 const { current, busy, thinking, activity, streams, send, react, round, stop, setMode, roles } = useDiscussion();
 const mode = computed(() => (current.value?.mode as string) || 'manual');
+
+// ---------- 转任务确认卡（agent 发起 → 用户拍板） ----------
+const cvResolving = ref('');
+const cvId = (row: { m?: DiscussionMessage }) => String(((row.m?.meta as any)?.convert_confirm?.id || ''));
+async function resolveConvert(row: { m?: DiscussionMessage }, action: 'confirm' | 'cancel') {
+  const confirmId = cvId(row);
+  if (!confirmId || !current.value || cvResolving.value) return;
+  cvResolving.value = confirmId;
+  try {
+    const r = await api.resolveDiscussionConvert(current.value.id, confirmId, action);
+    if (action === 'confirm') ElMessage.success(r.task_id ? `已确认，任务 ${r.task_id} 已创建并开工` : '已确认，任务已创建并开工');
+    else ElMessage.info('已取消转任务，继续讨论');
+    // 卡片状态与讨论状态经 discussion_convert_resolved 事件回写（store 内统一处理）
+  } catch (e: any) {
+    ElMessage.error(String(e?.message || e));
+  } finally {
+    cvResolving.value = '';
+  }
+}
 
 const members = computed(() => current.value?.members || []);
 const converted = computed(() => (current.value?.status || 'discussing') === 'converted');
@@ -458,6 +487,12 @@ watch(() => current.value?.id, (id) => {
 .ask-input { flex: 1; min-width: 0; background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 4px; color: var(--ct-text); font-size: 12px; padding: 5px 8px; outline: none; }
 .ask-input:focus { border-color: var(--ct-accent); }
 .ask-done { font-size: 11px; color: var(--ct-green); margin-top: 4px; }
+/* 转任务确认卡 */
+.cv-card { text-align: left; max-width: 86%; border-color: var(--ct-accent); }
+.cv-text { white-space: pre-wrap; margin-bottom: 8px; }
+.cv-row { display: flex; gap: 6px; }
+.cv-done { font-size: 11px; color: var(--ct-green); margin-top: 4px; }
+.cv-done.off { color: var(--ct-text3); }
 
 /* ---------- 工具活动行 ---------- */
 .tool-row { display: flex; padding-left: 44px; margin: 1px 0; }

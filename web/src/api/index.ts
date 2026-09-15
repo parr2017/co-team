@@ -529,7 +529,10 @@ export interface Discussion {
   scheme: string;
   scheme_version: number;
   project_id?: string;
+  /** 最新一次转出的任务（兼容字段，= task_ids 最后一项） */
   task_id?: string;
+  /** 转任务不封存：本讨论转出的全部任务，一聊可多任务 */
+  task_ids?: string[];
   created_at: string;
   updated_at: string;
   message_count?: number;
@@ -794,6 +797,11 @@ export const api = {
   convertDiscussion: (id: string, payload: ConvertDiscussionPayload) =>
     request<{ status: string; project_id: string; task_id: string }>(`/api/discussions/${id}/convert`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    }),
+  /** agent 转任务确认卡的用户拍板：confirm 真正建任务开工，cancel 继续讨论 */
+  resolveDiscussionConvert: (id: string, confirmId: string, action: 'confirm' | 'cancel') =>
+    request<{ status: string; state: 'confirmed' | 'cancelled'; project_id?: string; task_id?: string }>(`/api/discussions/${id}/convert/confirm`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm_id: confirmId, action }),
     }),
   status: () => request<StatusResponse>('/api/status'),
   metrics: () => request<MetricsResponse>('/api/metrics'),

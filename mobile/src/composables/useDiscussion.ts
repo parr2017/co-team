@@ -76,7 +76,7 @@ function subscribe() {
     const p: Record<string, any> = (msg as any).payload || {};
     const did = p.discussion_id;
     const t = (msg as any).type;
-    if (['discussion_started', 'discussion_scheme_updated', 'discussion_converted', 'discussion_ask_user'].includes(t)) void loadList();
+    if (['discussion_started', 'discussion_scheme_updated', 'discussion_converted', 'discussion_ask_user', 'discussion_convert_resolved'].includes(t)) void loadList();
     if (!current.value || did !== current.value.id) return;
     reArm();
     if (t === 'discussion_message' && p.message) {
@@ -117,6 +117,11 @@ function subscribe() {
       } else if (p.phase === 'end') {
         clearBusy();
       }
+    } else if (t === 'discussion_convert_resolved') {
+      // 转任务确认卡已拍板：本地回写卡片状态 + 重拉详情（status 可能已变 converted）
+      const target = current.value.messages.find((x) => x.id === p.message_id);
+      if (target?.meta?.convert_confirm) target.meta.convert_confirm = { ...target.meta.convert_confirm, state: p.state, task_id: p.task_id };
+      void open(current.value.id);
     } else if (['discussion_scheme_updated', 'discussion_status', 'discussion_converted'].includes(t)) {
       void open(current.value.id);
     } else if (t === 'discussion_experience') {

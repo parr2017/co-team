@@ -44,11 +44,17 @@ export async function discussionTaskDigest(projectId: string): Promise<string> {
   }
 }
 
-/** ②③ 把关键事件以系统通知发进绑定项目的活跃讨论（最新一个 discussing 状态的讨论） */
-async function postToProjectDiscussions(projectId: string, text: string, meta?: Record<string, any>): Promise<void> {
+/** ②③ 把关键事件以系统通知发进讨论：优先发转出该任务的讨论（转任务后群聊不封存，事件持续回流）；
+ *  否则发该项目下最新一个 discussing 状态的讨论。 */
+export async function postToProjectDiscussions(projectId: string, taskId: string, text: string, meta?: Record<string, any>): Promise<void> {
   const { listDiscussions, postTaskNotice } = await import('./discussion');
-  const discs = (await listDiscussions()).filter((d) => d.project_id === projectId && d.status === 'discussing');
-  const target = discs[0];
+  const discs = await listDiscussions();
+  const own = discs.find((d) => (d.task_ids || []).includes(taskId));
+  if (own) {
+    await postTaskNotice(own.id, text, meta);
+    return;
+  }
+  const target = discs.find((d) => d.project_id === projectId && d.status === 'discussing');
   if (!target) return;
   await postTaskNotice(target.id, text, meta);
 }
@@ -74,30 +80,30 @@ async function onEvent(envelope: unknown): Promise<void> {
 
   switch (type) {
     case 'stage_started':
-      await postToProjectDiscussions(projectId, `📋 任务 ${taskId} 第 ${p.stage} 阶段启动：${String(p.stage_goal || '').slice(0, 120)}`);
+      await postToProjectDiscussions(projectId, taskId, `📋 任务 ${taskId} 第 ${p.stage} 阶段启动：${String(p.stage_goal || '').slice(0, 120)}`);
       return;
     case 'acceptance_report':
-      await postToProjectDiscussions(projectId, `🏁 任务 ${taskId} 最终验收：机审红灯 ${p.failed} 项、待人工 ${p.open} 项（平台：${(p.platforms || []).join('/')}）——详见任务详情`);
+      await postToProjectDiscussions(projectId, taskId, `🏁 任务 ${taskId} 最终验收：机审红灯 ${p.failed} 项、待人工 ${p.open} 项（平台：${(p.platforms || []).join('/')}）——详见任务详情`);
       return;
     case 'supervisor_proposal':
-      await postToProjectDiscussions(projectId, `🔔 任务 ${taskId} 有监督者提案待批准——去任务频道处理`);
+      await postToProjectDiscussions(projectId, taskId, `🔔 任务 ${taskId} 有监督者提案待批准——去任务频道处理`);
       return;
     case 'ask_created': {
       if (String(p.to || '') !== 'user') return;
-      await postToProjectDiscussions(projectId, `❓ 任务 ${taskId} 的 ${p.from} 提问：${String(p.question || '').slice(0, 200)}`, {
+      await postToProjectDiscussions(projectId, taskId, `❓ 任务 ${taskId} 的 ${p.from} 提问：${String(p.question || '').slice(0, 200)}`, {
         bridge_ask: { task_id: taskId, ask_id: String(p.ask_id || ''), question: String(p.question || '') },
       });
       return;
     }
     case 'ask_resolved': {
-      if (!p.no_answer) await postToProjectDiscussions(projectId, `💬 任务 ${taskId} 的提问已被回答，agent 继续执行`);
+      if (!p.no_answer) await postToProjectDiscussions(projectId, taskId, `💬 任务 ${taskId} 的提问已被回答，agent 继续执行`);
       return;
     }
     case 'execute_complete':
-      await postToProjectDiscussions(projectId, `✅ 任务 ${taskId} 已完成并通过最终验收`);
+      await postToProjectDiscussions(projectId, taskId, `✅ 任务 ${taskId} 已完成并通过最终验收`);
       return;
     case 'execute_failed':
-      await postToProjectDiscussions(projectId, `❌ 任务 ${taskId} 失败：${String(p.error || '').slice(0, 150)}——详见任务详情与提案`);
+      await postToProjectDiscussions(projectId, taskId, `❌ 任务 ${taskId} 失败：${String(p.error || '').slice(0, 150)}——详见任务详情与提案`);
       return;
     default:
       return;

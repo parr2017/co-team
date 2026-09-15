@@ -1264,6 +1264,16 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'converted', ...result });
   });
 
+  app.post('/api/discussions/:id/convert/confirm', async (c) => {
+    // agent 转任务确认卡的用户拍板入口：confirm 真正建任务开工，cancel 继续讨论
+    const { resolveConvertConfirm } = await import('../discussion');
+    const body = await readJsonAuto<{ confirm_id?: string; action?: 'confirm' | 'cancel' }>(c);
+    if (!body.confirm_id) throw new HttpError(400, 'confirm_id is required');
+    const action = body.action === 'cancel' ? 'cancel' : 'confirm';
+    const result = await resolveConvertConfirm(discDeps(), c.req.param('id'), body.confirm_id, action, validateWorkspace);
+    return c.json({ status: result.state, ...result });
+  });
+
   // ---------- snapshots (improvement 10) ----------
 
   app.get('/api/snapshots', async (c) => {

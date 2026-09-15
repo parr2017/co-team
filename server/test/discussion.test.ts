@@ -63,6 +63,7 @@ import {
   createDiscussion, DiscussionError, parseMentions, hasPendingUserQuestion, unansweredQuestions,
   getDiscussion, getMessages, runDiscussionRound, runAutoDiscussion, runResponseLoop, generateScheme, updateDiscussion,
   convertToProject, postUserMessage, isDiscussionBusy, extractReplyStreaming, SPEAKER_RETRY_POLICY,
+  requestConvertConfirm, hasPendingConvertConfirm, resolveConvertConfirm,
 } from '../src/discussion';
 import type { DiscussionMessage } from '../src/discussion';
 
@@ -545,36 +546,141 @@ describe('auto mode loop', () => {
   });
 });
 
-describe('convert_to_project tool (agent 自己转任务)', () => {
-  it('bound discussion: scheme auto-generated, task created, discussion sealed', async () => {
-    await mkProject();
-    const createCalls: any[] = [];
+describe('convert_to_project tool（agent 发起 → 用户拍板两段式）', () => {
+  const validateWs = (w: string) => w;
+
+  let createCalls: { taskId: string; description: string; workspace: string; projectId?: string; opts?: any }[] = [];
+  function stubCreateTask() {
+    createCalls = [];
+    let n = 0;
     (deps.orchestrator as any).createTask = async (description: string, workspace: string, projectId?: string, opts?: any) => {
-      createCalls.push({ description, workspace, projectId, opts });
+      n += 1;
+      const taskId = `tk-cv-${n}`;
+      createCalls.push({ taskId, description, workspace, projectId, opts });
       const { saveTaskGraph } = await import('../src/store');
-      await saveTaskGraph('tk-cv', [], [], { description, workspace, status: 'pending', project_id: projectId });
-      return { taskId: 'tk-cv', graph: { nodes: [], edges: [], summary: '' }, level: 'standard' };
+      await saveTaskGraph(taskId, [], [], { description, workspace, status: 'pending', project_id: projectId });
+      return { taskId, graph: { nodes: [], edges: [], summary: '' }, level: 'standard' };
     };
+  }
+
+  /** 讨论垫到"可转任务"状态并让 dev 发起一次转任务（停在待确认） */
+  async function convertRequestedDiscussion() {
+    await mkProject();
     const d = await mkDiscussion(['dev'], { project_id: 'p1' });
     await postUserMessage(deps, d.id, 'UI 是占位符，补全四页面并对接 dataService');
     // 第一轮垫一条实质发言（generateScheme 要求 ≥2 条实质消息）
     h.speaker = () => okContent('UI 层缺失，建议转任务补全');
     await runDiscussionRound(deps, d.id);
     h.speaker = async (_sys, user) => {
-      if (user.includes('工具执行结果')) return okContent('已转开发任务 tk-cv，UI 补全由执行团队接手');
+      if (user.includes('工具执行结果')) return okContent('已提交转任务确认卡，等你拍板');
       return JSON.stringify({ tool_calls: [{ tool: 'convert_to_project', auto_run: true }] });
     };
     await runDiscussionRound(deps, d.id);
+    return d;
+  }
+
+  it('发起转任务只落确认卡，不建任务；确认后才真正开工', async () => {
+    stubCreateTask();
+    const d = await convertRequestedDiscussion();
+    // 卡片阶段：任务未创建、讨论未封存，确认卡带任务概要与项目信息
+    expect(createCalls).toHaveLength(0);
+    const pend = await hasPendingConvertConfirm(d.id);
+    expect(pend).toBeTruthy();
+    const card = (await getMessages(d.id)).find((m) => m.id === pend!.message_id)!;
+    expect(card.meta?.convert_confirm).toMatchObject({ state: 'pending', auto_run: true, by: 'dev' });
+    expect(card.text).toContain('任务内容概要');
+    expect(card.text).toContain('项目p1');
+    expect(card.text).toContain('直接入队执行');
+    // 未转换（方案自动生成后为 converged），讨论未封存
+    expect((await getDiscussion(d.id))!.status).toBe('converged');
+
+    const r = await resolveConvertConfirm(deps, d.id, pend!.id, 'confirm', validateWs);
+    expect(r.state).toBe('confirmed');
     expect(createCalls).toHaveLength(1);
     expect(createCalls[0].opts.skipClarification).toBe(true);
+    expect(pend!.opts.auto_run).toBe(true);
     const disc = await getDiscussion(d.id);
     expect(disc!.status).toBe('converted');
-    expect(disc!.task_id).toBe('tk-cv');
-    const msgs = await getMessages(d.id);
-    expect(msgs.some((m) => m.tool && m.text.includes('转项目开发任务 tk-cv'))).toBe(true);
-    expect(plainAgentMsgs(msgs, 'dev').at(-1)!.text).toContain('tk-cv');
-    // 封存后不能再发言
+    expect(disc!.task_ids).toEqual(['tk-cv-1']);
+    expect(disc!.task_id).toBe('tk-cv-1');
+    const card2 = (await getMessages(d.id)).find((m) => m.id === pend!.message_id)!;
+    expect(card2.meta?.convert_confirm).toMatchObject({ state: 'confirmed', task_id: 'tk-cv-1' });
+    expect(capturedEvents.some((e) => e.type === 'discussion_convert_resolved' && e.payload.state === 'confirmed')).toBe(true);
+    // 确认后即 converted：轮次封存（发消息可复活，见下方用例）
     await expect(runDiscussionRound(deps, d.id)).rejects.toThrow(/转为项目/);
+  });
+
+  it('取消不建任务，卡片置已取消；重复确认被拒', async () => {
+    stubCreateTask();
+    const d = await convertRequestedDiscussion();
+    const pend = await hasPendingConvertConfirm(d.id);
+    const r = await resolveConvertConfirm(deps, d.id, pend!.id, 'cancel', validateWs);
+    expect(r.state).toBe('cancelled');
+    expect(createCalls).toHaveLength(0);
+    expect((await getDiscussion(d.id))!.status).toBe('converged');
+    const card = (await getMessages(d.id)).find((m) => m.id === pend!.message_id)!;
+    expect(card.meta?.convert_confirm).toMatchObject({ state: 'cancelled' });
+    await expect(resolveConvertConfirm(deps, d.id, pend!.id, 'confirm', validateWs)).rejects.toThrow(/没有待确认/);
+  });
+
+  it('新请求取代旧请求：旧卡片自动置已取消', async () => {
+    stubCreateTask();
+    const d = await convertRequestedDiscussion();
+    const first = await hasPendingConvertConfirm(d.id);
+    const second = await requestConvertConfirm(deps, d.id, 'test', { target: 'existing', project_id: 'p1', auto_run: false });
+    expect(second.id).not.toBe(first!.id);
+    const msgs = await getMessages(d.id);
+    expect(msgs.find((m) => m.id === first!.message_id)!.meta?.convert_confirm.state).toBe('cancelled');
+    expect(msgs.find((m) => m.id === second.message_id)!.meta?.convert_confirm.state).toBe('pending');
+  });
+
+  it('转任务不封存：真实消息复活讨论、纯 emoji 不复活；复活后可再转任务（一聊多任务）', async () => {
+    stubCreateTask();
+    const d = await convertRequestedDiscussion();
+    const pend = await hasPendingConvertConfirm(d.id);
+    await resolveConvertConfirm(deps, d.id, pend!.id, 'confirm', validateWs);
+    expect((await getDiscussion(d.id))!.status).toBe('converted');
+
+    // 纯 emoji 回应：原地变更，不复活、不新增消息
+    const before = await getMessages(d.id);
+    const target = before.find((m) => m.from === 'dev' && !m.tool)!;
+    await postUserMessage(deps, d.id, '', { react_to: target.id, emoji: '👍' });
+    expect((await getDiscussion(d.id))!.status).toBe('converted');
+    expect((await getMessages(d.id)).length).toBe(before.length);
+
+    // 真实消息：复活 + 系统卡
+    await postUserMessage(deps, d.id, '继续，我还有后续任务要在群里聊');
+    expect((await getDiscussion(d.id))!.status).toBe('discussing');
+    expect((await getMessages(d.id)).some((m) => m.kind === 'card' && m.text.includes('讨论已重新开启'))).toBe(true);
+
+    // 复活后轮次照常
+    h.speaker = () => okContent('收到，继续聊后续需求');
+    const rr = await runDiscussionRound(deps, d.id);
+    expect(rr.speakers).toEqual(['dev']);
+
+    // 第二次转换：task_ids 累积（一聊多任务）
+    const r2 = await convertToProject(deps, d.id, { target: 'existing', project_id: 'p1' }, validateWs);
+    const disc2 = await getDiscussion(d.id);
+    expect(disc2!.task_ids).toEqual(['tk-cv-1', 'tk-cv-2']);
+    expect(disc2!.task_id).toBe(r2.task_id);
+    expect(disc2!.status).toBe('converted');
+  });
+
+  it('响应循环在转任务待确认时暂停自动轮（确认卡晚于用户最后一条消息）', async () => {
+    await mkProject();
+    const d = await mkDiscussion(['dev'], { project_id: 'p1' });
+    await postUserMessage(deps, d.id, '开始讨论');
+    h.speaker = () => okContent('观点');
+    await runDiscussionRound(deps, d.id);
+    await generateScheme(deps, d.id);
+    await postUserMessage(deps, d.id, '就按方案来，转任务吧');
+    await requestConvertConfirm(deps, d.id, 'dev', { target: 'existing', project_id: 'p1', auto_run: true });
+    h.moderatorContinue = true;
+    await runAutoDiscussion(deps, d.id);
+    const msgs = await getMessages(d.id);
+    // 1 条垫场 + 循环第一轮后即暂停；若无暂停，moderator 会跑满 3 轮（共 4 条）
+    expect(plainAgentMsgs(msgs, 'dev').length).toBe(2);
+    expect(msgs.some((m) => m.from === 'system' && m.text.includes('转任务确认已提交'))).toBe(true);
   });
 });
 

@@ -63,8 +63,10 @@ export interface Discussion {
   scheme_version: number;
   /** attached target project (experiences go to its category directly) */
   project_id?: string;
-  /** set after convertToProject */
+  /** latest converted task (backward-compat mirror of task_ids.at(-1)) */
   task_id?: string;
+  /** 转任务不封存（2026-09-15）：本讨论转出的全部任务，一聊可多任务 */
+  task_ids?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -177,6 +179,7 @@ function discKey(id: string) { return `discussion:${id}`; }
 function msgKey(id: string) { return `discussion:${id}:messages`; }
 function busyKey(id: string) { return `discussion:${id}:busy`; }
 function stopKey(id: string) { return `discussion:${id}:stop`; }
+function pendingConvertKey(id: string) { return `discussion:${id}:convert_pending`; }
 
 function newId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -192,7 +195,7 @@ async function saveDiscussion(d: Discussion): Promise<void> {
 }
 
 export async function listDiscussions(): Promise<Discussion[]> {
-  const keys = (await busKeys('discussion:*')).filter((k) => !k.includes(':messages') && !k.includes(':busy') && !k.includes(':stop'));
+  const keys = (await busKeys('discussion:*')).filter((k) => !k.includes(':messages') && !k.includes(':busy') && !k.includes(':stop') && !k.includes(':convert_pending'));
   const out: Discussion[] = [];
   for (const key of keys) {
     const d = await busGet<Discussion>(key);
@@ -230,6 +233,7 @@ export async function deleteDiscussion(id: string): Promise<void> {
   await busDel(msgKey(id));
   await busDel(busyKey(id));
   await busDel(stopKey(id));
+  await busDel(pendingConvertKey(id));
 }
 
 // ---------- concurrency lock ----------
@@ -684,23 +688,24 @@ async function runSpeakerToolCalls(
         // M11 群聊禁改代码（用户拍板）：群聊只做运行/部署/调试/查报错，改代码一律转任务
         results.push({ tool: name, ok: false, error: '群聊不允许修改代码——请用 convert_to_project 把改动转成开发任务执行' });
             } else if (name === 'convert_to_project' || name === 'convert_task') {
-        // 用户已拍板的大改动：agent 自己走完 方案收敛→转任务→入队，不再"口头宣布正式启动"后掉球
+        // 用户拍板前置（2026-09-15）：agent 发起转任务先落「待确认卡片」（任务概要+执行方式），
+        // 用户在群里确认后才真正建任务——任务不再"莫名其妙就开始做了"
         if (!disc.project_id) {
           results.push({ tool: 'convert_to_project', ok: false, error: '本讨论未绑定项目目录，无法转任务；需要新建项目的请让用户在界面「转为项目开发」操作（需要选目录）' });
           continue;
         }
         const live = await getDiscussion(disc.id);
         if (!live || live.status === 'converted') {
-          results.push({ tool: 'convert_to_project', ok: false, error: '讨论已转项目或已不存在' });
+          results.push({ tool: 'convert_to_project', ok: false, error: '讨论已转项目且未重新开启；请先引导用户发一条消息重新开启讨论' });
           continue;
         }
         try {
           if (!live.scheme.trim()) await generateScheme(deps, disc.id);
           const autoRun = call.auto_run !== false;
-          const res = await convertToProject(deps, disc.id, { target: 'existing', project_id: disc.project_id, auto_run: autoRun }, (w) => w);
+          const pending = await requestConvertConfirm(deps, disc.id, agent, { target: 'existing', project_id: disc.project_id, auto_run: autoRun });
           results.push({
-            tool: 'convert_to_project', ok: true, task_id: res.task_id, project_id: res.project_id, auto_run: autoRun,
-            note: '开发任务已创建' + (autoRun ? '并入队执行' : '待规划评审') + '；讨论已封存，后续沟通走任务介入通道。请在发言里向用户汇报任务 id。',
+            tool: 'convert_to_project', ok: true, pending: true, confirm_id: pending.id, auto_run: autoRun,
+            note: '转任务请求已提交为群内确认卡，任务尚未创建。请用一两句话向用户说明这个任务要做什么，并提醒用户点卡片上的「确认转任务」后才会开工；不要重复提交转任务。',
           });
         } catch (e: any) {
           results.push({ tool: 'convert_to_project', ok: false, error: String(e?.message || e).slice(0, 300) });
@@ -727,7 +732,7 @@ function toolActivityLine(calls: Record<string, any>[], results: unknown[]): str
     else if (t === 'kill_process') segs.push(`停止进程 ${calls[i].pid}${r.ok ? '' : ' 失败'}`);
     else if (t === 'write_file' || t === 'edit_file') segs.push(`改代码被拒（群聊禁改，转任务）`);
     else if (t === 'write_knowledge') segs.push(r.ok ? '沉淀知识' : '沉淀知识失败');
-    else if (t === 'convert_to_project' || t === 'convert_task') segs.push(r.ok ? `转项目开发任务 ${r.task_id}${r.auto_run ? '（已入队）' : ''}` : '转任务失败');
+    else if (t === 'convert_to_project' || t === 'convert_task') segs.push(r.ok ? (r.pending ? '转任务确认卡已发出（待用户确认）' : `转项目开发任务 ${r.task_id}${r.auto_run ? '（已入队）' : ''}`) : '转任务失败');
     else segs.push(t);
   }
   const more = calls.length > 4 ? ` 等 ${calls.length} 项` : '';
@@ -1101,6 +1106,20 @@ export async function runResponseLoop(deps: DiscussionDeps, discId: string, opts
         break;
       }
       {
+        // 转任务确认卡还挂着且位于最后一条用户消息之后：暂停自动轮，等用户拍板。
+        // 按消息顺序而非时间戳比较——同毫秒内先后到达时时间戳不可靠。
+        const pend = await hasPendingConvertConfirm(discId);
+        if (pend) {
+          const lastUserIdx = msgs.map((m) => m.from).lastIndexOf('user');
+          const cardIdx = msgs.findIndex((m) => m.id === pend.message_id);
+          if (cardIdx > lastUserIdx) {
+            await appendSystemMessage(discId, '转任务确认已提交，等待你在群里确认后继续（卡片上可确认或取消）', res.round);
+            await emitProgress('discussion_status', { discussion_id: discId, waiting_user: true });
+            break;
+          }
+        }
+      }
+      {
         const liveNow = await getDiscussion(discId);
         if (!liveNow || liveNow.status === 'converted') break; // 转任务成功，讨论封存
       }
@@ -1302,6 +1321,7 @@ export async function convertToProject(deps: DiscussionDeps, discId: string, opt
 
   const { taskId } = await deps.orchestrator.createTask(description, project.workspace, project.id, { skipClarification: true, planAsync: true });
   disc.project_id = disc.project_id || project.id;
+  disc.task_ids = Array.from(new Set([...(disc.task_ids || []), taskId]));
   disc.task_id = taskId;
   disc.status = 'converted';
   await saveDiscussion(disc);
@@ -1314,6 +1334,106 @@ export async function convertToProject(deps: DiscussionDeps, discId: string, opt
     );
   }
   return { project_id: project.id, task_id: taskId };
+}
+
+// ---------- convert confirmation（转任务先过用户拍板，2026-09-15） ----------
+
+export interface ConvertPending {
+  id: string;
+  summary: string;
+  opts: ConvertOptions;
+  /** 确认卡消息 id（resolve 后回写 meta.convert_confirm.state） */
+  message_id: string;
+  created_by: string;
+  created_at: string;
+}
+
+/** 方案正文去 markdown 的纯文摘，供确认卡展示"任务大概内容" */
+function schemeDigest(scheme: string, cap = 300): string {
+  const plain = (scheme || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[#>*`]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return plain.slice(0, cap) + (plain.length > cap ? '…' : '');
+}
+
+/**
+ * Agent 发起的转任务改为两段式：先落一张「待确认卡」（任务概要+执行方式），
+ * 用户在群里点确认才真正建任务开工。重复发起时新请求取代旧请求（旧卡片置 cancelled）。
+ */
+export async function requestConvertConfirm(deps: DiscussionDeps, discId: string, agent: string, opts: ConvertOptions): Promise<ConvertPending> {
+  const disc = await getDiscussion(discId);
+  if (!disc) throw new DiscussionError(404, `discussion not found: ${discId}`);
+  if (!disc.scheme.trim()) throw new DiscussionError(400, '请先生成项目规划方案，再转任务');
+  const project = opts.project_id ? await getProject(opts.project_id) : null;
+
+  // 旧请求被新请求取代：旧卡片落"已取消"态，避免群里同时挂两张可确认的卡
+  const prev = await busGet<ConvertPending>(pendingConvertKey(discId));
+  if (prev) await markConvertCard(discId, prev.message_id, { state: 'cancelled' });
+
+  const messages = await getMessages(discId);
+  const pendingQ = unansweredQuestions(messages);
+  const summary = [
+    `任务内容概要：${schemeDigest(disc.scheme)}`,
+    `——`,
+    `方案 v${disc.scheme_version} · 共 ${disc.scheme.length} 字${pendingQ.length ? ` · 未拍板事项 ${pendingQ.length} 个` : ''}`,
+    `目标：${project ? `挂入已有项目「${project.name}」（${project.workspace}）` : '新建项目'}`,
+    `执行方式：${opts.auto_run ? '确认后规划完成直接入队执行' : '确认后先规划，任务计划待用户评审'}`,
+  ].join('\n');
+
+  const id = newId();
+  const msg = await appendMessage(discId, {
+    id: newId(),
+    from: 'system',
+    ts: new Date().toISOString(),
+    kind: 'card',
+    text: `⏳ 转任务确认（由 ${agent} 发起）\n${summary}`,
+    meta: { convert_confirm: { id, state: 'pending', auto_run: !!opts.auto_run, by: agent } },
+  });
+  const pending: ConvertPending = { id, summary, opts, message_id: msg.id, created_by: agent, created_at: msg.ts };
+  await busSet(pendingConvertKey(discId), pending);
+  deps.logger.info('discussion convert confirm requested', { discId, agent, confirmId: id });
+  return pending;
+}
+
+/** 当前待确认的转任务请求（无则 null）；响应循环用它暂停自动轮等用户拍板 */
+export async function hasPendingConvertConfirm(discId: string): Promise<ConvertPending | null> {
+  return busGet<ConvertPending>(pendingConvertKey(discId));
+}
+
+/** 回写确认卡状态（pending → confirmed/cancelled），前端通过 discussion_convert_resolved 事件同步 */
+async function markConvertCard(discId: string, messageId: string, patch: { state: string; task_id?: string }): Promise<void> {
+  const key = msgKey(discId);
+  const list = (await busGet<DiscussionMessage[]>(key)) || [];
+  const target = list.find((m) => m.id === messageId);
+  if (!target?.meta?.convert_confirm) return;
+  target.meta.convert_confirm = { ...target.meta.convert_confirm, ...patch };
+  await busSet(key, list.slice(-MAX_MESSAGES));
+}
+
+export async function resolveConvertConfirm(
+  deps: DiscussionDeps,
+  discId: string,
+  confirmId: string,
+  action: 'confirm' | 'cancel',
+  validateWorkspace: (ws: string) => string,
+): Promise<{ state: 'confirmed' | 'cancelled'; project_id?: string; task_id?: string }> {
+  const pending = await busGet<ConvertPending>(pendingConvertKey(discId));
+  if (!pending || pending.id !== confirmId) throw new DiscussionError(400, '没有待确认的转任务请求（可能已处理或已取消）');
+  if (action === 'cancel') {
+    await busDel(pendingConvertKey(discId));
+    await markConvertCard(discId, pending.message_id, { state: 'cancelled' });
+    await emitProgress('discussion_convert_resolved', { discussion_id: discId, message_id: pending.message_id, state: 'cancelled' });
+    return { state: 'cancelled' };
+  }
+  // 转换失败时 pending 保留、卡片维持待确认——用户重试即可
+  const res = await convertToProject(deps, discId, pending.opts, validateWorkspace);
+  await busDel(pendingConvertKey(discId));
+  await markConvertCard(discId, pending.message_id, { state: 'confirmed', task_id: res.task_id });
+  await emitProgress('discussion_convert_resolved', { discussion_id: discId, message_id: pending.message_id, state: 'confirmed', task_id: res.task_id });
+  return { state: 'confirmed', ...res };
 }
 
 // ---------- discussion lifecycle ----------
@@ -1397,10 +1517,9 @@ export async function postUserMessage(
 ): Promise<{ message: DiscussionMessage | null; mentioned: string[] }> {
   const disc = await getDiscussion(discId);
   if (!disc) throw new DiscussionError(404, `discussion not found: ${discId}`);
-  if (disc.status === 'converted') throw new DiscussionError(400, '讨论已转为项目，请通过任务介入通道继续沟通');
   const clean = (text || '').trim();
 
-  // 轻量回应：emoji reaction（不产生新消息、不触发发言轮）——用户用行动代替催促
+  // 轻量回应：emoji reaction（不产生新消息、不触发发言轮、不改变已转状态）——用户用行动代替催促
   if (opts?.react_to && !clean) {
     const emoji = (opts.emoji || '👍').trim().slice(0, 8);
     const key = msgKey(discId);
@@ -1434,6 +1553,20 @@ export async function postUserMessage(
     const list = await getMessages(discId);
     if (!list.some((m) => m.id === opts.reply_to)) throw new DiscussionError(400, `reply_to 消息不存在：${opts.reply_to}`);
     reply_to = opts.reply_to;
+  }
+  // 转任务不封存（2026-09-15）：真实消息（文字/附图）自动重新开启讨论——
+  // 后续沟通、后续任务都回到本群；纯 emoji 回应已在上方提前 return，不会走到这里
+  if (disc.status === 'converted') {
+    const n = (disc.task_ids || []).length;
+    disc.status = 'discussing';
+    await saveDiscussion(disc);
+    await appendSystemMessage(
+      discId,
+      `讨论已重新开启——已转任务${disc.task_id ? ` ${disc.task_id}${n > 1 ? `（共 ${n} 个）` : ''}` : ''}继续推进，后续沟通与新任务都可在本群继续`,
+      undefined,
+      'card',
+    );
+    await emitProgress('discussion_status', { discussion_id: discId, status: 'discussing' });
   }
   const msg = await appendMessage(discId, {
     id: newId(),

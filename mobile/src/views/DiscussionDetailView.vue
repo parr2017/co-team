@@ -28,8 +28,28 @@ const loadFailed = ref(false);
 const members = computed(() => current.value?.members || []);
 const status = computed(() => current.value?.status || 'discussing');
 const converted = computed(() => status.value === 'converted');
+/** 转任务不封存：本讨论转出的任务数 */
+const taskCount = computed(() => current.value?.task_ids?.length || (current.value?.task_id ? 1 : 0));
 const pendingUser = computed(() => !!current.value?.pending_user);
 const anyStreaming = computed(() => Object.keys(streams).length > 0);
+
+// ---------- 转任务确认卡（agent 发起 → 用户拍板，与 web 同行为） ----------
+const cvResolving = ref('');
+const cvId = (row: { m?: DiscussionMessage }) => String(((row.m?.meta as any)?.convert_confirm?.id || ''));
+async function resolveConvert(row: { m?: DiscussionMessage }, action: 'confirm' | 'cancel') {
+  const confirmId = cvId(row);
+  if (!confirmId || !current.value || cvResolving.value) return;
+  cvResolving.value = confirmId;
+  try {
+    const r = await api.resolveDiscussionConvert(current.value.id, confirmId, action);
+    showToast(action === 'confirm' ? (r.task_id ? `已确认，任务 ${r.task_id} 已创建并开工` : '已确认，任务已创建并开工') : '已取消转任务，继续讨论');
+    // 卡片状态与讨论状态经 discussion_convert_resolved 事件回写（store 内统一处理）
+  } catch (e: any) {
+    showToast(String(e?.message || e));
+  } finally {
+    cvResolving.value = '';
+  }
+}
 
 function roleOf(name: string): string {
   if (name === 'user') return '我';
@@ -182,7 +202,6 @@ function rowImgUrls(m: DiscussionMessage): string[] {
   return Array.isArray(imgs) ? imgs.map((i: any) => String(i.url || '')).filter(Boolean) : [];
 }
 function pickImages() {
-  if (converted.value) return;
   imgInputEl.value?.click();
 }
 async function onPickImages(e: Event) {
@@ -307,7 +326,9 @@ const opsActions = computed(() => {
   list.push(busy.value ? { text: '⏹ 打断并停止' } : { text: '▶ 让成员继续' });
   list.push(current.value?.mode === 'auto' ? { text: '🔁 切到手动模式' } : { text: '🔁 切到自动模式' });
   list.push({ text: current.value?.scheme ? `📄 查看方案 v${current.value.scheme_version}` : '📄 生成方案' });
-  list.push({ text: converted.value ? '🚀 查看开发任务' : '🚀 转为项目开发' });
+  // 转任务不封存（2026-09-15）：已转任务仍可查看，且可继续讨论后再转后续任务
+  if (current.value?.task_id) list.push({ text: `🚀 查看开发任务${taskCount.value > 1 ? `（共 ${taskCount.value} 个）` : ''}` });
+  list.push({ text: '🚀 转为项目开发' });
   list.push({ text: `💡 沉淀经验${experiences.value.length ? ` (${experiences.value.length})` : ''}` });
   list.push({ text: '👥 群成员' });
   return list;
@@ -356,6 +377,19 @@ async function saveEdit() {
 }
 
 // ---------- 转项目弹层 ----------
+/** 方案纯文摘（去 markdown，前 400 字）：确认前让用户看到任务大概内容 */
+const schemeDigest = computed(() => {
+  const s = current.value?.scheme || '';
+  if (!s) return '';
+  const plain = s.replace(/```[\s\S]*?```/g, ' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[#>*`]+/g, '').replace(/\s+/g, ' ').trim();
+  return plain.slice(0, 400) + (plain.length > 400 ? '…' : '');
+});
+/** 未拍板事项数（最后一条用户消息之后的 needs_user 消息） */
+const pendingCount = computed(() => {
+  const msgs = current.value?.messages || [];
+  const lastUser = msgs.map((m) => m.from).lastIndexOf('user');
+  return msgs.slice(lastUser + 1).filter((m) => m.needs_user).length;
+});
 const showConvert = ref(false);
 const showCvProject = ref(false);
 const showCvDir = ref(false);
@@ -453,6 +487,17 @@ const showExp = ref(false);
             </div>
             <div v-else class="ask-done">✓ 已回答，agent 继续执行中</div>
           </div>
+          <!-- 2026-09-15 转任务确认卡：agent 发起转任务先过用户拍板，确认才开工 -->
+          <div v-else-if="row.m.kind === 'card' && row.m.meta?.convert_confirm" class="sys-card cv-card">
+            <div class="cv-text">{{ row.m.text }}</div>
+            <div v-if="String(row.m.meta.convert_confirm.state) === 'pending'" class="cv-row">
+              <van-button size="small" type="primary" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'confirm')">确认转任务</van-button>
+              <van-button size="small" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'cancel')">暂不转</van-button>
+            </div>
+            <div v-else class="cv-done" :class="{ off: String(row.m.meta.convert_confirm.state) === 'cancelled' }">
+              {{ String(row.m.meta.convert_confirm.state) === 'confirmed' ? `✓ 已确认开工${row.m.meta.convert_confirm.task_id ? `，任务 ${row.m.meta.convert_confirm.task_id}` : ''}` : '✕ 已取消，继续讨论' }}
+            </div>
+          </div>
           <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
           <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
           <span v-else class="sys-text">{{ row.m.text }}</span>
@@ -540,18 +585,18 @@ const showExp = ref(false);
       </div>
       <div class="input-row">
         <span class="at-btn" @click="mentionSheet = true">＠</span>
-        <span class="at-btn" :class="{ dim: converted }" @click="pickImages">📷</span>
+        <span class="at-btn" @click="pickImages">📷</span>
         <van-field
           v-model="draft"
           type="textarea"
           rows="1"
           autosize
           maxlength="4000"
-          :placeholder="busy ? '成员在忙，插话即刻受理' : '说点什么…（@成员点名、发图、或让它动手）'"
+          :placeholder="converted ? '已转任务——输入消息将重新开启群聊，继续沟通或再转新任务' : busy ? '成员在忙，插话即刻受理' : '说点什么…（@成员点名、发图、或让它动手）'"
           class="input-field"
           @keydown.enter.exact.prevent="sendNow"
         />
-        <van-button class="send-btn" round type="primary" size="small" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length) || converted" @click="sendNow">
+        <van-button class="send-btn" round type="primary" size="small" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length)" @click="sendNow">
           {{ busy ? '插话' : '发送' }}
         </van-button>
       </div>
@@ -617,6 +662,15 @@ const showExp = ref(false);
     <van-popup v-model:show="showConvert" position="bottom" round :style="{ maxHeight: '80%' }">
       <div class="sheet">
         <div class="sheet-head"><span class="sheet-title">方案转项目开发</span><span class="sheet-op" @click="showConvert = false">关闭</span></div>
+        <!-- 任务内容预览：转任务前先看清要建的是什么任务（2026-09-15，与 web 弹窗一致） -->
+        <div class="cv-preview">
+          <div v-if="schemeDigest" class="cv-preview-text">{{ schemeDigest }}</div>
+          <div v-else class="cv-preview-text dim">方案尚未生成——请先在右上菜单「生成方案」后再转任务</div>
+          <div class="cv-preview-meta">
+            方案 v{{ current?.scheme_version || 0 }} · 共 {{ (current?.scheme || '').length }} 字
+            <template v-if="pendingCount"> · 未拍板事项 {{ pendingCount }} 个（执行到相关决策点时按方案默认取向推进）</template>
+          </div>
+        </div>
         <van-radio-group v-model="cv.target" direction="horizontal" class="cv-target">
           <van-radio name="new">新建项目</van-radio>
           <van-radio name="existing">挂入已有项目</van-radio>
@@ -686,6 +740,12 @@ const showExp = ref(false);
 .at-btn.sm { width: 30px; height: 30px; font-size: 15px; flex-shrink: 0; }
 .ask-input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; font-size: 13px; padding: 6px 8px; outline: none; }
 .ask-done { font-size: 11px; color: var(--green); margin-top: 4px; }
+/* 转任务确认卡 */
+.cv-card { text-align: left; max-width: 90%; border-color: var(--accent); }
+.cv-text { white-space: pre-wrap; margin-bottom: 8px; }
+.cv-row { display: flex; gap: 6px; }
+.cv-done { font-size: 11px; color: var(--green); margin-top: 4px; }
+.cv-done.off { color: var(--text-3); }
 
 .tool-row { display: flex; padding-left: 40px; margin: 1px 0; }
 .tool-text { font-size: 10px; color: var(--text-3); background: var(--panel-2); border-radius: 6px; padding: 2px 8px; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -763,6 +823,11 @@ const showExp = ref(false);
 .scheme-md :deep(h1) { font-size: 16px; margin: 4px 0 8px; }
 .scheme-md :deep(h2) { font-size: 14px; margin: 12px 0 4px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
 .cv-target { margin-bottom: 8px; }
+/* 转项目弹层：任务内容预览 */
+.cv-preview { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+.cv-preview-text { font-size: 12px; line-height: 1.7; color: var(--text); max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.cv-preview-text.dim { color: var(--text-3); }
+.cv-preview-meta { font-size: 10px; color: var(--text-3); margin-top: 6px; }
 .cv-note { font-size: 11px; color: var(--text-3); margin-top: 10px; line-height: 1.6; }
 .exp-item { padding: 8px 0; border-bottom: 1px solid var(--bg); }
 .exp-title { font-size: 13px; font-weight: 600; }
