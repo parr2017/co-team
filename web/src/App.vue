@@ -7,13 +7,17 @@
           <span class="logo-env">multi-agent orchestrator</span>
         </div>
         <nav class="nav mono">
-          <button class="nav-tab" :class="{ active: page === 'workbench' }" @click="page = 'workbench'">工作台</button>
-          <button class="nav-tab" :class="{ active: page === 'tasks' }" @click="page = 'tasks'">
+          <button class="nav-tab" :class="{ active: page === 'workbench' }" @click="router.push('/workbench')">工作台</button>
+          <button class="nav-tab" :class="{ active: page === 'tasks' }" @click="router.push('/tasks')">
             任务中心
             <span v-if="pendingGateCount" class="nav-badge" :title="`${pendingGateCount} 个任务等待你的反馈（审批/澄清/计划评审）`">{{ pendingGateCount }}</span>
           </button>
-          <button class="nav-tab" :class="{ active: page === 'project' }" @click="page = 'project'">项目开发</button>
-          <button class="nav-tab" :class="{ active: page === 'discuss' }" @click="page = 'discuss'">
+          <button class="nav-tab" :class="{ active: page === 'approvals' }" @click="router.push('/approvals')">
+            审批
+            <span v-if="pendingGateCount" class="nav-badge" title="等待你处理的审批/提案/命令/提问">{{ pendingGateCount }}</span>
+          </button>
+          <button class="nav-tab" :class="{ active: page === 'project' }" @click="router.push('/project')">项目开发</button>
+          <button class="nav-tab" :class="{ active: page === 'discuss' }" @click="router.push('/discuss')">
             群组沟通
             <span v-if="discussAlertCount" class="nav-badge" :title="`${discussAlertCount} 个讨论有成员等你拍板`">{{ discussAlertCount }}</span>
           </button>
@@ -92,6 +96,15 @@
         </main>
       </div>
 
+      <div class="layout single" v-else-if="page === 'approvals'">
+        <main class="main">
+          <div class="page-toolbar">
+            <div class="page-title">审批收件箱</div>
+          </div>
+          <router-view />
+        </main>
+      </div>
+
       <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid: string) => { detailAgent = null; detailTaskId = tid; }" />
       <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :task="chatTask" />
       <TaskDagDialog :model-value="dagTaskId !== null" :task="dagTaskId ? tasks[dagTaskId] : null" @close="dagTaskId = null" />
@@ -119,6 +132,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, onUnmounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { showApiError } from './utils/apiError';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, setApiToken, type StatusResponse } from './api';
@@ -149,12 +163,23 @@ import { useDiscussion } from './composables/useDiscussion';
 
 const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, reconnectWs, clearEvents } = useDashboard();
 const { list: discList, loadList: loadDiscussions } = useDiscussion();
+
+// B5：审批收件箱「去处理/详情」打开任务详情对话框（收件箱是路由组件，对话框宿主在 App.vue）
+const onOpenTaskEvent = (e: Event) => {
+  const tid = (e as CustomEvent<string>).detail;
+  if (tid) detailTaskId.value = tid;
+};
+window.addEventListener('coteam:open-task', onOpenTaskEvent);
+onUnmounted(() => window.removeEventListener('coteam:open-task', onOpenTaskEvent));
 const { theme, toggle } = useTheme();
 const { enabled: notifyEnabled, setEnabled: setNotifyEnabled } = useNotifier();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
 const settingsVisible = ref(false);
-const page = ref<'workbench' | 'tasks' | 'project' | 'discuss'>('workbench');
+// B3（2026-09-17）：路由是页面切换的唯一事实源——URL 直达、刷新不丢、前进后退可用
+const route = useRoute();
+const router = useRouter();
+const page = computed(() => (route.name as string) || 'workbench');
 const roadmapVisible = ref(false);
 const logVisible = ref(false);
 const reviewTaskId = ref<string | null>(null);
