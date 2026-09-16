@@ -1844,9 +1844,9 @@ export class Orchestrator {
    * git working-tree diff in the sandbox. Flags both unreported real changes and
    * phantom claims (reported files that do not exist) — the "fake completion" detector.
    */
-  private async recordDeliveryCheck(graph: TaskGraph, node: TaskNode, sandbox: string, result: AgentResult): Promise<void> {
+  private async recordDeliveryCheck(graph: TaskGraph, node: TaskNode, sandbox: string, result: AgentResult): Promise<AgentResult['delivery_check'] | null> {
     try {
-      if (!this.gitEnabled || !this.sandboxEnabled || sandbox === graph.workspace) return;
+      if (!this.gitEnabled || !this.sandboxEnabled || sandbox === graph.workspace) return null;
       const looksLikePath = (p: string) => /[/\\]/.test(p) || /\.[a-z0-9]{1,6}$/i.test(p);
       const reported = this.reportedPaths(result).map((p) => this.normalizeReportedPath(p)).filter(Boolean);
       const repSet = new Set(reported);
@@ -1879,9 +1879,48 @@ export class Orchestrator {
           taskId: graph.task_id, nodeId: node.id, unreported: unreported.length, phantom: phantom.length,
         });
       }
+      return result.delivery_check;
     } catch (e) {
       this.logger.debug?.('delivery check skipped', { taskId: graph.task_id, nodeId: node.id, error: String(e) });
+      return null;
     }
+  }
+
+  /**
+   * 假完成守卫（2026-09-16，o3xmkraj 实证）：429 限流风暴下 agent 抢不到写窗口却
+   * "幻觉完成"——changes 申报的文件沙箱里不存在（两次复现：AiClient 账面 completed、
+   * 分支无 lib/services/ai_client.dart），下游按申报等文件 → precondition blocker。
+   * recordDeliveryCheck 已算出 phantom 但只记分；本守卫做分级裁决：
+   * - 全 phantom（git 无实际变更且申报全缺失）→ 'fail'，调用点判节点失败转人工；
+   * - 部分 phantom → 从 result.changes 剔除幻影条目（下游不再等不存在的文件），journal 审计。
+   * orchestrator 合并节点无文件产出语义，跳过。
+   */
+  private applyPhantomGuard(taskId: string, graph: TaskGraph, node: TaskNode, result: AgentResult, delivery: NonNullable<AgentResult['delivery_check']>): 'fail' | 'ok' {
+    if (node.agent === 'orchestrator') return 'ok';
+    const phantom = delivery.phantom || [];
+    if (!phantom.length) return 'ok';
+
+    const phantomNorm = new Set(phantom.map((p) => this.normalizeReportedPath(p).toLowerCase()));
+    const isPhantom = (entry: string) => {
+      const p = String(entry).split(':')[0].trim().replace(/\\/g, '/').toLowerCase();
+      if (!p) return false;
+      return [...phantomNorm].some((ph) => ph === p || ph.endsWith('/' + p) || p.endsWith('/' + ph));
+    };
+    const before = (result.changes || []).length;
+    if (result.changes) result.changes = result.changes.filter((c) => !isPhantom(c));
+    const pruned = before - (result.changes || []).length;
+    // 全 phantom = 申报条目经剔除后清零（SSOT 文档等未申报噪声不稀释判据——
+    // 申报清单是下游的等待契约，全为幻影即假完成）
+    const allPhantom = before > 0 && (result.changes || []).length === 0;
+    const mode = allPhantom ? 'fail' : 'pruned';
+    void emitProgress('node_phantom_detected', { task_id: taskId, node_id: node.id, node_name: node.name, agent: node.agent, phantom: phantom.slice(0, 10), mode });
+    if (mode === 'fail') {
+      this.logger.warn('Phantom completion intercepted', { taskId, nodeId: node.id, agent: node.agent, phantom: phantom.slice(0, 5) });
+      return 'fail';
+    }
+    // 部分 phantom：剔除后照常交付（journal 留痕）
+    void pruned;
+    return 'ok';
   }
 
   // ---------- single node ----------
@@ -2161,7 +2200,11 @@ export class Orchestrator {
         }
 
         // quality metric: reported changes vs the actual working tree (before the commit)
-        await this.recordDeliveryCheck(graph, node, sandbox, result);
+        const delivery = await this.recordDeliveryCheck(graph, node, sandbox, result);
+        if (delivery && this.applyPhantomGuard(taskId, graph, node, result, delivery) === 'fail') {
+          error = `假完成拦截：申报的 ${delivery.phantom.length} 个文件均未落盘（${delivery.phantom.slice(0, 3).join('、')}）——换模型重试或人工介入`;
+          break;
+        }
 
         this.logger.nodeComplete(taskId, node.id, node.agent);
 
@@ -2221,7 +2264,23 @@ export class Orchestrator {
         error = result.error || error;
       }
       if (result.status === 'success') {
-        await this.recordDeliveryCheck(graph, node, sandbox, result);
+        const delivery = await this.recordDeliveryCheck(graph, node, sandbox, result);
+        if (delivery && this.applyPhantomGuard(taskId, graph, node, result, delivery) === 'fail') {
+          // 主 Agent 接管后仍幻觉交付：无更多升级手段，停靠人工（error_type=content → 车道锁等人工决策）
+          const msg = `假完成拦截：申报的 ${delivery.phantom.length} 个文件均未落盘（${delivery.phantom.slice(0, 3).join('、')}）——接管后仍幻觉交付，转人工`;
+          node.status = 'failed';
+          node.finished_at = new Date().toISOString();
+          node.error = `需人工介入（假完成守卫）：${msg}`;
+          node.result = { status: 'failed', error: node.error, summary: '节点停止（假完成守卫），未产出变更' };
+          node.needs_human = true;
+          node.error_type = 'content';
+          await saveDeliverable(taskId, node).catch(() => {});
+          await persistGraph(graph);
+          await this.recordAgentLife(taskId, graph, node, false, 0);
+          await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
+          notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」假完成拦截（${delivery.phantom.length} 文件未落盘），转人工处理`);
+          return;
+        }
         await this.finalizeNodeSuccess(taskId, graph, node, result, useBranch, sandbox, true);
         return;
       }

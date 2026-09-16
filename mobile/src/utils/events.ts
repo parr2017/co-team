@@ -163,6 +163,12 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
       return { text: `${p.agent || '成员'}${p.direct ? '定向' : '广播'}发言：${CLIP(p.text, 70)}`, level: 'info', category: 'agent', noisy: false };
     case 'node_handoff':
       return { text: `${p.agent || '成员'} 接力上游：${CLIP(p.handoff || '', 80)}`, level: 'info', category: 'agent', noisy: false };
+    case 'node_phantom_detected':
+      return { text: p.mode === 'fail'
+        ? `假完成拦截：${p.agent || '成员'} 申报的 ${p.phantom?.length ?? '?'} 个文件未落盘，已停止并转人工`
+        : `${p.agent || '成员'} 申报中 ${p.phantom?.length ?? '?'} 个文件未落盘，已从交付清单剔除`,
+        level: p.mode === 'fail' ? 'error' : 'warn', category: 'task', noisy: false };
+
     case 'ask_created':
       return { text: `${p.from || 'Agent'} 向你提问：${CLIP(p.question, 70)}`, level: 'accent', category: 'agent', noisy: false };
     case 'ask_delivered':
