@@ -311,7 +311,9 @@ export async function syncToWorkspace(sandbox: string, workspace: string, branch
   try {
     if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
     if (path.resolve(sandbox) === path.resolve(workspace)) return true;
-    fs.cpSync(sandbox, workspace, {
+    // 2026-09-16：同步 cpSync 改 fs.promises.cp——全量拷贝（含 Flutter build/ 等大目录）
+    // 曾以同步 I/O 冻结事件循环数分钟（两次发车窗口 API 全灭的实证），异步化让循环喘息
+    await fs.promises.cp(sandbox, workspace, {
       recursive: true,
       force: true,
       filter: (src) => {

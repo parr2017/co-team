@@ -67,7 +67,10 @@ export function canExecute(policy: PermissionPolicy, command: string): boolean {
   return policy.whitelistCommands.includes(bin);
 }
 
-const IGNORE = new Set(['.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'logs', '.history', '.coteam']);
+const IGNORE = new Set(['.git', '__pycache__', '.pytest_cache', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'logs', '.history', '.coteam',
+  // 构建产物（2026-09-16 o3xmkraj 实证）：Flutter build/ 43MB×上千小文件在收尾 syncToWorkspace
+  // 同步 cpSync 时冻结事件循环数分钟（Defender 实时扫描放大），且产物目录从不参与交付
+  'build', '.dart_tool', 'target', '.gradle']);
 /** Runtime artifacts, never deliverables: caches and databases carry execution state
  *  that breaks repeat runs when committed (tests then hit their own leftover rows). */
 const IGNORE_EXT = new Set(['.pyc', '.pyo', '.db', '.sqlite', '.sqlite3']);
