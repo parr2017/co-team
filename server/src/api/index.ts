@@ -811,7 +811,10 @@ export function createApi(ctx: ApiContext): Hono {
     while (changed) {
       changed = false;
       for (const n of graph.nodes) {
-        if ((n.status === 'pending' || n.status === 'cancelled') && (upstream.get(n.id) || []).some((d) => reset.has(d))) {
+        if ((n.status === 'pending' || n.status === 'cancelled') && !reset.has(n.id) && (upstream.get(n.id) || []).some((d) => reset.has(d))) {
+          // !reset.has 守卫（2026-09-16 o3xmkraj 实证）：缺它时 Set.add 幂等但 changed
+          // 仍被置 true——下游存在 pending/cancelled 节点即无条件死循环，冻结事件循环
+          // （retry POST 后全 API 无响应、supervisor 心跳同停），一天两起假死皆此因
           reset.add(n.id);
           changed = true;
         }
