@@ -110,3 +110,26 @@ describe('worktree 沙箱', () => {
     expect(fs.existsSync(sandbox)).toBe(false);
   });
 });
+
+describe('worktree 沙箱：崩溃残留自锁（2026-09-16 o3xmkraj 实证）', () => {
+  it('HEAD 恰好停在 coteam/base 上时，createSandbox 仍走 worktree 而非静默降级', async () => {
+    const { ws } = await makeGitWorkspace();
+    const g = simpleGit({ baseDir: ws });
+    // 模拟崩溃残留：造一次正常基线让 coteam/base 出生 → 清掉 worktree（分支保留）→
+    // 把主工作区 HEAD 停在 coteam/base 上（真实场景：崩溃打断基线舞步的回切）
+    const seed = await createSandbox(ws, 'seed');
+    await cleanupSandbox(seed);
+    const cur = (await g.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    if (cur !== 'coteam/base') await g.checkout(['-B', 'coteam/base']);
+    fs.writeFileSync(path.join(ws, 'dirty2.txt'), 'residue'); // 脏改动照常进基线
+    const sandbox = await createSandbox(ws, 'task-residue');
+    try {
+      // 修复前：branch -f coteam/base 抛 "Cannot force update the current branch" → 降级临时拷贝
+      expect(sandbox).toBe(path.join(worktreeRoot(ws), 'task-residue'));
+      expect(fs.readFileSync(path.join(sandbox, 'dirty2.txt'), 'utf-8')).toBe('residue');
+    } finally {
+      await cleanupSandbox(sandbox);
+    }
+    expect(fs.existsSync(sandbox)).toBe(false);
+  });
+});

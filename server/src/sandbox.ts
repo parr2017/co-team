@@ -133,8 +133,16 @@ async function createWorktreeSandbox(workspace: string, taskId: string): Promise
     // 基线舞步：临时切任务分支提交当前工作树（含未提交改动），再回切用户 HEAD——
     // 用户脏改动从"合并时被 mtime 覆盖"变为"进 git 基线可追溯"
     const status = await g.status();
-    const orig = status.current;
+    let orig = status.current;
     const headSha = (await g.log({ maxCount: 1 })).latest!.hash;
+    // 崩溃残留自锁（o3xmkraj 09-16 实证）：HEAD 恰好停在 coteam/base 上时，收尾的
+    // branch -f coteam/base 会因 "Cannot force update the current branch" 必然抛错，
+    // worktree 创建从此每次都静默降级临时拷贝。先 detach 到原提交（orig 置空走
+    // 既有 headSha 恢复路径），让 branch -f 在分离 HEAD 下正常执行。
+    if (orig === 'coteam/base') {
+      await g.checkout(headSha, ['--detach']).catch(() => {});
+      orig = '';
+    }
     const branches = await g.branchLocal();
     if (branches.all.includes(taskBranch)) await g.branch(['-D', taskBranch]).catch(() => {});
     await g.checkout(['-B', taskBranch]);
