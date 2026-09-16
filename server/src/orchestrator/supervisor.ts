@@ -223,8 +223,12 @@ export class Supervisor {
     switch (action.action) {
       case 'nudge': {
         if (!message) return;
-        const { pushIntervention } = await import('../store');
-        await pushIntervention(taskId, `（监督者催办）${message}`);
+        const { pushIntervention, hasPendingIntervention } = await import('../store');
+        const text = `（监督者催办）${message}`;
+        // 催办内容级去重（2026-09-16 o3xmkraj 实证）：同文未消费即跳过——同一卡点
+        // 每心跳重复催办曾在单节点开局累积 15 条噪声干预稀释模型注意力
+        if (await hasPendingIntervention(taskId, text)) return;
+        await pushIntervention(taskId, text);
         await appendJournal(taskId, 'supervisor', {
           role: 'master', kind: 'round', text: `监督者催办已注入：${message}`,
           ts: new Date().toISOString(), node_id: String(action.node_id || ''), node_name: '',

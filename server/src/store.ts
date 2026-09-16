@@ -164,6 +164,13 @@ export async function pushIntervention(taskId: string, message: string): Promise
   return item;
 }
 
+/** 2026-09-16（o3xmkraj 实证）：未消费队列里是否已有同文待办——监督者每心跳对同一卡点
+ *  重复催办曾在单节点开局累积 15 条噪声干预稀释模型注意力，nudge 入队前先查重。 */
+export async function hasPendingIntervention(taskId: string, message: string): Promise<boolean> {
+  const queue = (await busGet<InterventionMessage[]>(`task:intervene:${taskId}`)) || [];
+  return queue.some((i) => i.message === message);
+}
+
 /** Read and clear the pending intervention queue (consumed right before building the next userMsg). */
 export async function consumeInterventions(taskId: string): Promise<InterventionMessage[]> {
   const key = `task:intervene:${taskId}`;

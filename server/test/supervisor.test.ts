@@ -204,3 +204,32 @@ async function setupApiHelpers() {
     },
   };
 }
+
+describe('监督者催办去重 + 重跑清错（2026-09-16 o3xmkraj 实证）', () => {
+  it('同文 nudge 未消费时不再重复入队', async () => {
+    const { pushIntervention, consumeInterventions } = await import('../src/store');
+    const taskId = 't-dedup';
+    await saveTaskGraph(taskId, [], [], { description: 'x', workspace: tmp, status: 'planned' });
+    await (supervisor as any).runAction(taskId, { action: 'nudge', message: '请检查卡点' });
+    await (supervisor as any).runAction(taskId, { action: 'nudge', message: '请检查卡点' });
+    const queue = await consumeInterventions(taskId);
+    expect(queue.length).toBe(1);
+    expect(queue[0].message).toContain('请检查卡点');
+  });
+
+  it('execute 重跑重置节点时清掉上一轮 error/needs_human（监督者不再读陈旧错误催办）', async () => {
+    (orchestrator as any).dispatch = async (): Promise<AgentResult> => ({ status: 'success', summary: 'done', changes: [], errors: [] });
+    const nodes: TaskNode[] = [
+      { id: 'gated', task_id: 't-reset', name: '门控节点', status: 'failed', agent: 'dev', result: null, retry_count: 0, complexity: 'normal', requires_approval: true, needs_human: true, error: 'upstream failed', created_at: '', updated_at: '' },
+    ];
+    await saveTaskGraph('t-reset', nodes, [], { description: 'x', workspace: tmp, status: 'planned' });
+    const result = await (orchestrator as any).execute('t-reset', tmp);
+    expect(result.status).toBe('waiting_approval');
+    const graph = await getTaskGraph('t-reset');
+    const gated = graph!.nodes.find((n) => n.id === 'gated')!;
+    // 门控节点停在 waiting_approval：error 已被重跑重置清空（修复前残留 'upstream failed'）
+    expect(gated.status).toBe('waiting_approval');
+    // waiting 流程会写自己的提示文案；关键是上一轮的陈旧 'upstream failed' 已被清掉
+    expect(gated.error).not.toContain('upstream failed');
+  });
+});

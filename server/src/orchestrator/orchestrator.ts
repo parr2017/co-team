@@ -1001,7 +1001,15 @@ export class Orchestrator {
     // E22：cancelled 也必须重置——"upstream failed 的连带取消"在上游修复重跑后应当续跑；
     // 排除它会让重跑只补 failed 节点、下游永远躺在 cancelled，最后拼出假 success（2y3tuote 实证）。
     for (const node of graph.nodes) {
-      if (node.status !== 'completed') node.status = 'pending';
+      if (node.status !== 'completed') {
+        node.status = 'pending';
+        // 重跑即重新开工：清掉上一轮失败痕迹（error/error_type/needs_human）——
+        // 监督者 buildDigest 读节点行的 error 字段，残留旧错误会每心跳重复催办
+        // （o3xmkraj 实证单节点累积 15 条噪声干预）
+        node.error = '';
+        (node as any).error_type = undefined;
+        node.needs_human = false;
+      }
     }
     // M2 实时问答：重跑入口把上次运行遗留的 pending ask 落盘（服务重启后内存等待已失）
     await settleTaskPendingAsks(taskId).catch(() => {});
