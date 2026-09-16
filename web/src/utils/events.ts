@@ -145,6 +145,8 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
       return { text: `${p.agent || '成员'} 给 ${p.to === 'user' ? '用户' : p.to === 'orchestrator' ? '主 Agent' : (p.to || '同伴')} 留言`, level: 'info', category: 'agent', noisy: false };
     case 'node_handoff':
       return { text: `${p.agent || '成员'} 接力上游：${CLIP(p.handoff || '', 80)}`, level: 'info', category: 'agent', noisy: false };
+    case 'branch_converge_conflict':
+      return { text: `上游分支收敛冲突 ${p.conflicts?.length ?? '?'} 个，已以上游版本续合`, level: 'warn', category: 'task', noisy: false };
     case 'node_phantom_detected':
       return { text: p.mode === 'fail'
         ? `假完成拦截：${p.agent || '成员'} 申报的 ${p.phantom?.length ?? '?'} 个文件未落盘，已停止并转人工`

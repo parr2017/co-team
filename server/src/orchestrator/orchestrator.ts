@@ -2061,7 +2061,14 @@ export class Orchestrator {
         if (depBranches.length) {
           const conv = await gitTool.mergeIntoCurrent(sandbox, depBranches).catch(() => null);
           if (conv?.conflicts.length) {
-            this.logger.warn('upstream branch convergence conflicts (node continues with what merged)', { taskId, nodeId: node.id, conflicts: conv.conflicts });
+            this.logger.warn('upstream branch convergence conflicts (resolved with theirs)', { taskId, nodeId: node.id, conflicts: conv.conflicts });
+            await appendJournal(taskId, plugin.name, {
+              role: 'master', kind: 'round',
+              text: `⚠ 上游分支收敛冲突 ${conv.conflicts.length} 个（${conv.conflicts.join('、')}），已以上游版本续合——动手前先核实相关文件版本`,
+              ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+              meta: { conflicts: conv.conflicts },
+            });
+            await emitProgress('branch_converge_conflict', { task_id: taskId, node_id: node.id, agent: plugin.name, conflicts: conv.conflicts });
           }
         }
       }

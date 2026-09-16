@@ -108,6 +108,22 @@ export async function commitAllOnBranch(workspace: string, message: string): Pro
   }
 }
 
+/** 冲突以上游版本续合（2026-09-16，o3xmkraj/s3-5 实证）：冲突 abort 会把上游独有
+ *  文件对下游隐藏（下游 precondition blocker）。读冲突清单（UU/AA 等），逐文件取
+ *  上游分支版本，add 后提交续合；分支删除的文件对应 rm。返回是否续合成功。 */
+async function continueMergeWithTheirs(g: SimpleGit, branch: string): Promise<boolean> {
+  const st = await g.status();
+  const conflicted = st.conflicted || [];
+  for (const f of conflicted) {
+    await g.raw(['checkout', branch, '--', f]).catch(async () => {
+      await g.raw(['rm', '--force', '--', f]).catch(() => {});
+    });
+  }
+  await g.add(['-A']).catch(() => {});
+  const commit = await g.commit(`coteam: converge ${branch} (conflicts resolved with theirs)`).catch(() => null);
+  return !!commit?.commit;
+}
+
 export interface MergeResult {
   merged: string[];
   conflicts: string[];
@@ -126,14 +142,16 @@ export async function mergeIntoCurrent(workspace: string, branches: string[]): P
     try {
       const summary = await g.merge([branch, '--no-edit', '-m', `coteam: converge ${branch}`]);
       if (summary.failed) {
-        result.conflicts.push(branch);
-        await g.merge(['--abort']).catch(() => {});
+        // 冲突不再 abort（上游独有文件对下游不可见 → precondition blocker）：
+        // 冲突文件以上游版本续合，能合的都合
+        if (await continueMergeWithTheirs(g, branch).catch(() => false)) result.merged.push(branch);
+        else { result.conflicts.push(branch); await g.merge(['--abort']).catch(() => {}); }
       } else {
         result.merged.push(branch);
       }
     } catch {
-      result.conflicts.push(branch);
-      await g.merge(['--abort']).catch(() => {});
+      if (await continueMergeWithTheirs(g, branch).catch(() => false)) result.merged.push(branch);
+      else { result.conflicts.push(branch); await g.merge(['--abort']).catch(() => {}); }
     }
   }
   try {
@@ -151,14 +169,14 @@ export async function mergeAllNodes(workspace: string, branches: string[]): Prom
     try {
       const summary = await g.merge([branch, '--no-ff', '-m', `coteam: merge ${branch}`]);
       if (summary.failed) {
-        result.conflicts.push(branch);
-        await g.merge(['--abort']).catch(() => {});
+        if (await continueMergeWithTheirs(g, branch).catch(() => false)) result.merged.push(branch);
+        else { result.conflicts.push(branch); await g.merge(['--abort']).catch(() => {}); }
       } else {
         result.merged.push(branch);
       }
     } catch {
-      result.conflicts.push(branch);
-      await g.merge(['--abort']).catch(() => {});
+      if (await continueMergeWithTheirs(g, branch).catch(() => false)) result.merged.push(branch);
+      else { result.conflicts.push(branch); await g.merge(['--abort']).catch(() => {}); }
     }
   }
   try {
