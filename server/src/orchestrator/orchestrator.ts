@@ -292,6 +292,9 @@ export class Orchestrator {
   private planningMode: 'rolling' | 'static';
   private rollingMaxStages: number;
   private taskTokens = new Map<string, number>();
+  /** 2026-09-16：任务级流打断——cancel API 经 abortTask 中止 in-flight LLM 流
+   *  （此前取消只能等轮边界轮询，卡死的流无法打断）。execute 创建、收尾清理。 */
+  private taskSignals = new Map<string, AbortController>();
   /** E5 软重试防浪费记忆（o3xmkraj 复盘）：本任务内已"降思考强度重试仍烧穿"的模型——
    *  同模型只软重试一次，命中记忆直接换模（网关不认 reasoning_effort 时避免双倍烧） */
   private thinkingBurned = new Map<string, Set<string>>();
@@ -972,7 +975,23 @@ export class Orchestrator {
     return false;
   }
 
+  /** 取消打断：abort 本任务的 in-flight LLM 流（llm.ts externalSignal 消费分支接管）。 */
+  abortTask(taskId: string): void {
+    this.taskSignals.get(taskId)?.abort();
+  }
+
+  /** execute 包装：登记任务级 AbortController，收尾清理（流内可控性，2026-09-16）。 */
   async execute(taskId: string, workspace: string): Promise<Record<string, any>> {
+    const controller = new AbortController();
+    this.taskSignals.set(taskId, controller);
+    try {
+      return await this.executeInner(taskId, workspace);
+    } finally {
+      this.taskSignals.delete(taskId);
+    }
+  }
+
+  private async executeInner(taskId: string, workspace: string): Promise<Record<string, any>> {
     this.logger.taskStart(taskId, '');
     
     const graph = await loadGraph(taskId);
@@ -2797,6 +2816,18 @@ export class Orchestrator {
           continue;
         }
       } catch (e: any) {
+        lastErr = String(e).slice(0, 500);
+        // 任务取消（abort 打断流）：不记账不换模，直接收场（isCancelled 检查接管后续清理）
+        if (lastErr.includes('外部取消')) {
+          return { status: 'failed', error: 'task cancelled' };
+        }
+        // 流内节点预算到线（wallclock_cap）：时间问题换谁都一样——停阶梯转人工，不记模型失败
+        if (lastErr.includes('wallclock_cap')) {
+          lastErr = `${NODE_BUDGET_PREFIX} 本节点单轮流内耗时超出总预算（${lastErr.slice(0, 140)}）`;
+          this.logger.warn('Node time budget exceeded in-stream — stopping ladder', { taskId, nodeId: node.id, model: entry.name });
+          await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: lastErr, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
+          return { status: 'failed', error: lastErr };
+        }
         if (String(e?.message).includes('token budget')) {
           this.logger.error('Token budget exceeded', { taskId, nodeId: node.id });
           return { status: 'failed', error: 'token budget exceeded for this task' };
@@ -3206,11 +3237,14 @@ export class Orchestrator {
         }
         // 动态输出预算：本轮可用输出 = 档位基座 × 2^轮次（封顶模型上限/128k）
         const roundBudget = roundBudgetFor(round);
+        // 流内节点预算墙钟（2026-09-16）：把节点剩余预算作为本轮 LLM 调用的墙钟上限
+        // 传入 chat——此前预算只在轮间检查，慢滴流（每字节都算活动）单轮可挂 30-50 分钟
+        const nodeCapMs = nodeBudgetMs > 0 ? Math.max(2000, nodeBudgetMs - (Date.now() - startedAt)) : undefined;
         await emitProgress('agent_activity', {
           task_id: taskId, node_id: node.id, agent: plugin.name,
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,
         });
-        const resp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, undefined, undefined, onDelta);
+        const resp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta);
         this.pool!.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
         record.tokens += resp.promptTokens + resp.completionTokens;
@@ -3256,7 +3290,7 @@ export class Orchestrator {
           await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: `输出预算耗尽：思考烧穿 ${resp.completionTokens} token（请求上限 ${roundBudget}）正文为空——同模型降思考强度软重试一次`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
           await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: '思考烧穿输出预算，降强度软重试…', model: entry.name });
           messages.push({ role: 'user', content: `你上一轮的思考耗尽了全部输出预算（${roundBudget} token）且没有输出任何正文。不要重新展开长思考：基于已有信息直接输出最终 JSON 结果；文件内容用 write_file 工具分批落盘，最终 JSON 的 files 留空数组。` });
-          const retryResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, undefined, undefined, onDelta, { extraBody: { reasoning_effort: 'low' } });
+          const retryResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta, { extraBody: { reasoning_effort: 'low' } });
           this.pool!.recordUsage(entry.name, retryResp.promptTokens, retryResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + retryResp.promptTokens + retryResp.completionTokens);
           record.tokens += retryResp.promptTokens + retryResp.completionTokens;
@@ -3368,7 +3402,7 @@ export class Orchestrator {
           messages.push({ role: 'assistant', content });
           messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
           // Do one more round to get final output
-          const finalResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, undefined, undefined, onDelta);
+          const finalResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta);
           this.pool!.recordUsage(entry.name, finalResp.promptTokens, finalResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + finalResp.promptTokens + finalResp.completionTokens);
           record.tokens += finalResp.promptTokens + finalResp.completionTokens;

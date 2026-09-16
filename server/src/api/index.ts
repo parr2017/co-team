@@ -389,6 +389,8 @@ export function createApi(ctx: ApiContext): Hono {
     const graph = await getTaskGraph(taskId);
     if (!graph) throw new HttpError(404, 'task not found');
     await busSet(`task:cancel:${taskId}`, true);
+    // 流内打断（2026-09-16）：abort 本任务 in-flight LLM 流——此前取消只能等轮边界轮询
+    ctx.orchestrator.abortTask(taskId);
     // a cancelled task must not stay in the queue — drop it from the pending tail
     await ctx.taskQueue.removePending(taskId);
     return c.json({ status: 'cancelling', task_id: taskId });
