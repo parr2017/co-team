@@ -28,6 +28,7 @@ import { chat, extractJson, stripCodeFence, salvageToolCalls } from './llm';
 import type { LlmResponse } from './llm';
 import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
+import type { McpManager } from './mcp/manager';
 import type { TaskQueueManager } from './taskQueue';
 import type { Logger } from './logger';
 import { writeKnowledge, relevantKnowledge, listKnowledge } from './knowledge';
@@ -101,6 +102,8 @@ export interface DiscussionDeps {
   pool: ModelPool;
   taskQueue: TaskQueueManager;
   logger: Logger;
+  /** 外部 MCP 服务管理器（缺省=未接入，mcp__ 工具软错误拒绝） */
+  mcp?: McpManager;
 }
 
 /** Error carrying an HTTP status so the API layer can map it 1:1. */
@@ -484,7 +487,7 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
 // ---------- prompts ----------
 
 /** 所有成员共享的 system 前缀：群规 + 真实性纪律 + 工具面 + 输出契约 */
-function speakerSystemPrompt(projectCtx: string): string {
+function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
   return `# 场景：项目规划群组讨论
 你在一个项目规划群聊里，与用户（决策方）和其他专业 agent 共同讨论并动手解决问题。你不是轮流朗诵的嘉宾——像真实的工程同事那样：没新东西就不说话，能动手就直接动手，说完话要兑现。
 
@@ -516,7 +519,7 @@ function speakerSystemPrompt(projectCtx: string): string {
 禁止修改代码：群聊没有 write_file/edit_file，任何改代码的请求一律 {"tool":"convert_to_project"} 转任务（这是修改代码的唯一出路）
 知识沉淀： {"tool":"write_knowledge","category":"general-tech|project","title":"标题","content":"内容"}
 转项目开发（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）： {"tool":"convert_to_project","auto_run":true}
-
+${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments 字段）：\n${mcpBlock}\n` : ''}
 ## 输出契约（最终消息必须是纯 JSON，禁止 markdown 代码栅栏）
 两种形态二选一：
 A 需要动手时：{"tool_calls":[ {"tool":"..."}, ... ]}
@@ -633,6 +636,37 @@ async function runSpeakerToolCalls(
     const name = String(call.tool || '').toLowerCase();
     if (roSet.has(name)) {
       results.push(roResults[roIdx++]);
+      continue;
+    }
+    if (name.startsWith('mcp__')) {
+      // 外部 MCP 工具：不依赖项目工作区（执行在外部服务侧），agent 白名单/allow_tools/
+      // 在线状态全部在桥内门控，软错误回喂——不进 try 内的命令/文件分支
+      const bridge = deps.mcp;
+      if (!bridge) {
+        results.push({ tool: name, ok: false, error: '本系统未接入 MCP 服务' });
+        continue;
+      }
+      const rest = name.slice('mcp__'.length);
+      const sep = rest.indexOf('__');
+      const server = sep > 0 ? rest.slice(0, sep) : '';
+      const toolName = sep > 0 ? rest.slice(sep + 2) : '';
+      if (!server || !toolName) {
+        results.push({ tool: name, ok: false, error: '工具名格式必须是 mcp__<服务>__<工具>' });
+        continue;
+      }
+      let args = (call as { arguments?: unknown }).arguments;
+      if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        // 兜底：模型没写 arguments 时把平铺字段（tool/arguments 之外）当作参数
+        const { tool: _t, arguments: _a, ...flat } = call as Record<string, unknown>;
+        args = flat;
+      }
+      try {
+        const r = await bridge.callTool(agent, server, toolName, args as Record<string, unknown>);
+        results.push({ tool: name, ok: r.ok, server, ...(r.ok ? { output: r.text, ...(r.truncated ? { truncated: true } : {}) } : { error: r.error }) });
+      } catch (e: any) {
+        // 软错误回喂纪律：一次工具异常绝不炸毁整次发言
+        results.push({ tool: name, ok: false, server, error: String(e?.message || e).slice(0, 200) });
+      }
       continue;
     }
     if (!ws) {
@@ -760,7 +794,8 @@ async function runSpeakerTurn(
     deps.logger.warn('discussion round: no model available for agent, skipped', { discId: disc.id, agent });
     return { spoke: false, asked: false, silent: true, failed: '无可用模型', toolUsed: false };
   }
-  const sys = speakerSystemPrompt(projectCtx);
+  const mcpBlock = deps.mcp ? deps.mcp.toolsIndex(agent) : '';
+  const sys = speakerSystemPrompt(projectCtx, mcpBlock);
   const convo: { role: string; content: string }[] = [
     { role: 'system', content: sys },
     { role: 'user', content: identity },

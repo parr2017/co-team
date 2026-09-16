@@ -6,6 +6,7 @@ import type { Context, Next } from 'hono';
 import { createApi, attachWebSocket, ApiContext } from './api';
 import { initBus, closeBus } from './bus';
 import { loadConfig, PROJECT_ROOT } from './config';
+import type { McpManager } from './mcp/manager';
 import { Orchestrator } from './orchestrator/orchestrator';
 import { ModelPool } from './scheduler';
 import { TaskQueueManager } from './taskQueue';
@@ -171,6 +172,17 @@ async function main(): Promise<void> {
     logger.info('Knowledge embedding enabled', { model: config.knowledge.embedding.model });
   }
 
+  // 外部 MCP 服务接入（MCP client）：无配置=零影响；连接失败仅 warn + 退避重试，不阻塞启动
+  let mcp: McpManager | undefined;
+  if (config.mcp?.servers?.length) {
+    const { McpManager } = await import('./mcp/manager');
+    mcp = new McpManager(config.mcp.servers);
+    mcp.start();
+    logger.info('MCP manager started', { servers: config.mcp.servers.map((s) => `${s.name}(${s.type}${s.enabled === false ? ',disabled' : ''})`) });
+  } else {
+    logger.info('MCP not configured (no mcp.servers), skipping');
+  }
+
   const orchestrator = new Orchestrator({
     agentsDir: config.agents_dir,
     modelPool,
@@ -191,6 +203,7 @@ async function main(): Promise<void> {
     slowSuccessSec: config.llm?.slow_success_sec,
     outputTiers: config.llm?.output_tiers,
     context: config.context,
+    mcp,
   });
 
   await orchestrator.loadAgents();
@@ -285,7 +298,7 @@ async function main(): Promise<void> {
   }
 
   // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
-  await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger });
+  await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger, mcp });
 
   // improvement 5 (R5): periodic scan nudges tasks stuck in 'clarifying' (once per task)
   startClarifyTimeoutScanner({ timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
@@ -295,7 +308,7 @@ async function main(): Promise<void> {
   const dailyReportScanner = startDailyReportScanner({ enabled: config.daily_report?.enabled ?? false, hour: config.daily_report?.hour ?? 9 });
   logger.info('Daily report scanner started', { enabled: config.daily_report?.enabled ?? false, hour: config.daily_report?.hour ?? 9 });
 
-  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue, dailyReportScanner };
+  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue, dailyReportScanner, mcp };
   const app = createApi(ctx);
 
   // browsers always probe /favicon.ico — answer 204 so it stops spamming the API log

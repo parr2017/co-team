@@ -10,6 +10,7 @@ import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCo
 import { runPostMergeAcceptance, runChecklistAudit, detectProjectProfile } from './acceptance';
 import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens, gitDiffFull, listTestAssets } from '../tools';
 import type { AskBridge, KnowledgeToolContext } from '../tools';
+import type { McpManager } from '../mcp/manager';
 import { analyzeImages, type VisionBridge } from '../vision';
 import { cancelAsks, consumeAskQueue, createAsk, flushAgentAsks, queueAskForAgent, resolveAsk, waitForAnswer, abandonAsk, settleTaskPendingAsks } from '../askGate';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
@@ -104,6 +105,8 @@ export interface OrchestratorOptions {
   planningMode?: 'rolling' | 'static';
   /** M4 阶段数上限（缺省 5） */
   rollingMaxStages?: number;
+  /** 外部 MCP 服务管理器（缺省=未接入 MCP） */
+  mcp?: McpManager;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -255,6 +258,8 @@ export function formatDocAttribution(docUpdates?: { type: string; version: numbe
 
 export class Orchestrator {
   plugins: Map<string, AgentPlugin>;
+  /** 外部 MCP 服务管理器（MCP client）；缺省=未接入，mcp__ 工具全软错误 */
+  mcp?: McpManager;
   router: Router;
   private pool: ModelPool | null;
   private policy: PermissionPolicy;
@@ -329,6 +334,9 @@ export class Orchestrator {
     this.askTimeoutMs = Math.max(5000, (opts.askTimeoutSec ?? 900) * 1000);
     this.planningMode = opts.planningMode ?? 'rolling';
     this.rollingMaxStages = Math.max(1, opts.rollingMaxStages ?? 5);
+    this.mcp = opts.mcp;
+    // MCP agent 白名单挂到插件表（agent.yaml 的 mcp_servers）；plugins 重载后 provider 读的是最新表
+    this.mcp?.setAgentServersProvider((agent) => this.plugins.get(agent)?.mcpServers);
     this.selfModGate = opts.selfModGate || {
       enabled: true,
       test_command: 'npm test',
@@ -2918,6 +2926,8 @@ export class Orchestrator {
     if (picks.length) {
       this.logger.info('Skills loaded for node', { taskId, nodeId: node.id, agent: plugin.name, skills: picks.map((p) => `${p.skill.name}(${p.reason})`) });
     }
+    // 外部 MCP 工具清单：按 agent 白名单确定性渲染（字节稳定，前缀缓存友好）；无绑定返回空
+    const mcpBlock = this.mcp ? this.mcp.toolsIndex(plugin.name) : '';
     const systemMsg = buildAgentHarness({
       name: plugin.name,
       role: plugin.role,
@@ -2929,6 +2939,7 @@ export class Orchestrator {
       knowledgeBlock: knowledgeBlock ? knowledgeBlock.replace(/^\n\n## 相关知识库条目\n/, '') : '',
       memories,
       skillsBlock,
+      mcpBlock: mcpBlock || undefined,
       round: 0,
       maxRounds,
       escalate,
@@ -3333,6 +3344,7 @@ export class Orchestrator {
             answer: (askId: string, c: string) => this.bridgeAnswer(taskId, plugin.name, askId, c),
           } satisfies AskBridge,
           ...(this.pool ? { vision: { analyze: (prompt: string, images: { base64: string; mediaType: string }[]) => analyzeImages(this.pool!, prompt, images) } satisfies VisionBridge } : {}),
+          ...(this.mcp ? { mcp: this.mcp } : {}),
         };
         // 重复调用指针化（缓存优先裁剪）：同工具+同参数再次出现不再读盘回显全文——
         // 既省上下文增量，也让模型看到"结果同上轮"而不是被第二份大体积 JSON 挤爆窗口
@@ -3343,8 +3355,10 @@ export class Orchestrator {
           const t = toolCalls[ti] as Record<string, any>;
           const tName = String(t.tool || '').toLowerCase();
           // screenshot/look_image 虽只读，但每次都是独立的视觉分析（页面随节点推进在变，
-          // 且消耗 vision 配额）——"同参结果从略"的契约对它们不成立，豁免去重
-          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file';
+          // 且消耗 vision 配额）——"同参结果从略"的契约对它们不成立，豁免去重。
+          // mcp__ 外部工具同理豁免：参数在独立 arguments 字段，现有 dedupKey 覆盖不到，
+          // 且外部工具可能带副作用（写远程/改外部数据），重放语义必须由工具自己决定。
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file' || tName.startsWith('mcp__');
           const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}`;
           if (!sideEffect && seenToolCalls.has(dedupKey)) {
             positioned[ti] = { tool: t.tool, ok: true, dedup: `与第 ${seenToolCalls.get(dedupKey)} 轮完全相同的调用，结果从略（可信任上轮结果）` };

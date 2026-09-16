@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import type { ModelConfig } from './types';
+import type { McpServerConfig } from './mcp/types';
+import { DEFAULT_MCP_MAX_RESULT_CHARS, DEFAULT_MCP_TIMEOUT_SEC } from './mcp/types';
 
 export interface OrchestrationConfig {
   max_retries: number;
@@ -92,6 +94,20 @@ export interface AppConfig {
   context?: ContextConfig;
   /** feishu bot (event subscription mode); secrets come from COTEAM_FEISHU_* env vars */
   feishu?: FeishuConfig;
+  /** 外部 MCP server 接入（MCP client）；server 级配置，agent 可见性走 agent.yaml 的 mcp_servers */
+  mcp?: { servers: McpServerConfig[] };
+}
+
+/** env/headers 等必须是 string→string 平对象；非法条目静默丢弃 */
+function stringRecord(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof k === 'string' && k && (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean')) {
+      out[k] = String(val);
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export interface LlmTimeoutConfig {
@@ -262,5 +278,37 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
           ...(process.env.COTEAM_FEISHU_API_BASE ? { api_base: process.env.COTEAM_FEISHU_API_BASE } : {}),
         }
       : undefined,
+    mcp: parseMcpConfig(raw.mcp),
   };
+}
+
+/** mcp.servers 解析：宽松容错——非法条目丢弃不炸启动；名称归一小写（对齐工具名 lowerCase 纪律） */
+function parseMcpConfig(raw: any): { servers: McpServerConfig[] } | undefined {
+  const list = Array.isArray(raw?.servers) ? raw.servers : [];
+  const servers: McpServerConfig[] = [];
+  for (const s of list) {
+    if (!s || typeof s !== 'object') continue;
+    const name = typeof s.name === 'string' ? s.name.trim().toLowerCase() : '';
+    if (!name || !/^[a-z0-9][a-z0-9_-]*$/.test(name)) continue;
+    const type = s.type === 'http' ? 'http' : 'stdio';
+    if (type === 'stdio' && typeof s.command !== 'string') continue;
+    if (type === 'http' && typeof s.url !== 'string') continue;
+    const env = stringRecord(s.env);
+    const headers = stringRecord(s.headers);
+    servers.push({
+      name,
+      type,
+      enabled: s.enabled !== false,
+      ...(typeof s.command === 'string' ? { command: s.command } : {}),
+      ...(Array.isArray(s.args) ? { args: s.args.map((a: unknown) => String(a)) } : {}),
+      ...(env ? { env } : {}),
+      ...(typeof s.cwd === 'string' ? { cwd: s.cwd } : {}),
+      ...(typeof s.url === 'string' ? { url: s.url } : {}),
+      ...(headers ? { headers } : {}),
+      max_result_chars: positiveOr(s.max_result_chars, DEFAULT_MCP_MAX_RESULT_CHARS),
+      timeout_sec: positiveOr(s.timeout_sec, DEFAULT_MCP_TIMEOUT_SEC),
+      ...(Array.isArray(s.allow_tools) ? { allow_tools: s.allow_tools.map((t: unknown) => String(t).toLowerCase()) } : {}),
+    });
+  }
+  return servers.length ? { servers } : undefined;
 }

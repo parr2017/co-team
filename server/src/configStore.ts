@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { PROJECT_ROOT } from './config';
 import type { ModelConfig } from './types';
+import type { McpServerConfig } from './mcp/types';
 
 function configPath(root: string = PROJECT_ROOT): string {
   return path.join(root, 'config', 'config.yaml');
@@ -35,8 +36,7 @@ export function saveDailyReport(cfg: { enabled: boolean; hour: number }, root: s
   writeRaw(raw, root);
 }
 
-/** 包 D（2026-09-16）：全局命令权限（permissions 节）读写——设置界面替代手改 config.yaml */
-export function readPermissions(root: string = PROJECT_ROOT): { level: string; whitelist_commands: string[]; max_time_sec?: number } {
+/** 包 D（2026-09-16）：全局命令权限（permissions 节）读写——设置界面替代手改 config.yaml */export function readPermissions(root: string = PROJECT_ROOT): { level: string; whitelist_commands: string[]; max_time_sec?: number } {
   const raw = readRaw(root);
   const p = (raw.permissions || {}) as Record<string, any>;
   return {
@@ -53,6 +53,16 @@ export function savePermissions(cfg: { level: string; whitelist_commands: string
     whitelist_commands: cfg.whitelist_commands,
     ...(cfg.max_time_sec !== undefined ? { max_time_sec: cfg.max_time_sec } : {}),
   };
+  writeRaw(raw, root);
+}
+
+// ---------- 外部 MCP 服务（mcp 节）----------
+
+/** 保存 MCP server 列表并热生效（UI 设置 → MCP服务）；空列表=移除整个 mcp 节 */
+export function saveMcpServers(servers: McpServerConfig[], root: string = PROJECT_ROOT): void {
+  const raw = readRaw(root);
+  if (servers.length) raw.mcp = { servers };
+  else delete raw.mcp;
   writeRaw(raw, root);
 }
 
@@ -100,6 +110,7 @@ export function readAgentDefinition(agentsDir: string, dirName: string) {
     timeout: cfg.timeout ?? 300,
     version: cfg.version || '1.0.0',
     skills: Array.isArray(cfg.skills) ? cfg.skills.map(String) : [],
+    mcp_servers: Array.isArray(cfg.mcp_servers) ? cfg.mcp_servers.map(String) : [],
     prompt: fs.existsSync(promptFile) ? fs.readFileSync(promptFile, 'utf-8') : '',
   };
 }
@@ -117,6 +128,8 @@ export function writeAgentDefinition(
     timeout?: number;
     prompt?: string;
     skills?: string[];
+    /** 绑定的外部 MCP server 白名单（agent.yaml mcp_servers） */
+    mcp_servers?: string[];
   }
 ): string {
   const dirName = sanitizeName(def.name);
@@ -136,6 +149,7 @@ export function writeAgentDefinition(
     model_override: def.model_override ?? null,
     timeout: def.timeout ?? 300,
     skills: def.skills ?? [],
+    mcp_servers: (def.mcp_servers ?? []).map((s) => String(s).toLowerCase()),
   };
   fs.writeFileSync(path.join(targetDir, 'agent.yaml'), yaml.dump(cfg), 'utf-8');
   const promptFile = path.join(targetDir, 'prompt.md');

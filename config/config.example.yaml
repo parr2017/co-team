@@ -189,3 +189,22 @@ redis:
   port: 6379
   # SEC-P0：Redis 暴露非 127.0.0.1 时必须设密码（requirepass），co-team 连接同步配置此项
   # password: your-redis-password
+# 外部 MCP 服务接入（MCP client）：把外部工具以 mcp__<name>__<tool> 暴露给 Agent。
+# server 连接参数在这里配置；agent 可见性在 agents/<name>/agent.yaml 的 mcp_servers 白名单（默认不可见）。
+# 密钥不进本文件：env/headers 的值支持 ${ENV_VAR} 占位（如 ${COTEAM_MCP_GITHUB_TOKEN}），
+# 保存即热生效（设置界面 → MCP服务，或 PUT /api/config/mcp）。
+# mcp:
+#   servers:
+#     - name: fs                      # 全小写 kebab，agent.yaml 用此名引用
+#       type: stdio                   # stdio=本地命令进程 | http=Streamable HTTP 远程
+#       enabled: true
+#       command: npx
+#       args: ["-y", "@modelcontextprotocol/server-filesystem", "D:/pxx/projects"]
+#       # env: { SOME_VAR: "${SOME_SECRET}" }
+#       # timeout_sec: 60             # 单次调用超时（秒，缺省 60）
+#       # max_result_chars: 16000     # 单次结果截断（字符，缺省 16000）
+#     - name: github
+#       type: http
+#       url: "http://127.0.0.1:8931/mcp"
+#       # headers: { Authorization: "Bearer ${COTEAM_MCP_GITHUB_TOKEN}" }
+#       # allow_tools: []             # 工具级白名单（小写），空=全部

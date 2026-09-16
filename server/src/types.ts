@@ -46,6 +46,8 @@ export interface FileChange {
 export interface ToolCall {
   tool: string;
   path?: string;
+  /** MCP 工具（mcp__<server>__<tool>）的独立参数字段——避开 name/path/pattern 等既有占用 */
+  arguments?: Record<string, unknown>;
 }
 
 export interface TestFixReport {

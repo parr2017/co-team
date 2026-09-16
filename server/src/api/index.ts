@@ -24,6 +24,8 @@ import { PROJECT_ROOT } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
 import type { FeishuHandler } from '../feishu/webhook';
 import { getLogger } from '../logger';
+import type { McpManager } from '../mcp/manager';
+import type { McpServerConfig, McpServerStatus } from '../mcp/types';
 
 export interface ApiContext {
   config: AppConfig;
@@ -32,6 +34,8 @@ export interface ApiContext {
   taskQueue: TaskQueueManager;
   /** feature: 每日问题报告 — scanner handle so the PUT config route can hot-reload it */
   dailyReportScanner?: { reload(enabled: boolean, hour: number): void };
+  /** 外部 MCP 服务管理器（MCP client）；未配置=undefined，mcp 配置路由按空列表处理 */
+  mcp?: McpManager;
 }
 
 /** A4 简单模式: safe default whitelist for auto-exec when the user didn't pick a policy. */
@@ -1524,6 +1528,46 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'saved', permissions });
   });
 
+  // ---------- 外部 MCP 服务管理（MCP client） ----------
+
+  app.get('/api/config/mcp', (c) => {
+    return c.json({
+      servers: ctx.config.mcp?.servers || [],
+      runtime: ctx.mcp ? ctx.mcp.status() : [],
+    });
+  });
+
+  app.put('/api/config/mcp', async (c) => {
+    const body = await c.req.json<{ servers?: unknown }>();
+    const { validateMcpServerConfigs } = await import('../mcp/manager');
+    const { saveMcpServers } = await import('../configStore');
+    let servers: McpServerConfig[];
+    try {
+      servers = validateMcpServerConfigs(body.servers);
+    } catch (e: any) {
+      throw new HttpError(400, String(e?.message || e));
+    }
+    saveMcpServers(servers);
+    ctx.config.mcp = servers.length ? { servers } : undefined;
+    // 保存即热生效：差异重连（新增/变更连，删除/禁用断），未变更的不动
+    if (ctx.mcp) await ctx.mcp.applyConfig(servers);
+    return c.json({ status: 'saved', servers, runtime: ctx.mcp ? ctx.mcp.status() : [] });
+  });
+
+  app.post('/api/config/mcp/test', async (c) => {
+    const body = await c.req.json<{ server?: unknown }>();
+    const { validateMcpServerConfigs, probeMcpServer } = await import('../mcp/manager');
+    let cfg: McpServerConfig;
+    try {
+      cfg = validateMcpServerConfigs([body.server])[0];
+    } catch (e: any) {
+      throw new HttpError(400, String(e?.message || e));
+    }
+    // 不落盘探测：连上 → listTools → 关闭；成功带工具数，失败带具体报错
+    const result = await probeMcpServer(cfg);
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
   // ---------- feature: 每日问题报告 ----------
 
   app.get('/api/config/daily-report', (c) => {
@@ -1753,6 +1797,8 @@ export function createApi(ctx: ApiContext): Hono {
       agents_dir: ctx.config.agents_dir,
       tokens_total: ctx.modelPool.totalTokens(),
       cost_total: ctx.modelPool.totalCost(),
+      // 外部 MCP 服务连接状态（MCP client）：web 状态灯与 mobile 状态列表共用
+      mcp: ctx.mcp ? ctx.mcp.status() : [],
     });
   });
 

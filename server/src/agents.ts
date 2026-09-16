@@ -24,6 +24,8 @@ export interface AgentPlugin extends AgentInfo {
   version: string;
   /** explicitly bound skills from agent.yaml (`skills: [name, ...]`) — always injected */
   skills: string[];
+  /** 绑定的外部 MCP server 白名单（agent.yaml `mcp_servers: [name, ...]`）；缺省=不可见（安全默认） */
+  mcpServers: string[];
 }
 
 export async function discoverAgents(agentsDir: string): Promise<AgentPlugin[]> {
@@ -66,6 +68,7 @@ export async function discoverAgents(agentsDir: string): Promise<AgentPlugin[]> 
       dir: agentDir,
       version: cfg.version || '0.0.0',
       skills: Array.isArray(cfg.skills) ? cfg.skills.map(String) : [],
+      mcpServers: Array.isArray(cfg.mcp_servers) ? cfg.mcp_servers.map((s: unknown) => String(s).toLowerCase()) : [],
     });
   }
   return plugins;

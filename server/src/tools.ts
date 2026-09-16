@@ -9,6 +9,7 @@ import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
 import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agentMessages';
 import { findSkillForAgent } from './skills';
 import { IMAGE_MEDIA_TYPES, MAX_IMAGE_BYTES, type VisionBridge } from './vision';
+import type { McpBridge } from './mcp/types';
 
 export interface KnowledgeToolContext {
   agent: string;
@@ -26,6 +27,8 @@ export interface KnowledgeToolContext {
   askBridge?: AskBridge;
   /** 多模态旁路：screenshot/look_image 的视觉分析桥（orchestrator/discussion 注入池实现；缺省即软错误门控） */
   vision?: VisionBridge;
+  /** 外部 MCP 服务桥：mcp__<server>__<tool> 分支的唯一执行通道（缺桥/未绑定即软错误门控） */
+  mcp?: McpBridge;
 }
 
 /** 阻塞式问答桥：由 orchestrator 实现（journal/飞书/目标投递都在桥内完成），tools.ts 保持无状态。 */
@@ -489,7 +492,7 @@ export async function lookImage(workspace: string, imagePath: string, question: 
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number; find?: string; replace?: string }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number; find?: string; replace?: string; arguments?: Record<string, unknown> }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -684,6 +687,34 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
         } else {
           results.push({ tool: 'edit_file', ok: false, path: rel, error: failures[0] || 'edit failed' });
         }
+      }
+    } else if (name.startsWith('mcp__')) {
+      // 外部 MCP 服务工具（mcp__<server>__<tool>）：参数放独立 arguments 字段——
+      // name/path/pattern 等被既有工具占用；缺桥/未绑定/未连接都由桥内转软错误，绝不 throw
+      const bridge = knowledgeCtx?.mcp;
+      if (!bridge) {
+        results.push({ tool: name, ok: false, error: '当前上下文未接入 MCP 服务（未配置或本 agent 未在 agent.yaml 绑定）' });
+        continue;
+      }
+      const rest = name.slice('mcp__'.length);
+      const sep = rest.indexOf('__');
+      const server = sep > 0 ? rest.slice(0, sep) : '';
+      const toolName = sep > 0 ? rest.slice(sep + 2) : '';
+      if (!server || !toolName) {
+        results.push({ tool: name, ok: false, error: '工具名格式必须是 mcp__<服务>__<工具>' });
+        continue;
+      }
+      let args = (call as { arguments?: unknown }).arguments;
+      if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        // 兜底：模型没写 arguments 时把平铺字段（tool/arguments 之外）当作参数，宽容 salvage
+        const { tool: _t, arguments: _a, ...flat } = call as Record<string, unknown>;
+        args = flat;
+      }
+      try {
+        const r = await bridge.callTool(knowledgeCtx!.agent, server, toolName, args as Record<string, unknown>);
+        results.push({ tool: name, ok: r.ok, server, ...(r.ok ? { output: r.text, ...(r.truncated ? { truncated: true } : {}) } : { error: r.error }) });
+      } catch (e: any) {
+        results.push({ tool: name, ok: false, server, error: String(e?.message || e).slice(0, 200) });
       }
     } else {
       results.push({ tool: name, ok: false, error: `tool '${name}' not allowed mid-run` });
