@@ -227,6 +227,8 @@ export function createApi(ctx: ApiContext): Hono {
       profile?: 'simple' | 'expert';
       fix_for?: { task_id?: string; node_id?: string };
       allow_self_ref?: boolean;
+      /** B1（2026-09-17）：验收策略——strict=验收失败即任务失败；tolerant（缺省）=完成·有警告 */
+      acceptance_policy?: 'strict' | 'tolerant';
     }>(c);
     const description = body.description || body.request || '';
     if (!description) throw new HttpError(400, 'description is required');
@@ -271,6 +273,16 @@ export function createApi(ctx: ApiContext): Hono {
       const fresh = await getTaskGraph(taskId);
       if (fresh) {
         fresh.fix_for = { task_id: body.fix_for.task_id, node_id: body.fix_for.node_id || '' };
+        await persistGraph(fresh);
+      }
+    }
+
+    // B1：创建时可选指定验收策略（缺省 tolerant，与编排器裁决一致）
+    if (body.acceptance_policy) {
+      if (!['strict', 'tolerant'].includes(body.acceptance_policy)) throw new HttpError(400, 'acceptance_policy must be strict | tolerant');
+      const fresh = await getTaskGraph(taskId);
+      if (fresh) {
+        fresh.acceptance_policy = body.acceptance_policy;
         await persistGraph(fresh);
       }
     }

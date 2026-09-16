@@ -606,7 +606,7 @@ export const api = {
     workspace: string,
     autoRun = true,
     projectId?: string,
-    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: string; profile?: 'simple' | 'expert'; allowSelfRef?: boolean }
+    opts?: { mainModelId?: string; level?: string; executionPolicy?: { level?: string; whitelist_commands?: string[] }; nodeClarify?: string; profile?: 'simple' | 'expert'; allowSelfRef?: boolean; acceptancePolicy?: 'strict' | 'tolerant' }
   ) =>
     request<{ task_id: string; status?: string; questions?: string[]; summary?: string; level?: string; graph?: TaskGraph }>('/api/tasks', {
       method: 'POST',
@@ -622,6 +622,7 @@ export const api = {
         node_clarify: opts?.nodeClarify,
         profile: opts?.profile,
         allow_self_ref: opts?.allowSelfRef,
+        acceptance_policy: opts?.acceptancePolicy,
       }),
     }),
   clarifyTask: (id: string, payload: { answers?: ClarifyAnswer[]; confirm?: boolean; text?: string }) =>

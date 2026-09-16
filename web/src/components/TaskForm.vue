@@ -60,6 +60,14 @@
         <span class="opt-hint">每个步骤实施前先给简报，经你确认再动手</span>
       </div>
       <div class="opt">
+        <span class="opt-label">验收策略</span>
+        <el-select v-model="acceptancePolicy" size="small" style="width: 150px">
+          <el-option label="宽容（推荐）" value="tolerant" />
+          <el-option label="严格" value="strict" />
+        </el-select>
+        <span class="opt-hint">宽容：合并后测试有失败仍交付（完成·有警告）；严格：测试失败即任务失败</span>
+      </div>
+      <div class="opt">
         <el-checkbox v-model="allowSelfRef">自指任务（co-team 开发 co-team）</el-checkbox>
         <span class="opt-hint">工作区在 co-team 内时必勾：任务在隔离克隆中执行，不碰主副本</span>
       </div>
@@ -111,6 +119,7 @@ const mainModel = ref('');
 const policy = ref('');
 const whitelist = ref<string[]>([]);
 const nodeClarify = ref('brief');
+const acceptancePolicy = ref<'tolerant' | 'strict'>('tolerant');
 // 高频命令建议清单：任务技术栈所需（如 Flutter 的 flutter/dart）直接勾选，或手动输入任意命令
 const COMMON_WHITELIST = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java', 'ls', 'cat', 'mkdir', 'cp', 'mv', 'rm', 'chmod'];
 const modelOptions = ref<{ name: string; healthy: boolean; label: string }[]>([]);
@@ -161,6 +170,7 @@ async function submit() {
       nodeClarify: nodeClarify.value === 'off' ? undefined : nodeClarify.value,
       profile: simpleMode.value ? 'simple' : undefined,
       allowSelfRef: allowSelfRef.value || undefined,
+      acceptancePolicy: acceptancePolicy.value,
     });
     if (d.status === 'needs_clarification') {
       hint.value = `[?] 需求不够清晰，请回答澄清问题: ${d.task_id}`;
