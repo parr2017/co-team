@@ -464,7 +464,14 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error('访问被拒绝：API Token 缺失或已失效');
   }
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as any).detail || res.statusText);
+  if (!res.ok) {
+    // B2（2026-09-17）：错误带操作建议（hint）——组件用 showApiError 展示两行提示
+    const { errorHint } = await import('../utils/apiError');
+    const detail = (body as any).detail || res.statusText;
+    const err: Error & { hint?: string } = new Error(detail);
+    err.hint = errorHint(String(detail));
+    throw err;
+  }
   return body as T;
 }
 

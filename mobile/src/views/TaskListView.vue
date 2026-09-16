@@ -93,6 +93,8 @@ function digest(t: TaskGraph): string {
   const approval = t.nodes.find((x) => x.status === 'waiting_approval');
   if (approval) return `待审批 · ${approval.name}`;
   if (t.status === 'success') return `${n} 个节点全部通过`;
+  // B1（2026-09-17）：tolerant 验收交付——主体完成但验收报告有失败项
+  if (t.status === 'completed_with_warnings') return `${n} 节点完成 · 验收有警告`;
   if (t.status === 'failed') {
     const failed = t.nodes.find((x) => x.status === 'failed');
     return failed ? `「${failed.name}」未通过` : `${n - done} 个节点未通过`;
@@ -151,7 +153,7 @@ function openTask(t: TaskGraph) {
 // ---------- 任务中心: status stats + filter + restart ----------
 
 /** same restartable set as the web TaskTable */
-const canRestart = (st: string) => ['failed', 'cancelled', 'success', 'completed'].includes(st);
+const canRestart = (st: string) => ['failed', 'cancelled', 'success', 'completed', 'completed_with_warnings'].includes(st);
 
 async function onRestart(t: TaskGraph) {
   try {
@@ -186,7 +188,7 @@ async function refreshStats() {
       running: all.filter((t) => ['running', 'retrying', 'queued', 'finalizing', 'interrupted'].includes(t.status)).length,
       waiting: all.filter((t) => ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned', 'pending'].includes(t.status)).length,
       failed: all.filter((t) => t.status === 'failed').length,
-      done: all.filter((t) => ['success', 'completed'].includes(t.status)).length,
+      done: all.filter((t) => ['success', 'completed', 'completed_with_warnings'].includes(t.status)).length,
     };
   } catch { /* server unreachable — keep last snapshot */ }
 }
@@ -204,7 +206,7 @@ function matchesFilter(t: TaskGraph): boolean {
   if (statusFilter.value === 'running') return ['running', 'retrying', 'queued', 'finalizing', 'interrupted'].includes(t.status);
   if (statusFilter.value === 'waiting') return ['waiting_approval', 'waiting_clarify', 'clarifying', 'planned', 'pending'].includes(t.status);
   if (statusFilter.value === 'failed') return t.status === 'failed';
-  if (statusFilter.value === 'done') return ['success', 'completed'].includes(t.status);
+  if (statusFilter.value === 'done') return ['success', 'completed', 'completed_with_warnings'].includes(t.status);
   return true;
 }
 
@@ -386,6 +388,7 @@ onUnmounted(() => {
                   <StatusTag v-else-if="t.status === 'waiting_approval' || t.status === 'clarifying' || t.status === 'planned'" :status="t.status" label="待处理" />
                   <StatusTag v-else-if="t.status === 'failed'" status="failed" label="失败" />
                   <StatusTag v-else-if="t.status === 'success'" status="success" label="完成" />
+                  <StatusTag v-else-if="t.status === 'completed_with_warnings'" status="completed_with_warnings" label="完成·有警告" />
                   <span v-if="t.project_id && projectNames[t.project_id]" class="s-proj">{{ projectNames[t.project_id] }}</span>
                 </span>
               </div>

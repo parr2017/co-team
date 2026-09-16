@@ -119,6 +119,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, onUnmounted } from 'vue';
+import { showApiError } from './utils/apiError';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, setApiToken, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
@@ -214,7 +215,7 @@ async function onApprove(taskId: string, nodeId: string) {
     await api.approveNode(taskId, nodeId);
     ElMessage.success('已批准，任务恢复执行');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -223,7 +224,7 @@ async function onCancel(taskId: string) {
     await api.cancelTask(taskId);
     ElMessage.info('取消信号已发送');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -242,7 +243,7 @@ async function onDeleteTask(taskId: string) {
     ElMessage.success('任务已删除');
     await loadTasks(taskPage.value, taskPageSize.value);
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -261,7 +262,7 @@ async function onReloadAgents() {
     ElMessage.success('Agent 已重载');
     loadAgents();
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 

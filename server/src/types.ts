@@ -5,6 +5,9 @@ export type TaskStatus =
   | 'clarifying'
   | 'running'
   | 'completed'
+  /** B1 验收软门（2026-09-17）：主体完成但合并后验收测试有失败（acceptance_policy=tolerant）——
+   *  验收报告照常挂在 result.acceptance，成功率口径计入成功 */
+  | 'completed_with_warnings'
   | 'failed'
   | 'retrying'
   | 'cancelled'
@@ -183,6 +186,9 @@ export interface TaskGraph {
   self_ref?: boolean;
   /** M4 滚动规划：任务按阶段滚动规划与验收 */
   rolling?: boolean;
+  /** B1 验收策略（2026-09-17）：strict = 合并后验收失败即任务失败（旧行为）；
+   *  tolerant（缺省）= 验收有失败 → completed_with_warnings，验收报告照常产出留证 */
+  acceptance_policy?: 'strict' | 'tolerant';
   stage?: number;
   stage_count?: number;
   stage_goal?: string;

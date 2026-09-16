@@ -96,6 +96,9 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
       return { text: `任务重新规划${p.summary ? ` — ${CLIP(p.summary, 70)}` : ''}`, level: 'accent', category: 'task', noisy: false };
     case 'task_model_changed':
       return { text: `主 Agent 模型切换 ${p.previous || '?'} → ${p.model || '?'}`, level: 'accent', category: 'task', noisy: false };
+    case 'task_completed_with_warnings':
+      // B1（2026-09-17）：tolerant 交付——主体完成、验收报告有失败项
+      return { text: `⚠️ 任务完成（验收有警告：${p.acceptance?.command || '测试'} 退出码 ${p.acceptance?.exitCode ?? '?'}）——详见验收报告`, level: 'warn', category: 'task', noisy: false };
     case 'goal_updated':
       return { text: '全局目标已更新', level: 'accent', category: 'task', noisy: false };
     case 'user_intervened':
@@ -212,7 +215,9 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
     case 'model_slow':
       return { text: `模型 ${p.model || '?'} 响应缓慢，持续观察中`, level: 'warn', category: 'system', noisy: false };
     case 'model_failover':
-      return { text: `模型降级：${p.from || '?'} → ${p.to || p.model || '?'}`, level: 'warn', category: 'system', noisy: false };
+      // B6（2026-09-17）：payload 补 reason——切换原因可见（限流/连接失败/执行失败/幻觉阻塞）
+      const r = p.reason ? `（${p.reason}）` : '';
+      return { text: `模型降级：${p.from || p.model || '?'} → ${p.to || '?'}${r}`, level: 'warn', category: 'system', noisy: false };
 
     default: {
       // 未登记类型：尽量从 payload 拼出可读内容，而不是裸 type
@@ -238,6 +243,8 @@ export const STATUS_TEXT: Record<string, string> = {
   failed: '失败',
   cancelled: '已取消',
   success: '已完成',
+  // B1（2026-09-17）：tolerant 验收交付——主体完成但验收有失败项
+  completed_with_warnings: '完成·有警告',
   idle: '空闲',
   done: '已完成',
   error: '出错',
@@ -256,6 +263,7 @@ export function taskStage(status: string): { label: string; step: number } {
   if (['waiting_approval'].includes(status)) return { label: '等待审批', step: 2 };
   if (['waiting_clarify'].includes(status)) return { label: '实施前澄清', step: 2 };
   if (['completed', 'success'].includes(status)) return { label: '已完成', step: 3 };
+  if (['completed_with_warnings'].includes(status)) return { label: '已完成（有警告）', step: 3 };
   if (['failed'].includes(status)) return { label: '执行失败', step: 3 };
   if (['cancelled'].includes(status)) return { label: '已取消', step: 3 };
   return { label: status, step: 0 };

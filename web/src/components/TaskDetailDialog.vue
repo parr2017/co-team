@@ -525,6 +525,7 @@
 
 <script setup lang="ts">
 import { Document, Memo, FolderOpened } from '@element-plus/icons-vue';
+import { showApiError } from '../utils/apiError';
 import { computed, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { renderMarkdown as mdShared } from '../utils/md';
@@ -669,7 +670,7 @@ async function openDocs() {
     docsList.value = r.docs || [];
     docsOpen.value = true;
   } catch (e: any) {
-    ElMessage.error(e.message || '加载协同文档失败');
+    showApiError(e, '加载协同文档失败');
   }
 }
 
@@ -695,7 +696,7 @@ async function refreshOutput() {
     outputSandbox.value = r.sandbox_path || '';
     outputFiles.value = r.files || [];
   } catch (e: any) {
-    ElMessage.error(e.message || '加载产出失败');
+    showApiError(e, '加载产出失败');
   }
 }
 
@@ -703,7 +704,7 @@ async function viewOutputFile(path: string) {
   try {
     outputFile.value = await api.taskOutputFile(props.taskId, path);
   } catch (e: any) {
-    ElMessage.error(e.message || '读取文件失败');
+    showApiError(e, '读取文件失败');
   }
 }
 
@@ -899,7 +900,7 @@ async function savePolicy() {
     await api.setTaskPolicy(props.taskId, policyLevel.value || null, policyWhitelist.value.length ? policyWhitelist.value : undefined);
     ElMessage.success(policyLevel.value ? `执行策略已切换为「${PERMISSION_LEVEL_LABELS[policyLevel.value]}」` : '已恢复跟随全局设置');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -908,7 +909,7 @@ async function savePolicyWhitelist() {
     await api.setTaskPolicy(props.taskId, policyLevel.value || null, policyWhitelist.value.length ? policyWhitelist.value : undefined);
     ElMessage.success(`白名单已更新（${policyWhitelist.value.length} 条命令）`);
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -921,7 +922,7 @@ async function retrySelectedNode(n: { id: string; name: string }) {
     ElMessage.success(`已重新入队（${r.reset_nodes.length} 个节点重置）`);
     emit('refresh');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     retryingNode.value = '';
   }
@@ -942,7 +943,7 @@ async function grantWhitelistAndRun() {
     ElMessage.success('白名单已补授，任务已发车');
     emit('refresh');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     preflightRunning.value = false;
   }
@@ -957,7 +958,7 @@ async function resolveCommand(c: { id: string; command: string }, approved: bool
     }
     pendingCommands.value = (await api.getPendingCommands(props.taskId)).commands;
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -984,7 +985,7 @@ async function confirmClarify(approveOnly: boolean) {
     clarifyState.value = null;
     await refresh();
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     clarifying.value = false;
   }
@@ -1007,7 +1008,7 @@ async function changeModel() {
     task.value = await api.getTask(props.taskId);
     newModel.value = '';
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     changingModel.value = false;
   }
@@ -1021,7 +1022,7 @@ async function saveGoal() {
     goalEditing.value = false;
     ElMessage.success('全局目标已更新');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     savingGoal.value = false;
   }
@@ -1034,7 +1035,7 @@ async function createSnap() {
     ElMessage.success('快照已创建');
     snapshots.value = (await api.listSnapshots(props.taskId)).snapshots;
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     creatingSnap.value = false;
   }
@@ -1056,7 +1057,7 @@ async function rollback(s: SnapshotMeta) {
     await refresh();
     await refreshManage();
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -1091,7 +1092,7 @@ async function answerAsk(a: any) {
     askDrafts.value[a.id] = '';
     await loadAsks();
   } catch (e: any) {
-    ElMessage.error(e.message || '回答失败');
+    showApiError(e, '回答失败');
   } finally {
     answering.value = '';
   }
@@ -1111,7 +1112,7 @@ async function decideProposal(proposalId: string, approved: boolean) {
     await loadProposals();
     await refresh();
   } catch (e: any) {
-    ElMessage.error(e.message || '操作失败');
+    showApiError(e, '操作失败');
   } finally {
     deciding.value = '';
   }

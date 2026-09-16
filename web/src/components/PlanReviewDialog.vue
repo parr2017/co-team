@@ -96,6 +96,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { showApiError } from '../utils/apiError';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type TaskGraph } from '../api';
 import { statusText } from '../utils/events';
@@ -158,7 +159,7 @@ async function reload() {
   try {
     d = await api.getTask(props.taskId);
   } catch (e: any) {
-    ElMessage.error(e?.message || '加载任务失败');
+    showApiError(e, '加载任务失败');
     return;
   }
   graph.value = d;
@@ -182,7 +183,7 @@ async function applyNode(n: EditableNode, patch: { name?: string; agent?: string
     n._original = { name: n.name, agent: n.agent };
     emit('changed');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -192,7 +193,7 @@ async function removeNode(n: EditableNode) {
     n._deleted = true;
     emit('changed');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 
@@ -223,7 +224,7 @@ async function confirmInsert() {
     await reload();
     emit('changed');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     inserting.value = false;
   }
@@ -242,7 +243,7 @@ async function doReplan() {
     ElMessage.success('已按反馈重新规划');
     emit('changed');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     replanning.value = false;
   }
@@ -256,7 +257,7 @@ async function approve() {
     emit('started');
     emit('close');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   } finally {
     approving.value = false;
   }
@@ -274,7 +275,7 @@ async function cancelTask() {
     emit('cancelled');
     emit('close');
   } catch (e: any) {
-    ElMessage.error(e.message);
+    showApiError(e);
   }
 }
 </script>

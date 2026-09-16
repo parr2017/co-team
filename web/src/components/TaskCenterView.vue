@@ -108,7 +108,8 @@ async function refreshStats() {
       queued: all.filter((t) => t.status === 'queued').length,
       waiting: all.filter((t) => t.status === 'waiting_approval' || (t.nodes || []).some((n: any) => n.status === 'waiting_approval')).length,
       pending: all.filter((t) => t.status === 'pending' || t.status === 'planned').length,
-      done: all.filter((t) => t.status === 'completed' || t.status === 'success').length,
+      // B1（2026-09-17）：completed_with_warnings 计入完成
+      done: all.filter((t) => t.status === 'completed' || t.status === 'success' || t.status === 'completed_with_warnings').length,
       failed: all.filter((t) => t.status === 'failed').length,
     };
   } catch { /* server unreachable — keep last snapshot */ }

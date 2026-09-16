@@ -11,6 +11,8 @@ type Tone = 'green' | 'yellow' | 'red' | 'accent' | 'neutral';
 
 const TONE_MAP: Record<string, Tone> = {
   completed: 'green', success: 'green', passed: 'green', done: 'green', ok: 'green', connected: 'green', converted: 'green',
+  // B1（2026-09-17）：验收有警告的 tolerant 交付——琥珀色区分于纯成功
+  completed_with_warnings: 'yellow',
   running: 'accent', retrying: 'accent', active: 'accent', executing: 'accent', open: 'accent',
   pending: 'neutral', planned: 'neutral', queued: 'neutral', idle: 'neutral', discussing: 'neutral', converged: 'yellow',
   failed: 'red', error: 'red', blocked: 'red', cancelled: 'red',

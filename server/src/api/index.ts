@@ -183,7 +183,8 @@ export function createApi(ctx: ApiContext): Hono {
     for (const p of projects) {
       const tasks = await listProjectTasks(p.id);
       const memory = await getProjectMemory(p.id, 50);
-      const done = tasks.filter((t) => t.status === 'success').length;
+      // B1（2026-09-17）：completed_with_warnings（验收有警告的 tolerant 交付）计入完成
+      const done = tasks.filter((t) => t.status === 'success' || t.status === 'completed_with_warnings').length;
       out.push({
         ...p,
         task_count: tasks.length,
@@ -1684,7 +1685,7 @@ export function createApi(ctx: ApiContext): Hono {
     const allNodes = taskRows.flatMap((t) => t.nodes);
     const totals = {
       tasks: taskRows.length,
-      tasks_success: taskRows.filter((t) => t.status === 'success').length,
+      tasks_success: taskRows.filter((t) => t.status === 'success' || t.status === 'completed_with_warnings').length,
       tasks_failed: taskRows.filter((t) => t.status === 'failed').length,
       tasks_running: taskRows.filter((t) => ['running', 'retrying', 'pending', 'waiting_approval'].includes(t.status)).length,
       nodes: allNodes.length,
@@ -1815,7 +1816,7 @@ export function createApi(ctx: ApiContext): Hono {
     const graphs = await listTaskGraphs();
     for (const graph of graphs) {
       tasksTotal += 1;
-      if (graph.status === 'success') tasksSuccess += 1;
+      if (graph.status === 'success' || graph.status === 'completed_with_warnings') tasksSuccess += 1;
       for (const node of graph.nodes) {
         const agent = node.agent || 'unknown';
         const stat = (agentStats[agent] ||= { tasks: 0, completed: 0, failed: 0, retries: 0, tokens: 0 });

@@ -57,6 +57,8 @@ function post<T>(url: string, payload?: unknown): Promise<T> {
 
 export type TaskStatus =
   | 'pending' | 'queued' | 'planned' | 'clarifying' | 'running' | 'completed' | 'success'
+  // B1（2026-09-17）：tolerant 验收交付——主体完成但验收有失败项
+  | 'completed_with_warnings'
   | 'failed' | 'retrying' | 'cancelled' | 'waiting_approval' | 'waiting_clarify'
   | 'interrupted' | 'finalizing';
 

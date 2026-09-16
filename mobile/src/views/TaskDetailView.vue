@@ -613,8 +613,8 @@ function nodeIcon(status: string): string {
         <span class="ab-text">Agent 需要你回复澄清问题</span>
         <button class="ab-btn" @click="router.push(`/clarify/${taskId}`)">去回复</button>
       </div>
-      <div v-else-if="task.status === 'success'" class="action-bar">
-        <span class="ab-text">成果已交付</span>
+      <div v-else-if="task.status === 'success' || task.status === 'completed_with_warnings'" class="action-bar">
+        <span class="ab-text">{{ task.status === 'completed_with_warnings' ? '成果已交付 · 验收有警告，详见验收报告' : '成果已交付' }}</span>
         <button class="ab-btn" @click="showMerge">合并</button>
         <button class="ab-btn" @click="openDocs">文档</button>
         <button class="ab-btn" @click="openOutput">产出</button>

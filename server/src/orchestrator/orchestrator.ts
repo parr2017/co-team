@@ -1199,9 +1199,13 @@ export class Orchestrator {
             result.acceptance = acc;
             if (acc.status === 'failed') {
               // M5：滚动任务的最终裁决交给 finalAcceptanceGate（清单机审 + 派生提案），
-              // 这里不提前判死；静态模式保持原有硬失败
+              // 这里不提前判死；静态模式按 acceptance_policy 裁决：
+              // tolerant（缺省，B1 2026-09-17）→ completed_with_warnings（验收报告照常留证，
+              // 不再把 23/25 节点全完成的任务因测试有败一刀切判死）；strict → 保持硬失败
               if (graph.rolling) {
                 this.logger.warn('post-merge acceptance failed (rolling: deferred to final gate)', { taskId });
+              } else if ((graph.acceptance_policy ?? 'tolerant') === 'tolerant') {
+                this.logger.warn('post-merge acceptance failed (tolerant: completing with warnings)', { taskId, command: acc.command, exitCode: acc.exitCode });
               } else {
                 throw new Error(`post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`);
               }
@@ -1283,8 +1287,9 @@ export class Orchestrator {
         const acc = await runPostMergeAcceptance(execWorkspace);
         result.acceptance = acc;
         if (acc.status === 'failed') {
-          // M5：滚动任务延迟到最终闸统一裁决
-          if (!graph.rolling) {
+          // M5：滚动任务延迟到最终闸统一裁决；静态按 acceptance_policy 裁决——
+          // tolerant（缺省）不在此判死，留给下方软门转 completed_with_warnings；strict 硬失败
+          if (!graph.rolling && (graph.acceptance_policy ?? 'tolerant') === 'strict') {
             result = { status: 'failed', error: `post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`, changes: result.changes || [] };
           }
         } else if (acc.status === 'no-test-command') {
@@ -1300,18 +1305,28 @@ export class Orchestrator {
       result = await this.finalAcceptanceGate(taskId, graph, execWorkspace, result);
     }
 
+    // B1 验收软门（2026-09-17）：tolerant（缺省）下静态任务合并后验收失败不再一刀切判死——
+    // 以 completed_with_warnings 交付（验收报告已挂 result.acceptance 留证，成功率口径计入成功）；
+    // strict 任务在上方两条路径直接 throw/改 failed，不会走到这里
+    if (result.status === 'success' && !graph.rolling
+      && (result as Record<string, any>).acceptance?.status === 'failed'
+      && (graph.acceptance_policy ?? 'tolerant') === 'tolerant') {
+      result.status = 'completed_with_warnings';
+      await emitProgress('task_completed_with_warnings', { task_id: taskId, acceptance: (result as Record<string, any>).acceptance });
+    }
+
     const status = String(result.status);
     // improvement #4 (C4): task terminal — report messages nobody consumed into the journal
     await flushUndelivered(taskId).catch(() => {});
-    this.logger.info('Task execution completed', { 
-      taskId, 
-      status, 
+    this.logger.info('Task execution completed', {
+      taskId,
+      status,
       changes: (result.changes || []).length,
       completedNodes: graph.nodes.filter((n) => n.status === 'completed').length,
       totalNodes: graph.nodes.length,
     });
 
-    if (status === 'success' && this.gitEnabled && (result.changes || []).length) {
+    if ((status === 'success' || status === 'completed_with_warnings') && this.gitEnabled && (result.changes || []).length) {
       result.git_commit = await this.gitCommit(taskId, execWorkspace, result.changes as string[]);
     }
 
@@ -1334,6 +1349,11 @@ export class Orchestrator {
     if (status === 'success') {
       notify('task_success', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 完成，${(result.changes || []).length} 个文件变更`);
       await addMemory(`任务「${description}」成功完成，产出了 ${(result.changes || []).length} 个文件变更。`);
+    } else if (status === 'completed_with_warnings') {
+      // B1（2026-09-17）：验收有失败但 tolerant 交付——通知明示 N 项未过，不与纯成功混同
+      const acc = (result as Record<string, any>).acceptance as { command?: string; exitCode?: number } | undefined;
+      notify('task_success', { task_id: taskId, warnings: true }, `[Co-Team] 任务 ${taskId} 完成（验收有警告：${acc?.command || '测试'} 退出码 ${acc?.exitCode ?? '?'}）——详见任务验收报告，${(result.changes || []).length} 个文件变更已交付`);
+      await addMemory(`任务「${description}」完成但合并后验收有失败（tolerant 交付，${(result.changes || []).length} 个文件变更）——主体可用，遗留失败项见验收报告。`);
     } else if (status === 'failed') {
       const recoveredInfo = result.recovered_partial ? `（已完成 ${result.recovered_partial.nodes} 个节点的成果已回写工作区：${result.recovered_partial.files} 个文件）` : (result.sandbox_preserved ? `（沙箱已保留供人工恢复：${result.sandbox_preserved}）` : '');
       notify('task_failed', { task_id: taskId, error: result.error, recovered: result.recovered_partial || null }, `[Co-Team] 任务 ${taskId} 失败：${result.error}${recoveredInfo}`);
@@ -2986,8 +3006,12 @@ export class Orchestrator {
         });
         // 确定性模型侧失败（连接死亡/真停滞）——计入模型健康度
         this.pool.markFailure(entry);
-        // OBS-1：降级链可见
-        await emitProgress('model_failover', { task_id: taskId, node_id: node.id, model: entry.name, error: String(lastErr).slice(0, 160) });
+        // OBS-1：降级链可见。B6（2026-09-17）：payload 补 from/to/reason——此前只带
+        // model 名，双端映射显示 "? → ?"，用户既看不到从谁切到谁、也不知道为什么切
+        const failoverReason = CAPACITY_RE.test(lastErr) ? '限流'
+          : /ECONN|ECONNRESET|ETIMEDOUT|timeout|socket|fetch failed|stream|停滞|连接/i.test(lastErr) ? '连接失败/流停滞'
+          : '执行失败';
+        await emitProgress('model_failover', { task_id: taskId, node_id: node.id, from: entry.name, to: chain[ci + 1]?.name ?? '', reason: failoverReason, model: entry.name, error: String(lastErr).slice(0, 160) });
         await appendJournal(taskId, plugin.name, { role: 'master', kind: 'round', text: `↯ ${entry.name} 失败（${String(lastErr).slice(0, 80)}），切换下一候选`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name });
       } finally {
         this.pool.release(entry);
