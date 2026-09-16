@@ -94,6 +94,11 @@ export interface AgentResult {
   gate_test?: { command: string; returncode: number; passed: boolean; summary?: string };
   /** quality metric: reported changes vs actual git working-tree changes */
   delivery_check?: { consistent: boolean; reported_count: number; actual_count: number; unreported: string[]; phantom: string[] };
+  /** 假完成拦截（2026-09-17）：规格点名但最终未落盘的文件路径清单（产物核查门产出，可审计、进 metrics）。
+   *  放 AgentResult 顶层而非 delivery_check 内——recordDeliveryCheck 会整对象覆写 delivery_check，内嵌字段会被冲掉。 */
+  spec_missing?: string[];
+  /** 幻觉阻塞证据门（2026-09-17）：本尝试实际执行过工具的轮数（失败返回携带；dispatch 据此甄别"零工具轮谎称缺工具"） */
+  tool_rounds?: number;
 }
 
 export interface TaskNode {

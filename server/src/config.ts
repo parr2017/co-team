@@ -220,7 +220,20 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
         timeout_sec: raw.orchestrator?.self_mod_gate?.timeout_sec ?? 600,
       },
     },
-    permissions: raw.permissions || {},
+    // B9（2026-09-17）：permissions.level 非法值不再静默穿透——手改 config.yaml 写错时
+    // 加载即拦截并告警，置空让 policyFromConfig 走唯一回退路径（有白名单 → whitelist_auto，
+    // 否则 approve_required）。API 写路径（/api/config/permissions）已有 400 校验，此处补齐
+    // 手改路径；合法值列表与 sandbox.ts PERMISSION_LEVELS 保持一致（内联防早期加载循环依赖）。
+    permissions: (() => {
+      const p: Record<string, unknown> = { ...(raw.permissions || {}) };
+      const validLevels = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'];
+      const lvl = String(p.level ?? '').trim();
+      if (lvl && !validLevels.includes(lvl)) {
+        console.warn(`[config] permissions.level "${lvl}" 不是合法值（可选：${validLevels.join(' | ')}）——已忽略该配置；实际生效级别由命令白名单决定（有白名单 → whitelist_auto，无 → approve_required），请修正 config.yaml`);
+        delete p.level;
+      }
+      return p;
+    })(),
     redis: raw.redis || { host: '127.0.0.1', port: 6379, db: 0 },
     knowledge: {
       dir: path.isAbsolute(raw.knowledge?.dir || '') ? raw.knowledge.dir : path.join(root, raw.knowledge?.dir || 'data/knowledge'),

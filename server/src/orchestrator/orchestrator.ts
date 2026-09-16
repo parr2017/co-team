@@ -134,6 +134,23 @@ export const PRECONDITION_FAIL_RE = /缺少(项目)?源代码|文件不在本沙
  * 命中即停阶梯、不记模型健康度，由 executeNode 的 needs_human 分支收尾。
  */
 export const LEGIT_BLOCKER_RE = /\[blocker\]|需要人类|需要人工|需要.{0,8}补充|信息不足|无法获得|未获得|缺少.{0,8}(信息|权限|证据)|上游.*(声明|实际).*(不符|不一致)|cannot proceed|need human/i;
+/**
+ * 幻觉阻塞证据门（2026-09-17，in6pe4qf 两次失败实证）：窄匹配"工具/权限类申诉"——
+ * 零工具轮的此类申诉是幻觉（同节点强模型实测工具调用返回 18KB）。窗口 ≤20 字符
+ * 覆盖实测文案"本轮未获得任何文件系统读取、写入或命令执行工具"；不含信息/证据类
+ * 合法阻塞（那类由 LEGIT_BLOCKER_RE 原语义停靠人工）。
+ */
+export const TOOLCLAIM_RE = /(未获得|无法获得|缺少|没有)[^\n]{0,20}(工具|权限)|只读侦查|cannot (call|use) tools|no (file system|command execution|read\/write) tool|no tool access/i;
+
+/**
+ * 假完成拦截·产物核查（2026-09-17）：从节点名提取规格点名的文件路径 token（至少含一个 '/'）。
+ * 先剥 URL（避免把 https://host/path 抓成路径）；裸文件名不提取（误报面大）；上限 10 条防膨胀。
+ */
+export function extractSpecPaths(name: string): string[] {
+  const cleaned = String(name || '').replace(/\w+:\/\/\S+/g, ' ');
+  const raw = cleaned.match(/[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+/g) || [];
+  return [...new Set(raw.map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()))].slice(0, 10);
+}
 /** M3：429/503/rate limit 是容量信号不是能力失败——退避重试同模型，不记健康度不烧链 */
 export const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
 export const CAPACITY_RE = /429|503|rate.?limit|too many requests|tpm|rpm|quota/i;
@@ -1711,9 +1728,10 @@ export class Orchestrator {
     }
   }
 
-  /** Normalize a reported change entry ("path: desc" / "path") into a repo-relative path. */
+  /** Normalize a reported change entry ("path: desc" / "path") into a repo-relative path.
+   *  先剥盘符前缀（d:/x.dart: 描述 若直接按 ':' 切会得到 'd'，豁免了 phantom 比对——假完成拦截 2026-09-17）。 */
   private normalizeReportedPath(entry: string): string {
-    return (entry || '').split(':')[0].trim().replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    return (entry || '').replace(/^[a-zA-Z]:[\/\\]?/, '').split(':')[0].trim().replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
   }
 
   /** Repo-relative paths the agent claims to have touched (files[] + changes[]). */
@@ -1921,7 +1939,7 @@ export class Orchestrator {
 
     const phantomNorm = new Set(phantom.map((p) => this.normalizeReportedPath(p).toLowerCase()));
     const isPhantom = (entry: string) => {
-      const p = String(entry).split(':')[0].trim().replace(/\\/g, '/').toLowerCase();
+      const p = String(entry).replace(/^[a-zA-Z]:[\/\\]?/, '').split(':')[0].trim().replace(/\\/g, '/').toLowerCase();
       if (!p) return false;
       return [...phantomNorm].some((ph) => ph === p || ph.endsWith('/' + p) || p.endsWith('/' + ph));
     };
@@ -1942,12 +1960,66 @@ export class Orchestrator {
     return 'ok';
   }
 
+  /**
+   * 假完成拦截·产物核查门（2026-09-17，ai_client.dart / 空申报两案例）：
+   * 3a 规格点名核查——节点名点名的 lib/... 路径必须真实存在（fs 判定；git 显示已删除视同通过，
+   * 覆盖"删除某文件"语义的节点）；
+   * 3b 空申报空转核查——零申报 + 轮内零写盘 + git 实际零变更 + 无豁免说明（no_changes_reason）→ 违规。
+   * 仅 parsed.status==='success' 时由调用点执行（模型已承认失败，不反向要求"补文件"）；
+   * git 不可用优雅降级：status 失败 → 跳过 3b、3a 退化为纯 fs 判定——非 git 目录不误伤。
+   */
+  private async collectDeliveryViolations(node: TaskNode, workspace: string, parsed: Record<string, any>, midRunWritten: string[]): Promise<{ violations: string[]; specMissing: string[] }> {
+    const violations: string[] = [];
+    let specMissing: string[] = [];
+    // 3a: 规格点名路径存在性
+    const specPaths = extractSpecPaths(node.name);
+    if (specPaths.length) {
+      let deletedSet: Set<string> | null = null;
+      try {
+        const st = await simpleGit({ baseDir: workspace }).status();
+        deletedSet = new Set([...(st.deleted || [])].map((p) => p.replace(/\\/g, '/').toLowerCase()));
+      } catch { deletedSet = null; }
+      specMissing = specPaths.filter((p) => {
+        if (fs.existsSync(path.join(workspace, p))) return false;
+        if (deletedSet?.has(p)) return false;
+        return true;
+      });
+      if (specMissing.length) {
+        violations.push(`规格点名的产物未落盘：${specMissing.slice(0, 3).join('、')}（用 write_file 真正写入工作区，别只在申报里写路径）`);
+      }
+    }
+    // 3b: 空申报空转。midRunWritten 在闸后由 applyFinalOutput 并入申报——闸内需显式豁免，
+    // 否则"写了文件忘申报"会被误拦；git status 失败（actual=null）跳过本核查。
+    // 执行期自动落盘的协同文档（SSOT docs / global_goal）不算"实际改动"——否则
+    // actual 恒 >0，守卫永不触发（实测：干净沙箱也带 3 个自动 md）。
+    const AUTO_DOC_RE = /^(docs\/)?(task_spec|api_contract|status_report|global_goal)\.md$/i;
+    const declared = [...(parsed.changes || []), ...(parsed.files || []).map((f: any) => f?.path)].filter(Boolean);
+    const noReason = String(parsed.no_changes_reason || '').trim();
+    if (declared.length === 0 && midRunWritten.length === 0 && !noReason) {
+      let actual: number | null = null;
+      try {
+        const st = await simpleGit({ baseDir: workspace }).status();
+        const all = [...st.modified, ...st.created, ...st.not_added, ...st.renamed.map((r: any) => r.to), ...st.deleted];
+        actual = all.filter((p) => !AUTO_DOC_RE.test(String(p).replace(/\\/g, '/').toLowerCase())).length;
+      } catch { actual = null; }
+      if (actual === 0) {
+        violations.push('零申报零改动却申报成功——若确有改动请用 changes 申报文件清单；若本节点确无需改动，请在最终 JSON 加 no_changes_reason 字段说明原因');
+      }
+    }
+    return { violations, specMissing };
+  }
+
   // ---------- single node ----------
 
   /** OBS-1 失败分型：把 node.error 归入结构化类别（供 /api/metrics 聚合失败构成） */
   private classifyNodeError(err: string): string {
     const e = err || '';
     if (e.startsWith(NODE_BUDGET_PREFIX)) return 'budget';
+    // 假完成拦截（2026-09-17）：假完成/产物核查是内容失败——通用分支补分型后
+    // 'other' 会走 infra 自动重排，这两类必须显式钉死 content 防止误重跑 3 次。
+    // 用 includes 而非 startsWith：降级链耗尽后错误被 "all models failed(...)" 包装，
+    // 原始前缀不再位于头部（tally 里仍可辨）。
+    if (e.includes('假完成拦截') || e.includes('产物核查未通过')) return 'content';
     if (PRECONDITION_FAIL_RE.test(e)) return 'precondition';
     if (LEGIT_BLOCKER_RE.test(e)) return 'blocker';
     if (CONTEXT_OVERFLOW_RE.test(e)) return 'context_overflow';
@@ -2297,7 +2369,8 @@ export class Orchestrator {
           node.status = 'failed';
           node.finished_at = new Date().toISOString();
           node.error = `需人工介入（假完成守卫）：${msg}`;
-          node.result = { status: 'failed', error: node.error, summary: '节点停止（假完成守卫），未产出变更' };
+          // delivery_check 随节点结果落档——phantom 清单是人工排查的审计证据
+          node.result = { status: 'failed', error: node.error, summary: '节点停止（假完成守卫），未产出变更', delivery_check: delivery };
           node.needs_human = true;
           node.error_type = 'content';
           await saveDeliverable(taskId, node).catch(() => {});
@@ -2345,6 +2418,10 @@ export class Orchestrator {
       ...(lastGateTest ? { gate_test: lastGateTest } : {}),
       ...(fixReport ? { report: fixReport } : {}),
     };
+    // 假完成拦截（2026-09-17）：通用失败分支此前不写 error_type——taskQueue 把无分型
+    // 一律当 content 锁道，模型池全灭/限流类本应 infra 自动重排自愈的失败也被锁死。
+    // 与 crash 包装器（classifyNodeError 同款）口径对齐。
+    if (!(node as any).error_type) node.error_type = this.classifyNodeError(node.error);
     node.needs_human = true;
     await saveDeliverable(taskId, node).catch(() => {});
 
@@ -2751,6 +2828,8 @@ export class Orchestrator {
     // content failures (parse/schema/refusal) are usually not model-specific: retry the
     // SAME model once with the failure text as feedback before burning the fallback chain
     const sameModelRetries = new Map<string, number>();
+    // 幻觉阻塞证据门：同模型对"零工具轮申诉"的重试计数（每模型一次，再犯沉底）
+    const hallucinatedBlockers = new Map<string, number>();
     const capacityRetries = new Map<string, number>();
     // 上下文超限瘦身重试：整个 dispatch 至多折叠重试一次（prompt 是链上共享的，
     // 折叠一次对所有模型生效；仍超限就换更大窗口，不该反复折叠浪费轮次）
@@ -2801,6 +2880,25 @@ export class Orchestrator {
           return { status: 'failed', error: `${PRECONDITION_PREFIX} ${lastErr}`, tokens: result.tokens };
         }
         if (LEGIT_BLOCKER_RE.test(lastErr)) {
+          // 幻觉阻塞证据门（2026-09-17）：零工具轮 + 工具/权限类文案 → 判幻觉，
+          // 不停阶梯：同模型重试一次（反馈注入），再犯 markFailure 沉底换下一候选；
+          // 有工具轮的真阻塞维持原语义（环境问题换模型没用，停阶梯转人工）
+          const zeroTools = (result.tool_rounds ?? 0) === 0;
+          if (zeroTools && TOOLCLAIM_RE.test(lastErr)) {
+            const hallucinated = hallucinatedBlockers.get(entry.name) ?? 0;
+            if (hallucinated < 1) {
+              hallucinatedBlockers.set(entry.name, hallucinated + 1);
+              this.logger.warn('Hallucinated blocker (zero tool rounds) — same-model retry once', { taskId, nodeId: node.id, model: entry.name, error: lastErr.slice(0, 120) });
+              await appendJournal(taskId, plugin.name, { role: 'master', kind: 'round', text: `🚫 ${entry.name} 零工具轮即申诉「${lastErr.slice(0, 80)}」——判幻觉阻塞（工具链可用），同模型重试一次`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name });
+              ci--;
+              continue;
+            }
+            this.logger.warn('Hallucinated blocker repeated — sinking model, next candidate', { taskId, nodeId: node.id, model: entry.name, error: lastErr.slice(0, 120) });
+            this.pool.markFailure(entry);
+            await emitProgress('model_failover', { task_id: taskId, node_id: node.id, from: entry.name, to: chain[ci + 1]?.name ?? '', reason: '幻觉阻塞（零工具轮申诉）', error: String(lastErr).slice(0, 160) });
+            await appendJournal(taskId, plugin.name, { role: 'master', kind: 'round', text: `↯ ${entry.name} 幻觉阻塞再犯（零工具轮申诉），沉底换下一候选`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name });
+            continue;
+          }
           this.logger.warn('Legitimate blocker reported by model — stopping ladder (environment issue, not model failure)', { taskId, nodeId: node.id, model: entry.name, error: lastErr.slice(0, 120) });
           return { status: 'failed', error: lastErr, tokens: result.tokens };
         }
@@ -3222,6 +3320,9 @@ export class Orchestrator {
       let emptyRounds = 0;
       // 重复调用指针化：同工具+同参数不再读盘回显
       const seenToolCalls = new Map<string, number>();
+      // 幻觉阻塞证据门（2026-09-17）：本尝试实际执行过工具的轮数——"缺工具/权限"申诉
+      // 只有在零工具轮时才可能是真阻塞；有工具轮说明工具链可用，申诉是幻觉
+      let toolRounds = 0;
       for (let round = 0; round < maxRounds; round++) {
         // Check for cancellation before each LLM call
         if (await isCancelled(taskId)) {
@@ -3270,7 +3371,7 @@ export class Orchestrator {
             record.error = `空正文连续 ${emptyRounds} 轮返回（finish_reason=${resp.finishReason ?? 'none'}）——模型确定性故障，换模`;
             await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
             await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
-            return { status: 'failed', error: record.error, tokens: record.tokens };
+            return { status: 'failed', error: record.error, tokens: record.tokens, tool_rounds: toolRounds };
           }
         } else {
           emptyRounds = 0;
@@ -3285,7 +3386,7 @@ export class Orchestrator {
             record.error = `输出预算耗尽（finish_reason=length）：${entry.name} 本任务软重试仍烧穿过，直接换模`;
             await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
             await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
-            return { status: 'failed', error: record.error, tokens: record.tokens };
+            return { status: 'failed', error: record.error, tokens: record.tokens, tool_rounds: toolRounds };
           }
           await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: `输出预算耗尽：思考烧穿 ${resp.completionTokens} token（请求上限 ${roundBudget}）正文为空——同模型降思考强度软重试一次`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: resp.completionTokens });
           await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: '思考烧穿输出预算，降强度软重试…', model: entry.name });
@@ -3302,7 +3403,7 @@ export class Orchestrator {
             record.error = `输出预算耗尽（finish_reason=length）：软重试（降思考强度）仍烧穿，两轮共 ${resp.completionTokens + retryResp.completionTokens} token 正文为空`;
             await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: retryResp.completionTokens });
             await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
-            return { status: 'failed', error: record.error, tokens: record.tokens };
+            return { status: 'failed', error: record.error, tokens: record.tokens, tool_rounds: toolRounds };
           }
           await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'round', text: `✅ E5 软重试成功（降思考强度后输出 ${retryResp.completionTokens} token）`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
         }
@@ -3355,7 +3456,7 @@ export class Orchestrator {
             // If this was the last round, return failure
             if (round >= maxRounds - 1) {
               record.error = 'failed to parse agent output as JSON';
-              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens, tool_rounds: toolRounds };
             }
             // Otherwise, inject correction message and retry
             messages.push({ role: 'assistant', content });
@@ -3377,6 +3478,19 @@ export class Orchestrator {
             check.violations.push(`缺少 reply_to_user：本轮你消费了 ${consumedForAttempt.length} 条用户插话（${consumedForAttempt.map((m) => m.message.slice(0, 50)).join(' / ')}），必须在 reply_to_user 字段逐条直接回应（结论/进度/做不做），summary 不能替代`);
             check.ok = false;
           }
+          // 假完成拦截·产物核查门（2026-09-17）：仅成功申报执行——模型已承认失败不反向要求补文件；
+          // orchestrator 合并节点无文件产出语义，跳过
+          let specViolations: string[] = [];
+          let specMissing: string[] = [];
+          if (parsed.status === 'success' && this.gitEnabled && plugin.name !== 'orchestrator') {
+            const av = await this.collectDeliveryViolations(node, workspace, parsed, midRunWritten);
+            specViolations = av.violations;
+            specMissing = av.specMissing;
+            if (specViolations.length) {
+              check.violations.push(...specViolations);
+              check.ok = false;
+            }
+          }
           if (!check.ok) {
             roundEntry.parse_error = 'schema violations: ' + check.violations.join('; ');
             record.rounds.push(roundEntry);
@@ -3386,8 +3500,10 @@ export class Orchestrator {
             }
             await emitProgress('agent_round', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, round: round + 1, tokens: resp.completionTokens, parse_error: true });
             if (round >= maxRounds - 1) {
-              record.error = 'result schema violations: ' + check.violations.join('; ');
-              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+              record.error = specViolations.length
+                ? `产物核查未通过：${specViolations.join('；')}`
+                : 'result schema violations: ' + check.violations.join('; ');
+              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens, tool_rounds: toolRounds, ...(specMissing.length ? { spec_missing: specMissing } : {}) };
             }
             messages.push({ role: 'assistant', content });
             messages.push({ role: 'user', content: buildRepairMessage(check.violations) });
@@ -3421,7 +3537,7 @@ export class Orchestrator {
             const check = validateAgentResult(parsed);
             if (!check.ok) {
               record.error = 'result schema violations: ' + check.violations.join('; ');
-              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+              return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens, tool_rounds: toolRounds };
             }
             roundEntry.assistant = content;
             record.rounds.push(roundEntry);
@@ -3430,7 +3546,7 @@ export class Orchestrator {
           }
           // If still tool_calls or no JSON, return failure
           record.error = 'agent failed to produce final output after tool calls';
-          return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+          return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens, tool_rounds: toolRounds };
         }
         await emitProgress('agent_activity', {
           task_id: taskId, node_id: node.id, agent: plugin.name,
@@ -3479,6 +3595,8 @@ export class Orchestrator {
         const freshResults = await applyToolCalls(workspace, fresh, knowledgeCtx);
         freshIdx.forEach((orig, i) => { positioned[orig] = freshResults[i]; });
         const results = positioned;
+        // 证据门计数：只计实际执行过工具的轮（末轮"强制终稿"的工具请求不执行，不计）
+        toolRounds += 1;
         // improvement 3: agent-driven knowledge deposits are audited in the war room;
         // improvement #4: doc updates and agent messages likewise
         for (const r of results as Record<string, any>[]) {
@@ -3607,7 +3725,7 @@ export class Orchestrator {
         }
         await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: record.error, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name, tokens: record.tokens });
         await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: record.error });
-        return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens };
+        return { status: 'failed', error: record.error, raw_output: content.slice(0, 2000), tokens: record.tokens, tool_rounds: toolRounds };
       }
 
       let result: AgentResult = parsed as AgentResult;

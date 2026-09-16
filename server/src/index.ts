@@ -234,10 +234,39 @@ async function main(): Promise<void> {
   // E7 重做（2026-09-15）：任务仍在 'running'/'finalizing' 的背后已没有进程驱动——
   // 标 interrupted 并自动续跑；queued 孤儿重新排队；planAsync 规划孤儿重新规划。
   // 旧语义（直接标 failed 等人工）是"经常需要人工重启"体验的根因之一。
-  const orphans = await orchestrator.sweepInterruptedTasks();
-  if (orphans.resume.length) logger.warn('Startup sweep: interrupted tasks marked for auto-resume', { tasks: orphans.resume });
-  if (orphans.queued.length) logger.warn('Startup sweep: orphaned queued tasks re-queued', { tasks: orphans.queued });
-  if (orphans.planning.length) logger.warn('Startup sweep: interrupted plan_async tasks re-planning', { tasks: orphans.planning });
+  // E16（2026-09-17）：清扫与孤儿重建都是全局动作，加编排锁——dev watch 热重载重启
+  // 进程时非主实例跳过，防误杀另一实例正在执行的任务；主实例死亡后接管者补扫补跑。
+  const { startLeaderLoop } = await import('./leaderLock');
+  const { getTaskGraph } = await import('./store');
+  const runStartupSweep = async () => {
+    const orphans = await orchestrator.sweepInterruptedTasks();
+    if (orphans.resume.length) logger.warn('Startup sweep: interrupted tasks marked for auto-resume', { tasks: orphans.resume });
+    if (orphans.queued.length) logger.warn('Startup sweep: orphaned queued tasks re-queued', { tasks: orphans.queued });
+    if (orphans.planning.length) logger.warn('Startup sweep: interrupted plan_async tasks re-planning', { tasks: orphans.planning });
+    // 永续开发（2026-09-15）：重启孤儿重建——interrupted 自动续跑、queued 孤儿重新排队、
+    // planAsync 规划孤儿重新规划。全部走既有车道（容量探针照常限流）
+    for (const taskId of [...orphans.resume, ...orphans.queued]) {
+      try {
+        const g = await getTaskGraph(taskId);
+        if (!g) continue;
+        if (g.status === 'failed') continue; // 反复中断已停靠人工
+        await taskQueue.enqueue(taskId, g.project_id ?? null, g.workspace);
+        logger.info('Startup orphan re-enqueued', { taskId, kind: orphans.resume.includes(taskId) ? 'interrupted' : 'queued' });
+      } catch (e) {
+        logger.warn('Startup orphan re-enqueue failed', { taskId, error: String(e).slice(0, 200) });
+      }
+    }
+    for (const taskId of orphans.planning) {
+      await orchestrator.resumeInterruptedPlanning(taskId).catch((e) =>
+        logger.warn('Startup planning resume failed', { taskId, error: String(e).slice(0, 200) })
+      );
+    }
+  };
+  startLeaderLoop({
+    onBecomeLeader: () => {
+      void runStartupSweep().catch((e) => logger.warn('leader sweep failed', { error: String(e) }));
+    },
+  });
 
   // 群组讨论：引擎 v2 配置（组内执行策略/轮数上限/背景注入预算）+ 上一进程死在轮次中
   // 会遗留 busy/stop 锁（无属主，TTL 内会卡住讨论）——启动即清
@@ -277,25 +306,7 @@ async function main(): Promise<void> {
     );
   };
 
-  // 永续开发（2026-09-15）：重启孤儿重建——interrupted 自动续跑、queued 孤儿重新排队、
-  // planAsync 规划孤儿重新规划。全部走既有车道（容量探针照常限流）
-  const { getTaskGraph } = await import('./store');
-  for (const taskId of [...orphans.resume, ...orphans.queued]) {
-    try {
-      const g = await getTaskGraph(taskId);
-      if (!g) continue;
-      if (g.status === 'failed') continue; // 反复中断已停靠人工
-      await taskQueue.enqueue(taskId, g.project_id ?? null, g.workspace);
-      logger.info('Startup orphan re-enqueued', { taskId, kind: orphans.resume.includes(taskId) ? 'interrupted' : 'queued' });
-    } catch (e) {
-      logger.warn('Startup orphan re-enqueue failed', { taskId, error: String(e).slice(0, 200) });
-    }
-  }
-  for (const taskId of orphans.planning) {
-    await orchestrator.resumeInterruptedPlanning(taskId).catch((e) =>
-      logger.warn('Startup planning resume failed', { taskId, error: String(e).slice(0, 200) })
-    );
-  }
+  // 永续开发：孤儿重建已并入编排锁回调（runStartupSweep）——非主实例不重复入队
 
   // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
   await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger, mcp });
