@@ -387,6 +387,8 @@ export const api = {
     cost_total: number;
   }>('/api/metrics'),
   metricsTrend: (days = 7) => request<{ trend: { date: string; tasks: number; defects_total: number; success_rate: number }[] }>(`/api/metrics/trend?days=${days}`),
+  // 外部 MCP 服务连接状态（MCP client；未配置返回空数组）
+  mcpStatus: () => request<{ mcp: { name: string; type: 'stdio' | 'http'; enabled: boolean; connected: boolean; error?: string; toolCount: number }[] }>('/api/status'),
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   approveNode: (taskId: string, nodeId: string) => post(`/api/tasks/${taskId}/approve/${nodeId}`),
   // 人工门续跑：needs_human 节点在人工修复后重置该节点及下游并重新入队

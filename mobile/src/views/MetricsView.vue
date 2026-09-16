@@ -13,6 +13,7 @@ const { connected } = useDashboard();
 
 const metrics = ref<any>(null);
 const trend = ref<{ date: string; tasks: number; defects_total: number; success_rate: number }[]>([]);
+const mcpServers = ref<{ name: string; type: 'stdio' | 'http'; enabled: boolean; connected: boolean; error?: string; toolCount: number }[]>([]);
 const loading = ref(true);
 const error = ref('');
 
@@ -27,6 +28,8 @@ async function load() {
     const [m, t] = await Promise.all([api.metrics(), api.metricsTrend(7).catch(() => ({ trend: [] }))]);
     metrics.value = m;
     trend.value = t.trend || [];
+    // MCP 连接状态只读展示（失败静默——指标页主体不依赖它）
+    mcpServers.value = await api.mcpStatus().then((d) => d.mcp || []).catch(() => mcpServers.value);
   } catch (e: any) {
     error.value = e?.message || '加载失败';
   } finally {
@@ -112,6 +115,22 @@ function fmtTok(n: number): string {
             <div class="q-row"><span>交付一致率</span><b>{{ metrics.quality.delivery_checked_nodes ? Math.round(metrics.quality.delivery_consistent_rate * 100) + '%' : '—' }}</b></div>
           </div>
         </div>
+
+        <!-- 外部 MCP 服务（只读状态：web 设置 → MCP服务 管理） -->
+        <template v-if="mcpServers.length">
+          <div class="wx-caption">MCP 服务</div>
+          <div class="wx-group sec">
+            <div v-for="s in mcpServers" :key="s.name" class="agent-row mcp-row">
+              <div class="agent-head">
+                <span class="agent-name mono">{{ s.name }}</span>
+                <span class="agent-meta mono">{{ s.type }} · {{ s.enabled ? `${s.toolCount} 工具` : '已禁用' }}</span>
+              </div>
+              <van-tag :type="!s.enabled ? 'default' : s.connected ? 'success' : 'danger'" size="medium">
+                {{ !s.enabled ? '禁用' : s.connected ? '已连接' : '未连接' }}
+              </van-tag>
+            </div>
+          </div>
+        </template>
 
         <!-- 失败分型 -->
         <div class="wx-caption">失败分型</div>
@@ -208,6 +227,8 @@ function fmtTok(n: number): string {
 .agent-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
 .agent-name { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-meta { font-size: 10.5px; color: var(--text-3); flex-shrink: 0; }
+.mcp-row { display: flex; justify-content: space-between; align-items: center; }
+.mcp-row .agent-head { margin-bottom: 0; flex: 1; min-width: 0; }
 .bar-track.tall { margin-top: 2px; }
 .bar-track.tall .bar-fill + .bar-fill { margin-left: 2px; }
 

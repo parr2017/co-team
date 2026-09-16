@@ -187,6 +187,50 @@
           技能 = skills/&lt;名称&gt;/SKILL.md（frontmatter: name/description/tags + 正文指令）。绑定 Agent 后每次执行全量注入；未绑定的按标签/关键词自动匹配。也可直接把文件夹丢进 skills/ 目录后点「重扫磁盘」。
         </div>
       </el-tab-pane>
+
+      <!-- 外部 MCP 服务（MCP client）：状态灯实时反映可连接性，保存即热生效 -->
+      <el-tab-pane label="MCP 服务" name="mcp">
+        <el-table :data="mcpRows" size="small">
+          <el-table-column prop="name" label="名称" width="110">
+            <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
+          </el-table-column>
+          <el-table-column label="类型" width="70" align="center">
+            <template #default="{ row }"><el-tag size="small" :type="row.type === 'http' ? 'warning' : 'info'">{{ row.type }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="目标" min-width="190">
+            <template #default="{ row }"><span class="mono mcp-target">{{ row.target || '（未填写）' }}</span></template>
+          </el-table-column>
+          <el-table-column label="状态" width="100" align="center">
+            <template #default="{ row }">
+              <el-tooltip v-if="row.error" :content="row.error" placement="top">
+                <el-tag size="small" :type="!row.enabled ? 'info' : row.connected ? 'success' : 'danger'">{{ mcpStatusLabel(row) }}</el-tag>
+              </el-tooltip>
+              <el-tag v-else size="small" :type="!row.enabled ? 'info' : row.connected ? 'success' : 'danger'">{{ mcpStatusLabel(row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="工具数" width="70" align="center">
+            <template #default="{ row }">{{ row.enabled ? row.toolCount : '-' }}</template>
+          </el-table-column>
+          <el-table-column label="启用" width="60" align="center">
+            <template #default="{ row }"><el-switch v-model="row.cfg.enabled" size="small" /></template>
+          </el-table-column>
+          <el-table-column label="" width="150" align="center">
+            <template #default="{ row, $index }">
+              <el-button size="small" link type="primary" :loading="mcpTesting === row.name" @click="testMcpRow(row)">测试</el-button>
+              <el-button size="small" link type="primary" @click="editMcp(row)">编辑</el-button>
+              <el-button size="small" link type="danger" @click="removeMcp($index)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="toolbar">
+          <el-button size="small" @click="editMcp(null)">+ 新增 MCP 服务</el-button>
+          <div class="spacer" />
+          <el-button size="small" :loading="mcpSavingList" @click="saveMcpList">保存并热生效</el-button>
+        </div>
+        <div class="note" style="margin-top: 8px">
+          外部工具以 mcp__&lt;服务&gt;__&lt;工具&gt; 暴露给 Agent（需在「Agent 管理」编辑框勾选绑定，默认不可见）。测试连接不落盘；密钥用 ${ENV_VAR} 占位走环境变量；「启用」切换后需点保存才热生效。
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- Agent 编辑弹窗 -->
@@ -201,6 +245,11 @@
         <el-form-item label="绑定技能">
           <el-select v-model="editing.skills" multiple clearable placeholder="未绑定则按标签/关键词自动匹配" style="width: 100%">
             <el-option v-for="sk in skills" :key="sk.name" :label="sk.name" :value="sk.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="绑定 MCP">
+          <el-select v-model="editing.mcp_servers" multiple clearable placeholder="未绑定则不可用外部 MCP 工具（安全默认）" style="width: 100%">
+            <el-option v-for="s in mcpServers" :key="s.name" :label="s.name" :value="s.name" />
           </el-select>
         </el-form-item>
         <el-form-item label="模型覆盖">
@@ -219,6 +268,58 @@
       <template #footer>
         <el-button size="small" @click="agentEditorVisible = false">取消</el-button>
         <el-button size="small" type="primary" :loading="savingAgent" @click="saveAgent">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- MCP 服务编辑弹窗：基础表单 + 可折叠高级 JSON（格式化/校验、测试连接不落盘） -->
+    <el-dialog v-model="mcpEditorVisible" :title="editingMcpOriginal ? `编辑 MCP 服务：${editingMcpOriginal}` : '新增 MCP 服务'" width="640px" append-to-body>
+      <el-form label-width="90px" size="small">
+        <el-form-item label="名称">
+          <el-input v-model="editingMcp.name" placeholder="小写字母/数字开头，仅 a-z0-9_-（agent 绑定用此名）" class="mono-input" />
+        </el-form-item>
+        <el-form-item label="启用"><el-switch v-model="editingMcp.enabled" /></el-form-item>
+        <el-form-item label="类型">
+          <el-radio-group v-model="editingMcp.type">
+            <el-radio value="stdio">stdio（本地命令进程）</el-radio>
+            <el-radio value="http">http（远程 Streamable HTTP）</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <template v-if="editingMcp.type === 'stdio'">
+          <el-form-item label="启动命令">
+            <el-input v-model="editingMcp.command" placeholder="如 npx / node / python" class="mono-input" />
+          </el-form-item>
+          <el-form-item label="启动参数">
+            <el-input v-model="editingMcp.argsText" placeholder="空格分隔，如：-y @modelcontextprotocol/server-filesystem D:/pxx/projects" class="mono-input" />
+          </el-form-item>
+        </template>
+        <el-form-item v-else label="服务地址">
+          <el-input v-model="editingMcp.url" placeholder="http://host:port/mcp" class="mono-input" />
+        </el-form-item>
+        <el-form-item label="高级设置">
+          <div style="width: 100%">
+            <el-button size="small" link type="primary" @click="mcpAdvancedOpen = !mcpAdvancedOpen">{{ mcpAdvancedOpen ? '▲ 收起 JSON' : '▼ 展开 JSON' }}</el-button>
+            <template v-if="mcpAdvancedOpen">
+              <el-input
+                v-model="editingMcp.advancedJson"
+                type="textarea"
+                :rows="10"
+                class="mono-input"
+                style="margin-top: 4px"
+                placeholder='{ "env": {}, "headers": {}, "allow_tools": [], "max_result_chars": 16000, "timeout_sec": 60 }'
+              />
+              <div class="field-hint">
+                除 名称/类型/启用/命令/参数/地址 外的全部字段（env / headers / allow_tools / max_result_chars / timeout_sec 等，可透传任意扩展字段）。
+                密钥用 ${ENV_VAR} 占位走环境变量；与基础表单字段冲突时以 JSON 为准。
+              </div>
+            </template>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="formatMcpJson">格式化/校验</el-button>
+        <el-button size="small" :loading="mcpTesting === '__dialog__'" @click="testMcpDialog">测试连接</el-button>
+        <el-button size="small" @click="mcpEditorVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="mcpSaving" @click="saveMcpDialog">保存到列表</el-button>
       </template>
     </el-dialog>
 
@@ -259,9 +360,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed } from 'vue';
+import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, getApiToken, setApiToken, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type AgentDefinition, type ModelConfig, type SkillMeta } from '../api';
+import { api, getApiToken, setApiToken, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type AgentDefinition, type ModelConfig, type SkillMeta, type McpServerConfig, type McpServerStatus } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
 // 模型池按「服务接入点」分组编辑：同一 base_url + api_key 下可挂任意多个模型；
@@ -285,7 +386,7 @@ const CAPABILITY_TAG_LABELS: Record<string, string> = {
   deploy: '部署',
 };
 
-defineProps<{ modelValue: boolean; notifyEnabled?: boolean }>();
+const props = defineProps<{ modelValue: boolean; notifyEnabled?: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void; (e: 'notify-toggle', v: boolean): void }>();
 
 const tab = ref('general');
@@ -319,9 +420,240 @@ async function savePerm() {
     permSaving.value = false;
   }
 }
+// ---------- 外部 MCP 服务（MCP client） ----------
+// 列表本地编辑（增/删/改/启停）→「保存并热生效」一次性 PUT；测试连接走不落盘探测接口
+interface McpRow {
+  name: string;
+  type: 'stdio' | 'http';
+  enabled: boolean;
+  target: string;
+  connected: boolean;
+  toolCount: number;
+  error?: string;
+  cfg: McpServerConfig;
+}
+
+const mcpServers = ref<McpServerConfig[]>([]);
+const mcpRuntime = ref<Record<string, McpServerStatus>>({});
+const mcpSavingList = ref(false);
+const mcpTesting = ref('');
+const mcpEditorVisible = ref(false);
+const mcpAdvancedOpen = ref(false);
+const mcpSaving = ref(false);
+const editingMcpOriginal = ref<string | null>(null);
+const editingMcp = ref<{ name: string; enabled: boolean; type: 'stdio' | 'http'; command: string; argsText: string; url: string; advancedJson: string }>({
+  name: '', enabled: true, type: 'stdio', command: '', argsText: '', url: '', advancedJson: '',
+});
+
+const mcpRows = computed<McpRow[]>(() =>
+  mcpServers.value.map((cfg) => {
+    const rt = mcpRuntime.value[cfg.name];
+    return {
+      name: cfg.name,
+      type: cfg.type,
+      enabled: cfg.enabled !== false,
+      target: cfg.type === 'http' ? (cfg.url || '') : [cfg.command || '', ...(cfg.args || [])].join(' ').trim(),
+      connected: !!rt?.connected,
+      toolCount: rt?.toolCount || 0,
+      error: rt?.error,
+      cfg,
+    };
+  })
+);
+
+function mcpStatusLabel(row: McpRow): string {
+  if (!row.enabled) return '已禁用';
+  if (row.connected) return '已连接';
+  return row.error ? '未连接' : '连接中';
+}
+
+async function loadMcp() {
+  try {
+    const d = await api.getMcpConfig();
+    mcpServers.value = d.servers || [];
+    mcpRuntime.value = Object.fromEntries((d.runtime || []).map((s) => [s.name, s]));
+  } catch {
+    /* 服务端未就绪等场景保持当前值 */
+  }
+}
+
+/** 编辑态的「高级 JSON」= 完整配置剔除基础表单字段（name/type/enabled/command/args/url 已随表单展示） */
+function mcpAdvancedOf(cfg: McpServerConfig): string {
+  const { name, type, enabled, command, args, url, ...rest } = cfg;
+  const adv: Record<string, unknown> = { ...rest };
+  return JSON.stringify(adv, null, 2);
+}
+
+function editMcp(row: McpRow | null) {
+  editingMcpOriginal.value = row ? row.name : null;
+  editingMcp.value = row
+    ? {
+        name: row.cfg.name,
+        enabled: row.cfg.enabled !== false,
+        type: row.cfg.type,
+        command: row.cfg.command || '',
+        argsText: (row.cfg.args || []).join(' '),
+        url: row.cfg.url || '',
+        advancedJson: mcpAdvancedOf(row.cfg),
+      }
+    : { name: '', enabled: true, type: 'stdio', command: '', argsText: '', url: '', advancedJson: '{}' };
+  mcpAdvancedOpen.value = false;
+  mcpEditorVisible.value = true;
+}
+
+/** 表单 + 高级 JSON → 完整配置；校验失败返回 null（已弹错误） */
+function buildMcpConfig(): McpServerConfig | null {
+  const e = editingMcp.value;
+  const name = e.name.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
+    ElMessage.error('名称必须是 小写字母/数字 开头，仅含 a-z0-9_-');
+    return null;
+  }
+  if (e.type === 'stdio' && !e.command.trim()) {
+    ElMessage.error('stdio 服务必须填写启动命令');
+    return null;
+  }
+  if (e.type === 'http' && !e.url.trim()) {
+    ElMessage.error('http 服务必须填写服务地址');
+    return null;
+  }
+  let advanced: Record<string, unknown> = {};
+  const raw = (e.advancedJson || '').trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('高级设置必须是 JSON 对象');
+      advanced = parsed;
+    } catch (err: any) {
+      ElMessage.error(`高级设置 JSON 无效：${err.message}`);
+      return null;
+    }
+  }
+  const base: McpServerConfig = { name, type: e.type, enabled: e.enabled };
+  if (e.type === 'stdio') {
+    base.command = e.command.trim();
+    const args = e.argsText.trim().split(/\s+/).filter(Boolean);
+    if (args.length) base.args = args;
+  } else {
+    base.url = e.url.trim();
+  }
+  // 决策 D5：高级 JSON 与基础表单字段冲突时以 JSON 为准
+  return { ...base, ...advanced } as McpServerConfig;
+}
+
+function formatMcpJson() {
+  const raw = (editingMcp.value.advancedJson || '').trim();
+  if (!raw) {
+    editingMcp.value.advancedJson = '{}';
+    return;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      ElMessage.error('高级设置必须是 JSON 对象');
+      return;
+    }
+    editingMcp.value.advancedJson = JSON.stringify(parsed, null, 2);
+    ElMessage.success('JSON 格式正确');
+  } catch (err: any) {
+    ElMessage.error(`JSON 无效：${err.message}`);
+  }
+}
+
+async function testMcpDialog() {
+  const cfg = buildMcpConfig();
+  if (!cfg) return;
+  mcpTesting.value = '__dialog__';
+  try {
+    const r = await api.testMcpServer(cfg);
+    if (r.ok) {
+      const names = (r.tools || []).slice(0, 5).map((t) => t.name).join('、');
+      ElMessage.success(`连接成功，发现 ${r.tools?.length ?? 0} 个工具${names ? `：${names}${(r.tools?.length || 0) > 5 ? ' …' : ''}` : ''}`);
+    } else {
+      ElMessage.error(r.error || '连接失败');
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    mcpTesting.value = '';
+  }
+}
+
+async function saveMcpDialog() {
+  const cfg = buildMcpConfig();
+  if (!cfg) return;
+  const originalIdx = mcpServers.value.findIndex((s) => s.name === (editingMcpOriginal.value || ''));
+  const dupIdx = mcpServers.value.findIndex((s) => s.name === cfg.name);
+  if (dupIdx >= 0 && dupIdx !== originalIdx) {
+    ElMessage.error(`服务名已存在：${cfg.name}`);
+    return;
+  }
+  if (originalIdx >= 0) mcpServers.value.splice(originalIdx, 1, cfg);
+  else mcpServers.value.push(cfg);
+  mcpEditorVisible.value = false;
+  await saveMcpList();
+}
+
+async function saveMcpList() {
+  mcpSavingList.value = true;
+  try {
+    const d = await api.saveMcpConfig(mcpServers.value);
+    mcpServers.value = d.servers || mcpServers.value;
+    mcpRuntime.value = Object.fromEntries((d.runtime || []).map((s) => [s.name, s]));
+    ElMessage.success('MCP 服务已保存并热生效');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    mcpSavingList.value = false;
+  }
+}
+
+async function removeMcp(index: number) {
+  const row = mcpRows.value[index];
+  try {
+    await ElMessageBox.confirm(`确定删除 MCP 服务「${row.name}」？保存后立即断开连接并从 Agent 工具面移除。`, '删除确认', { type: 'warning' });
+  } catch {
+    return;
+  }
+  mcpServers.value.splice(index, 1);
+  await saveMcpList();
+}
+
+async function testMcpRow(row: McpRow) {
+  mcpTesting.value = row.name;
+  try {
+    const r = await api.testMcpServer(row.cfg);
+    if (r.ok) ElMessage.success(`${row.name}: 连接成功，${r.tools?.length ?? 0} 个工具`);
+    else ElMessage.error(`${row.name}: ${r.error || '连接失败'}`);
+  } catch (e: any) {
+    ElMessage.error(`${row.name}: ${e.message}`);
+  } finally {
+    mcpTesting.value = '';
+  }
+}
+
+// 状态灯轮询：仅在设置对话框打开且停在 MCP tab 时 8s 拉一次运行时状态
+let mcpTimer: ReturnType<typeof setInterval> | null = null;
+watch(
+  [() => props.modelValue, tab],
+  ([visible, t]) => {
+    if (mcpTimer) {
+      clearInterval(mcpTimer);
+      mcpTimer = null;
+    }
+    if (visible && t === 'mcp') {
+      void loadMcp();
+      mcpTimer = setInterval(() => void loadMcp(), 8000);
+    }
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  if (mcpTimer) clearInterval(mcpTimer);
+});
+
 // 拉取/导入上游模型
-const pullingIndex = ref(-1);
-const importVisible = ref(false);
+const pullingIndex = ref(-1);const importVisible = ref(false);
 const importLabel = ref('');
 const importChoices = ref<string[]>([]);
 const importSelected = ref<string[]>([]);
@@ -417,7 +749,7 @@ const editingOriginal = ref<string | null>(null);
 const editing = ref<Partial<AgentDefinition> & { tagsText?: string; skills?: string[] }>({});
 
 async function loadAll() {
-  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport(), loadPerm()]);
+  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport(), loadPerm(), loadMcp()]);
 }
 
 async function loadDailyReport() {
@@ -678,8 +1010,8 @@ async function testModelPool() {
 function editAgent(row: AgentDefinition | null) {
   editingOriginal.value = row ? row.dir : null;
   editing.value = row
-    ? { ...row, tagsText: row.tags.join(','), skills: row.skills || [] }
-    : { name: '', role: '', description: '', tagsText: '', model_override: '', timeout: 3600, prompt: '', skills: [] };
+    ? { ...row, tagsText: row.tags.join(','), skills: row.skills || [], mcp_servers: row.mcp_servers || [] }
+    : { name: '', role: '', description: '', tagsText: '', model_override: '', timeout: 3600, prompt: '', skills: [], mcp_servers: [] };
   agentEditorVisible.value = true;
 }
 
@@ -766,4 +1098,5 @@ async function removeAgent(row: AgentDefinition) {
 .perm-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px; border: 1px dashed var(--ct-border); border-radius: 8px; }
 .perm-tag { font-family: var(--ct-mono); }
 .perm-actions { display: flex; gap: 8px; }
+.mcp-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
 </style>

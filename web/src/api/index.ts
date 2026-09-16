@@ -297,6 +297,40 @@ export interface StatusResponse {
   agents_dir: string;
   tokens_total: number;
   cost_total: number;
+  /** 外部 MCP 服务连接状态（MCP client；未配置为空数组） */
+  mcp?: McpServerStatus[];
+}
+
+// ---------- 外部 MCP 服务（MCP client） ----------
+
+export interface McpServerConfig {
+  name: string;
+  type: 'stdio' | 'http';
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  max_result_chars?: number;
+  timeout_sec?: number;
+  allow_tools?: string[];
+}
+
+export interface McpServerStatus {
+  name: string;
+  type: 'stdio' | 'http';
+  enabled: boolean;
+  connected: boolean;
+  error?: string;
+  toolCount: number;
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  tools?: { name: string; description?: string }[];
+  error?: string;
 }
 
 export interface MetricsResponse {
@@ -340,6 +374,8 @@ export interface AgentDefinition {
   version: string;
   prompt: string;
   skills?: string[];
+  /** 绑定的外部 MCP server 白名单（agent.yaml mcp_servers） */
+  mcp_servers?: string[];
 }
 
 export interface ProjectMemoryItem {
@@ -702,8 +738,21 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ level, whitelist_commands, ...(max_time_sec !== undefined ? { max_time_sec } : {}) }),
     }),
-  listDailyReports: (limit = 30) => request<{ reports: DailyReport[] }>(`/api/reports/daily?limit=${limit}`),
-  resolveReportItem: (date: string, itemId: string, action: 'fix_now' | 'create_task' | 'skip') =>
+  // 外部 MCP 服务管理（保存即热生效；测试连接不落盘）
+  getMcpConfig: () => request<{ servers: McpServerConfig[]; runtime: McpServerStatus[] }>('/api/config/mcp'),
+  saveMcpConfig: (servers: McpServerConfig[]) =>
+    request<{ status: string; servers: McpServerConfig[]; runtime: McpServerStatus[] }>('/api/config/mcp', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ servers }),
+    }),
+  testMcpServer: (server: McpServerConfig) =>
+    request<McpTestResult>('/api/config/mcp/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server }),
+    }),
+  listDailyReports: (limit = 30) => request<{ reports: DailyReport[] }>(`/api/reports/daily?limit=${limit}`),  resolveReportItem: (date: string, itemId: string, action: 'fix_now' | 'create_task' | 'skip') =>
     request<{ status: string; action: string; task_id?: string }>(`/api/reports/daily/${date}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
