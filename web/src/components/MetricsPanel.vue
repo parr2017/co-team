@@ -7,22 +7,22 @@
       <span>指标加载失败{{ loadError }}</span>
       <el-button size="small" link type="primary" @click="refresh">重试</el-button>
     </div>
-    <div class="metrics-band" v-if="metrics">
-      <div class="metric-box">
-        <div class="m-num">{{ metrics.tasks.total }}</div>
-        <div class="m-label">任务总数</div>
+    <div class="statrow" v-if="metrics">
+      <div class="stat">
+        <div class="k">任务总数</div>
+        <div class="v mono">{{ metrics.tasks.total }}</div>
       </div>
-      <div class="metric-box">
-        <div class="m-num">{{ Math.round(metrics.tasks.success_rate * 100) }}<i>%</i></div>
-        <div class="m-label">成功率</div>
+      <div class="stat">
+        <div class="k">成功率</div>
+        <div class="v mono">{{ Math.round(metrics.tasks.success_rate * 100) }}<i>%</i></div>
       </div>
-      <div class="metric-box">
-        <div class="m-num">{{ metrics.tokens_total.toLocaleString() }}</div>
-        <div class="m-label">Token 消耗</div>
+      <div class="stat">
+        <div class="k">Token 消耗</div>
+        <div class="v mono">{{ metrics.tokens_total.toLocaleString() }}</div>
       </div>
-      <div class="metric-box">
-        <div class="m-num">${{ metrics.cost_total.toFixed(4) }}</div>
-        <div class="m-label">总成本</div>
+      <div class="stat">
+        <div class="k">总成本</div>
+        <div class="v mono">${{ metrics.cost_total.toFixed(4) }}</div>
       </div>
     </div>
     <div class="metrics-summary" v-if="metrics?.quality">
@@ -249,28 +249,32 @@ defineExpose({ refresh });
 </script>
 
 <style scoped>
-.metrics-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
-.metric-box { background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 10px; padding: 14px 16px; transition: border-color 0.15s ease, transform 0.15s ease; }
-.metric-box:hover { border-color: var(--ct-accent); }
-.m-num { font-size: 24px; font-weight: 700; color: var(--ct-text); line-height: 1.2; font-variant-numeric: tabular-nums; letter-spacing: -0.3px; }
-.m-num i { font-style: normal; font-size: 13px; color: var(--ct-text3); }
-.m-label { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
-.charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* 统计行（预览 statrow：分割线单容器 + mono 大数字） */
+.statrow { display: flex; border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--bg-panel); margin-bottom: 12px; flex-wrap: wrap; }
+.stat { flex: 1; padding: 14px 18px; min-width: 140px; }
+.stat + .stat { border-left: 1px solid var(--line); }
+.stat .k { font-size: var(--fs-aux); color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.stat .v { font-size: 24px; font-weight: 700; letter-spacing: -.02em; color: var(--text-1); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.stat .v i { font-style: normal; font-size: 14px; color: var(--text-3); }
+.charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
 .chart { height: 170px; min-width: 0; }
 .chart-tall { height: 200px; }
-.section-head { margin-bottom: 10px; }
-.metrics-summary { font-size: 12px; color: var(--ct-text2); margin-bottom: 10px; }
+/* 图表容器统一（chartbox） */
+.chart, .chart-tall, .model-cost {
+  border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--bg-panel); padding: 14px 16px;
+}
+.metrics-summary { font-size: var(--fs-aux); color: var(--text-2); margin-bottom: 10px; }
 .metric-row { display: flex; justify-content: space-between; padding: 2px 0; }
-.metric-row b { color: var(--ct-text); }
-.metric-quality-title { margin-top: 6px; color: var(--ct-accent); font-weight: 600; }
-.metrics-error { display: flex; align-items: center; gap: 10px; color: var(--ct-red); font-size: 12px; padding: 10px 0; }
-.model-cost { background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 10px 12px; font-size: 12px; overflow: hidden; }
-.mc-title { font-size: 11px; color: var(--ct-text3); margin-bottom: 8px; }
+.metric-row b { color: var(--text-1); font-family: var(--font-mono); font-weight: 600; }
+.metric-quality-title { margin-top: 6px; color: var(--accent); font-weight: 600; }
+.metrics-error { display: flex; align-items: center; gap: 10px; color: var(--danger); font-size: var(--fs-aux); padding: 10px 0; }
+.model-cost { font-size: var(--fs-aux); overflow: hidden; }
+.mc-title { font-size: var(--fs-meta); color: var(--text-3); margin-bottom: 8px; }
 .mc-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; min-width: 0; }
-.mc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ct-text2); }
-.mc-calls { color: var(--ct-text3); flex-shrink: 0; }
-.mc-cost { color: var(--ct-text); flex-shrink: 0; }
-.mc-empty { color: var(--ct-text3); text-align: center; padding: 24px 0; }
+.mc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.mc-calls { color: var(--text-3); flex-shrink: 0; }
+.mc-cost { color: var(--text-1); flex-shrink: 0; }
+.mc-empty { color: var(--text-3); text-align: center; padding: 24px 0; }
 @media (max-width: 900px) {
   .charts-row { grid-template-columns: 1fr; }
 }

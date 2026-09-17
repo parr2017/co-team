@@ -142,9 +142,9 @@ function badge(n: string) { return codes.value[n] || '??'; }
 .agent-action { font-size: 11px; color: var(--ct-yellow); margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-action.idle { color: var(--ct-text3); }
 .agent-skills { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; min-height: 20px; }
-.skill-tag { font-size: 10px; color: var(--ct-accent); background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 3px; padding: 1px 6px; }
-.skill-more { font-size: 10px; color: var(--ct-text3); padding: 1px 2px; }
-.skill-empty { font-size: 10px; color: var(--ct-text3); font-style: italic; }
+.skill-tag { font-size: var(--fs-meta); color: var(--ct-accent); background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 3px; padding: 1px 6px; }
+.skill-more { font-size: var(--fs-meta); color: var(--ct-text3); padding: 1px 2px; }
+.skill-empty { font-size: var(--fs-meta); color: var(--ct-text3); font-style: italic; }
 .agent-stats { display: flex; gap: 12px; font-size: 11px; color: var(--ct-text3); border-top: 1px solid var(--ct-border-light, var(--ct-border)); padding-top: 8px; }
 .agent-stats b { color: var(--ct-text2); font-weight: 600; }
 .section-head { margin-bottom: 10px; display: flex; align-items: baseline; gap: 10px; }

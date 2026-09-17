@@ -1,13 +1,39 @@
 <template>
   <div v-if="hero" class="hero" :class="{ queued: hero.status === 'queued' }">
-    <div class="hero-head">
-      <span class="hero-tag" :class="hero.status">{{ statusText(hero.status) }}</span>
-      <span v-if="hero.rolling" class="hero-stage mono">第 {{ hero.stage }} 阶段</span>
-      <span class="hero-pct mono">{{ hero.percent }}%</span>
-      <button class="hero-open mono" @click="$emit('open', hero.task_id)">进入战情室 →</button>
+    <div class="hero-top">
+      <div class="info">
+        <div class="sup">
+          <span class="dot-run"></span>
+          <span>{{ statusText(hero.status) }}</span>
+          <span class="mono">· {{ hero.task_id }}</span>
+          <span v-if="hero.rolling" class="mono">· 第 {{ hero.stage }} 阶段</span>
+        </div>
+        <h2>{{ hero.description || hero.task_id }}</h2>
+        <div v-if="hero.stageGoal" class="desc">{{ hero.stageGoal }}</div>
+      </div>
+      <div class="hero-cta">
+        <button class="cta-primary" @click="$emit('open', hero.task_id)">进入战情室 →</button>
+      </div>
     </div>
-    <div class="hero-title">{{ hero.description || hero.task_id }}</div>
-    <div class="hero-bar"><div class="fill" :style="{ width: hero.percent + '%' }"></div></div>
+
+    <div class="hero-bottom">
+      <div class="pbar"><i :style="{ width: hero.percent + '%' }"></i></div>
+      <span class="pct mono">{{ hero.percent }}%</span>
+    </div>
+
+    <!-- 心跳卡：正在执行节点的实时执行态（agent/模型/token/重试/限流/耗时） -->
+    <div v-if="activeNodes.length" class="heartbeat">
+      <div v-for="n in activeNodes" :key="n.id" class="hb-group">
+        <div class="hb"><span class="k">执行 Agent</span><span class="v">{{ n.agent }}</span></div>
+        <div class="hb" v-if="n.model"><span class="k">模型</span><span class="v mono">{{ n.model }}</span></div>
+        <div class="hb" v-if="n.tokens"><span class="k">Token</span><span class="v mono">{{ fmtTok(n.tokens) }}</span></div>
+        <div class="hb"><span class="k">重试</span><span class="v mono">{{ n.retryCount || 0 }}</span></div>
+        <div class="hb"><span class="k">限流等待</span><span class="v mono">{{ n.backoffSec ? n.backoffSec + 's' : '0s' }}</span></div>
+        <div class="hb"><span class="k">节点耗时</span><span class="v mono">{{ elapsed(n) }}</span></div>
+      </div>
+      <!-- 生成直播：最近一次 delta（全任务维度取最新鲜的） -->
+      <div v-if="latestDelta" class="hb live-delta mono">✓ {{ latestDelta }}</div>
+    </div>
 
     <!-- 并行任务徽标（Phase 2）：hero 之外的其他活跃任务，点击直达对应战情室 -->
     <div v-if="others.length" class="hero-par">
@@ -15,22 +41,6 @@
       <button v-for="o in others" :key="o.task_id" class="par-chip mono" :title="o.description" @click="$emit('open', o.task_id)">
         {{ o.task_id }} · {{ o.description }}
       </button>
-    </div>
-
-    <!-- 正在执行的节点（心跳卡串联） -->
-    <div v-if="activeNodes.length" class="hero-nodes">
-      <div v-for="n in activeNodes" :key="n.id" class="hero-node">
-        <span class="hn-dot"></span>
-        <span class="hn-agent mono">{{ n.agent }}</span>
-        <span class="hn-name">{{ n.name }}</span>
-        <span v-if="n.model" class="hn-chip mono">{{ n.model }}</span>
-        <span v-if="n.tokens" class="hn-chip mono">{{ fmtTok(n.tokens) }} tok</span>
-        <span v-if="n.retryCount" class="hn-chip warn mono">重试 {{ n.retryCount }}</span>
-        <span v-if="n.backoffSec" class="hn-chip warn mono">⏳ 限流 {{ n.backoffSec }}s</span>
-        <span class="hn-elapsed mono">{{ elapsed(n) }}</span>
-      </div>
-      <!-- 生成直播：最近一次 delta（全任务维度取最新鲜的） -->
-      <div v-if="latestDelta" class="hero-delta mono">{{ latestDelta }}</div>
     </div>
 
     <!-- 中断/重排提示 -->
@@ -125,7 +135,8 @@ const latestDelta = computed(() => {
 function elapsed(n: { startedAt?: string }): string {
   void nowTick.value;
   if (!n.startedAt) return '';
-  return Math.max(0, Math.round((Date.now() - new Date(n.startedAt).getTime()) / 1000)) + 's';
+  const sec = Math.max(0, Math.round((Date.now() - new Date(n.startedAt).getTime()) / 1000));
+  return sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : sec + 's';
 }
 function fmtTok(n: number): string {
   return n >= 1000 ? (Math.round(n / 100) / 10) + 'k' : String(n);
@@ -133,55 +144,62 @@ function fmtTok(n: number): string {
 </script>
 
 <style scoped>
+/* 通栏 hero：面板卡 + 左缘强调条（预览样式） */
 .hero {
   position: relative; overflow: hidden;
-  background: var(--ct-panel, var(--el-bg-color));
-  border: 1px solid var(--ct-accent, #4a8dff);
-  border-radius: 12px; padding: 14px 18px; margin-bottom: 14px;
-  box-shadow: 0 0 0 1px rgba(74, 141, 255, 0.08), 0 4px 20px rgba(74, 141, 255, 0.06);
-  animation: heroIn 0.3s ease;
+  background: var(--bg-panel); border: 1px solid var(--line);
+  border-radius: var(--r-panel); padding: 18px 20px 16px; margin-bottom: 14px;
 }
-@keyframes heroIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-.hero.queued { border-color: var(--ct-border2, var(--el-border-color)); box-shadow: none; }
-.hero-head { display: flex; align-items: center; gap: 10px; }
-.hero-tag { font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 999px; }
-.hero-tag.running, .hero-tag.retrying { color: var(--ct-yellow, #d29922); border: 1px solid var(--ct-yellow, #d29922); }
-.hero-tag.finalizing { color: var(--ct-accent, #4a8dff); border: 1px solid var(--ct-accent, #4a8dff); }
-.hero-tag.interrupted { color: var(--ct-red, #e5534b); border: 1px solid var(--ct-red, #e5534b); }
-.hero-tag.queued { color: var(--ct-text3, #666b75); border: 1px solid var(--ct-border2, #26272c); }
-.hero-stage { font-size: 11px; color: var(--ct-accent, #4a8dff); }
-.hero-pct { margin-left: auto; font-size: 18px; font-weight: 700; color: var(--ct-text); font-variant-numeric: tabular-nums; }
-.hero-open { border: none; background: transparent; color: var(--ct-accent, #4a8dff); font-size: 12px; cursor: pointer; padding: 2px 4px; }
-.hero-open:hover { text-decoration: underline; }
-.hero-title { font-size: 13px; color: var(--ct-text); margin-top: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hero-bar { height: 6px; border-radius: 3px; background: var(--ct-bg2, rgba(127,127,127,0.12)); overflow: hidden; margin-top: 8px; }
-.hero-bar .fill { height: 100%; background: linear-gradient(90deg, var(--ct-accent, #4a8dff), var(--ct-green, #3fb950)); border-radius: 3px; transition: width 0.6s ease; }
-.hero-nodes { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
-.hero-node { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap; }
-.hn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ct-yellow, #d29922); animation: blink 1.2s ease-in-out infinite; }
-@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-.hn-agent { color: var(--ct-accent, #4a8dff); }
-.hn-name { color: var(--ct-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hn-chip { font-size: 10px; border: 1px solid var(--ct-border2, #26272c); border-radius: 999px; padding: 1px 8px; color: var(--ct-text2); }
-.hn-chip.warn { color: var(--ct-yellow, #d29922); border-color: var(--ct-yellow, #d29922); }
-.hn-elapsed { margin-left: auto; color: var(--ct-text3); font-variant-numeric: tabular-nums; }
-.hero-delta {
-  margin-top: 2px; padding: 6px 10px; font-size: 11px; line-height: 1.5;
-  color: var(--ct-text2); background: var(--ct-bg2, rgba(127,127,127,0.06));
-  border-left: 2px solid var(--ct-accent, #4a8dff); border-radius: 0 6px 6px 0;
-  white-space: pre-wrap; word-break: break-all; max-height: 56px; overflow: hidden;
+.hero::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+.hero.queued::before { background: var(--text-3); }
+.hero-top { display: flex; align-items: flex-start; gap: 16px; }
+.hero-top .info { flex: 1; min-width: 0; }
+.sup {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .04em;
 }
-.hero-note { margin-top: 8px; font-size: 12px; }
-.hero-note.warn { color: var(--ct-yellow, #d29922); }
-.hero-par { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.par-label { font-size: 11px; color: var(--ct-text3, #666b75); }
+.dot-run { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s infinite; flex: none; }
+@keyframes pulse { 50% { opacity: .35; } }
+.hero-top h2 { font-size: var(--fs-h1); font-weight: 700; letter-spacing: -.01em; line-height: 1.3; color: var(--text-1); margin: 0; }
+.desc { font-size: 13px; color: var(--text-2); margin-top: 5px; max-width: 720px; }
+.hero-cta { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; flex: none; }
+.cta-primary {
+  height: 32px; padding: 0 16px; border: none; border-radius: var(--r-ctl);
+  background: var(--accent); color: var(--accent-text); font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: filter .15s;
+}
+.cta-primary:hover { filter: brightness(1.08); }
+.hero-bottom { display: flex; align-items: center; gap: 16px; margin-top: 14px; }
+.pbar { flex: 1; height: 5px; border-radius: 3px; background: var(--bg-inset); overflow: hidden; }
+.pbar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.6s ease; }
+.pct { font-size: 13px; color: var(--accent); font-weight: 700; }
+
+/* 心跳卡：k/v 列（mono 数值） */
+.heartbeat {
+  margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px;
+  display: flex; gap: 22px; flex-wrap: wrap; align-items: center;
+}
+.hb-group { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
+.hb { display: flex; flex-direction: column; gap: 1px; }
+.hb .k { font-size: var(--fs-meta); color: var(--text-3); }
+.hb .v { font-family: var(--font-mono); font-size: 13px; color: var(--text-1); }
+.hb.live-delta {
+  color: var(--ok); font-size: var(--fs-aux); max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; align-self: center;
+}
+
+.hero-par { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.par-label { font-size: var(--fs-meta); color: var(--text-3); }
 .par-chip {
-  border: 1px solid var(--ct-border2, #26272c); background: transparent; color: var(--ct-text2);
-  font-size: 11px; border-radius: 999px; padding: 2px 10px; cursor: pointer; max-width: 260px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1px solid var(--line); background: transparent; color: var(--text-2);
+  font-family: var(--font-mono); font-size: var(--fs-meta); border-radius: 999px; padding: 2px 10px; cursor: pointer;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.par-chip:hover { border-color: var(--ct-accent, #4a8dff); color: var(--ct-accent, #4a8dff); }
-.hero-empty { border-color: var(--ct-border, #26272c); box-shadow: none; }
-.hero-empty-title { font-size: 13px; font-weight: 600; color: var(--ct-text2); }
-.hero-empty-sub { font-size: 12px; color: var(--ct-text3); margin-top: 4px; }
+.par-chip:hover { border-color: var(--accent-line); color: var(--accent); }
+.hero-note { margin-top: 8px; font-size: var(--fs-aux); }
+.hero-note.warn { color: var(--warn); }
+.hero-empty { border-color: var(--line); }
+.hero-empty::before { background: var(--line-strong); }
+.hero-empty-title { font-size: var(--fs-sub); font-weight: 600; color: var(--text-2); }
+.hero-empty-sub { font-size: var(--fs-aux); color: var(--text-3); margin-top: 4px; }
 </style>

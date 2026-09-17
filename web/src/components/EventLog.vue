@@ -34,7 +34,7 @@ function view(e: EventItem) {
 <style scoped>
 .log-list { max-height: 320px; overflow-y: auto; background: var(--ct-bg); border-radius: 8px; border: 1px solid var(--el-border-color); }
 .log-entry { padding: 6px 10px; border-bottom: 1px solid var(--el-border-color); font-size: 12px; display: flex; gap: 8px; align-items: baseline; }
-.log-ts { color: var(--ct-text3); flex-shrink: 0; font-family: var(--ct-mono); font-size: 10px; }
+.log-ts { color: var(--ct-text3); flex-shrink: 0; font-family: var(--ct-mono); font-size: var(--fs-meta); }
 .log-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; align-self: center; background: var(--ct-text3); }
 .log-dot.success { background: var(--ct-green); }
 .log-dot.warn { background: var(--ct-yellow); }
