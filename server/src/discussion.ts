@@ -97,6 +97,35 @@ export interface DiscussionMessage {
   model?: string;
 }
 
+/** 单次工具调用的可展示记录（P1 明细落盘）：详情面板"看了哪些代码/执行了什么命令/MCP"的数据源，
+ *  随工具活动条消息（meta.calls）与发言消息（meta.detail.tool_calls）持久化——刷新不丢。 */
+export interface ToolCallRecord {
+  tool: string;
+  /** 参数摘要（命令/路径/pattern/url 等，≤200 字） */
+  args_summary?: string;
+  /** 输出要点（≤300 字） */
+  output_gist?: string;
+  ok?: boolean;
+  /** 外部 MCP 工具标注 */
+  mcp?: { server: string; tool: string };
+}
+
+/** 单次发言的工作明细（meta.detail）：右侧详情面板分区渲染的数据源 */
+export interface SpeakerTurnDetail {
+  agent: string;
+  round: number;
+  /** 解决思路：依据什么代码/文档/命令输出得出结论（发言契约 evidence 字段） */
+  evidence?: string;
+  /** 本轮全部工具调用记录（含 mcp 标注） */
+  tool_calls: ToolCallRecord[];
+  /** 成员绑定的技能（agent.yaml skills 白名单） */
+  skills: string[];
+  /** 本轮发言 @ 了哪些成员 */
+  mentioned: string[];
+  /** 实际应答模型 */
+  model: string;
+}
+
 export interface DiscussionDeps {
   orchestrator: Orchestrator;
   pool: ModelPool;
@@ -523,8 +552,9 @@ ${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments �
 ## 输出契约（最终消息必须是纯 JSON，禁止 markdown 代码栅栏）
 两种形态二选一：
 A 需要动手时：{"tool_calls":[ {"tool":"..."}, ... ]}
-B 发言时：  {"speak": true|false, "reply": "发言内容（≤300字）", "experience": "可选一句话经验", "ask_user": "可选需用户判断的问题"}
+B 发言时：  {"speak": true|false, "reply": "发言内容（≤300字）", "evidence": "可选：结论依据（基于哪些代码/文档/命令输出，≤200字）", "experience": "可选一句话经验", "ask_user": "可选需用户判断的问题"}
 工具结果会以用户消息回喂给你：信息够了就用形态 B 汇报真实结果（含命令输出要点/端口/报错原文），需要继续就再发形态 A。启动服务后必须先验证（查端口或读日志）再向用户汇报状态。
+给出结论时建议带 evidence（你看了什么、凭什么得出这个结论）——用户在消息详情里能看到你的解决思路与工作过程（工具调用/文件/命令），写在那里比塞进正文更清楚。
 ## 行动优先（重要）
 - 侦查只是手段：如果你的回合里还有该动手的主动作（装依赖/启动/修改/重启），不要以"下一步我将…"的口头承诺收尾——直接用形态 A 把它做完再汇报。
 - 迭代预算有限：第一批工具就把最关键的侦查+主动作一起发出（如 npm install + exec_background），减少往返。
@@ -538,8 +568,10 @@ function speakerIdentityPrompt(deps: DiscussionDeps, agent: string, mem: string[
   const identity = plugin
     ? `# 你的身份\n你是群组讨论中的「${agent}」Agent（角色：${plugin.role || agent}）。\n${(plugin.prompt || '').slice(0, 1500)}`
     : `# 你的身份\n你是群组讨论中的「${agent}」成员。`;
+  // P1 明细：绑定技能注入身份（成员知道自己有什么技能，详情面板也按此展示）
+  const skillsLine = plugin?.skills?.length ? `\n# 你绑定的技能\n${plugin.skills.join('、')}` : '';
   const own = mem.length ? `\n# 你过往的经验记忆\n${mem.map((m) => `- ${m}`).join('\n')}` : '';
-  return `${identity}${own}`;
+  return `${identity}${skillsLine}${own}`;
 }
 
 function roundPrompt(round: number, messages: DiscussionMessage[], firstSubstantive: boolean, interruptNote: string): string {
@@ -755,6 +787,56 @@ async function runSpeakerToolCalls(
   return results;
 }
 
+/** 从一批工具调用+结果提取可展示明细记录（参数摘要+输出要点）——meta.calls 与详情面板共用 */
+function buildCallRecords(calls: Record<string, any>[], results: unknown[]): ToolCallRecord[] {
+  const out: ToolCallRecord[] = [];
+  for (let i = 0; i < calls.length; i++) {
+    const c = calls[i] || {};
+    const r: any = results[i] || {};
+    const name = String(c.tool || '?');
+    const rec: ToolCallRecord = { tool: name, ok: r.ok !== false };
+    if (name.startsWith('mcp__')) {
+      const rest = name.slice('mcp__'.length);
+      const sep = rest.indexOf('__');
+      rec.mcp = { server: sep > 0 ? rest.slice(0, sep) : '', tool: sep > 0 ? rest.slice(sep + 2) : name };
+    }
+    const argParts: string[] = [];
+    for (const k of ['command', 'path', 'pattern', 'url', 'pid', 'question']) {
+      const v = c[k];
+      if (v !== undefined && v !== null && String(v).trim()) argParts.push(`${k}=${String(v).slice(0, 120)}`);
+    }
+    if (!argParts.length && c.arguments && typeof c.arguments === 'object') {
+      argParts.push(JSON.stringify(c.arguments).slice(0, 200));
+    }
+    rec.args_summary = argParts.join(' · ').slice(0, 200) || undefined;
+    let gist = '';
+    if (r.returncode !== undefined) {
+      gist = `exit ${r.returncode}${r.stdout ? ' · ' + String(r.stdout).trim().slice(-160) : ''}${!r.stdout && r.stderr ? ' · ' + String(r.stderr).trim().slice(-160) : ''}`;
+    } else if (r.error) {
+      gist = `✗ ${String(r.error).slice(0, 200)}`;
+    } else if (Array.isArray(r.matches)) {
+      gist = `命中 ${r.matches.length} 处${r.matches[0] ? ` · ${r.matches[0].file}:${r.matches[0].line}` : ''}`;
+    } else if (r.total_lines !== undefined) {
+      gist = `${r.total_lines} 行${r.truncated ? '（截断）' : ''}`;
+    } else if (Array.isArray(r.entries)) {
+      gist = `${r.entries.length} 项`;
+    } else if (r.output) {
+      gist = String(r.output).slice(0, 280);
+    } else if (r.log) {
+      gist = `日志 ${r.log}${r.pid ? ` · pid ${r.pid}` : ''}`;
+    } else if (r.files) {
+      gist = `${Array.isArray(r.files) ? r.files.length : '?'} 个文件`;
+    } else if (r.note) {
+      gist = String(r.note).slice(0, 200);
+    } else if (r.content) {
+      gist = String(r.content).slice(0, 200);
+    }
+    rec.output_gist = gist ? gist.slice(0, 300) : undefined;
+    out.push(rec);
+  }
+  return out;
+}
+
 /** one tool activity line per batch, persisted into the transcript for auditability */
 function toolActivityLine(calls: Record<string, any>[], results: unknown[]): string {
   const segs: string[] = [];
@@ -804,6 +886,8 @@ async function runSpeakerTurn(
 
   let parsed: Record<string, any> | null = null;
   let toolUsed = false;
+  // P1 明细落盘：本轮全部工具调用记录（跨工具迭代累积），最终随发言消息 meta.detail 持久化
+  const turnCalls: ToolCallRecord[] = [];
   // 换模链：主选 + 健康后备（同端点组沉底），本轮实际应答的模型记在 chosen 上
   const chain = speakerModelChain(deps, agent, entry);
   let chosen: ModelEntry = chain[0];
@@ -849,8 +933,11 @@ async function runSpeakerTurn(
       void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
       toolUsed = true;
       const results = await runSpeakerToolCalls(deps, disc, agent, calls);
+      const records = buildCallRecords(calls, results);
+      turnCalls.push(...records);
       const line = toolActivityLine(calls, results);
-      await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true, model: chosen.name });
+      // P1 明细落盘：meta.calls 随活动条持久化——刷新后 UI 仍能渲染工具树，不再只剩一行摘要
+      await appendMessage(disc.id, { id: newId(), from: agent, text: line, ts: new Date().toISOString(), round, tool: true, model: chosen.name, meta: { calls: records } });
       await emitProgress('discussion_tool', { discussion_id: disc.id, agent, round, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results });
       // M5.2 ④：同一批工具 ≥2 次失败时提示转任务——讨论的工具面（≤90s 命令、≤80 行小改）有天花板
       const failedCalls = results.filter((r) => (r as Record<string, any>)?.ok === false).length;
@@ -901,9 +988,23 @@ async function runSpeakerTurn(
   const reply = String(parsed.reply || '').trim().slice(0, MAX_MESSAGE_LENGTH);
   const askUser = String(parsed.ask_user || '').trim();
   const experience = String(parsed.experience || '').trim();
+  // P1 明细：解决思路（evidence，发言契约新字段）+ 成员绑定技能 + @提及
+  const evidence = String(parsed.evidence || '').trim().slice(0, 600);
+  const plugin = deps.orchestrator.plugins.get(agent);
+  const skills = plugin?.skills || [];
+  const mentioned = parseMentions(reply, disc.members).mentioned;
   if (!reply && !askUser) {
     return { spoke: false, asked: false, silent: true, toolUsed };
   }
+  const detail: SpeakerTurnDetail = {
+    agent,
+    round,
+    evidence: evidence || undefined,
+    tool_calls: turnCalls,
+    skills,
+    mentioned,
+    model: chosen.name,
+  };
   const msg: DiscussionMessage = {
     id: newId(),
     from: agent,
@@ -913,6 +1014,8 @@ async function runSpeakerTurn(
     needs_user: !!askUser,
     // 实际应答模型（可能已在换模链上切过）——复盘时能看出这轮话是谁的模型说的
     model: chosen.name,
+    // P1 明细落盘：右侧详情面板数据源（思路/工具调用/技能/协作），随消息持久化刷新不丢
+    meta: { detail },
   };
   await appendMessage(disc.id, msg);
   void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: `${disc.id}:${agent}:r${round}#*`, discarded: true });
