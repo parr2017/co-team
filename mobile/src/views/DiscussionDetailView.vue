@@ -55,9 +55,6 @@ function roleOf(name: string): string {
   if (name === 'user') return '我';
   return roles.value[name] || name;
 }
-function agentStreaming(agent: string): boolean {
-  return Object.values(streams).some((s) => s.agent === agent);
-}
 
 // ---------- P2-4 并行活动（双端一致）：多成员同时动手/输入/排队一眼可见 ----------
 const activeMembers = computed<string[]>(() => {
