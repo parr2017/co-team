@@ -2,11 +2,14 @@
   <el-config-provider>
     <div class="app-shell">
       <header class="app-header">
-        <div class="logo">
-          <span class="logo-mark">co-team</span>
-          <span class="logo-env">multi-agent orchestrator</span>
+        <div class="brand">
+          <div class="brand-mark mono">CT</div>
+          <div class="brand-text">
+            <span class="brand-name">Co-Team</span>
+            <span class="brand-sub mono">multi-agent orchestrator</span>
+          </div>
         </div>
-        <nav class="nav mono">
+        <nav class="nav">
           <button class="nav-tab" :class="{ active: page === 'workbench' }" @click="router.push('/workbench')">工作台</button>
           <button class="nav-tab" :class="{ active: page === 'tasks' }" @click="router.push('/tasks')">
             任务中心
@@ -23,16 +26,17 @@
           </button>
         </nav>
         <div class="header-right">
-          <div class="header-metrics mono" v-if="status">
-            <span class="metric">tok <b>{{ status.tokens_total.toLocaleString() }}</b></span>
-            <span class="metric">cost <b>${{ status.cost_total.toFixed(4) }}</b></span>
+          <div class="header-metrics" v-if="status">
+            <span class="metric-pill">成本 <b class="mono">${{ status.cost_total.toFixed(4) }}</b></span>
+            <span class="metric-pill">Token <b class="mono">{{ status.tokens_total.toLocaleString() }}</b></span>
           </div>
-          <span class="conn" :class="{ off: !connected }"><i></i>{{ connected ? 'connected' : 'connecting' }}</span>
-          <button class="theme-toggle mono" @click="toggle">{{ theme === 'dark' ? 'light' : 'dark' }} mode</button>
+          <span class="conn" :class="{ off: !connected }"><i></i>{{ connected ? '已连接' : '连接中' }}</span>
+          <button v-if="page === 'workbench' || page === 'tasks'" class="side-toggle" :title="sideCollapsed ? '展开侧栏' : '收起侧栏'" @click="sideCollapsed = !sideCollapsed">{{ sideCollapsed ? '«' : '»' }}</button>
+          <button class="theme-toggle" :title="theme === 'dark' ? '切到亮色' : '切到暗色'" @click="toggle">{{ theme === 'dark' ? '☀' : '☾' }}</button>
         </div>
       </header>
 
-      <div class="layout" v-if="page === 'workbench'">
+      <div class="layout" :class="{ 'side-hidden': sideCollapsed }" v-if="page === 'workbench'">
         <main class="main">
           <div class="page-toolbar">
             <div class="page-title">工作台</div>
@@ -60,7 +64,7 @@
         </aside>
       </div>
 
-      <div class="layout" v-else-if="page === 'tasks'">
+      <div class="layout" :class="{ 'side-hidden': sideCollapsed }" v-else-if="page === 'tasks'">
         <main class="main">
           <TaskCenterView
             :tasks="tasks"
@@ -90,13 +94,13 @@
         </main>
       </div>
 
-      <div class="layout single" v-else-if="page === 'discuss'">
+      <div class="layout" v-else-if="page === 'discuss'">
         <main class="main">
           <GroupDiscussionView @open-task="detailTaskId = $event" />
         </main>
       </div>
 
-      <div class="layout single" v-else-if="page === 'approvals'">
+      <div class="layout" v-else-if="page === 'approvals'">
         <main class="main">
           <div class="page-toolbar">
             <div class="page-title">审批收件箱</div>
@@ -176,6 +180,8 @@ const { enabled: notifyEnabled, setEnabled: setNotifyEnabled } = useNotifier();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
 const settingsVisible = ref(false);
+// 步骤2：工作台/任务中心右栏可折叠（宽屏满宽自适应）
+const sideCollapsed = ref(false);
 // B3（2026-09-17）：路由是页面切换的唯一事实源——URL 直达、刷新不丢、前进后退可用
 const route = useRoute();
 const router = useRouter();
@@ -402,34 +408,63 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .mono { font-family: var(--font-mono); }
 .app-shell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+/* 顶栏（44px）：品牌位 + 产品化 tab + 指标 pill */
 .app-header {
-  flex-shrink: 0; z-index: 50; height: 48px; padding: 0 20px;
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-shrink: 0; z-index: 50; height: 44px; padding: 0 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 20px;
   background: var(--bg-panel); border-bottom: 1px solid var(--line);
 }
-.logo { display: flex; align-items: baseline; gap: 10px; }
-.logo-mark { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--text-1); }
-.logo-env { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
-.nav { display: flex; gap: 4px; margin-left: 24px; }
-.nav-tab { font-family: var(--font-mono); font-size: 12px; color: var(--text-3); background: transparent; border: none; border-bottom: 2px solid transparent; padding: 6px 10px; cursor: pointer; }
-.nav-tab.active { color: var(--text-1); border-bottom-color: var(--accent); }
+.brand { display: flex; align-items: center; gap: 9px; min-width: 200px; }
+.brand-mark {
+  width: 22px; height: 22px; border-radius: var(--r-ctl); flex: none;
+  background: var(--accent); color: var(--accent-text);
+  display: grid; place-items: center; font-size: 11px; font-weight: 700;
+}
+.brand-text { display: flex; align-items: baseline; gap: 8px; }
+.brand-name { font-size: var(--fs-body); font-weight: 700; letter-spacing: .01em; color: var(--text-1); }
+.brand-sub { font-size: var(--fs-meta); color: var(--text-3); }
+.nav { display: flex; gap: 2px; height: 100%; }
+.nav-tab {
+  position: relative; display: flex; align-items: center; gap: 7px; padding: 0 14px;
+  font-family: var(--font-ui); font-size: 13.5px; color: var(--text-2);
+  background: transparent; border: none; cursor: pointer;
+  transition: color .15s;
+}
+.nav-tab.active { color: var(--text-1); }
+.nav-tab.active::after {
+  content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px;
+  background: var(--accent); border-radius: 2px 2px 0 0;
+}
 .nav-tab:hover { color: var(--text-1); }
-.nav-badge { display: inline-block; min-width: 16px; text-align: center; font-size: 11px; color: var(--accent-text); background: var(--accent); border-radius: 8px; padding: 0 4px; margin-left: 4px; vertical-align: 1px; font-family: var(--font-mono); font-weight: 700; }
-.btn-badge { display: inline-block; min-width: 16px; text-align: center; font-size: 11px; color: var(--accent-text); background: var(--accent); border-radius: 8px; padding: 0 4px; margin-left: 4px; }
-.header-right { display: flex; align-items: center; gap: 14px; }
-.header-metrics { display: flex; gap: 14px; font-size: var(--fs-meta); color: var(--text-3); }
-.header-metrics b { color: var(--text-2); font-weight: 500; }
-.conn { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--ok); }
+.nav-badge {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-text);
+  font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+  display: grid; place-items: center;
+}
+.btn-badge { display: inline-block; min-width: 16px; text-align: center; font-size: var(--fs-meta); color: var(--accent-text); background: var(--accent); border-radius: 8px; padding: 0 4px; margin-left: 4px; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.header-metrics { display: flex; gap: 14px; }
+.metric-pill { display: flex; align-items: baseline; gap: 6px; color: var(--text-3); font-size: var(--fs-meta); }
+.metric-pill b { color: var(--text-2); font-family: var(--font-mono); font-weight: 600; font-size: var(--fs-aux); }
+.conn { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-meta); color: var(--ok); }
 .conn i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 .conn.off { color: var(--danger); }
 .conn.off i { background: var(--danger); }
-.theme-toggle { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 4px 10px; cursor: pointer; }
-.theme-toggle:hover { color: var(--text-1); border-color: var(--line-strong); }
-.layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr var(--side-w); overflow: hidden; }
-.layout.single { grid-template-columns: 1fr; }
-.layout.single .main { max-width: 1180px; margin: 0 auto; width: 100%; border-right: none; }
-.main { overflow-y: auto; padding: 20px 24px; border-right: 1px solid var(--line); }
-.side { overflow-y: auto; padding: 16px; }
+.side-toggle, .theme-toggle {
+  width: 26px; height: 26px; display: grid; place-items: center;
+  color: var(--text-3); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl);
+  font-size: 13px; cursor: pointer; transition: color .15s, border-color .15s, background .15s;
+}
+.side-toggle:hover, .theme-toggle:hover { color: var(--text-1); background: var(--bg-raised); border-color: var(--line); }
+/* 满宽工作区：main 自适应 + 右栏固定宽可折叠（替代 1fr/340px 栅格与 1180px 居中） */
+.layout { flex: 1; min-height: 0; min-width: 0; display: flex; overflow: hidden; }
+.layout .main { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px; }
+.layout .side {
+  width: var(--side-w); flex: none; overflow-y: auto; padding: 16px;
+  border-left: 1px solid var(--line); background: var(--bg-panel);
+}
+.layout.side-hidden .side { display: none; }
 .page-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .page-title { font-size: var(--fs-sub); font-weight: 600; color: var(--text-1); }
 .page-ops { margin-left: auto; display: flex; gap: 4px; }
