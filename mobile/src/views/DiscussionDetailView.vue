@@ -291,19 +291,80 @@ function msgSheetSelect(action: any) {
     replyTo.value = m.id;
   } else if (name === 'copy') {
     void copyText(m.text).then((ok) => showToast(ok ? '已复制' : '复制失败（浏览器限制）'));
+  } else if (name === 'detail') {
+    detailMsg.value = m;
+    detailSheet.value = true;
   } else if (name.startsWith('react:')) {
     void onReact(m, name.slice(6));
   }
 }
 const msgActions = computed(() => {
   const m = msgSheet.msg;
-  return [
+  const list: { name: string; text: string }[] = [
     { name: 'reply', text: '↩ 引用回复' },
     { name: 'react:👍', text: m?.reactions?.['👍'] ? '👍 已回应' : '👍 同意' },
     { name: 'react:✅', text: m?.reactions?.['✅'] ? '✅ 已回应' : '✅ 收到/已解决' },
     { name: 'react:👀', text: m?.reactions?.['👀'] ? '👀 已回应' : '👀 在看' },
     { name: 'copy', text: '⧉ 复制' },
   ];
+  // P1-3 明细抽屉：有工作过程的消息可查看详细（思路/工具调用/技能/协作）
+  if (m && hasDetail(m)) list.unshift({ name: 'detail', text: '🔍 查看工作明细' });
+  return list;
+});
+
+// ---------- P1-3 工作明细（工具树 + 底部抽屉详情） ----------
+const CODE_TOOLS = /^(read_file|read|read_dir|readdir|list_files|list|ls|grep|search|git_log|git_diff)$/;
+const CMD_TOOLS = /^(exec|exec_command|run_command|exec_background|start_process|kill_process|check_page|screenshot|look_image)$/;
+const DOC_TOOLS = /^(write_knowledge|write_doc)$/;
+const expandedTools = ref<Set<string>>(new Set());
+function toggleTool(id: string) {
+  const next = new Set(expandedTools.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedTools.value = next;
+}
+function toolCallsOf(m: DiscussionMessage): any[] {
+  const calls = (m.meta as any)?.calls;
+  return Array.isArray(calls) ? calls : [];
+}
+function toolIcon(tool: string): string {
+  if (tool.startsWith('mcp__')) return '🔌';
+  if (CODE_TOOLS.test(tool)) return '📂';
+  if (CMD_TOOLS.test(tool)) return '⚙';
+  if (DOC_TOOLS.test(tool)) return '📄';
+  if (/^convert_to_project|^convert_task/.test(tool)) return '🚀';
+  return '🔧';
+}
+function hasDetail(m: DiscussionMessage): boolean {
+  const meta: any = m.meta || {};
+  return !!(meta.detail?.tool_calls?.length || meta.detail?.evidence || meta.detail?.skills?.length || meta.detail?.mentioned?.length || meta.calls?.length);
+}
+const detailSheet = ref(false);
+const detailMsg = ref<DiscussionMessage | null>(null);
+function openDetail(m: DiscussionMessage) {
+  detailMsg.value = m;
+  detailSheet.value = true;
+}
+const detailData = computed(() => {
+  const m = detailMsg.value;
+  if (!m) return null;
+  const meta: any = m.meta || {};
+  return meta.detail || (meta.calls?.length ? { agent: m.from, round: m.round || 0, tool_calls: meta.calls, skills: [], mentioned: [], model: m.model || '' } : null);
+});
+const groupedCalls = computed(() => {
+  const calls: any[] = detailData.value?.tool_calls || [];
+  const code: any[] = [];
+  const cmd: any[] = [];
+  const mcp: any[] = [];
+  const doc: any[] = [];
+  for (const rec of calls) {
+    if (rec.mcp || String(rec.tool).startsWith('mcp__')) mcp.push(rec);
+    else if (CODE_TOOLS.test(rec.tool)) code.push(rec);
+    else if (CMD_TOOLS.test(rec.tool)) cmd.push(rec);
+    else if (DOC_TOOLS.test(rec.tool)) doc.push(rec);
+    else cmd.push(rec);
+  }
+  return { code, cmd, mcp, doc };
 });
 
 // ---------- @点名 ----------
@@ -503,8 +564,23 @@ const showExp = ref(false);
           <span v-else class="sys-text">{{ row.m.text }}</span>
         </div>
 
-        <div v-else-if="row.type === 'tool'" class="tool-row">
-          <span class="tool-text">{{ row.m.text }}</span>
+        <div v-else-if="row.type === 'tool'" class="tool-block">
+          <div class="tool-head" @click="toggleTool(row.m.id)">
+            <span class="tool-caret mono">{{ expandedTools.has(row.m.id) ? '▾' : '▸' }}</span>
+            <span class="tool-agent" :style="{ color: agentColor(row.m.from) }">{{ roleOf(row.m.from) }}</span>
+            <span class="tool-text">{{ row.m.text }}</span>
+          </div>
+          <div v-if="expandedTools.has(row.m.id)" class="tool-tree">
+            <div v-for="(rec, ci) in toolCallsOf(row.m)" :key="ci" class="tool-call">
+              <div class="tc-line mono">
+                <span class="tc-icon">{{ toolIcon(rec.tool) }}</span>
+                <span class="tc-name">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
+                <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+              </div>
+              <div v-if="rec.args_summary" class="tc-args mono">{{ rec.args_summary }}</div>
+              <div v-if="rec.output_gist" class="tc-gist mono">{{ rec.output_gist }}</div>
+            </div>
+          </div>
         </div>
 
         <div v-else class="row" :class="[row.side, { grouped: !row.head }]">
@@ -516,6 +592,7 @@ const showExp = ref(false);
               <span class="who-role" :style="{ color: row.side === 'them' ? agentColor(row.m.from) : undefined }">{{ roleOf(row.m.from) }}</span>
               <span v-if="row.m.model" class="who-model mono">{{ row.m.model }}</span>
               <span v-if="row.m.needs_user" class="ask-tag" :class="{ answered: row.answered }">{{ row.answered ? '已回复' : '待你拍板' }}</span>
+              <span v-if="hasDetail(row.m)" class="detail-chip" @click.stop="openDetail(row.m)">🔍 明细</span>
             </div>
             <div
               class="bubble"
@@ -615,6 +692,68 @@ const showExp = ref(false);
 
     <!-- 长按/右键动作 -->
     <van-action-sheet v-model:show="msgSheet.show" :actions="msgActions" title="消息操作" close-on-click-action cancel-text="取消" @select="msgSheetSelect" />
+
+    <!-- P1-3 工作明细抽屉：解决思路 / 工具调用 / SKILL / 协作 -->
+    <van-popup v-model:show="detailSheet" position="bottom" round :style="{ maxHeight: '75%' }">
+      <div v-if="detailMsg" class="dp-wrap">
+        <div class="dp-head">
+          <span class="dp-title">
+            <span class="dp-role" :style="{ color: agentColor(detailMsg.from) }">{{ roleOf(detailMsg.from) }}</span>
+            <span class="dp-id mono">{{ detailMsg.from }}</span>
+          </span>
+          <span class="dp-close" @click="detailSheet = false">×</span>
+        </div>
+        <div class="dp-body">
+          <template v-if="detailData">
+            <div v-if="detailData.evidence" class="dp-sec">
+              <div class="dp-sec-title">💡 解决思路</div>
+              <div class="dp-sec-body">{{ detailData.evidence }}</div>
+            </div>
+            <div v-if="groupedCalls.code.length" class="dp-sec">
+              <div class="dp-sec-title">📂 看了哪些代码（{{ groupedCalls.code.length }}）</div>
+              <div v-for="(rec, i) in groupedCalls.code" :key="`c${i}`" class="dp-call mono">
+                <div class="dp-call-line"><span>{{ toolIcon(rec.tool) }}</span><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
+                <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
+                <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
+              </div>
+            </div>
+            <div v-if="groupedCalls.cmd.length" class="dp-sec">
+              <div class="dp-sec-title">⚙ 执行了什么命令（{{ groupedCalls.cmd.length }}）</div>
+              <div v-for="(rec, i) in groupedCalls.cmd" :key="`x${i}`" class="dp-call mono">
+                <div class="dp-call-line"><span>{{ toolIcon(rec.tool) }}</span><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
+                <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
+                <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
+              </div>
+            </div>
+            <div v-if="groupedCalls.mcp.length" class="dp-sec">
+              <div class="dp-sec-title">🔌 MCP 调用（{{ groupedCalls.mcp.length }}）</div>
+              <div v-for="(rec, i) in groupedCalls.mcp" :key="`m${i}`" class="dp-call mono">
+                <div class="dp-call-line"><span>🔌</span><span class="tc-name">{{ rec.mcp ? `${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
+                <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
+                <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
+              </div>
+            </div>
+            <div v-if="groupedCalls.doc.length" class="dp-sec">
+              <div class="dp-sec-title">📄 文档与沉淀（{{ groupedCalls.doc.length }}）</div>
+              <div v-for="(rec, i) in groupedCalls.doc" :key="`d${i}`" class="dp-call mono">
+                <div class="dp-call-line"><span>{{ toolIcon(rec.tool) }}</span><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
+                <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
+              </div>
+            </div>
+            <div v-if="detailData.skills?.length" class="dp-sec">
+              <div class="dp-sec-title">🧩 绑定的 SKILL</div>
+              <div class="dp-chips"><span v-for="s in detailData.skills" :key="s" class="dp-chip mono">{{ s }}</span></div>
+            </div>
+            <div v-if="detailData.mentioned?.length" class="dp-sec">
+              <div class="dp-sec-title">🤝 协作</div>
+              <div class="dp-chips"><span v-for="a in detailData.mentioned" :key="a" class="dp-chip mono">@{{ a }}（{{ roleOf(a) }}）</span></div>
+            </div>
+            <div class="dp-model mono">模型：{{ detailData.model }} · 第 {{ detailData.round }} 轮</div>
+          </template>
+          <div v-else class="dp-empty mono">这条消息还没有工作明细</div>
+        </div>
+      </div>
+    </van-popup>
 
     <!-- @点名选择 -->
     <van-action-sheet v-model:show="mentionSheet" :actions="mentionActions" title="点名成员（只唤被点名者）" cancel-text="取消" close-on-click-action @select="pickMention" />
@@ -749,6 +888,40 @@ const showExp = ref(false);
 
 .tool-row { display: flex; padding-left: 40px; margin: 1px 0; }
 .tool-text { font-size: 10px; color: var(--text-3); background: var(--panel-2); border-radius: 6px; padding: 2px 8px; max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- P1-3 工具树 + 明细抽屉 ---------- */
+.tool-block { margin: 2px 0; }
+.tool-head { display: flex; align-items: center; gap: 5px; padding: 2px 4px 2px 8px; cursor: pointer; }
+.tool-caret { font-size: 9px; color: var(--text-3); width: 10px; }
+.tool-agent { font-size: 10px; font-weight: 600; flex-shrink: 0; }
+.tool-tree { margin: 2px 0 4px 18px; display: flex; flex-direction: column; gap: 3px; border-left: 2px solid var(--border, #e5e5e5); padding-left: 8px; }
+.tool-call { display: flex; flex-direction: column; gap: 1px; }
+.tc-line { display: flex; align-items: baseline; gap: 5px; font-size: 11px; flex-wrap: wrap; }
+.tc-icon { font-size: 10px; }
+.tc-name { font-weight: 600; word-break: break-all; }
+.tc-status { font-size: 10px; color: var(--green, #10b981); }
+.tc-status.bad { color: #e5484d; }
+.tc-args { font-size: 10px; opacity: 0.85; word-break: break-all; padding-left: 16px; }
+.tc-gist { font-size: 10px; color: var(--text-3); padding-left: 16px; word-break: break-all; }
+.detail-chip { font-size: 10px; color: var(--accent, #1989fa); border: 1px solid var(--accent, #1989fa); border-radius: 8px; padding: 0 6px; cursor: pointer; }
+.dp-wrap { display: flex; flex-direction: column; min-height: 0; max-height: 75vh; }
+.dp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border, #e5e5e5); }
+.dp-title { display: flex; align-items: baseline; gap: 6px; }
+.dp-role { font-size: 13px; font-weight: 600; }
+.dp-id { font-size: 10px; color: var(--text-3); }
+.dp-close { font-size: 18px; color: var(--text-3); cursor: pointer; padding: 0 4px; }
+.dp-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.dp-empty { font-size: 11px; color: var(--text-3); text-align: center; padding: 24px 0; }
+.dp-sec { display: flex; flex-direction: column; gap: 4px; }
+.dp-sec-title { font-size: 11px; font-weight: 600; }
+.dp-sec-body { font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; background: var(--panel-2); border-radius: 6px; padding: 6px 8px; }
+.dp-call { display: flex; flex-direction: column; gap: 2px; background: var(--panel-2); border-radius: 6px; padding: 5px 8px; margin-bottom: 4px; }
+.dp-call-line { display: flex; align-items: baseline; gap: 5px; font-size: 11px; }
+.dp-call-args { font-size: 10px; opacity: 0.85; word-break: break-all; }
+.dp-call-gist { font-size: 10px; color: var(--text-3); word-break: break-all; }
+.dp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.dp-chip { font-size: 10px; color: var(--accent, #1989fa); background: var(--panel-2); border-radius: 8px; padding: 1px 8px; }
+.dp-model { font-size: 9px; color: var(--text-3); }
 
 .row { display: flex; gap: 7px; }
 .row.me { justify-content: flex-end; }

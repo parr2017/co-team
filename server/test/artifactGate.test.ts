@@ -107,6 +107,7 @@ describe('产物核查门（最终 JSON 闸内）', () => {
 
   it('零申报零改动无豁免 → failed；no_changes_reason 豁免 → completed', async () => {
     // A：零申报空转——simple 复杂度，尝试 + 接管共 8 轮全部空申报
+    // 30s 超时：8 轮 mock 轮次 + 两次 execute 踩默认 5s 边界，机器负载高时偶发超时（预存在，2026-09-17 补声明）
     const empty = () => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: '已核对', changes: [], errors: [] }) });
     agentBehaviors.push(empty, empty, empty, empty, empty, empty, empty, empty);
     await saveTaskGraph('t-ag3', [makeNode('d1', '整理项目文档', { complexity: 'simple' })], [], { description: 'x', workspace: tmp, status: 'planned' });
@@ -122,7 +123,7 @@ describe('产物核查门（最终 JSON 闸内）', () => {
     expect(r4.status).toBe('success');
     const n4 = (await getTaskGraph('t-ag4'))!.nodes.find((n) => n.id === 'd2')!;
     expect(n4.status).toBe('completed');
-  });
+  }, 30_000);
 
   it('盘符申报条目（d:/x.dart: desc）参与 phantom 判定——修复后不再被豁免', async () => {
     // 修复前：split(':')[0] 切出 'd'，looksLikePath 不过 → 幻影条目漏判，节点假完成
