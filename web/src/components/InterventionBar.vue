@@ -78,31 +78,30 @@ async function send() {
   min-width: 0;
   min-height: 34px;
   padding: 7px 12px;
-  border: 1px solid var(--ct-border2);
-  border-radius: 8px;
-  background: var(--ct-panel);
-  color: var(--ct-text);
-  font-size: 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-panel);
+  background: var(--bg-overlay);
+  color: var(--text-1);
+  font-size: var(--fs-body);
   line-height: 1.5;
   outline: none;
   resize: none;
   font-family: inherit;
 }
-.iv-input:focus { border-color: var(--ct-accent); }
+.iv-input:focus { border-color: var(--accent-line); }
 .iv-input:disabled { opacity: 0.6; }
 .iv-send {
   height: 34px;
   padding: 0 18px;
   border: none;
-  border-radius: 8px;
-  background: var(--ct-green); color: #fff;
-  color: #0b2e13;
+  border-radius: var(--r-ctl);
+  background: var(--accent); color: var(--accent-text);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   flex-shrink: 0;
 }
-html.dark .iv-send { background: var(--ct-green); color: #0b1a10; }
+
 .iv-send:disabled { opacity: 0.45; cursor: not-allowed; }
 .iv-send:not(:disabled):hover { filter: brightness(1.05); }
 </style>

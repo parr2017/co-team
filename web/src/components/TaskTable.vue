@@ -11,9 +11,9 @@
       </template>
     </el-table-column>
 
-    <el-table-column label="状态" width="96">
+    <el-table-column label="状态" width="120">
       <template #default="{ row }">
-        <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+        <div class="statuscell"><span class="dot" :class="statusDot(row.status)"></span>{{ statusLabel(row.status) }}</div>
       </template>
     </el-table-column>
 
@@ -97,7 +97,7 @@ import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type TaskGraph } from '../api';
 import { useDashboard } from '../composables/useDashboard';
-import { statusText, statusTagType } from '../utils/events';
+import { statusText } from '../utils/events';
 import { fmtDateTime } from '../utils/time';
 import AgentAvatar from './AgentAvatar.vue';
 
@@ -201,8 +201,13 @@ function onMore(cmd: string, row: Row) {
 function statusLabel(s: string) {
   return statusText(s);
 }
-function statusType(s: string) {
-  return statusTagType(s);
+/** 状态点色（预览样式：点 + 文字替代 tag） */
+function statusDot(s: string): string {
+  if (['running', 'retrying', 'finalizing'].includes(s)) return 'run';
+  if (['waiting_approval', 'waiting_clarify', 'clarifying', 'planned'].includes(s)) return 'warn';
+  if (['completed', 'success', 'completed_with_warnings'].includes(s)) return 'ok';
+  if (s === 'failed') return 'danger';
+  return '';
 }
 function levelLabel(l: string) {
   return ({ light: '轻量', standard: '标准', heavy: '重量' } as Record<string, string>)[l] || l;
@@ -222,16 +227,24 @@ function fmtTime(ts: string): string {
 
 <style scoped>
 .task-table { width: 100%; cursor: default; }
-.t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; font-size: 13px; font-weight: 500; color: var(--ct-text); line-height: 1.4; }
-.t-sub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11px; color: var(--ct-text3); }
+/* 状态格：点 + 文字（mono 计量除外） */
+.statuscell { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-1); white-space: nowrap; }
+.statuscell .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--text-3); }
+.statuscell .dot.run { background: var(--accent); animation: pulse 1.6s infinite; }
+.statuscell .dot.ok { background: var(--ok); }
+.statuscell .dot.warn { background: var(--warn); }
+.statuscell .dot.danger { background: var(--danger); }
+@keyframes pulse { 50% { opacity: .35; } }
+.t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; font-size: 13px; font-weight: 600; color: var(--text-1); line-height: 1.4; }
+.t-sub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: var(--fs-meta); color: var(--text-3); }
 .t-mini-tag { transform: scale(0.85); }
-.t-agent { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ct-text2); }
-.t-dim { color: var(--ct-text3); font-size: 12px; }
+.t-agent { display: flex; align-items: center; gap: 6px; font-size: var(--fs-aux); color: var(--text-2); }
+.t-dim { color: var(--text-3); font-size: var(--fs-aux); }
 .t-progress { display: flex; align-items: center; gap: 8px; }
 .t-progress { --el-fill-color-blank: transparent; }
 .t-progress :deep(.el-progress) { flex: 1; }
-.t-progress-text { font-size: 11px; color: var(--ct-text3); flex-shrink: 0; }
-.t-tok { font-size: 11px; color: var(--ct-text2); font-variant-numeric: tabular-nums; }
-.t-error { color: var(--ct-red); font-size: 12px; }
+.t-progress-text { font-size: var(--fs-aux); color: var(--text-2); flex-shrink: 0; }
+.t-tok { font-size: var(--fs-aux); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.t-error { color: var(--danger); font-size: var(--fs-aux); }
 .t-more { margin-left: 12px; }
 </style>

@@ -1,26 +1,26 @@
 <template>
-  <div class="section">
-    <div class="section-head">
-      <div class="section-title">任务中心</div>
-      <div class="section-actions" style="display:flex; align-items:center; gap:10px;">
-        <el-tooltip content="开启后列表、徽标与统计涵盖项目开发下的任务（默认只列外部下发的任务）" placement="top">
-          <el-checkbox :model-value="includeProjects" size="small" @change="onScopeChange">包含项目任务</el-checkbox>
-        </el-tooltip>
-        <el-tag size="small" type="info" class="mono">共 {{ stats.total }} 个任务</el-tag>
-      </div>
+  <div class="tc">
+    <div class="tc-head">
+      <h1>任务中心</h1>
+      <span class="cnt mono">共 {{ stats.total }} · 执行中 {{ stats.running }}</span>
+      <div class="spacer"></div>
+      <el-tooltip content="开启后列表、徽标与统计涵盖项目开发下的任务（默认只列外部下发的任务）" placement="top">
+        <el-checkbox :model-value="includeProjects" size="small" @change="onScopeChange">包含项目任务</el-checkbox>
+      </el-tooltip>
     </div>
 
     <!-- status overview: click a chip to filter the table below -->
-    <div class="stat-row">
+    <div class="chipbar">
       <button
         v-for="c in chips"
         :key="c.key"
-        class="stat-chip"
-        :class="{ active: filterStatus === c.value }"
+        class="chip"
+        :class="{ on: filterStatus === c.value }"
         @click="toggleFilter(c.value)"
       >
-        <span class="stat-num mono">{{ c.count }}</span>
-        <span class="stat-label">{{ c.label }}</span>
+        <span v-if="c.dot" class="dot" :class="c.dot"></span>
+        <span>{{ c.label }}</span>
+        <span class="n mono">{{ c.count }}</span>
       </button>
     </div>
 
@@ -121,13 +121,13 @@ const filterStatus = ref('');
 const keyword = ref('');
 
 const chips = computed(() => [
-  { key: 'all', label: '全部', count: stats.value.total, value: '' },
-  { key: 'running', label: '执行中', count: stats.value.running, value: 'running,retrying,finalizing,interrupted' },
-  { key: 'queued', label: '排队中', count: stats.value.queued, value: 'queued' },
-  { key: 'waiting', label: '待审批', count: stats.value.waiting, value: 'waiting_approval' },
-  { key: 'pending', label: '待执行', count: stats.value.pending, value: 'pending,planned' },
-  { key: 'done', label: '已完成', count: stats.value.done, value: 'completed,success' },
-  { key: 'failed', label: '失败', count: stats.value.failed, value: 'failed' },
+  { key: 'all', label: '全部', count: stats.value.total, value: '', dot: '' },
+  { key: 'running', label: '执行中', count: stats.value.running, value: 'running,retrying,finalizing,interrupted', dot: 'run' },
+  { key: 'queued', label: '排队中', count: stats.value.queued, value: 'queued', dot: '' },
+  { key: 'waiting', label: '待审批', count: stats.value.waiting, value: 'waiting_approval', dot: 'warn' },
+  { key: 'pending', label: '待执行', count: stats.value.pending, value: 'pending,planned', dot: '' },
+  { key: 'done', label: '已完成', count: stats.value.done, value: 'completed,success', dot: 'ok' },
+  { key: 'failed', label: '失败', count: stats.value.failed, value: 'failed', dot: 'danger' },
 ]);
 
 function toggleFilter(value: string) {
@@ -155,19 +155,31 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.stat-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-.stat-chip {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  min-width: 86px; padding: 8px 14px;
-  background: var(--ct-panel, var(--el-bg-color));
-  border: 1px solid var(--ct-border2, var(--el-border-color));
-  border-radius: 8px; cursor: pointer; text-align: left;
-  transition: border-color 0.15s ease, background 0.15s ease;
+/* 满宽自适应 + 1560px 行宽上限（宽屏 ≠ 信息无限铺开） */
+.tc { max-width: 1560px; margin: 0 auto; }
+.tc-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; }
+.tc-head h1 { font-size: var(--fs-h2); font-weight: 700; color: var(--text-1); margin: 0; }
+.tc-head .cnt { font-size: var(--fs-aux); color: var(--text-3); }
+.tc-head .spacer { flex: 1; }
+
+/* 状态过滤 chips（预览样式：点 + 文字 + mono 计数） */
+.chipbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--bg-panel);
+  font-size: 12.5px; color: var(--text-2); cursor: pointer; transition: border-color .15s, color .15s, background .15s;
 }
-.stat-chip:hover { border-color: var(--ct-accent, #3b82f6); }
-.stat-chip.active { border-color: var(--ct-accent, #3b82f6); background: var(--ct-accent-soft, rgba(59, 130, 246, 0.08)); }
-.stat-num { font-size: 20px; font-weight: 700; color: var(--ct-text, var(--el-text-color-primary)); line-height: 1.1; }
-.stat-label { font-size: 12px; color: var(--ct-text3, var(--el-text-color-secondary)); }
+.chip:hover { border-color: var(--line-strong); color: var(--text-1); }
+.chip.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text-1); }
+.chip .n { font-size: 11.5px; color: var(--text-3); }
+.chip.on .n { color: var(--accent); }
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.danger { background: var(--danger); }
+.dot.run { background: var(--accent); animation: pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
 .search-row { margin-bottom: 10px; }
 .search-input { max-width: 320px; }
 .table-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
