@@ -1077,6 +1077,7 @@ export async function routeSpeakers(
 1. 严格执行用户最新指示：用户点名某人则只选该人；用户说其他人不要发言则绝不选中其他人。
 2. 只选对当前话题真正有新信息/能动手解决问题的成员，优先 1 人，最多 ${MAX_ROUND_SPEAKERS} 人；复述、客套、无信息量的成员不选。
 3. ${firstSubstantive ? '这是开场轮：选择最相关的至多 2-3 位成员给出初始观点（不必全员）。' : '没有成员有新增内容时返回空数组。'}
+4. 若上一轮成员间存在分歧或互补发现，优先选能接力、验证或裁决的成员（真协作：接别人的结论往下走，不各说各话）。
 可选成员：${disc.members.join('、')}
 只输出纯 JSON：{"speakers":["成员名"],"reason":"一句话理由"}`,
       },
@@ -1143,6 +1144,7 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
   const silent: string[] = [];
   const asked: string[] = [];
   const commitments: string[] = [];
+  const spokenReplies: { agent: string; text: string }[] = [];
   let interrupted = false;
 
   // P2-4 并行发言：同一批发言者并发执行（信号量限流，默认 2，config parallel_speakers 可调）。
@@ -1190,11 +1192,17 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
       silent.push(agent);
       continue;
     }
-    if (out.spoke) speakers.push(agent);
+    if (out.spoke) {
+      speakers.push(agent);
+      if (out.text) spokenReplies.push({ agent, text: out.text });
+    }
     if (out.asked) asked.push(agent);
     // 承诺式收尾检测：说了"正式启动/接下来我将…"却没调用任何工具 → 记名，由响应循环追问一轮
     if (out.spoke && !out.toolUsed && out.text && COMMITMENT_RE.test(out.text)) commitments.push(agent);
   }
+
+  // P2-5 分歧上报：同批 ≥2 成员发言后判定结论冲突，冲突则系统卡请用户拍板（真协作不各说各话收场）
+  await detectDivergence(deps, disc, round, spokenReplies).catch(() => {});
 
   // P2-4 并行补刀：在飞成员看不到批中到达的插话（各自开工时读的现场）——轮末统一重读，
   // 批中出现的新用户消息同样触发重路由（插话必被回应，下一轮优先处理）
@@ -1253,6 +1261,31 @@ function createSemaphore(width: number) {
 }
 
 // ---------- moderator (auto mode convergence) ----------
+
+/** P2-5 分歧上报：同批 ≥2 成员发言后，便宜模型判定结论是否冲突——冲突则系统卡请用户拍板
+ *  （真协作：成员不各说各话收场，方向性分歧由用户裁决）。检测失败不阻塞轮次。 */
+async function detectDivergence(deps: DiscussionDeps, disc: Discussion, round: number, spokenReplies: { agent: string; text: string }[]): Promise<boolean> {
+  if (spokenReplies.length < 2) return false;
+  const entry = cheapModel(deps);
+  if (!entry) return false;
+  const transcript = spokenReplies.map((r) => `- 【${r.agent}】${r.text.slice(0, 300)}`).join('\n');
+  try {
+    const res = await chat(entry, [
+      {
+        role: 'system',
+        content: '你是项目群聊的分歧检测员。判断多位成员的最新发言是否存在结论冲突（方向不一致、建议互斥、结论矛盾）。视角不同/互相补充不算冲突。只输出 JSON：{"conflict": true|false, "summary": "一句话冲突点"}',
+      },
+      { role: 'user', content: `话题：${disc.title}\n本轮发言：\n${transcript}` },
+    ], 1000, 0, undefined, ROUTER_WALLCLOCK_CAP_MS);
+    const parsed = extractJson(res.content);
+    if (parsed?.conflict === true) {
+      await appendSystemMessage(disc.id, `⚠️ 第 ${round} 轮成员间存在分歧，需要你拍板：${String(parsed.summary || '').slice(0, 200)}`, round, 'card');
+      await emitProgress('discussion_ask_user', { discussion_id: disc.id, agent: 'system', question: `成员间分歧：${String(parsed.summary || '').slice(0, 200)}`, round });
+      return true;
+    }
+  } catch { /* 分歧检测失败不阻塞轮次 */ }
+  return false;
+}
 
 async function moderatorCheck(deps: DiscussionDeps, disc: Discussion, lastResult: RoundResult): Promise<boolean> {
   const entry = cheapModel(deps);
@@ -1499,11 +1532,15 @@ export async function convertToProject(deps: DiscussionDeps, discId: string, opt
 
   const messages = await getMessages(discId);
   const pending = unansweredQuestions(messages);
+  // P2-5 转任务带侦查报告：聚合讨论中实际发生的排查动作（工具调用要点）——
+  // 任务从"模糊需求丢给管线"变成"带着证据开工"；根因与结论以方案为准
+  const scout = scoutReportFromMessages(messages);
   const description = [
     disc.scheme,
     `\n[来源] 本任务由群组讨论「${disc.title}」讨论沉淀生成，方案即需求基线；讨论中各成员的结论与项目记忆为准。`,
+    scout ? `\n[侦查报告——讨论中的实际排查动作]\n${scout}` : '',
     pending.length ? `\n[待定事项——以下问题用户尚未拍板，执行到相关决策点时先按方案默认取向推进并在产出中标注]\n${pending.map((p) => `- ${p.from}: ${p.text}`).join('\n')}` : '',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   // scheme itself becomes a project-category knowledge entry (cross-task reusable)
   const kn = writeKnowledge({
@@ -1534,6 +1571,31 @@ export async function convertToProject(deps: DiscussionDeps, discId: string, opt
 }
 
 // ---------- convert confirmation（转任务先过用户拍板，2026-09-15） ----------
+
+/** P2-5 侦查报告：聚合讨论中实际发生的排查动作（工具消息的 meta.calls），转任务描述携带 */
+function scoutReportFromMessages(messages: DiscussionMessage[]): string {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const m of messages) {
+    if (!m.tool) continue;
+    const calls = (m.meta as any)?.calls;
+    if (!Array.isArray(calls)) continue;
+    for (const rec of calls) {
+      if (!rec || typeof rec !== 'object') continue;
+      const args = String(rec.args_summary || '').slice(0, 100);
+      const key = `${rec.tool}:${args}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (/^read_file|^grep|^read_dir|^list_files/.test(rec.tool) && args) {
+        lines.push(`- ${rec.tool} ${args}${rec.output_gist ? `（${String(rec.output_gist).slice(0, 60)}）` : ''}`);
+      } else if (/^exec|^check_page/.test(rec.tool) && args) {
+        lines.push(`- ${rec.tool} ${args}${rec.output_gist ? `（${String(rec.output_gist).slice(0, 60)}）` : ''}`);
+      }
+    }
+  }
+  if (!lines.length) return '';
+  return lines.slice(0, 15).join('\n') + (lines.length > 15 ? `\n（其余 ${lines.length - 15} 条略）` : '');
+}
 
 export interface ConvertPending {
   id: string;

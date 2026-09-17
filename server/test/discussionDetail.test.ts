@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   routerSpeakers: null as null | string[] | 'throw',
   lastSpeakerCalls: [] as { agent: string; model: string; sys: string; user: string }[],
   speaker: null as null | ((sys: string, user: string, model: string) => string | Promise<string>),
+  divergenceConflict: false,
 }));
 
 vi.mock('../src/llm', async (importOriginal) => {
@@ -20,6 +21,7 @@ vi.mock('../src/llm', async (importOriginal) => {
       const sys = messages.find((m) => m.role === 'system')?.content || '';
       const userAll = messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n\n');
       if (sys.includes('判断讨论是否还有必要')) return ok(JSON.stringify({ continue: false, reason: 'test' }));
+      if (sys.includes('分歧检测员')) return ok(JSON.stringify({ conflict: h.divergenceConflict, summary: h.divergenceConflict ? '方案选择冲突' : '' }));
       if (sys.includes('群聊调度路由器')) {
         const m = sys.match(/可选成员：([^\n]+)/);
         const all = m ? m[1].split('、').map((s) => s.trim()).filter(Boolean) : [];
@@ -45,7 +47,7 @@ import { initBus, closeBus } from '../src/bus';
 import { ModelPool } from '../src/scheduler';
 import { Orchestrator } from '../src/orchestrator/orchestrator';
 import { saveProject } from '../src/store';
-import { createDiscussion, getMessages, runDiscussionRound, SPEAKER_RETRY_POLICY } from '../src/discussion';
+import { createDiscussion, getMessages, runDiscussionRound, SPEAKER_RETRY_POLICY, convertToProject, updateDiscussion } from '../src/discussion';
 import type { DiscussionMessage } from '../src/discussion';
 
 let tmp: string;
@@ -196,5 +198,53 @@ describe('P1 明细落盘：工具调用与工作过程随消息持久化', () =
     expect(calls.map((c: any) => c.args_summary).join(',')).toContain('batch-0');
     expect(calls.map((c: any) => c.args_summary).join(',')).toContain('batch-1');
     void ws;
+  });
+});
+
+// ---------- P2-5：转任务带侦查报告 + 分歧上报 ----------
+describe('P2-5 侦查报告与分歧上报', () => {
+  it('转任务描述携带侦查报告（讨论中的实际排查动作）', async () => {
+    await mkProject();
+    const d = await mkDiscussion(['dev'], { project_id: 'p1' });
+    h.routerSpeakers = ['dev'];
+    h.speaker = (_sys, user) => {
+      if (user.includes('工具执行结果')) return okContent('定位到了，auth.ts 有问题');
+      return JSON.stringify({ tool_calls: [{ tool: 'grep', pattern: 'error', path: 'src' }, { tool: 'read_file', path: 'src/a.ts' }] });
+    };
+    await runDiscussionRound(deps, d.id);
+    h.schemeText = '# 项目规划方案：修登录页\n## 背景与目标\n修好登录页\n## 待定事项\n无';
+    await updateDiscussion(d.id, { scheme: h.schemeText });
+    let created: string | undefined;
+    const spy = vi.spyOn(deps.orchestrator, 'createTask').mockResolvedValue({ taskId: 't-x', graph: { nodes: [], edges: [], summary: '' }, level: 'standard' });
+    try {
+      await convertToProject(deps, d.id, { target: 'existing', project_id: 'p1' }, (x) => x);
+      // restore 前读取（mockRestore 会清空 calls）
+      created = spy.mock.calls.at(-1)?.[0] as string | undefined;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(created).toContain('[侦查报告');
+    expect(created).toContain('pattern=error');
+    expect(created).toContain('read_file path=src/a.ts');
+  });
+
+  it('同批 ≥2 成员结论冲突 → 分歧上报系统卡 + ask_user 事件', async () => {
+    const d = await mkDiscussion(['dev', 'test']);
+    h.routerSpeakers = ['dev', 'test'];
+    h.speaker = (_sys, user) => (user.includes('「dev」') ? okContent('建议用方案 A') : okContent('我反对，应该用方案 B'));
+    h.divergenceConflict = true;
+    await runDiscussionRound(deps, d.id);
+    const msgs = await getMessages(d.id);
+    expect(msgs.some((m) => m.kind === 'card' && m.text.includes('成员间存在分歧'))).toBe(true);
+  });
+
+  it('结论互补不报分歧', async () => {
+    const d = await mkDiscussion(['dev', 'test']);
+    h.routerSpeakers = ['dev', 'test'];
+    h.speaker = (_sys, user) => (user.includes('「dev」') ? okContent('后端没问题') : okContent('前端也正常'));
+    h.divergenceConflict = false;
+    await runDiscussionRound(deps, d.id);
+    const msgs = await getMessages(d.id);
+    expect(msgs.some((m) => m.text.includes('成员间存在分歧'))).toBe(false);
   });
 });
