@@ -8,7 +8,7 @@ import { busSet, busGet, busKeys } from './bus';
 import { appendJournal } from './store';
 import type { TaskNode } from './types';
 
-export function buildDeliverableReport(taskId: string, node: TaskNode): string {
+export function buildDeliverableReport(taskId: string, node: TaskNode, brief = false): string {
   const result = node.result || ({} as Record<string, any>);
   const status = node.status === 'completed' ? '✅ 完成' : `❌ ${node.status}`;
   const duration = node.started_at
@@ -21,6 +21,28 @@ export function buildDeliverableReport(taskId: string, node: TaskNode): string {
   const tokens = result.tokens || 0;
   const docUpdates: { type: string; version: number }[] = result.doc_updates || [];
   const unreported: string[] = (result as any).unreported_files || [];
+
+  // P3 档级驱动：轻量档交付简版——做了什么/变更/验证三段即可，全模板对 typo 级任务是噪音
+  if (brief) {
+    return [
+      `# 节点交付：${node.name}`,
+      '',
+      `**${status}** · ${node.agent} · ${duration} · 模型 ${model}`,
+      '',
+      '## 做了什么',
+      result.summary || node.error || '（无摘要）',
+      '',
+      '## 变更清单',
+      changes.length ? changes.map((c) => '- ' + c).join('\n') : '（无文件变更）',
+      '',
+      '## 验证',
+      result.verification || '（未提供）',
+      ...(unreported.length ? ['', `> ⚠ ${unreported.length} 个文件已写入未申报，请人工确认：`, ...unreported.map((u) => `- ${u}`)] : []),
+      '',
+      '---',
+      '*轻量档简版交付 · Co_team*',
+    ].join('\n');
+  }
 
   return [
     `# 节点交付报告：${node.name}`,
@@ -66,8 +88,8 @@ export function buildDeliverableReport(taskId: string, node: TaskNode): string {
 }
 
 /** Persist the deliverable + drop a clickable card into the war-room journal. */
-export async function saveDeliverable(taskId: string, node: TaskNode): Promise<void> {
-  const markdown = buildDeliverableReport(taskId, node);
+export async function saveDeliverable(taskId: string, node: TaskNode, brief = false): Promise<void> {
+  const markdown = buildDeliverableReport(taskId, node, brief);
   const defects = (node.result as Record<string, any>)?.defects || [];
   await busSet(`task:${taskId}:deliverable:${node.id}`, {
     node_id: node.id,

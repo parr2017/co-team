@@ -9,6 +9,21 @@ export interface LevelProfile {
   docs: boolean;
   /** max nodes the planner should produce */
   maxNodes: number;
+  // ---------- P3 档级驱动执行管线：执行链按档裁剪（轻的是"仪式"，不是"安全"） ----------
+  /** 是否走沙箱 worktree + 每节点 git 分支；false = 直接在 execWorkspace 执行（git 任务分支提交兜底） */
+  sandbox: boolean;
+  /** 合并后验收深度：full=跑全量测试套件；smoke=仅构建冒烟（build 命令） */
+  acceptance: 'full' | 'smoke';
+  /** 滚动任务的最终清单机审（finalAcceptanceGate）是否执行 */
+  finalGate: boolean;
+  /** 是否允许滚动规划（false = 强制静态整图） */
+  rolling: boolean;
+  /** 节点交付报告：true = 一行简版（做了什么/变更/状态），不套全模板 */
+  briefDeliverable: boolean;
+  /** 任务复盘是否写知识库（typo 级复盘是噪音且膨胀知识库——193MB 知识怪兽教训） */
+  knowledge: boolean;
+  /** 任务成败是否写全局记忆（占 20 条记忆槽，轻任务纯噪音） */
+  memory: boolean;
 }
 
 export const LEVEL_PROFILES: Record<TaskLevel, LevelProfile> = {
@@ -18,6 +33,13 @@ export const LEVEL_PROFILES: Record<TaskLevel, LevelProfile> = {
     planRule: '该任务为轻量级：拆解为 1-2 个节点即可，不要生成文档类节点，跳过非必要检查步骤，追求快速完成。',
     docs: false,
     maxNodes: 2,
+    sandbox: false,
+    acceptance: 'smoke',
+    finalGate: false,
+    rolling: false,
+    briefDeliverable: true,
+    knowledge: false,
+    memory: false,
   },
   standard: {
     level: 'standard',
@@ -25,6 +47,13 @@ export const LEVEL_PROFILES: Record<TaskLevel, LevelProfile> = {
     planRule: '该任务为标准级：按常规粒度拆解（4-8 个节点），每个开发节点后紧跟验证节点。',
     docs: true,
     maxNodes: 10,
+    sandbox: true,
+    acceptance: 'full',
+    finalGate: true,
+    rolling: true,
+    briefDeliverable: false,
+    knowledge: true,
+    memory: true,
   },
   heavy: {
     level: 'heavy',
@@ -32,6 +61,13 @@ export const LEVEL_PROFILES: Record<TaskLevel, LevelProfile> = {
     planRule: '该任务为重量级（架构级变更）：拆解务必充分，先有设计/评审节点，再分步实现，每个关键模块单独验证，并在实现前增加一个 review 审查节点把关方案。',
     docs: true,
     maxNodes: 16,
+    sandbox: true,
+    acceptance: 'full',
+    finalGate: true,
+    rolling: true,
+    briefDeliverable: false,
+    knowledge: true,
+    memory: true,
   },
 };
 

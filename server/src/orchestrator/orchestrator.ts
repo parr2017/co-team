@@ -566,8 +566,9 @@ export class Orchestrator {
     // staged feedback: the API request is synchronous and can take minutes on a slow
     // upstream — emit the current stage so the UI can show progress instead of a spinner
     await emitProgress('task_creating', { stage: 'assessing', description: description.slice(0, 80) });
-    // A4 简单模式: explicit skip wins over the clarification loop
-    const assessment = opts?.skipClarification ? ({ clear: true } as ClarificationAssessment) : await assessRequirement(description, this.pool);
+    // A4 简单模式: explicit skip wins over the clarification loop。
+    // P3 档级驱动：轻量任务跳过澄清（typo 级任务不该问 3 轮问题）
+    const assessment = opts?.skipClarification || level === 'light' ? ({ clear: true } as ClarificationAssessment) : await assessRequirement(description, this.pool);
     const taskId = Math.random().toString(36).slice(2, 10);
 
     if (!assessment.clear) {
@@ -626,8 +627,9 @@ export class Orchestrator {
 
     this.logger.debug('Generating task graph', { description: requestWithContext.slice(0, 100) });
     // M4 滚动规划：rolling 模式下第 1 阶段只规划"可运行最小骨架"+ 全局验收清单；
-    // 静态模式或滚动规划失败回退整图（回退时也带合成清单，保住结构）
-    const stage1 = this.planningMode === 'rolling'
+    // 静态模式或滚动规划失败回退整图（回退时也带合成清单，保住结构）。
+    // P3 档级驱动：轻量档强制静态整图（不进滚动 → 不触发最终清单机审）
+    const stage1 = this.planningMode === 'rolling' && LEVEL_PROFILES[opts.level]?.rolling !== false
       ? await this.planStage1(requestWithContext, { level: opts.level, mainModelId: opts.mainModelId, projectId })
       : { planned: appendMergeNode(stripMergeNodes(await this.planFor(requestWithContext, { level: opts.level, mainModelId: opts.mainModelId, projectId }))), rolling: false, stageGoal: '', checklist: synthesizeChecklist(requestWithContext) };
     const planned = appendMergeNode(stripMergeNodes(stage1.planned));
@@ -1081,10 +1083,14 @@ export class Orchestrator {
     await persistGraph(graph);
     await emitProgress('execute_start', { task_id: taskId, workspace: execWorkspace, total_nodes: graph.nodes.length });
 
+    // P3 档级驱动执行管线：轻的是"仪式"不是"安全"——light 档跳过 worktree 舞步直接在
+    // execWorkspace 执行（git 任务分支提交兜底 + 产物核查门保留），standard/heavy 行为不变
+    const levelProfile = LEVEL_PROFILES[graph.level ?? 'standard'];
+    const useSandbox = this.sandboxEnabled && levelProfile.sandbox;
     let sandbox: string;
     try {
-      sandbox = this.sandboxEnabled ? await createSandbox(execWorkspace, taskId) : execWorkspace;
-      this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled });
+      sandbox = useSandbox ? await createSandbox(execWorkspace, taskId) : execWorkspace;
+      this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled, useSandbox });
       // A1 实时产出视图: remember where the work is happening so the API can browse it
       graph.sandbox_path = sandbox;
       await persistGraph(graph);
@@ -1103,7 +1109,8 @@ export class Orchestrator {
       return { status: 'failed', error: `Failed to create sandbox: ${error}` };
     }
 
-    if (this.branchWorkflow && this.gitEnabled) {
+    // P3 档级驱动：light 直接在 execWorkspace 执行——不在用户仓库里跳每节点分支舞步
+    if (this.branchWorkflow && this.gitEnabled && sandbox !== execWorkspace) {
       // baseline snapshot: all agent branches start from here
       await gitTool.ensureBase(sandbox).catch(() => {});
       // M6（2y3tuote 两次 merge 假冲突实证）：重跑时 completed 节点的 branch 指向上一次
@@ -1134,7 +1141,6 @@ export class Orchestrator {
 
     // improvement 4: SSOT documents — the single source of truth for agent collaboration.
     // improvement 7: light-level tasks skip the doc pipeline entirely (LEVEL_PROFILES.docs)
-    const levelProfile = LEVEL_PROFILES[graph.level ?? 'standard'];
     const docTarget = this.sandboxEnabled && sandbox !== execWorkspace ? sandbox : undefined;
     if (levelProfile.docs) {
       try {
@@ -1195,7 +1201,7 @@ export class Orchestrator {
             }
             // post-merge acceptance：合并后的真实工作区跑项目自身测试套件——每个节点
             // 验证自己的切片 ≠ 整体能跑（jr3gdkxq：验证节点全绿但页面全崩的根因补闸）
-            const acc = await runPostMergeAcceptance(execWorkspace);
+            const acc = await runPostMergeAcceptance(execWorkspace, 240, levelProfile.acceptance);
             result.acceptance = acc;
             if (acc.status === 'failed') {
               // M5：滚动任务的最终裁决交给 finalAcceptanceGate（清单机审 + 派生提案），
@@ -1284,7 +1290,7 @@ export class Orchestrator {
         graph.status = 'finalizing';
         await persistGraph(graph);
         await emitProgress('task_finalizing', { task_id: taskId, stage: 'acceptance' });
-        const acc = await runPostMergeAcceptance(execWorkspace);
+        const acc = await runPostMergeAcceptance(execWorkspace, 240, levelProfile.acceptance);
         result.acceptance = acc;
         if (acc.status === 'failed') {
           // M5：滚动任务延迟到最终闸统一裁决；静态按 acceptance_policy 裁决——
@@ -1299,8 +1305,9 @@ export class Orchestrator {
     }
 
     // M5 最终验收闸：滚动任务 success 后跑清单机审（构建/单测/E2E 平台矩阵）——
-    // 红灯或降级项 → waiting_approval + 派生任务提案（一键批准全自动派生）；全绿 → success
-    if (result.status === 'success' && graph.rolling) {
+    // 红灯或降级项 → waiting_approval + 派生任务提案（一键批准全自动派生）；全绿 → success。
+    // P3 档级驱动：light 档跳过清单机审（finalGate=false；且 light 已强制静态不进滚动）
+    if (result.status === 'success' && graph.rolling && levelProfile.finalGate) {
       await emitProgress('task_finalizing', { task_id: taskId, stage: 'final_gate' });
       result = await this.finalAcceptanceGate(taskId, graph, execWorkspace, result);
     }
@@ -1346,18 +1353,27 @@ export class Orchestrator {
     });
 
     const description = graph.description || taskId;
+    // P3 档级驱动：轻量任务不写全局记忆（typo 级成败记录占 20 条记忆槽是纯噪音）；通知保留
+    const memorize = levelProfile.memory;
     if (status === 'success') {
       notify('task_success', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 完成，${(result.changes || []).length} 个文件变更`);
-      await addMemory(`任务「${description}」成功完成，产出了 ${(result.changes || []).length} 个文件变更。`);
+      if (memorize) await addMemory(`任务「${description}」成功完成，产出了 ${(result.changes || []).length} 个文件变更。`);
     } else if (status === 'completed_with_warnings') {
       // B1（2026-09-17）：验收有失败但 tolerant 交付——通知明示 N 项未过，不与纯成功混同
       const acc = (result as Record<string, any>).acceptance as { command?: string; exitCode?: number } | undefined;
       notify('task_success', { task_id: taskId, warnings: true }, `[Co-Team] 任务 ${taskId} 完成（验收有警告：${acc?.command || '测试'} 退出码 ${acc?.exitCode ?? '?'}）——详见任务验收报告，${(result.changes || []).length} 个文件变更已交付`);
-      await addMemory(`任务「${description}」完成但合并后验收有失败（tolerant 交付，${(result.changes || []).length} 个文件变更）——主体可用，遗留失败项见验收报告。`);
+      if (memorize) await addMemory(`任务「${description}」完成但合并后验收有失败（tolerant 交付，${(result.changes || []).length} 个文件变更）——主体可用，遗留失败项见验收报告。`);
     } else if (status === 'failed') {
       const recoveredInfo = result.recovered_partial ? `（已完成 ${result.recovered_partial.nodes} 个节点的成果已回写工作区：${result.recovered_partial.files} 个文件）` : (result.sandbox_preserved ? `（沙箱已保留供人工恢复：${result.sandbox_preserved}）` : '');
       notify('task_failed', { task_id: taskId, error: result.error, recovered: result.recovered_partial || null }, `[Co-Team] 任务 ${taskId} 失败：${result.error}${recoveredInfo}`);
-      await addMemory(`任务「${description}」失败于节点：${result.error}${recoveredInfo}。后续类似任务注意规避。`);
+      if (memorize) await addMemory(`任务「${description}」失败于节点：${result.error}${recoveredInfo}。后续类似任务注意规避。`);
+    }
+
+    // P3-12 轻量档动态复核（防"说小了"绕过重管线）：实际改动超出轻量预估 → 明示提示人工确认
+    if ((graph.level ?? 'standard') === 'light' && (status === 'success' || status === 'completed_with_warnings') && (result.changes || []).length > 3) {
+      await emitProgress('light_escalated', { task_id: taskId, changes: (result.changes || []).length });
+      notify('light_escalated', { task_id: taskId }, `[Co-Team] 轻量任务 ${taskId} 实际改动 ${(result.changes || []).length} 个文件，超出轻量预估——请人工确认交付物`);
+      this.logger.warn('light task escalated: actual changes exceed light budget', { taskId, changes: (result.changes || []).length });
     }
 
     // improvement 10: task-end snapshot for post-hoc rollback / audit
@@ -1365,9 +1381,10 @@ export class Orchestrator {
     clearProgressThrottle(taskId);
 
     // improvement 3: post-task review deposits a structured lesson into the knowledge base
+    // P3 档级驱动：轻量任务不写知识库复盘（typo 级复盘是噪音且膨胀知识库——193MB 知识怪兽教训）
     try {
       const changes = (result.changes || []) as string[];
-      if (changes.length > 0 || status === 'failed') {
+      if (levelProfile.knowledge && (changes.length > 0 || status === 'failed')) {
         await writeKnowledge({
           title: `任务复盘 ${taskId}：${description.slice(0, 40)}`,
           content: [
@@ -2153,8 +2170,10 @@ export class Orchestrator {
       return;
     }
 
-    // branch workflow: each agent works on its own branch off its dependencies
-    const useBranch = this.branchWorkflow && this.gitEnabled && this.sandboxEnabled;
+    // branch workflow: each agent works on its own branch off its dependencies。
+    // P3 档级驱动：light 直接在 execWorkspace 执行（sandbox === graph.workspace）——
+    // 绝不在用户仓库里切每节点分支，交付由任务末尾的 gitCommit 统一落任务分支
+    const useBranch = this.branchWorkflow && this.gitEnabled && this.sandboxEnabled && sandbox !== graph.workspace;
     if (useBranch) {
       const parent = this.parentBranchFor(graph, node);
       const branch = `coteam/${node.id}-${node.agent}`;
@@ -2360,7 +2379,7 @@ export class Orchestrator {
         node.needs_human = true;
         // 人工门分型：车道不锁（taskQueue onFinished 保槽放行），等人在节点上"已处理，继续"
         node.error_type = 'human_gate';
-        await saveDeliverable(taskId, node).catch(() => {});
+        await saveDeliverable(taskId, node, LEVEL_PROFILES[graph.level ?? 'standard'].briefDeliverable).catch(() => {});
         await persistGraph(graph);
         await this.recordAgentLife(taskId, graph, node, false, 0);
         await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
@@ -2393,7 +2412,7 @@ export class Orchestrator {
           node.result = { status: 'failed', error: node.error, summary: '节点停止（假完成守卫），未产出变更', delivery_check: delivery };
           node.needs_human = true;
           node.error_type = 'content';
-          await saveDeliverable(taskId, node).catch(() => {});
+          await saveDeliverable(taskId, node, LEVEL_PROFILES[graph.level ?? 'standard'].briefDeliverable).catch(() => {});
           await persistGraph(graph);
           await this.recordAgentLife(taskId, graph, node, false, 0);
           await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
@@ -2443,7 +2462,7 @@ export class Orchestrator {
     // 与 crash 包装器（classifyNodeError 同款）口径对齐。
     if (!(node as any).error_type) node.error_type = this.classifyNodeError(node.error);
     node.needs_human = true;
-    await saveDeliverable(taskId, node).catch(() => {});
+    await saveDeliverable(taskId, node, LEVEL_PROFILES[graph.level ?? 'standard'].briefDeliverable).catch(() => {});
 
     this.logger.nodeFailed(taskId, node.id, node.agent, node.error);
 
@@ -2468,7 +2487,7 @@ export class Orchestrator {
       node.finished_at = new Date().toISOString();
       node.result = { status: 'waiting_approval', summary: `命令待人工审批后节点续跑：${pendingCommands.join('；').slice(0, 300)}`, changes: (result as Record<string, any>).changes || [] };
       node.error = '';
-      await saveDeliverable(taskId, node).catch(() => {});
+      await saveDeliverable(taskId, node, LEVEL_PROFILES[graph.level ?? 'standard'].briefDeliverable).catch(() => {});
       await persistGraph(graph);
       await emitProgress('node_waiting_approval', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, commands: pendingCommands });
       notify('approval_required', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」命令待审批（${pendingCommands.length} 条），批准后自动续跑`);
@@ -2478,7 +2497,7 @@ export class Orchestrator {
     node.finished_at = new Date().toISOString();
     node.result = escalated ? { ...result, escalated: true } : result;
     node.error = '';
-    await saveDeliverable(taskId, node).catch(() => {});
+    await saveDeliverable(taskId, node, LEVEL_PROFILES[graph.level ?? 'standard'].briefDeliverable).catch(() => {});
     if (useBranch && node.branch) {
       // M2：全量提交节点工作树（不再依赖模型申报的 changes——漏报是常态，产物丢失才是灾难）
       const commit = await gitTool.commitAllOnBranch(sandbox, `coteam: ${node.name}${escalated ? ' (escalated)' : ''}`).catch(() => null);

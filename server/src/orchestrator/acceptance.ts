@@ -50,10 +50,31 @@ export interface AcceptanceResult {
 }
 
 /**
- * 在合并后的真实工作区跑项目测试套件。命令无路径参数，jail 天然通过；
+ * 在合并后的真实工作区跑项目验收。命令无路径参数，jail 天然通过；
  * 执行策略固定 full（这是系统验收行为，不受 agent 命令白名单约束，但受超时约束）。
+ * P3 档级驱动验收深度：full=项目自身测试套件（全量）；smoke=仅构建冒烟（轻量档——
+ * 单节点任务无跨节点断裂风险，build 兜编译级错误即可），无 build 命令等价放行。
  */
-export async function runPostMergeAcceptance(workspace: string, timeoutSec = 240): Promise<AcceptanceResult> {
+export async function runPostMergeAcceptance(workspace: string, timeoutSec = 240, depth: 'full' | 'smoke' = 'full'): Promise<AcceptanceResult> {
+  if (depth === 'smoke') {
+    const profile = detectProjectProfile(workspace);
+    if (!profile.buildCommand) {
+      return { status: 'no-test-command', tail: '轻量档构建冒烟：未探测到 build 命令（package.json scripts.build）——无编译级验证证据，放行' };
+    }
+    const policy: PermissionPolicy = { level: 'full', whitelistCommands: null, maxTimeSec: timeoutSec };
+    try {
+      const r = await executeCommandAsync(profile.buildCommand, workspace, policy, timeoutSec);
+      const tail = (r.stdout + (r.stdout && r.stderr ? '\n' : '') + r.stderr).slice(-1500);
+      return {
+        status: r.returncode === 0 ? 'passed' : 'failed',
+        command: profile.buildCommand,
+        exitCode: r.returncode,
+        tail,
+      };
+    } catch (e: any) {
+      return { status: 'failed', command: profile.buildCommand, exitCode: -1, tail: String(e?.message || e).slice(0, 500) };
+    }
+  }
   const tc = detectTestCommand(workspace);
   if (!tc) return { status: 'no-test-command', tail: '未探测到测试命令（package.json scripts.test / pytest 标记均无）——合并后无全量验证证据' };
   const policy: PermissionPolicy = { level: 'full', whitelistCommands: null, maxTimeSec: timeoutSec };
