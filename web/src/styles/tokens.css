@@ -1,0 +1,109 @@
+/* ============================================================
+   Co-Team Web 设计 token —— 暗色终端 IDE 风（docs/ui-redesign/preview.html 拍板稿）
+   主题机制：useTheme 只切 html.dark，故亮色为 :root 默认、暗色在 html.dark 覆盖。
+   强调色与主题绑定：暗 = 暖橙 #ff9349 / 亮 = 蓝 #2f6fed（不做独立强调色切换）。
+   本文件只放 token；--el-* 映射在 App.vue；--ct-* 为旧名兼容别名（组件迁移完移除）。
+   ============================================================ */
+
+:root {
+  /* ---- 底色五层（亮）---- */
+  --bg-page: #f5f6f8;
+  --bg-panel: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-overlay: #ffffff;
+  --bg-inset: #f2f4f7;
+
+  /* ---- 发丝线 ---- */
+  --line: #e4e7ec;
+  --line-strong: #cdd3db;
+
+  /* ---- 文字三级 ---- */
+  --text-1: #171a20;
+  --text-2: #5b6472;
+  --text-3: #8f98a5;
+
+  /* ---- 强调色（亮 = 蓝）---- */
+  --accent: #2f6fed;
+  --accent-text: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
+
+  /* ---- 语义色（亮色加深保对比）---- */
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --danger: #cf222e;
+
+  /* ---- 字号阶梯（9-13px 二十余档收敛为 7 档；9px/10px 绝迹）---- */
+  --fs-meta: 11px;
+  --fs-aux: 12px;
+  --fs-body: 14px;
+  --fs-sub: 15px;
+  --fs-title: 16px;
+  --fs-h2: 18px;
+  --fs-h1: 22px;
+
+  /* ---- 几何：阴影只给浮层 ---- */
+  --r-ctl: 6px;
+  --r-panel: 10px;
+  --r-float: 12px;
+  --shadow-float: 0 12px 32px rgba(20, 28, 40, 0.14), 0 2px 8px rgba(20, 28, 40, 0.08);
+
+  /* ---- 间距 / 布局 ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --measure: 1160px;   /* 消息正文列宽上限（宽屏 ≠ 行宽无限） */
+  --disc-w: 264px;     /* 讨论列表栏 */
+  --detail-w: 360px;   /* 群聊详情面板（常驻可收） */
+  --side-w: 340px;     /* 工作台右栏 */
+
+  /* ---- 字体 ---- */
+  --font-ui: -apple-system, 'Segoe UI', 'Microsoft YaHei', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
+
+  /* ============================================================
+     旧名兼容别名（--ct-*）：迁移期组件零断裂；全部组件 token 化后删除本段
+     ============================================================ */
+  --ct-bg: var(--bg-page);
+  --ct-panel: var(--bg-panel);
+  --ct-panel2: var(--bg-raised);
+  --ct-border: var(--line);
+  --ct-border2: var(--line-strong);
+  --ct-text: var(--text-1);
+  --ct-text2: var(--text-2);
+  --ct-text3: var(--text-3);
+  --ct-accent: var(--accent);
+  --ct-accent-soft: var(--accent-soft);
+  --ct-green: var(--ok);
+  --ct-yellow: var(--warn);
+  --ct-orange: var(--warn);
+  --ct-red: var(--danger);
+  --ct-mono: var(--font-mono);
+}
+
+/* ---- 暗色覆盖（终端 IDE 感：深炭底 / 高对比）---- */
+html.dark {
+  --bg-page: #0c0d10;
+  --bg-panel: #121419;
+  --bg-raised: #181b21;
+  --bg-overlay: #1d2129;
+  --bg-inset: #0f1115;
+
+  --line: #23272f;
+  --line-strong: #31363f;
+
+  --text-1: #e9ebee;
+  --text-2: #98a0ab;
+  --text-3: #626a76;
+
+  --accent: #ff9349;
+  --accent-text: #0c0d10;
+
+  --ok: #3fb96f;
+  --warn: #d29922;
+  --danger: #e5534b;
+
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
