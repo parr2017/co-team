@@ -1,0 +1,1102 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Co-Team Web 改版风格预览 · 暗色终端 IDE 风</title>
+<style>
+/* ============================================================
+   Co-Team Web 改版风格预览（纯静态 mock，不接任何数据）
+   设计语言：工程指挥台 —— 深炭底 / mono 数字 / 单一强调色 / 满宽三栏
+   预览控件（右下角浮标）不属于产品 UI
+   ============================================================ */
+
+/* ---------- 设计 token：暗色（默认） ---------- */
+:root{
+  --bg-page:#0c0d10;          /* 页底：最深一层 */
+  --bg-panel:#121419;         /* 面板：第二层 */
+  --bg-raised:#181b21;        /* 浮起：第三层 */
+  --bg-overlay:#1d2129;       /* 浮层/输入框 */
+  --bg-inset:#0f1115;         /* 内嵌（工具树/代码）*/
+
+  --line:#23272f;             /* 发丝线 */
+  --line-strong:#31363f;
+
+  --text-1:#e9ebee;
+  --text-2:#98a0ab;
+  --text-3:#626a76;
+
+  --accent:#ff9349;           /* 强调色（橙，zcode 系暖调） */
+  --accent-text:#0c0d10;      /* 强调色上的文字 */
+  --accent-soft:color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-line:color-mix(in srgb, var(--accent) 38%, transparent);
+
+  --ok:#3fb96f; --warn:#d29922; --danger:#e5534b;
+
+  /* agent 身份色（沿用 agentColor 调色板） */
+  --ag-front:#4ab8a8; --ag-review:#a78bfa; --ag-test:#d29922;
+  --ag-lead:#5aa9e6;  --ag-system:#626a76; --ag-user:var(--accent);
+
+  --fs-meta:11px; --fs-aux:12px; --fs-body:14px; --fs-sub:15px;
+  --fs-title:16px; --fs-h2:18px; --fs-h1:22px;
+
+  --r-ctl:6px; --r-panel:10px; --r-float:12px;
+  --shadow-float:0 12px 32px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.35);
+
+  --font-ui:-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+
+  --measure:1160px;           /* 消息正文列宽上限（宽屏但不无限） */
+  --disc-w:264px;             /* 讨论列表 */
+  --detail-w:360px;           /* 详情面板（常驻可收） */
+}
+/* 亮色主题（同等精修，非降级）；强调色与主题绑定：暗=暖橙，亮=蓝 */
+html[data-theme="light"]{
+  --bg-page:#f5f6f8; --bg-panel:#ffffff; --bg-raised:#ffffff; --bg-overlay:#ffffff;
+  --bg-inset:#f2f4f7;
+  --line:#e4e7ec; --line-strong:#cdd3db;
+  --text-1:#171a20; --text-2:#5b6472; --text-3:#8f98a5;
+  --accent:#2f6fed; --accent-text:#ffffff;
+  --shadow-float:0 12px 32px rgba(20,28,40,.14), 0 2px 8px rgba(20,28,40,.08);
+}
+
+/* ---------- 基础 ---------- */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg-page);color:var(--text-1);
+  font:var(--fs-body)/1.6 var(--font-ui);
+  -webkit-font-smoothing:antialiased;overflow:hidden;
+}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:5px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+.mono{font-family:var(--font-mono)}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,textarea,select{font:inherit;color:var(--text-1)}
+
+/* 通用控件（IDE 风：扁平、发丝线、6px 圆角） */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;
+  border:1px solid var(--line-strong);border-radius:var(--r-ctl);
+  background:var(--bg-raised);color:var(--text-1);font-size:13px;white-space:nowrap;
+  transition:border-color .15s,background .15s,color .15s;
+}
+.btn:hover{border-color:var(--text-3)}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--accent-text);font-weight:600}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--text-2)}
+.btn.ghost:hover{background:var(--bg-raised);color:var(--text-1)}
+.btn.sm{height:24px;padding:0 9px;font-size:12px}
+.tag{
+  display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:4px;
+  font-size:var(--fs-meta);font-family:var(--font-mono);letter-spacing:.02em;
+  color:var(--text-2);background:var(--bg-raised);border:1px solid var(--line);
+}
+.tag.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 10%,transparent);border-color:color-mix(in srgb,var(--ok) 25%,transparent)}
+.tag.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent);border-color:color-mix(in srgb,var(--warn) 25%,transparent)}
+.tag.danger{color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,transparent);border-color:color-mix(in srgb,var(--danger) 25%,transparent)}
+.tag.accent{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-line)}
+.dot{width:6px;height:6px;border-radius:50%;flex:none}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.danger{background:var(--danger)}
+.dot.run{background:var(--accent);animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.35}}
+
+/* ---------- 应用壳：顶栏 + 满宽工作区 ---------- */
+.chrome{
+  height:46px;display:flex;align-items:center;gap:20px;padding:0 16px;
+  border-bottom:1px solid var(--line);background:var(--bg-panel);flex:none;
+}
+.brand{display:flex;align-items:center;gap:9px;min-width:200px}
+.brand .mark{
+  width:22px;height:22px;border-radius:6px;background:var(--accent);color:var(--accent-text);
+  display:grid;place-items:center;font-family:var(--font-mono);font-size:12px;font-weight:700;
+}
+.brand .name{font-size:14px;font-weight:700;letter-spacing:.01em}
+.brand .sub{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);margin-left:2px}
+.tabs{display:flex;gap:2px;height:100%}
+.tab{
+  position:relative;display:flex;align-items:center;gap:7px;padding:0 14px;
+  color:var(--text-2);font-size:13.5px;
+}
+.tab:hover{color:var(--text-1)}
+.tab.active{color:var(--text-1)}
+.tab.active::after{
+  content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;
+  background:var(--accent);border-radius:2px 2px 0 0;
+}
+.tab .bdg{
+  min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--accent-text);
+  font-family:var(--font-mono);font-size:10.5px;font-weight:700;display:grid;place-items:center;
+}
+.chrome-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.metric-pill{display:flex;align-items:baseline;gap:6px;color:var(--text-3);font-size:var(--fs-meta)}
+.metric-pill b{color:var(--text-2);font-family:var(--font-mono);font-weight:600;font-size:12px}
+.ws{display:flex;align-items:center;gap:6px;font-size:var(--fs-meta);color:var(--text-3)}
+
+/* 屏幕切换 */
+.screen{display:none;height:calc(100vh - 46px);min-width:0}
+.screen.active{display:flex}
+
+/* ============================================================
+   屏幕一：群组沟通 —— 满宽三栏（列表 / 消息流 / 详情常驻）
+   ============================================================ */
+.disc-list{
+  width:var(--disc-w);flex:none;border-right:1px solid var(--line);
+  background:var(--bg-panel);display:flex;flex-direction:column;
+}
+.disc-list .side-head{
+  padding:12px 14px 8px;font-size:var(--fs-meta);color:var(--text-3);
+  font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase;
+  display:flex;justify-content:space-between;align-items:center;
+}
+.side-head .cnt{color:var(--text-3)}
+.search{
+  margin:0 12px 10px;height:28px;display:flex;align-items:center;gap:7px;padding:0 9px;
+  background:var(--bg-overlay);border:1px solid var(--line);border-radius:var(--r-ctl);
+  color:var(--text-3);font-size:12.5px;
+}
+.search:focus-within{border-color:var(--accent-line)}
+.disc-scroll{flex:1;overflow-y:auto;padding:0 8px 12px}
+.disc-item{
+  width:100%;text-align:left;padding:9px 10px;border-radius:8px;border:1px solid transparent;
+  display:block;margin-bottom:2px;position:relative;
+}
+.disc-item:hover{background:var(--bg-raised)}
+.disc-item.active{background:var(--bg-raised);border-color:var(--line)}
+.disc-item.active::before{
+  content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;border-radius:2px;background:var(--accent);
+}
+.disc-item .t{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+.disc-item .name{font-size:13.5px;font-weight:600;color:var(--text-1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disc-item .last{font-size:12px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disc-item .meta{display:flex;justify-content:space-between;align-items:center;margin-top:4px}
+.disc-item .time{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+
+.chat-main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg-page)}
+.chat-head{
+  height:46px;flex:none;display:flex;align-items:center;gap:12px;padding:0 18px;
+  border-bottom:1px solid var(--line);background:var(--bg-panel);
+}
+.chat-head .title{font-size:var(--fs-title);font-weight:700}
+.chat-head .spacer{flex:1}
+.stream-wrap{flex:1;overflow-y:auto;scroll-behavior:smooth}
+.stream{max-width:var(--measure);margin:0 auto;padding:18px 24px 12px;display:flex;flex-direction:column;gap:2px}
+
+/* 消息行：avatar 列 + 内容列 */
+.msg{display:grid;grid-template-columns:30px 1fr;gap:0 12px;padding:7px 0}
+.msg:hover{background:color-mix(in srgb,var(--bg-raised) 55%,transparent)}
+.avatar{
+  width:26px;height:26px;border-radius:8px;display:grid;place-items:center;margin-top:2px;
+  font-family:var(--font-mono);font-size:11px;font-weight:700;color:#0c0d10;
+}
+.avatar.front{background:var(--ag-front)} .avatar.review{background:var(--ag-review)}
+.avatar.test{background:var(--ag-test)} .avatar.lead{background:var(--ag-lead)}
+.avatar.user{background:var(--accent);color:var(--accent-text)}
+.msg-head{display:flex;align-items:baseline;gap:8px;margin-bottom:3px}
+.msg-head .who{font-size:13px;font-weight:700}
+.msg-head .aid{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+.msg-head .model{
+  font-size:var(--fs-meta);font-family:var(--font-mono);color:var(--text-3);
+  border:1px solid var(--line);border-radius:4px;padding:0 5px;height:16px;line-height:15px;
+}
+.msg-head .ts{margin-left:auto;font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);opacity:0;transition:opacity .15s}
+.msg:hover .ts{opacity:1}
+.msg-body{font-size:var(--fs-body);line-height:1.62;color:var(--text-1)}
+.msg-body .dim{color:var(--text-2)}
+.msg-body code{
+  font-family:var(--font-mono);font-size:12.5px;background:var(--bg-inset);
+  border:1px solid var(--line);border-radius:4px;padding:0 5px;
+}
+/* 用户消息：轻量强调 */
+.msg.user{background:linear-gradient(90deg,var(--accent-soft),transparent 70%);border-radius:8px}
+.msg.user .who{color:var(--accent)}
+
+/* 工具调用树（IDE 感核心组件） */
+.tooltree{
+  margin:6px 0;background:var(--bg-inset);border:1px solid var(--line);
+  border-radius:var(--r-panel);overflow:hidden;
+}
+.tooltree .tt-head{
+  display:flex;align-items:center;gap:8px;padding:6px 10px;
+  font-size:var(--fs-aux);color:var(--text-2);border-bottom:1px solid var(--line);
+  background:color-mix(in srgb,var(--bg-raised) 60%,transparent);
+}
+.tooltree .tt-head .n{font-family:var(--font-mono);color:var(--text-3)}
+.tooltree .tt-body{padding:6px 10px 7px;display:flex;flex-direction:column;gap:3px}
+.tcall{display:flex;align-items:center;gap:8px;font-size:var(--fs-aux);line-height:1.5}
+.tcall .sym{color:var(--text-3);font-family:var(--font-mono);flex:none}
+.tcall .path{font-family:var(--font-mono);color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tcall.ok .path{color:var(--text-2)} .tcall.err .path{color:var(--danger)}
+.tcall .st{margin-left:auto;font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);flex:none}
+.tcall.err .st{color:var(--danger)}
+.tcall.ok .st{color:var(--ok)}
+
+/* 系统行 / notice */
+.sysline{
+  display:flex;align-items:center;gap:10px;color:var(--text-3);
+  font-size:var(--fs-aux);padding:7px 0;
+}
+.sysline::before,.sysline::after{content:"";flex:1;height:1px;background:var(--line)}
+.sysline span{flex:none}
+.notice{
+  display:flex;gap:9px;align-items:flex-start;max-width:640px;margin:8px auto;
+  padding:8px 12px;border-radius:var(--r-panel);
+  background:color-mix(in srgb,var(--warn) 7%,transparent);
+  border:1px solid color-mix(in srgb,var(--warn) 22%,transparent);
+  color:var(--text-2);font-size:12.5px;line-height:1.55;
+}
+.notice .ic{color:var(--warn);flex:none;margin-top:1px}
+
+/* 问答卡（需拍板） */
+.askcard{
+  max-width:640px;margin:10px auto;background:var(--bg-raised);
+  border:1px solid var(--accent-line);border-left:3px solid var(--accent);
+  border-radius:var(--r-panel);padding:12px 14px;
+}
+.askcard .q{font-size:var(--fs-body);font-weight:600;margin-bottom:3px}
+.askcard .hint{font-size:12.5px;color:var(--text-2);margin-bottom:10px}
+.askcard .row{display:flex;gap:8px}
+.askcard input{
+  flex:1;height:30px;padding:0 10px;background:var(--bg-overlay);
+  border:1px solid var(--line-strong);border-radius:var(--r-ctl);font-size:13px;outline:none;
+}
+.askcard input:focus{border-color:var(--accent-line)}
+
+/* 流式行 */
+.live{display:flex;align-items:center;gap:9px;padding:6px 0;color:var(--text-2);font-size:13px}
+.live .cursor{width:7px;height:14px;background:var(--accent);animation:blink 1s steps(1) infinite;border-radius:1px}
+@keyframes blink{50%{opacity:0}}
+.live .mono{color:var(--text-3);font-size:var(--fs-meta)}
+
+/* 输入区 */
+.chat-input{
+  flex:none;border-top:1px solid var(--line);background:var(--bg-panel);padding:10px 24px 12px;
+}
+.chat-input .inner{max-width:var(--measure);margin:0 auto}
+.quote{
+  display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-2);
+  background:var(--bg-inset);border:1px solid var(--line);border-radius:6px;padding:5px 9px;margin-bottom:8px;
+}
+.quote .bar{width:2px;height:14px;background:var(--ag-review);border-radius:2px;flex:none}
+.quote .x{margin-left:auto;color:var(--text-3)}
+.mentions{display:flex;gap:6px;margin-bottom:8px;align-items:center}
+.mention{
+  display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:11px;
+  font-size:12px;color:var(--text-2);border:1px solid var(--line);background:var(--bg-raised);
+}
+.mention .dot{width:5px;height:5px}
+.mention.hot{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.inputrow{display:flex;gap:10px;align-items:flex-end}
+.inputrow textarea{
+  flex:1;min-height:44px;max-height:120px;resize:none;padding:9px 12px;
+  background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:var(--r-panel);
+  font-size:var(--fs-body);line-height:1.5;outline:none;
+}
+.inputrow textarea:focus{border-color:var(--accent-line)}
+.input-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.mode{display:flex;background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:var(--r-ctl);overflow:hidden}
+.mode button{padding:4px 10px;font-size:12px;color:var(--text-3)}
+.mode button.on{background:var(--accent-soft);color:var(--accent)}
+.under{display:flex;gap:6px}
+
+/* 详情面板（常驻可收） */
+.detail{
+  width:var(--detail-w);flex:none;border-left:1px solid var(--line);background:var(--bg-panel);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.detail-head{
+  height:46px;flex:none;display:flex;align-items:center;gap:9px;padding:0 14px;
+  border-bottom:1px solid var(--line);font-size:13px;font-weight:600;color:var(--text-2);
+}
+.detail-head .mono{color:var(--text-3);font-weight:400;font-size:var(--fs-meta)}
+.detail-body{flex:1;overflow-y:auto;padding:14px 16px 20px}
+.dsec{margin-bottom:18px}
+.dsec .dtitle{
+  font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);
+  letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;
+  display:flex;align-items:center;gap:8px;
+}
+.dsec .dtitle::after{content:"";flex:1;height:1px;background:var(--line)}
+.dsec p{font-size:13px;line-height:1.65;color:var(--text-2)}
+.flist{display:flex;flex-direction:column;gap:2px}
+.fitem{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 6px;border-radius:5px}
+.fitem:hover{background:var(--bg-raised)}
+.fitem .path{font-family:var(--font-mono);color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fitem .plus{margin-left:auto;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--ok);flex:none}
+.fitem .minus{margin-left:auto;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--danger);flex:none}
+.kv{display:flex;flex-direction:column;gap:6px}
+.kv .row{display:flex;justify-content:space-between;font-size:12.5px}
+.kv .k{color:var(--text-2)}
+.kv .v{font-family:var(--font-mono);color:var(--text-1)}
+
+/* ============================================================
+   屏幕二：任务中心
+   ============================================================ */
+.tasks{flex:1;min-width:0;flex-direction:column;background:var(--bg-page);overflow-y:auto}
+.task-head{display:flex;align-items:center;gap:14px;padding:16px 24px 0;max-width:1560px;width:100%;margin:0 auto}
+.task-head h1{font-size:var(--fs-h2);font-weight:700}
+.task-head .cnt{font-family:var(--font-mono);font-size:12px;color:var(--text-3)}
+.task-head .spacer{flex:1}
+.chipbar{display:flex;gap:8px;padding:12px 24px;max-width:1560px;width:100%;margin:0 auto;flex-wrap:wrap}
+.chip{
+  display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 12px;
+  border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-panel);
+  font-size:12.5px;color:var(--text-2);
+}
+.chip:hover{border-color:var(--line-strong);color:var(--text-1)}
+.chip.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--text-1)}
+.chip .n{font-family:var(--font-mono);font-size:11.5px;color:var(--text-3)}
+.chip.on .n{color:var(--accent)}
+.tablewrap{max-width:1560px;width:100%;margin:0 auto;padding:0 24px 24px}
+table.grid{width:100%;border-collapse:collapse;font-size:13px}
+table.grid th{
+  text-align:left;font-size:var(--fs-meta);font-weight:600;color:var(--text-3);
+  font-family:var(--font-mono);letter-spacing:.06em;text-transform:uppercase;
+  padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;
+}
+table.grid td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.grid tr.row:hover td{background:color-mix(in srgb,var(--bg-panel) 70%,transparent)}
+.td-task .desc{font-weight:600;margin-bottom:1px}
+.td-task .meta{font-size:var(--fs-meta);color:var(--text-3);display:flex;gap:8px;align-items:center}
+.statuscell{display:flex;align-items:center;gap:7px;font-size:12.5px;white-space:nowrap}
+.agentcell{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.agentcell .avatar{width:20px;height:20px;border-radius:6px;font-size:10px;margin:0}
+.pbar{width:90px;height:4px;border-radius:3px;background:var(--bg-inset);overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.pval{font-family:var(--font-mono);font-size:12px;color:var(--text-2)}
+.num{font-family:var(--font-mono);font-size:12.5px;color:var(--text-2)}
+.time{font-family:var(--font-mono);font-size:12px;color:var(--text-3);white-space:nowrap}
+.acts{display:flex;gap:4px;opacity:.6}
+tr.row:hover .acts{opacity:1}
+.pageno{display:flex;justify-content:flex-end;gap:6px;padding-top:14px;color:var(--text-3);font-size:12.5px;align-items:center}
+.pageno button{width:26px;height:26px;border:1px solid var(--line);border-radius:var(--r-ctl);color:var(--text-2);font-family:var(--font-mono);font-size:12px}
+.pageno button.on{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+
+/* ============================================================
+   屏幕三：工作台主页
+   ============================================================ */
+.home{flex:1;min-width:0;flex-direction:column;background:var(--bg-page);overflow-y:auto}
+.home-inner{max-width:1560px;width:100%;margin:0 auto;padding:20px 24px 40px}
+.hero{
+  border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);
+  padding:18px 20px 16px;position:relative;overflow:hidden;
+}
+.hero::before{
+  content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--accent);
+}
+.hero-top{display:flex;align-items:flex-start;gap:16px}
+.hero-top .info{flex:1;min-width:0}
+.hero-top .sup{display:flex;align-items:center;gap:8px;font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);margin-bottom:6px}
+.hero-top h2{font-size:var(--fs-h1);font-weight:700;letter-spacing:-.01em;line-height:1.3}
+.hero-top .desc{font-size:13px;color:var(--text-2);margin-top:5px;max-width:720px}
+.hero-cta{display:flex;flex-direction:column;gap:8px;align-items:flex-end;flex:none}
+.hero-bottom{display:flex;align-items:center;gap:16px;margin-top:14px}
+.hero-bottom .pbar{flex:1;height:5px;border-radius:3px}
+.hero-bottom .pct{font-family:var(--font-mono);font-size:13px;color:var(--accent);font-weight:700}
+.heartbeat{
+  margin-top:14px;border-top:1px dashed var(--line);padding-top:12px;
+  display:flex;gap:22px;flex-wrap:wrap;align-items:center;
+}
+.hb{display:flex;flex-direction:column;gap:1px}
+.hb .k{font-size:var(--fs-meta);color:var(--text-3)}
+.hb .v{font-family:var(--font-mono);font-size:13px;color:var(--text-1)}
+.hb .v.live-delta{color:var(--ok)}
+.section{margin-top:26px}
+.section .shead{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+.section .shead h3{font-size:var(--fs-title);font-weight:700}
+.section .shead .hint{font-size:var(--fs-meta);color:var(--text-3)}
+.section .shead .more{margin-left:auto;font-size:12.5px;color:var(--text-3)}
+.section .shead .more:hover{color:var(--accent)}
+.statrow{display:flex;border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel)}
+.stat{flex:1;padding:14px 18px;min-width:0}
+.stat + .stat{border-left:1px solid var(--line)}
+.stat .k{font-size:var(--fs-aux);color:var(--text-2);display:flex;align-items:center;gap:6px}
+.stat .v{font-family:var(--font-mono);font-size:24px;font-weight:700;letter-spacing:-.02em;margin-top:3px}
+.stat .d{font-size:var(--fs-meta);margin-top:2px;font-family:var(--font-mono)}
+.stat .d.up{color:var(--ok)} .stat .d.dn{color:var(--danger)} .stat .d.flat{color:var(--text-3)}
+.duo{display:grid;grid-template-columns:1.6fr 1fr;gap:14px}
+.chartbox{border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);padding:14px 16px}
+.chartbox .ct{font-size:12.5px;color:var(--text-2);display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.bars{display:flex;align-items:flex-end;gap:4px;height:120px}
+.bars i{
+  flex:1;border-radius:2px 2px 0 0;
+  background:color-mix(in srgb,var(--accent) 55%,var(--bg-inset));
+}
+.bars i.hot{background:var(--accent)}
+.hlist{display:flex;flex-direction:column;gap:9px}
+.hrow{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.hrow .lbl{width:76px;color:var(--text-2);flex:none}
+.hrow .track{flex:1;height:6px;border-radius:3px;background:var(--bg-inset);overflow:hidden}
+.hrow .track i{display:block;height:100%;border-radius:3px}
+.hrow .v{font-family:var(--font-mono);font-size:11.5px;color:var(--text-3);width:52px;text-align:right;flex:none}
+.feed{border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel)}
+.frow{display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line);font-size:13px}
+.frow:last-child{border-bottom:none}
+.frow .when{font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-3);width:74px;flex:none}
+.frow .what{color:var(--text-2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.frow .what b{color:var(--text-1);font-weight:600}
+
+/* ============================================================
+   屏幕四：设置（overlay 形态：浮层面板，IDE command palette 感）
+   ============================================================ */
+#screen-settings{position:relative;background:var(--bg-page)}
+#screen-settings .veil{
+  position:absolute;inset:0;background:color-mix(in srgb,var(--bg-page) 72%,transparent);
+  backdrop-filter:blur(2px);
+}
+#screen-settings.active{display:flex;align-items:center;justify-content:center}
+.settings-panel{
+  position:relative;width:min(880px,92vw);max-height:84vh;display:flex;flex-direction:column;
+  background:var(--bg-panel);border:1px solid var(--line-strong);
+  border-radius:var(--r-float);box-shadow:var(--shadow-float);overflow:hidden;
+}
+.set-head{display:flex;align-items:center;gap:10px;padding:14px 18px 12px}
+.set-head h2{font-size:var(--fs-title);font-weight:700}
+.set-head .sub{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+.set-head .x{margin-left:auto;color:var(--text-3);font-size:16px;width:26px;height:26px;border-radius:6px;display:grid;place-items:center}
+.set-head .x:hover{background:var(--bg-raised);color:var(--text-1)}
+.set-tabs{display:flex;gap:2px;padding:0 18px;border-bottom:1px solid var(--line)}
+.set-tab{padding:8px 14px;font-size:13.5px;color:var(--text-2);border-bottom:2px solid transparent;margin-bottom:-1px}
+.set-tab:hover{color:var(--text-1)}
+.set-tab.on{color:var(--text-1);border-bottom-color:var(--accent);font-weight:600}
+.set-body{flex:1;overflow-y:auto;padding:18px 20px}
+.set-pane{display:none}
+.set-pane.on{display:block}
+.set-foot{
+  display:flex;justify-content:space-between;align-items:center;gap:8px;
+  padding:12px 18px;border-top:1px solid var(--line);background:var(--bg-panel);
+}
+.set-foot .left{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+.set-foot .right{display:flex;gap:8px}
+.frow2{display:grid;grid-template-columns:170px 1fr;gap:12px;align-items:center;margin-bottom:14px}
+.frow2 .fl{font-size:13px;color:var(--text-2)}
+.frow2 .fhint{font-size:var(--fs-meta);color:var(--text-3);margin-top:2px}
+.inp{
+  height:30px;padding:0 10px;background:var(--bg-overlay);border:1px solid var(--line-strong);
+  border-radius:var(--r-ctl);font-size:13px;outline:none;width:100%;color:var(--text-1);
+}
+.inp:focus{border-color:var(--accent-line)}
+textarea.inp{height:auto;min-height:64px;padding:8px 10px;resize:vertical;line-height:1.5;font-family:var(--font-mono);font-size:12.5px}
+.switch{width:34px;height:19px;border-radius:10px;background:var(--line-strong);position:relative;flex:none;border:none}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--text-2);transition:.15s}
+.switch.on{background:var(--accent)}
+.switch.on::after{left:17px;background:var(--accent-text)}
+.poolrow{display:flex;align-items:center;gap:12px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-ctl);margin-bottom:6px;background:var(--bg-raised)}
+.poolrow .nm{font-family:var(--font-mono);font-size:12.5px;width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.poolrow .mt{font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-3);width:150px}
+.poolrow .tags{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+.poolrow .rt{font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-3)}
+.mcprow{display:flex;align-items:center;gap:12px;padding:10px;border:1px solid var(--line);border-radius:var(--r-panel);margin-bottom:8px;background:var(--bg-panel)}
+.mcprow:hover{border-color:var(--line-strong)}
+.mcprow .nm{font-size:13.5px;font-weight:600}
+.mcprow .ds{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);margin-top:1px}
+.mcprow .info{flex:1;min-width:0}
+.mcprow .tools{font-size:var(--fs-meta);color:var(--text-2)}
+.agentrow{display:flex;align-items:center;gap:12px;padding:10px;border:1px solid var(--line);border-radius:var(--r-panel);margin-bottom:8px;background:var(--bg-panel)}
+.agentrow .info{flex:1;min-width:0}
+.agentrow .nm{font-size:13.5px;font-weight:600}
+.agentrow .rl{font-size:12px;color:var(--text-2);margin-top:1px}
+.agentrow .binds{display:flex;gap:5px;margin-top:5px;flex-wrap:wrap}
+
+/* ---------- 预览控件（非产品 UI） ---------- */
+.preview-bar{
+  position:fixed;right:18px;bottom:18px;z-index:99;display:flex;align-items:center;gap:14px;
+  background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:var(--r-float);
+  padding:8px 12px;box-shadow:var(--shadow-float);font-size:12px;color:var(--text-2);
+}
+.preview-bar .grp{display:flex;align-items:center;gap:5px}
+.preview-bar .grp .lbl{font-size:10.5px;color:var(--text-3);font-family:var(--font-mono);letter-spacing:.06em;margin-right:2px}
+.preview-bar button{
+  height:24px;padding:0 10px;border-radius:6px;border:1px solid var(--line);
+  color:var(--text-2);font-size:12px;
+}
+.preview-bar button.on{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+@media (max-width:1100px){ .detail{display:none} }
+</style>
+</head>
+<body>
+
+<!-- ============ 应用壳 ============ -->
+<header class="chrome">
+  <div class="brand">
+    <div class="mark">CT</div>
+    <div><span class="name">Co-Team</span><span class="sub">v0.3 · preview</span></div>
+  </div>
+  <nav class="tabs" id="navtabs">
+    <button class="tab" data-goto="home">工作台</button>
+    <button class="tab" data-goto="tasks">任务中心 <span class="bdg">3</span></button>
+    <button class="tab" data-goto="tasks">审批</button>
+    <button class="tab" data-goto="tasks">项目开发</button>
+    <button class="tab active" data-goto="chat">群组沟通 <span class="bdg">1</span></button>
+  </nav>
+  <div class="chrome-right">
+    <div class="metric-pill">今日 <b>¥12.40</b></div>
+    <div class="metric-pill">Token <b>1.28M</b></div>
+    <div class="ws"><span class="dot ok"></span>已连接</div>
+    <button class="btn ghost sm" title="主题切换（预览内）">☾</button>
+  </div>
+</header>
+
+<!-- ============ 屏幕一：群组沟通 ============ -->
+<section class="screen active" id="screen-chat">
+  <!-- 左：讨论列表 -->
+  <aside class="disc-list" id="discList">
+    <div class="side-head">讨论 <span class="cnt mono">13</span></div>
+    <div class="search">⌕ 搜索讨论…</div>
+    <div class="disc-scroll">
+      <button class="disc-item active">
+        <div class="t"><span class="name">修改UI</span><span class="tag accent">讨论中</span></div>
+        <div class="last">front-dev：导航栏已改粉底，正在产出统计页…</div>
+        <div class="meta"><span class="time">20:54</span></div>
+      </button>
+      <button class="disc-item">
+        <div class="t"><span class="name">功能优化</span><span class="tag ok">已转项目</span></div>
+        <div class="last">test：npm test 40/40 全绿，可合并。</div>
+        <div class="meta"><span class="time">昨天</span></div>
+      </button>
+      <button class="disc-item">
+        <div class="t"><span class="name">关于学习英语app的开发</span><span class="tag ok">已转项目</span></div>
+        <div class="last">review：打卡链路数据契约已确认。</div>
+        <div class="meta"><span class="time">09-16</span></div>
+      </button>
+      <button class="disc-item">
+        <div class="t"><span class="name">这个报表系统跟专业bi比起来还有哪些缺陷</span><span class="tag">讨论中</span></div>
+        <div class="last">lead：权限粒度与行级安全是主要差距…</div>
+        <div class="meta"><span class="time">09-12</span></div>
+      </button>
+      <button class="disc-item">
+        <div class="t"><span class="name">运行项目</span><span class="tag">讨论中</span></div>
+        <div class="last">front-dev：5123 端口已可用。</div>
+        <div class="meta"><span class="time">09-09</span></div>
+      </button>
+      <button class="disc-item">
+        <div class="t"><span class="name">如何实现一个每月记账app</span><span class="tag ok">已转项目</span></div>
+        <div class="last">已转入任务 ledger-app-r2</div>
+        <div class="meta"><span class="time">09-09</span></div>
+      </button>
+      <button class="btn ghost sm" style="margin:6px 10px 0;width:calc(100% - 20px)">+ 发起讨论</button>
+    </div>
+  </aside>
+
+  <!-- 中：消息流 -->
+  <div class="chat-main">
+    <div class="chat-head">
+      <span class="title">修改UI</span>
+      <span class="tag">accountapp</span>
+      <span class="tag">手动模式</span>
+      <div class="spacer"></div>
+      <button class="btn ghost sm">方案</button>
+      <button class="btn ghost sm">转任务</button>
+      <button class="btn ghost sm">成员 3</button>
+    </div>
+
+    <div class="stream-wrap">
+      <div class="stream">
+        <div class="sysline"><span>今天 · 20:18</span></div>
+
+        <!-- 用户消息 -->
+        <div class="msg user">
+          <div class="avatar user">我</div>
+          <div>
+            <div class="msg-head"><span class="who">我</span><span class="ts mono">20:18</span></div>
+            <div class="msg-body">将记账的收入、支出类型支持删除和添加。界面 UI 大改，风格以女生使用为主，让界面可爱一点，好了以后请给我一个图片看一下。</div>
+          </div>
+        </div>
+
+        <!-- front-dev：正文 + 工具树 -->
+        <div class="msg">
+          <div class="avatar front">FD</div>
+          <div>
+            <div class="msg-head">
+              <span class="who" style="color:var(--ag-front)">front-dev</span>
+              <span class="aid">front-dev</span>
+              <span class="model">glm-5.2</span>
+              <span class="ts">20:19:29</span>
+            </div>
+            <div class="msg-body">
+              <div class="tooltree">
+                <div class="tt-head"><span class="dot ok"></span>工具调用 <span class="n">× 5</span><span style="margin-left:auto" class="mono">1.2s</span></div>
+                <div class="tt-body">
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">list_files src/pages/</span><span class="st">ok</span></div>
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">read_file src/pages/settings/settings.vue</span><span class="st">ok</span></div>
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">exec「netstat -ano | findstr :5858」</span><span class="st">exit 0</span></div>
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">screenshot http://localhost:5858/#/pages/index</span><span class="st">ok</span></div>
+                  <div class="tcall err"><span class="sym">▸</span><span class="path">screenshot http://localhost:5123/</span><span class="st">ECONNREFUSED</span></div>
+                </div>
+              </div>
+              已完成现状侦查：录入页已是奶油粉+淡紫渐变、大圆角卡片、emoji 贴纸图标的可爱风；设置页已具备支出/收入分段切换、新增分类、删除（引用拦截+二次确认）。<span class="dim">本环境无联网搜索，风格依据既有代码与截图确认。</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- review -->
+        <div class="msg">
+          <div class="avatar review">RV</div>
+          <div>
+            <div class="msg-head">
+              <span class="who" style="color:var(--ag-review)">review</span>
+              <span class="aid">review</span>
+              <span class="model">deepseek-v4-pro</span>
+              <span class="ts">20:20:02</span>
+            </div>
+            <div class="msg-body">
+              复核同意可爱风方向已达成核心目标。建议：① 导航栏改粉紫渐变+白色图标；② 统计页增加环形图动画；③ 历史页卡片式布局。
+            </div>
+          </div>
+        </div>
+
+        <!-- 问答卡 -->
+        <div class="askcard">
+          <div class="q">需要你拍板</div>
+          <div class="hint">是否认可当前可爱风方向？若认可，将统一导航栏与统计/历史页并产出全套预览图。</div>
+          <div class="row">
+            <input placeholder="回复意见，或直接确认…" value="认可，但是功能不全">
+            <button class="btn primary sm">发送</button>
+          </div>
+        </div>
+
+        <div class="sysline"><span>20:23 · 视觉模型与路由故障已修复，讨论恢复</span></div>
+
+        <!-- front-dev 第二轮：写入 + 汇报 -->
+        <div class="msg">
+          <div class="avatar front">FD</div>
+          <div>
+            <div class="msg-head">
+              <span class="who" style="color:var(--ag-front)">front-dev</span>
+              <span class="aid">front-dev</span>
+              <span class="model">glm-5.2</span>
+              <span class="ts">20:43:37</span>
+            </div>
+            <div class="msg-body">
+              <div class="tooltree">
+                <div class="tt-head"><span class="dot ok"></span>工具调用 <span class="n">× 8</span><span style="margin-left:auto" class="mono">6.4s</span></div>
+                <div class="tt-body">
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">grep 「分类」 src/pages/settings/</span><span class="st">ok</span></div>
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">write_file src/pages/stats/stats.vue</span><span class="st" style="color:var(--ok)">+38 −12</span></div>
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">edit_file src/pages/history/history.vue</span><span class="st" style="color:var(--ok)">+16 −4</span></div>
+                  <div class="tcall ok"><span class="sym">▸</span><span class="path">exec「npm test」</span><span class="st">40/40</span></div>
+                </div>
+              </div>
+              本轮真实进展：① 功能验证通过——<code>npm test</code> 40/40 PASS（含新增分类、默认分类禁删/自定义可删）；② UI 已改：导航栏粉底 <code>#FFB7C5</code> 白字、统计页奶油粉→淡紫渐变背景。
+            </div>
+          </div>
+        </div>
+
+        <!-- 系统通知 -->
+        <div class="notice"><span class="ic">⚙</span><span>front-dev 本批工具连续失败 2 次——若超出讨论的工具能力，建议 convert_to_project 转任务处理。</span></div>
+
+        <!-- 流式行 -->
+        <div class="live">
+          <span class="dot run"></span>front-dev 正在动手执行<span class="mono">· screenshot ×1 · 3.2s</span><span class="cursor"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="chat-input">
+      <div class="inner">
+        <div class="quote"><span class="bar"></span>回复 review：复核同意可爱风方向已达成核心目标…<span class="x">✕</span></div>
+        <div class="mentions">
+          <span class="mention"><span class="dot" style="background:var(--ag-front)"></span>front-dev</span>
+          <span class="mention"><span class="dot" style="background:var(--ag-review)"></span>review</span>
+          <span class="mention"><span class="dot" style="background:var(--ag-test)"></span>test</span>
+        </div>
+        <div class="inputrow">
+          <textarea placeholder="回复讨论… Enter 发送 / Shift+Enter 换行 / @ 点名成员">收入、支出类型 支持删除和添加</textarea>
+          <div class="input-side">
+            <div class="mode"><button class="on">手动</button><button>自动</button></div>
+            <div class="under">
+              <button class="btn ghost sm" title="附图">📎</button>
+              <button class="btn sm">打断</button>
+              <button class="btn primary sm">发送</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：详情面板（常驻可收） -->
+  <aside class="detail" id="detailPanel">
+    <div class="detail-head">消息明细 <span class="mono">front-dev · 20:43:37</span>
+      <button class="btn ghost sm" style="margin-left:auto" onclick="toggleDetail()">»</button>
+    </div>
+    <div class="detail-body">
+      <div class="dsec">
+        <div class="dtitle">解决思路</div>
+        <p>先验证分类增删功能契约（默认项保护 + 引用拦截），再做视觉统一：导航栏与统计页共用粉紫渐变 token，避免逐页硬编码色值。</p>
+      </div>
+      <div class="dsec">
+        <div class="dtitle">看过哪些代码</div>
+        <div class="flist">
+          <div class="fitem"><span class="path">src/pages/settings/settings.vue</span><span class="plus">+12</span></div>
+          <div class="fitem"><span class="path">src/pages/stats/stats.vue</span><span class="plus">+38 −12</span></div>
+          <div class="fitem"><span class="path">src/pages/history/history.vue</span><span class="minus">−4</span></div>
+          <div class="fitem"><span class="path">src/services/da.js</span></div>
+        </div>
+      </div>
+      <div class="dsec">
+        <div class="dtitle">命令</div>
+        <div class="flist">
+          <div class="fitem"><span class="path">npm test</span><span class="plus">40/40</span></div>
+          <div class="fitem"><span class="path">netstat -ano | findstr :5858</span><span class="plus">exit 0</span></div>
+        </div>
+      </div>
+      <div class="dsec">
+        <div class="dtitle">协作 · 技能</div>
+        <div class="kv">
+          <div class="row"><span class="k">成员</span><span class="v">front-dev / review / test</span></div>
+          <div class="row"><span class="k">技能</span><span class="v">uniapp-h5 · vite-config</span></div>
+          <div class="row"><span class="k">模型</span><span class="v">glm-5.2</span></div>
+          <div class="row"><span class="k">耗时</span><span class="v">2m 41s</span></div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</section>
+
+<!-- ============ 屏幕二：任务中心 ============ -->
+<section class="screen" id="screen-tasks">
+  <div class="tasks">
+    <div class="task-head">
+      <h1>任务中心</h1><span class="cnt mono">共 47 · 运行 2</span>
+      <div class="spacer"></div>
+      <button class="btn sm">服务日志</button>
+      <button class="btn primary sm">+ 下发任务</button>
+    </div>
+    <div class="chipbar">
+      <button class="chip on">全部 <span class="n">47</span></button>
+      <button class="chip"><span class="dot run"></span>运行中 <span class="n">2</span></button>
+      <button class="chip">待审批 <span class="n">1</span></button>
+      <button class="chip"><span class="dot warn"></span>待澄清 <span class="n">1</span></button>
+      <button class="chip"><span class="dot ok"></span>已完成 <span class="n">38</span></button>
+      <button class="chip"><span class="dot danger"></span>失败 <span class="n">3</span></button>
+      <button class="chip">已取消 <span class="n">2</span></button>
+    </div>
+    <div class="tablewrap">
+      <table class="grid">
+        <thead><tr>
+          <th style="width:34%">任务</th><th>状态</th><th>Agent</th><th>进度</th>
+          <th>Token</th><th>失败原因</th><th>更新时间</th><th style="width:150px">操作</th>
+        </tr></thead>
+        <tbody>
+          <tr class="row">
+            <td class="td-task">
+              <div class="desc">实现记账分类增删与粉紫可爱风 UI 统一</div>
+              <div class="meta"><span class="mono">jr3gdkxq</span><span>·</span>ledger-app-r2<span><span class="tag">heavy</span></span></div>
+            </td>
+            <td><div class="statuscell"><span class="dot run"></span>运行中 · execute</div></td>
+            <td><div class="agentcell"><span class="avatar front">FD</span>front-dev</div></td>
+            <td><div style="display:flex;align-items:center;gap:8px"><div class="pbar"><i style="width:68%"></i></div><span class="pval">68</span></div></td>
+            <td class="num">284.1k</td>
+            <td class="num" style="color:var(--text-3)">—</td>
+            <td class="time">2 分钟前</td>
+            <td><div class="acts"><button class="btn ghost sm">详情</button><button class="btn ghost sm">日志</button><button class="btn ghost sm">⋮</button></div></td>
+          </tr>
+          <tr class="row">
+            <td class="td-task">
+              <div class="desc">报表系统权限粒度与行级安全改造</div>
+              <div class="meta"><span class="mono">ywwrotjt</span><span>·</span>dw-app<span><span class="tag">heavy</span></span></div>
+            </td>
+            <td><div class="statuscell"><span class="dot warn"></span>待澄清 · 2 题</div></td>
+            <td><div class="agentcell"><span class="avatar lead">LD</span>lead</div></td>
+            <td><div style="display:flex;align-items:center;gap:8px"><div class="pbar"><i style="width:22%"></i></div><span class="pval">22</span></div></td>
+            <td class="num">96.5k</td>
+            <td class="num" style="color:var(--text-3)">—</td>
+            <td class="time">1 小时前</td>
+            <td><div class="acts"><button class="btn ghost sm">回复</button><button class="btn ghost sm">详情</button></div></td>
+          </tr>
+          <tr class="row">
+            <td class="td-task">
+              <div class="desc">审批收件箱聚合五类待办</div>
+              <div class="meta"><span class="mono">ec00a4c</span><span>·</span>co-team<span><span class="tag">light</span></span></div>
+            </td>
+            <td><div class="statuscell"><span class="dot ok"></span>已完成</div></td>
+            <td><div class="agentcell"><span class="avatar test">TS</span>test</div></td>
+            <td><div style="display:flex;align-items:center;gap:8px"><div class="pbar"><i style="width:100%;background:var(--ok)"></i></div><span class="pval">100</span></div></td>
+            <td class="num">41.2k</td>
+            <td class="num" style="color:var(--text-3)">—</td>
+            <td class="time">3 小时前</td>
+            <td><div class="acts"><button class="btn ghost sm">详情</button><button class="btn ghost sm">产出</button></div></td>
+          </tr>
+          <tr class="row">
+            <td class="td-task">
+              <div class="desc">合并 coteam/task-ui 分支到 main</div>
+              <div class="meta"><span class="mono">p8cirvu9</span><span>·</span>ledger-app-r2<span><span class="tag">light</span></span></div>
+            </td>
+            <td><div class="statuscell"><span class="dot danger"></span>失败 · 重试 2</div></td>
+            <td><div class="agentcell"><span class="avatar front">FD</span>front-dev</div></td>
+            <td><div style="display:flex;align-items:center;gap:8px"><div class="pbar"><i style="width:55%;background:var(--danger)"></i></div><span class="pval">55</span></div></td>
+            <td class="num">18.9k</td>
+            <td class="num" style="color:var(--danger)">conflict: history.vue</td>
+            <td class="time">5 小时前</td>
+            <td><div class="acts"><button class="btn ghost sm">详情</button><button class="btn ghost sm">重启</button></div></td>
+          </tr>
+          <tr class="row">
+            <td class="td-task">
+              <div class="desc">知识库检索索引重建（skills_indexed）</div>
+              <div class="meta"><span class="mono">1e64df6</span><span>·</span>co-team<span><span class="tag">light</span></span></div>
+            </td>
+            <td><div class="statuscell"><span class="dot ok"></span>已完成</div></td>
+            <td><div class="agentcell"><span class="avatar review">RV</span>review</div></td>
+            <td><div style="display:flex;align-items:center;gap:8px"><div class="pbar"><i style="width:100%;background:var(--ok)"></i></div><span class="pval">100</span></div></td>
+            <td class="num">12.7k</td>
+            <td class="num" style="color:var(--text-3)">—</td>
+            <td class="time">昨天</td>
+            <td><div class="acts"><button class="btn ghost sm">详情</button></div></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="pageno"><span>每页 20</span><button>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 屏幕三：工作台主页 ============ -->
+<section class="screen" id="screen-home">
+  <div class="home">
+    <div class="home-inner">
+      <!-- Hero：当前活跃任务 -->
+      <div class="hero">
+        <div class="hero-top">
+          <div class="info">
+            <div class="sup"><span class="dot run"></span>NOW RUNNING · <span>jr3gdkxq</span> · ledger-app-r2 · heavy</div>
+            <h2>实现记账分类增删与粉紫可爱风 UI 统一</h2>
+            <div class="desc">节点 execute 正在运行 · front-dev 持有工作区互斥锁 · 当前 8/12 节点通过，预计剩余 2 个节点。</div>
+          </div>
+          <div class="hero-cta">
+            <button class="btn primary">进入战情室 →</button>
+            <button class="btn sm">介入对话</button>
+          </div>
+        </div>
+        <div class="hero-bottom">
+          <div class="pbar"><i style="width:68%"></i></div>
+          <span class="pct">68%</span>
+        </div>
+        <div class="heartbeat">
+          <div class="hb"><span class="k">执行 Agent</span><span class="v">front-dev</span></div>
+          <div class="hb"><span class="k">模型</span><span class="v">glm-5.2</span></div>
+          <div class="hb"><span class="k">Token</span><span class="v">284.1k</span></div>
+          <div class="hb"><span class="k">重试</span><span class="v">0</span></div>
+          <div class="hb"><span class="k">限流等待</span><span class="v">0s</span></div>
+          <div class="hb"><span class="k">节点耗时</span><span class="v">4m 12s</span></div>
+          <div class="hb"><span class="k">实时输出</span><span class="v live-delta">✓ npm test 40/40 PASS</span></div>
+        </div>
+      </div>
+
+      <!-- 指标行 -->
+      <div class="section">
+        <div class="shead"><h3>运营指标</h3><span class="hint">近 30 天 · 每 30s 刷新</span></div>
+        <div class="statrow">
+          <div class="stat"><div class="k">任务总数</div><div class="v">47</div><div class="d up">+12 本周</div></div>
+          <div class="stat"><div class="k">成功率</div><div class="v">92.4<span style="font-size:14px;color:var(--text-3)">%</span></div><div class="d up">+3.1pt</div></div>
+          <div class="stat"><div class="k">Token 消耗</div><div class="v">1.28<span style="font-size:14px;color:var(--text-3)">M</span></div><div class="d flat">环比持平</div></div>
+          <div class="stat"><div class="k">成本</div><div class="v">¥86.4</div><div class="d dn">−¥9.20</div></div>
+          <div class="stat"><div class="k">平均节点耗时</div><div class="v">3m48s</div><div class="d up">−22s</div></div>
+        </div>
+      </div>
+
+      <!-- 图表双列 -->
+      <div class="section">
+        <div class="duo">
+          <div class="chartbox">
+            <div class="ct"><span class="dot ok"></span>每日任务吞吐 · 近 30 天</div>
+            <div class="bars">
+              <i style="height:32%"></i><i style="height:44%"></i><i style="height:38%"></i><i style="height:52%"></i>
+              <i style="height:47%"></i><i style="height:61%"></i><i style="height:55%"></i><i style="height:70%"></i>
+              <i style="height:64%"></i><i style="height:78%"></i><i style="height:58%"></i><i style="height:83%"></i>
+              <i style="height:72%"></i><i style="height:66%"></i><i style="height:88%"></i><i style="height:74%"></i>
+              <i style="height:81%"></i><i style="height:69%"></i><i style="height:92%"></i><i style="height:77%"></i>
+              <i style="height:85%"></i><i style="height:73%"></i><i style="height:96%"></i><i style="height:82%"></i>
+              <i style="height:89%"></i><i style="height:76%"></i><i class="hot" style="height:100%"></i><i style="height:91%"></i>
+              <i style="height:84%"></i><i style="height:78%"></i>
+            </div>
+          </div>
+          <div class="chartbox">
+            <div class="ct">Agent 负载分布 · 本周</div>
+            <div class="hlist">
+              <div class="hrow"><span class="lbl">front-dev</span><div class="track"><i style="width:82%;background:var(--ag-front)"></i></div><span class="v">18 任务</span></div>
+              <div class="hrow"><span class="lbl">review</span><div class="track"><i style="width:64%;background:var(--ag-review)"></i></div><span class="v">14 任务</span></div>
+              <div class="hrow"><span class="lbl">test</span><div class="track"><i style="width:50%;background:var(--ag-test)"></i></div><span class="v">11 任务</span></div>
+              <div class="hrow"><span class="lbl">lead</span><div class="track"><i style="width:36%;background:var(--ag-lead)"></i></div><span class="v">8 任务</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 事件流 -->
+      <div class="section">
+        <div class="shead"><h3>最近动态</h3><a class="more" href="#">查看全部 →</a></div>
+        <div class="feed">
+          <div class="frow"><span class="when">20:54</span><span class="what"><b>front-dev</b> 在「修改UI」提交 3 个文件改动（stats.vue / history.vue / pages.json）</span><span class="tag accent">群聊</span></div>
+          <div class="frow"><span class="when">20:43</span><span class="what">任务 <b>jr3gdkxq</b> 节点 execute 通过，npm test 40/40</span><span class="tag ok">任务</span></div>
+          <div class="frow"><span class="when">20:36</span><span class="what">模型池配置热更新：agnes max_tokens 修正为 65536</span><span class="tag">系统</span></div>
+          <div class="frow"><span class="when">19:12</span><span class="what">任务 <b>ywwrotjt</b> 进入 clarify 暂停，等待回答 2 个问题</span><span class="tag warn">任务</span></div>
+          <div class="frow"><span class="when">18:40</span><span class="what"><b>review</b> 通过了「权限粒度改造」的计划评审（5 节点）</span><span class="tag ok">审批</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 屏幕四：设置（overlay） ============ -->
+<section class="screen" id="screen-settings">
+  <div class="veil" onclick="setScreen('home')"></div>
+  <div class="settings-panel">
+    <div class="set-head">
+      <h2>设置</h2><span class="sub">config/config.yaml · 保存即热生效</span>
+      <button class="x" onclick="setScreen('home')">✕</button>
+    </div>
+    <div class="set-tabs">
+      <button class="set-tab on" data-stab="general">常规</button>
+      <button class="set-tab" data-stab="mcp">MCP 服务</button>
+      <button class="set-tab" data-stab="agents">Agent 管理</button>
+    </div>
+    <div class="set-body">
+
+      <!-- 常规 -->
+      <div class="set-pane on" data-pane="general">
+        <div class="dsec">
+          <div class="dtitle">模型池健康 · 8 个模型</div>
+          <div class="poolrow"><span class="dot ok"></span><span class="nm">glm-5.2</span><span class="mt">优先 15 · 并发 2</span><div class="tags"><span class="tag">code</span><span class="tag">debug</span><span class="tag">doc</span></div><span class="rt">386ms</span></div>
+          <div class="poolrow"><span class="dot ok"></span><span class="nm">deepseek-v4-pro</span><span class="mt">优先 15 · 并发 2</span><div class="tags"><span class="tag">code</span><span class="tag">reasoning</span></div><span class="rt">512ms</span></div>
+          <div class="poolrow"><span class="dot ok"></span><span class="nm">Qwen3.6</span><span class="mt">优先 10 · 并发 4 · local</span><div class="tags"><span class="tag">review</span><span class="tag">image</span></div><span class="rt">98ms</span></div>
+          <div class="poolrow"><span class="dot warn"></span><span class="nm">agnes-3.0-flash</span><span class="mt">优先 1 · 并发 2</span><div class="tags"><span class="tag">image</span><span class="tag">doc</span></div><span class="rt">冷却 · 2m</span></div>
+        </div>
+        <div class="dsec">
+          <div class="dtitle">执行与安全</div>
+          <div class="frow2">
+            <div><div class="fl">权限等级</div><div class="fhint">目录监狱恒开，full 仅指目录内完全控制</div></div>
+            <select class="inp"><option selected>whitelist_auto（白名单命令自动放行）</option><option>confirm_all（全部确认）</option></select>
+          </div>
+          <div class="frow2">
+            <div><div class="fl">沙箱隔离</div><div class="fhint">heavy 任务在独立克隆中执行</div></div>
+            <button class="switch on" onclick="this.classList.toggle('on')"></button>
+          </div>
+          <div class="frow2">
+            <div><div class="fl">每日日报</div><div class="fhint">每天 07:00 汇总任务与成本</div></div>
+            <button class="switch on" onclick="this.classList.toggle('on')"></button>
+          </div>
+        </div>
+        <div class="dsec">
+          <div class="dtitle">连接</div>
+          <div class="kv">
+            <div class="row"><span class="k">Redis</span><span class="v">127.0.0.1:6379 · 已连接</span></div>
+            <div class="row"><span class="k">项目根目录</span><span class="v">D:\pxx\projects</span></div>
+            <div class="row"><span class="k">服务启动于</span><span class="v">2026-09-17 20:37 · PID 4552</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MCP 服务 -->
+      <div class="set-pane" data-pane="mcp">
+        <div class="mcprow">
+          <span class="dot ok"></span>
+          <div class="info">
+            <div class="nm">fs <span class="tag">stdio</span></div>
+            <div class="ds">npx -y @modelcontextprotocol/server-filesystem D:/pxx/projects</div>
+            <div class="tools">11 个工具 · list_files / read_file / write_file …</div>
+          </div>
+          <button class="switch on" onclick="this.classList.toggle('on')"></button>
+          <button class="btn sm">测试</button><button class="btn sm">编辑</button>
+        </div>
+        <div class="mcprow">
+          <span class="dot warn"></span>
+          <div class="info">
+            <div class="nm">github <span class="tag">http</span></div>
+            <div class="ds">https://api.github.com/mcp · Authorization: Bearer ${GITHUB_TOKEN}</div>
+            <div class="tools">重连中 · 下次退避 2m</div>
+          </div>
+          <button class="switch" onclick="this.classList.toggle('on')"></button>
+          <button class="btn sm">测试</button><button class="btn sm">编辑</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn sm">+ 添加服务</button>
+          <span class="hint" style="font-size:12px;color:var(--text-3);align-self:center">密钥只走环境变量占位 \${ENV_VAR}，不落盘</span>
+        </div>
+      </div>
+
+      <!-- Agent 管理 -->
+      <div class="set-pane" data-pane="agents">
+        <div class="agentrow">
+          <span class="avatar front">FD</span>
+          <div class="info">
+            <div class="nm">front-dev <span class="tag">前端开发</span></div>
+            <div class="rl">Vue / uniapp / 样式还原，负责 UI 与页面实现</div>
+            <div class="binds"><span class="tag accent">MCP · fs</span><span class="tag">工具 9</span><span class="tag">tags: code</span></div>
+          </div>
+          <button class="btn sm">编辑</button>
+        </div>
+        <div class="agentrow">
+          <span class="avatar review">RV</span>
+          <div class="info">
+            <div class="nm">review <span class="tag">评审</span></div>
+            <div class="rl">方案复核、数据契约验证、验收把关</div>
+            <div class="binds"><span class="tag">工具 6</span><span class="tag">tags: review</span></div>
+          </div>
+          <button class="btn sm">编辑</button>
+        </div>
+        <div class="agentrow">
+          <span class="avatar test">TS</span>
+          <div class="info">
+            <div class="nm">test <span class="tag">测试</span></div>
+            <div class="rl">测试编写与执行、浏览器实拍验收</div>
+            <div class="binds"><span class="tag accent">MCP · fs</span><span class="tag">工具 7</span></div>
+          </div>
+          <button class="btn sm">编辑</button>
+        </div>
+        <div style="margin-top:12px"><button class="btn sm">+ 新建 Agent</button></div>
+      </div>
+    </div>
+    <div class="set-foot">
+      <span class="left">3 个模型带 image 标签 · 1 个 MCP 服务在线</span>
+      <div class="right">
+        <button class="btn">取消</button>
+        <button class="btn primary">保存</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 预览控件（非产品 UI） ============ -->
+<div class="preview-bar">
+  <div class="grp"><span class="lbl">屏幕</span>
+    <button data-scr="chat" class="on">群聊</button>
+    <button data-scr="tasks">任务</button>
+    <button data-scr="home">主页</button>
+    <button data-scr="settings">设置</button>
+  </div>
+  <div class="grp"><span class="lbl">主题（强调色自动配对：暗=橙 / 亮=蓝）</span>
+    <button data-thm="dark" class="on">暗色</button>
+    <button data-thm="light">亮色</button>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelectorAll(s);
+function setScreen(k){
+  $('.screen').forEach(e=>e.classList.toggle('active',e.id==='screen-'+k));
+  $('[data-scr]').forEach(b=>b.classList.toggle('on',b.dataset.scr===k));
+  document.querySelectorAll('#navtabs .tab').forEach(t=>{
+    t.classList.toggle('active',t.dataset.goto===k);
+  });
+}
+function setTheme(t){
+  document.documentElement.dataset.theme=t;
+  $('[data-thm]').forEach(b=>b.classList.toggle('on',b.dataset.thm===t));
+}
+function toggleDetail(){const d=document.getElementById('detailPanel');d.style.display=d.style.display==='none'?'flex':'none';}
+function setSetTab(k){
+  $('.set-tab').forEach(b=>b.classList.toggle('on',b.dataset.stab===k));
+  $('.set-pane').forEach(p=>p.classList.toggle('on',p.dataset.pane===k));
+}
+$('[data-scr]').forEach(b=>b.onclick=()=>setScreen(b.dataset.scr));
+$('[data-thm]').forEach(b=>b.onclick=()=>setTheme(b.dataset.thm));
+$('[data-stab]').forEach(b=>b.onclick=()=>setSetTab(b.dataset.stab));
+document.querySelectorAll('#navtabs .tab').forEach(t=>t.onclick=()=>setScreen(t.dataset.goto));
+document.querySelector('.chrome-right .btn.ghost.sm').onclick=()=>
+  setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark');
+</script>
+</body>
+</html>
