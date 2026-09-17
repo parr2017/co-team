@@ -201,7 +201,7 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
     case 'supervisor_evaluated':
       return { text: `监督者巡检：${CLIP(p.assessment || p.reason, 70)}`, level: 'info', category: 'agent', noisy: false };
     case 'supervisor_action':
-      return { text: `监督者执行动作：${CLIP(p.action || p.reason, 70)}`, level: 'warn', category: 'agent', noisy: false };
+      return { text: p.action === 'help' ? '监督者已下发主 agent 方案' : `监督者执行动作：${CLIP(p.action || p.reason, 70)}`, level: 'warn', category: 'agent', noisy: false };
     case 'supervisor_proposal':
       return { text: `监督者提案${p.type ? `（${p.type}）` : ''}：${CLIP(p.reason, 70)}`, level: 'accent', category: 'agent', noisy: false };
     case 'supervisor_proposal_executed':

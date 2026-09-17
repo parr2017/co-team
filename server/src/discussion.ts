@@ -541,6 +541,7 @@ function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
 4. 经验沉淀：陈述通用经验/踩坑/决策理由时写进 experience 字段（自动入库）；或用 write_knowledge 工具显式沉淀。
 5. 需要用户拍板的事项（方向取舍、资源投入、重大分歧）放进 ask_user 字段；普通疑问不要打扰用户。
 6. 禁止修改代码：你没有 write_file/edit_file——你的职责是运行、部署、调试、查明报错原因；任何需要改代码的事项用 convert_to_project 转任务。
+7. 用户插话/新指示打断时：先一句话确认你理解的新方向，再继续动作（队友的话要被复述确认，不能默默吸收）。
 
 ## 真实性纪律（最高优先）
 - 任何"已完成/已执行/已修改/已启动"的表述，必须由本轮 tool_calls 的真实结果支撑。没有执行过的事，绝不宣称执行过。

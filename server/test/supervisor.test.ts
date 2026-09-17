@@ -205,6 +205,29 @@ async function setupApiHelpers() {
   };
 }
 
+describe('P2-7 求助链 leader 层：主 agent 方案下发（help 动作）', () => {
+  it('help 动作把方案建议作为插话注入节点下一轮，journal 留痕 + 事件广播', async () => {
+    await saveTaskGraph('t-help', [makeNode('n1', 'dev', { status: 'failed', error: '缺 ai_client 文件' })], [], { description: 'demo', workspace: tmp, status: 'running' });
+    await (supervisor as any).runAction('t-help', { action: 'help', node_id: 'n1', message: '先创建 lib/services/ai_client.dart 再跑测试' });
+    // 方案经插话通道注入（agent 下一轮拿到）
+    const { consumeInterventions } = await import('../src/store');
+    const q = await consumeInterventions('t-help');
+    expect(q.some((m) => m.message.includes('主 agent 方案建议') && m.message.includes('ai_client.dart'))).toBe(true);
+    // journal 留痕
+    const journals = Object.values(await getTaskJournals('t-help')).flat();
+    expect(journals.some((e) => String(e.text).includes('主 agent 方案已下发'))).toBe(true);
+  });
+
+  it('同一方案未消费不重复下发（内容级去重）', async () => {
+    await saveTaskGraph('t-help2', [makeNode('n1', 'dev', { status: 'failed', error: '缺文件' })], [], { description: 'x', workspace: tmp, status: 'planned' });
+    await (supervisor as any).runAction('t-help2', { action: 'help', node_id: 'n1', message: '方案 A' });
+    await (supervisor as any).runAction('t-help2', { action: 'help', node_id: 'n1', message: '方案 A' });
+    const { consumeInterventions } = await import('../src/store');
+    const q = await consumeInterventions('t-help2');
+    expect(q.filter((m) => m.message.includes('方案 A')).length).toBe(1);
+  });
+});
+
 describe('监督者催办去重 + 重跑清错（2026-09-16 o3xmkraj 实证）', () => {
   it('同文 nudge 未消费时不再重复入队', async () => {
     const { pushIntervention, consumeInterventions } = await import('../src/store');

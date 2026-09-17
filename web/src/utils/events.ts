@@ -116,7 +116,7 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
     case 'supervisor_evaluated':
       return { text: `监督者评估（${p.reason || '心跳'}）：${CLIP(p.assessment || '', 50)}`, level: 'info', category: 'system', noisy: false };
     case 'supervisor_action':
-      return { text: `监督者动作：${p.action}`, level: 'info', category: 'system', noisy: false };
+      return { text: p.action === 'help' ? '监督者已下发主 agent 方案' : `监督者动作：${p.action}`, level: 'info', category: 'system', noisy: false };
     case 'supervisor_proposal':
       return { text: `🔔 监督者提案待批准（任务 ${p.task_id}）`, level: 'warn', category: 'task', noisy: true };
     case 'supervisor_proposal_executed':

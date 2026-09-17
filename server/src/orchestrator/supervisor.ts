@@ -50,6 +50,7 @@ export interface SupervisorOptions {
 const SYSTEM_PROMPT = `你是任务监督者（主 Agent 的监督角色）。你收到一份任务状态摘要，任务是「用多个 agent 协作开发软件」的多节点 DAG。
 你的职责是监督任务进度、发现卡点，并从下列"有边界的动作"中选择（宁少勿滥，没有问题就空动作）：
 - nudge：催办/提醒某个执行中的节点（message 会注入该节点的下一轮对话，agent 必须回应）
+- help：为卡住的节点提供解决方案建议（你是问题的第一响应者：agent 遇到问题先找你，基于卡点给出可执行的修复思路），message 会作为「主 agent 方案」注入该节点的下一轮对话；如果你判断自己解决不了（需要人工/资源/环境/权限），改用 report 升级给用户
 - report：向用户汇报风险或进度异常
 - suggest：只在 journal 留下建议，不打扰任何人
 - propose_retry：提案重试某个 failed 节点（需用户批准）
@@ -235,6 +236,23 @@ export class Supervisor {
           meta: { supervisor: true, action: 'nudge' },
         });
         await emitSupervisorEvent('supervisor_action', { task_id: taskId, action: 'nudge' });
+        return;
+      }
+      case 'help': {
+        // P2-7 求助链 leader 层：agent 卡住先找主 agent——方案建议作为插话注入节点下一轮；
+        // 主 agent 解决不了时由 LLM 改选 report 升级用户
+        if (!message) return;
+        const { pushIntervention, hasPendingIntervention } = await import('../store');
+        const text = `（主 agent 方案建议）${message}`;
+        // 内容级去重：同一方案不重复下发（o3xmkraj 噪声干预教训）
+        if (await hasPendingIntervention(taskId, text)) return;
+        await pushIntervention(taskId, text);
+        await appendJournal(taskId, 'supervisor', {
+          role: 'master', kind: 'round', text: `主 agent 方案已下发：${message}`,
+          ts: new Date().toISOString(), node_id: String(action.node_id || ''), node_name: '',
+          meta: { supervisor: true, action: 'help' },
+        });
+        await emitSupervisorEvent('supervisor_action', { task_id: taskId, action: 'help' });
         return;
       }
       case 'report': {
