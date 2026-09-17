@@ -23,18 +23,18 @@ const { theme, cssVar } = useTheme();
 let chart: echarts.ECharts | null = null;
 
 const STATUS_VAR: Record<string, string> = {
-  completed: '--ct-green',
-  success: '--ct-green',
-  running: '--ct-yellow',
-  retrying: '--ct-yellow',
-  clarifying: '--ct-yellow',
-  waiting_clarify: '--ct-yellow',
-  failed: '--ct-red',
-  waiting_approval: '--ct-accent',
-  planned: '--ct-accent',
-  cancelled: '--ct-text3',
-  pending: '--ct-text3',
-  queued: '--ct-text3',
+  completed: '--ok',
+  success: '--ok',
+  running: '--warn',
+  retrying: '--warn',
+  clarifying: '--warn',
+  waiting_clarify: '--warn',
+  failed: '--danger',
+  waiting_approval: '--accent',
+  planned: '--accent',
+  cancelled: '--text-3',
+  pending: '--text-3',
+  queued: '--text-3',
 };
 
 function statusLabel(s: string) {
@@ -78,14 +78,14 @@ async function renderDag(task: TaskGraph) {
         x,
         y,
         symbolSize: 40,
-        itemStyle: { color: cssVar(STATUS_VAR[n.status] || '--ct-text3') || '#888', borderColor: cssVar('--ct-border') || '#26272c', borderWidth: 2 },
-        label: { show: true, formatter: `${n.name}\n(${n.agent})`, fontSize: 10, color: cssVar('--ct-text') || '#d7dae0', position: 'bottom' as const },
+        itemStyle: { color: cssVar(STATUS_VAR[n.status] || '--text-3') || '#888', borderColor: cssVar('--line') || '#26272c', borderWidth: 2 },
+        label: { show: true, formatter: `${n.name}\n(${n.agent})`, fontSize: 10, color: cssVar('--text-1') || '#d7dae0', position: 'bottom' as const },
       };
     });
     const edges = task.edges.map(([src, dst]) => ({
       source: src,
       target: dst,
-      lineStyle: { color: cssVar('--ct-border2') || '#33353b', width: 2, curveness: 0.1 },
+      lineStyle: { color: cssVar('--line-strong') || '#33353b', width: 2, curveness: 0.1 },
     }));
     chart.setOption(
       {

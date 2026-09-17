@@ -104,13 +104,13 @@ async function refresh() {
 
 function baseColors() {
   return {
-    text2: cssVar('--ct-text2') || '#9aa0aa',
-    text3: cssVar('--ct-text3') || '#666b75',
-    border: cssVar('--ct-border') || '#26272c',
-    accent: cssVar('--ct-accent') || '#4a8dff',
-    green: cssVar('--ct-green') || '#3fb950',
-    red: cssVar('--ct-red') || '#e5534b',
-    yellow: cssVar('--ct-yellow') || '#d29922',
+    text2: cssVar('--text-2') || '#9aa0aa',
+    text3: cssVar('--text-3') || '#666b75',
+    border: cssVar('--line') || '#26272c',
+    accent: cssVar('--accent') || '#4a8dff',
+    green: cssVar('--ok') || '#3fb950',
+    red: cssVar('--danger') || '#e5534b',
+    yellow: cssVar('--warn') || '#d29922',
   };
 }
 

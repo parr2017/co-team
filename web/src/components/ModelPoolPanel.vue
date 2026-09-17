@@ -34,25 +34,25 @@ defineEmits<{ (e: 'refresh'): void }>();
 
 <style scoped>
 .pool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
-.model-card { background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 6px; padding: 10px 12px; }
+.model-card { background: var(--bg-page); border: 1px solid var(--el-border-color); border-radius: 6px; padding: 10px 12px; }
 .m-head { display: flex; align-items: center; gap: 7px; }
 .m-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-.m-dot.on { background: var(--ct-green); }
-.m-dot.off { background: var(--ct-red); }
-.m-name { font-size: 12px; font-weight: 600; color: var(--ct-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.m-cost { margin-left: auto; font-size: var(--fs-meta); color: var(--ct-text3); flex-shrink: 0; }
-.m-meta { font-size: var(--fs-meta); color: var(--ct-text3); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slot-bar { height: 4px; background: var(--ct-panel2); border-radius: 2px; margin-top: 8px; overflow: hidden; }
-.slot-fill { height: 100%; background: var(--ct-accent); transition: width 0.4s; }
-.m-slots { font-size: var(--fs-meta); color: var(--ct-text3); margin-top: 5px; }
-.muted { color: var(--ct-text3); font-size: 12px; }
+.m-dot.on { background: var(--ok); }
+.m-dot.off { background: var(--danger); }
+.m-name { font-size: 12px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-cost { margin-left: auto; font-size: var(--fs-meta); color: var(--text-3); flex-shrink: 0; }
+.m-meta { font-size: var(--fs-meta); color: var(--text-3); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-bar { height: 4px; background: var(--bg-raised); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+.slot-fill { height: 100%; background: var(--accent); transition: width 0.4s; }
+.m-slots { font-size: var(--fs-meta); color: var(--text-3); margin-top: 5px; }
+.muted { color: var(--text-3); font-size: 12px; }
 .section-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 </style>
 
 <style scoped>
 /* OBS-1 模型健康细节 */
 .m-health { display: flex; gap: 6px; margin-top: 4px; font-size: var(--fs-meta); }
-.mh-bad { color: var(--ct-red); }
-.mh-slow { color: var(--ct-yellow); }
-.mh-cd { color: var(--ct-text3); }
+.mh-bad { color: var(--danger); }
+.mh-slow { color: var(--warn); }
+.mh-cd { color: var(--text-3); }
 </style>

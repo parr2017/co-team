@@ -112,23 +112,23 @@ async function resolve(item: { id: string }, action: 'create_task' | 'skip') {
 <style scoped>
 .sheet { font-size: 13px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.meta { font-size: 11px; color: var(--ct-text3); }
-.empty { color: var(--ct-text3); text-align: center; padding: 48px 0; }
+.meta { font-size: 11px; color: var(--text-3); }
+.empty { color: var(--text-3); text-align: center; padding: 48px 0; }
 .items { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; }
-.item { border: 1px solid var(--ct-border); border-radius: 6px; padding: 10px 12px; background: var(--ct-panel2); }
+.item { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg-raised); }
 .item.done { opacity: 0.55; }
 .item-head { display: flex; align-items: center; gap: 10px; }
 .cat { font-size: 10px; border: 1px solid currentColor; border-radius: 3px; padding: 0 6px; }
-.cat.model_env { color: var(--ct-yellow); }
-.cat.code_defect { color: var(--ct-red); }
-.cat.command_risk { color: var(--ct-accent); }
-.cat.requirement { color: var(--ct-green); }
-.cat.other { color: var(--ct-text3); }
-.count { font-size: 11px; color: var(--ct-text2); }
-.time { font-size: 10px; color: var(--ct-text3); }
-.resolved { margin-left: auto; font-size: 10px; color: var(--ct-green); }
-.sample { font-size: 12px; color: var(--ct-text); margin-top: 6px; white-space: pre-wrap; word-break: break-all; }
-.sources { font-size: 11px; color: var(--ct-text3); margin-top: 6px; }
+.cat.model_env { color: var(--warn); }
+.cat.code_defect { color: var(--danger); }
+.cat.command_risk { color: var(--accent); }
+.cat.requirement { color: var(--ok); }
+.cat.other { color: var(--text-3); }
+.count { font-size: 11px; color: var(--text-2); }
+.time { font-size: 10px; color: var(--text-3); }
+.resolved { margin-left: auto; font-size: 10px; color: var(--ok); }
+.sample { font-size: 12px; color: var(--text-1); margin-top: 6px; white-space: pre-wrap; word-break: break-all; }
+.sources { font-size: 11px; color: var(--text-3); margin-top: 6px; }
 .src { margin-right: 10px; font-size: 11px; }
 .ops { margin-top: 8px; display: flex; gap: 8px; }
 </style>

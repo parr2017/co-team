@@ -62,12 +62,12 @@ function pick() {
 
 <style scoped>
 .fs-path { display: flex; gap: 8px; margin-bottom: 12px; }
-.fs-list { max-height: 320px; overflow-y: auto; background: var(--ct-bg); border: 1px solid var(--el-border-color); border-radius: 8px; }
+.fs-list { max-height: 320px; overflow-y: auto; background: var(--bg-page); border: 1px solid var(--el-border-color); border-radius: 8px; }
 .fs-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--el-border-color); cursor: pointer; font-size: 13px; }
-.fs-row:hover { background: var(--ct-panel2); }
-.fs-row.shortcut { color: var(--ct-text2); }
-.fs-ico { color: var(--ct-text3); flex-shrink: 0; }
+.fs-row:hover { background: var(--bg-raised); }
+.fs-row.shortcut { color: var(--text-2); }
+.fs-ico { color: var(--text-3); flex-shrink: 0; }
 .fs-row .fs-sub { margin-left: 0; }
-.fs-sub { color: var(--ct-text3); font-size: 11px; }
-.fs-empty { padding: 24px; text-align: center; color: var(--ct-text3); font-size: 12px; }
+.fs-sub { color: var(--text-3); font-size: 11px; }
+.fs-empty { padding: 24px; text-align: center; color: var(--text-3); font-size: 12px; }
 </style>

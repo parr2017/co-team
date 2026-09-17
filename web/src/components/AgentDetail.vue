@@ -63,10 +63,10 @@ const roleFallback = computed(() => ROLES[props.agent?.name || ''] || props.agen
 const badge = computed(() => (props.agent?.name || '??').replace(/[^a-z]/gi, '').slice(0, 2).toUpperCase());
 const color = computed(() => {
   const s = props.agent?.status;
-  if (s === 'running') return 'var(--ct-yellow)';
-  if (s === 'done') return 'var(--ct-green)';
-  if (s === 'error') return 'var(--ct-red)';
-  return 'var(--ct-text3)';
+  if (s === 'running') return 'var(--warn)';
+  if (s === 'done') return 'var(--ok)';
+  if (s === 'error') return 'var(--danger)';
+  return 'var(--text-3)';
 });
 const statusText = computed(() => (({ idle: '空闲', running: '工作中', done: '已完成', error: '出错' } as Record<string, string>)[props.agent?.status || 'idle']) || props.agent?.status);
 const agentDesc = computed(() => profile.value?.description || '');
@@ -89,19 +89,19 @@ async function load() {
 
 <style scoped>
 .p-head { display: flex; align-items: center; gap: 14px; }
-.p-avatar { width: 52px; height: 52px; border-radius: 8px; border: 2px solid; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; background: var(--ct-panel2); color: var(--ct-text); }
+.p-avatar { width: 52px; height: 52px; border-radius: 8px; border: 2px solid; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; background: var(--bg-raised); color: var(--text-1); }
 .p-name { font-size: 17px; font-weight: 700; }
-.p-role { font-size: 12px; color: var(--ct-text3); }
-.p-exp { color: var(--ct-text3); }
-.p-section-title { font-size: 10px; color: var(--ct-text3); text-transform: uppercase; letter-spacing: 0.6px; margin: 14px 0 6px; }
-.p-value { background: var(--ct-bg); border-radius: 6px; padding: 10px 12px; font-size: 12px; color: var(--ct-text2); }
-.p-action { color: var(--ct-yellow); margin-top: 4px; }
-.p-model { color: var(--ct-accent); margin-top: 4px; }
-.p-err { color: var(--ct-red); margin-top: 4px; }
-.p-muted { color: var(--ct-text3); }
-.p-tags { color: var(--ct-text3); margin-top: 4px; }
-.p-memory { padding: 1px 0; font-size: 11px; color: var(--ct-text2); }
+.p-role { font-size: 12px; color: var(--text-3); }
+.p-exp { color: var(--text-3); }
+.p-section-title { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.6px; margin: 14px 0 6px; }
+.p-value { background: var(--bg-page); border-radius: 6px; padding: 10px 12px; font-size: 12px; color: var(--text-2); }
+.p-action { color: var(--warn); margin-top: 4px; }
+.p-model { color: var(--accent); margin-top: 4px; }
+.p-err { color: var(--danger); margin-top: 4px; }
+.p-muted { color: var(--text-3); }
+.p-tags { color: var(--text-3); margin-top: 4px; }
+.p-memory { padding: 1px 0; font-size: 11px; color: var(--text-2); }
 .p-task { padding: 2px 0; font-size: 11px; }
-.pt-status.completed { color: var(--ct-green); }
-.pt-status.failed { color: var(--ct-red); }
+.pt-status.completed { color: var(--ok); }
+.pt-status.failed { color: var(--danger); }
 </style>

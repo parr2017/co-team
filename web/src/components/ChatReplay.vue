@@ -80,22 +80,22 @@ watch(mode, (v) => {
 </script>
 
 <style scoped>
-.chat-sub { font-size: 11px; color: var(--ct-text3); margin-bottom: 10px; display: flex; align-items: center; }
-.chat-wrap { max-height: 520px; overflow-y: auto; display: flex; flex-direction: column; background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 4px; }
-.full-wrap { max-height: 560px; overflow-y: auto; background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 8px; }
-.state { color: var(--ct-text3); text-align: center; padding: 30px 0; font-size: 12px; }
+.chat-sub { font-size: 11px; color: var(--text-3); margin-bottom: 10px; display: flex; align-items: center; }
+.chat-wrap { max-height: 520px; overflow-y: auto; display: flex; flex-direction: column; background: var(--bg-page); border: 1px solid var(--line); border-radius: 6px; padding: 4px; }
+.full-wrap { max-height: 560px; overflow-y: auto; background: var(--bg-page); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.state { color: var(--text-3); text-align: center; padding: 30px 0; font-size: 12px; }
 .conv { margin-bottom: 12px; }
-.conv-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--ct-panel2); border-radius: 5px; font-size: 11px; }
-.conv-agent { color: var(--ct-accent); font-weight: 700; }
-.conv-node { color: var(--ct-text); }
-.conv-meta { margin-left: auto; color: var(--ct-text3); }
-.round { border-bottom: 1px dashed var(--ct-border); padding: 6px 10px; }
+.conv-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--bg-raised); border-radius: 5px; font-size: 11px; }
+.conv-agent { color: var(--accent); font-weight: 700; }
+.conv-node { color: var(--text-1); }
+.conv-meta { margin-left: auto; color: var(--text-3); }
+.round { border-bottom: 1px dashed var(--line); padding: 6px 10px; }
 .round:last-child { border-bottom: none; }
 .r-line { display: flex; gap: 8px; align-items: baseline; margin: 3px 0; }
-.r-tag { flex: 0 0 62px; text-align: right; font-size: 10px; color: var(--ct-text3); }
-.r-user .r-text { color: var(--ct-text2); font-size: 12px; }
-.r-assistant .r-text { color: var(--ct-text); font-size: 12px; }
+.r-tag { flex: 0 0 62px; text-align: right; font-size: 10px; color: var(--text-3); }
+.r-user .r-text { color: var(--text-2); font-size: 12px; }
+.r-assistant .r-text { color: var(--text-1); font-size: 12px; }
 .r-text.pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow-y: auto; }
-.r-tools .r-text { font-size: 10.5px; color: var(--ct-text3); word-break: break-all; }
-.r-error .r-text { color: var(--ct-red); font-size: 12px; }
+.r-tools .r-text { font-size: 10.5px; color: var(--text-3); word-break: break-all; }
+.r-error .r-text { color: var(--danger); font-size: 12px; }
 </style>

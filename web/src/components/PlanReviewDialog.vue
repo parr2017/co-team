@@ -282,37 +282,37 @@ async function cancelTask() {
 
 <style scoped>
 .sheet { font-size: 13px; }
-.sheet-head { display: flex; justify-content: space-between; font-size: 10px; color: var(--ct-text3); letter-spacing: 1px; border-bottom: 1px dashed var(--ct-border2); padding-bottom: 8px; }
-.doc-status { color: var(--ct-yellow); }
-.sheet-desc { margin: 12px 0 16px; color: var(--ct-text); font-weight: 500; }
+.sheet-head { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-3); letter-spacing: 1px; border-bottom: 1px dashed var(--line-strong); padding-bottom: 8px; }
+.doc-status { color: var(--warn); }
+.sheet-desc { margin: 12px 0 16px; color: var(--text-1); font-weight: 500; }
 .entries { display: flex; flex-direction: column; gap: 2px; max-height: 380px; overflow-y: auto; }
-.entry { padding: 6px 4px; border-bottom: 1px dotted var(--ct-border); }
+.entry { padding: 6px 4px; border-bottom: 1px dotted var(--line); }
 .entry.dim { opacity: 0.4; }
 .entry-line { display: flex; align-items: center; gap: 8px; }
-.entry-no { color: var(--ct-text3); font-size: 11px; }
+.entry-no { color: var(--text-3); font-size: 11px; }
 .leader { flex: 0 0 0; }
-.entry-name { color: var(--ct-text); }
+.entry-name { color: var(--text-1); }
 .entry-name-input { width: 320px; }
-.entry-agent { color: var(--ct-accent); font-size: 11px; }
-.entry-agent.orchestrator { color: var(--ct-text3); }
-.model-badge { font-size: 10px; color: var(--ct-accent); }
+.entry-agent { color: var(--accent); font-size: 11px; }
+.entry-agent.orchestrator { color: var(--text-3); }
+.model-badge { font-size: 10px; color: var(--accent); }
 .model-opt { display: inline-flex; align-items: center; gap: 6px; }
 .model-opt .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
-.model-opt .dot.on { background: var(--ct-green); }
-.model-opt .dot.off { background: var(--ct-red); }
-.model-hint { font-size: 10px; color: var(--ct-text3); }
-.branch { font-size: 10px; color: var(--ct-text3); }
-.stamp { font-size: 9px; border: 1px solid var(--ct-accent); color: var(--ct-accent); border-radius: 2px; padding: 0 4px; transform: rotate(-3deg); }
-.stamp.del { color: var(--ct-red); border-color: var(--ct-red); }
+.model-opt .dot.on { background: var(--ok); }
+.model-opt .dot.off { background: var(--danger); }
+.model-hint { font-size: 10px; color: var(--text-3); }
+.branch { font-size: 10px; color: var(--text-3); }
+.stamp { font-size: 9px; border: 1px solid var(--accent); color: var(--accent); border-radius: 2px; padding: 0 4px; transform: rotate(-3deg); }
+.stamp.del { color: var(--danger); border-color: var(--danger); }
 .ops { margin-left: auto; display: flex; gap: 4px; align-items: center; }
 .margin-note { display: flex; gap: 8px; align-items: center; padding: 2px 0 2px 28px; }
-.note-line { width: 24px; height: 1px; background: var(--ct-border2); transform: rotate(-2deg); }
-.note-text { font-size: 11px; color: var(--ct-text3); font-style: italic; }
-.insert-row { display: flex; gap: 8px; align-items: center; padding: 8px 10px; margin: 6px 0 4px 28px; border: 1px dashed var(--ct-border2); border-radius: 6px; background: var(--ct-panel2); }
+.note-line { width: 24px; height: 1px; background: var(--line-strong); transform: rotate(-2deg); }
+.note-text { font-size: 11px; color: var(--text-3); font-style: italic; }
+.insert-row { display: flex; gap: 8px; align-items: center; padding: 8px 10px; margin: 6px 0 4px 28px; border: 1px dashed var(--line-strong); border-radius: 6px; background: var(--bg-raised); }
 .insert-name { flex: 1; }
-.sign-area { border-top: 2px solid var(--ct-border2); margin-top: 14px; padding-top: 12px; }
+.sign-area { border-top: 2px solid var(--line-strong); margin-top: 14px; padding-top: 12px; }
 .feedback { display: flex; gap: 8px; align-items: center; }
-.feedback-label { color: var(--ct-accent); font-size: 11px; font-weight: 600; }
+.feedback-label { color: var(--accent); font-size: 11px; font-weight: 600; }
 .feedback .el-input { flex: 1; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 </style>

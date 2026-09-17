@@ -1061,42 +1061,42 @@ async function removeAgent(row: AgentDefinition) {
 
 <style scoped>
 .provider-list { display: flex; flex-direction: column; gap: 12px; max-height: 480px; overflow-y: auto; padding-right: 4px; }
-.provider-card { background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 12px; }
+.provider-card { background: var(--bg-page); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
 .pv-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.pv-title { font-size: 12px; font-weight: 500; color: var(--ct-text); }
-.pv-host { font-size: 11px; color: var(--ct-text3); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-title { font-size: 12px; font-weight: 500; color: var(--text-1); }
+.pv-host { font-size: 11px; color: var(--text-3); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-head .spacer { flex: 1; }
 .pv-shared { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 6px; }
-.pv-empty { font-size: 12px; color: var(--ct-text3); padding: 6px 0 2px; }
-.model-row { border-top: 1px dashed var(--ct-border); padding: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.pv-empty { font-size: 12px; color: var(--text-3); padding: 6px 0 2px; }
+.model-row { border-top: 1px dashed var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 6px; }
 .mr-line { display: flex; align-items: center; gap: 8px; }
 .mr-name { width: 220px; flex: none; }
 .mr-tags { flex: 1; min-width: 200px; }
 .mr-nums { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
 .mr-nums :deep(.el-input-number) { width: 100%; }
-.import-note { font-size: 12px; color: var(--ct-text3); margin-bottom: 10px; }
+.import-note { font-size: 12px; color: var(--text-3); margin-bottom: 10px; }
 .field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-.field > span { font-size: 11px; color: var(--ct-text3); }
+.field > span { font-size: 11px; color: var(--text-3); }
 .field-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
 .toolbar .spacer { flex: 1; }
-.toolbar .note { flex: 1; font-size: 11px; color: var(--ct-text3); }
-.mono { font-family: var(--ct-mono); font-size: 11px; }
-.mono-input :deep(textarea) { font-family: var(--ct-mono); font-size: 12px; }
+.toolbar .note { flex: 1; font-size: 11px; color: var(--text-3); }
+.mono { font-family: var(--font-mono); font-size: 11px; }
+.mono-input :deep(textarea) { font-family: var(--font-mono); font-size: 12px; }
 .field-hint { font-size: 11px; color: var(--el-text-color-secondary); line-height: 1.4; margin-top: 2px; }
 .general { display: flex; flex-direction: column; gap: 12px; }
-.gen-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--ct-border); border-radius: 8px; }
+.gen-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; }
 .gen-info { flex: 1; min-width: 0; }
-.gen-title { font-size: 13px; font-weight: 500; color: var(--ct-text); }
-.gen-desc { font-size: 11px; color: var(--ct-text3); margin-top: 3px; }
+.gen-title { font-size: 13px; font-weight: 500; color: var(--text-1); }
+.gen-desc { font-size: 11px; color: var(--text-3); margin-top: 3px; }
 .gen-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.gen-time { font-size: 11px; color: var(--ct-text3); }
+.gen-time { font-size: 11px; color: var(--text-3); }
 
 /* 包 D：命令权限 */
 .perm { display: flex; flex-direction: column; gap: 12px; }
-.perm-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--ct-border); border-radius: 8px; }
-.perm-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px; border: 1px dashed var(--ct-border); border-radius: 8px; }
-.perm-tag { font-family: var(--ct-mono); }
+.perm-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; }
+.perm-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px; border: 1px dashed var(--line); border-radius: 8px; }
+.perm-tag { font-family: var(--font-mono); }
 .perm-actions { display: flex; gap: 8px; }
 .mcp-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
 </style>

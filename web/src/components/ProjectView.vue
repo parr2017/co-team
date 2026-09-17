@@ -146,17 +146,17 @@ defineExpose({ loadProjects });
 </script>
 
 <style scoped>
-.empty { color: var(--ct-text3); text-align: center; padding: 30px; font-size: 12px; }
-.project-card { position: relative; background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; cursor: pointer; transition: border-color 0.15s; overflow: hidden; }
-.project-card:hover { border-color: var(--ct-border2); }
-.pc-name { font-size: 14px; font-weight: 600; color: var(--ct-text); }
-.pc-ws { font-size: 11px; color: var(--ct-text3); margin: 2px 0 6px; }
-.pc-stats { display: flex; gap: 12px; font-size: 11px; color: var(--ct-text2); }
-.pc-issues { color: var(--ct-yellow); }
-.pc-running { color: var(--ct-green); animation: blink 1.2s infinite; }
+.empty { color: var(--text-3); text-align: center; padding: 30px; font-size: 12px; }
+.project-card { position: relative; background: var(--bg-panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; cursor: pointer; transition: border-color 0.15s; overflow: hidden; }
+.project-card:hover { border-color: var(--line-strong); }
+.pc-name { font-size: 14px; font-weight: 600; color: var(--text-1); }
+.pc-ws { font-size: 11px; color: var(--text-3); margin: 2px 0 6px; }
+.pc-stats { display: flex; gap: 12px; font-size: 11px; color: var(--text-2); }
+.pc-issues { color: var(--warn); }
+.pc-running { color: var(--ok); animation: blink 1.2s infinite; }
 @keyframes blink { 50% { opacity: 0.4; } }
-.pc-bar { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--ct-panel2); }
-.pc-fill { height: 100%; background: var(--ct-accent); transition: width 0.5s; }
-.ws-hint { font-size: 10px; color: var(--ct-text3); margin-top: 3px; }
-.ws-warn { font-size: 10px; color: var(--ct-orange, #e6a23c); margin-top: 3px; }
+.pc-bar { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--bg-raised); }
+.pc-fill { height: 100%; background: var(--accent); transition: width 0.5s; }
+.ws-hint { font-size: 10px; color: var(--text-3); margin-top: 3px; }
+.ws-warn { font-size: 10px; color: var(--warn); margin-top: 3px; }
 </style>

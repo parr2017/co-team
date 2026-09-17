@@ -88,12 +88,12 @@ async function copyAll() {
 
 <style scoped>
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-.meta { font-size: 11px; color: var(--ct-text3); margin-left: auto; }
-.log-wrap { height: 62vh; overflow: auto; background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 6px 0; font-size: 11px; line-height: 1.55; }
+.meta { font-size: 11px; color: var(--text-3); margin-left: auto; }
+.log-wrap { height: 62vh; overflow: auto; background: var(--bg-page); border: 1px solid var(--line); border-radius: 6px; padding: 6px 0; font-size: 11px; line-height: 1.55; }
 .log-line { display: flex; gap: 10px; padding: 1px 12px; }
-.log-line .idx { flex: 0 0 46px; text-align: right; color: var(--ct-text3); opacity: 0.6; user-select: none; }
-.log-line .txt { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all; color: var(--ct-text2); }
-.log-line.err .txt { color: var(--ct-red); }
-.log-line.warn .txt { color: var(--ct-yellow); }
-.empty { text-align: center; color: var(--ct-text3); padding: 40px 0; }
+.log-line .idx { flex: 0 0 46px; text-align: right; color: var(--text-3); opacity: 0.6; user-select: none; }
+.log-line .txt { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all; color: var(--text-2); }
+.log-line.err .txt { color: var(--danger); }
+.log-line.warn .txt { color: var(--warn); }
+.empty { text-align: center; color: var(--text-3); padding: 40px 0; }
 </style>

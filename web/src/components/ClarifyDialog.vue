@@ -129,14 +129,14 @@ async function cancelTask() {
 
 <style scoped>
 .clarify { font-size: 13px; }
-.head { display: flex; justify-content: space-between; font-size: 10px; color: var(--ct-text3); letter-spacing: 1px; border-bottom: 1px dashed var(--ct-border2); padding-bottom: 8px; }
-.req { margin: 12px 0 8px; color: var(--ct-text); }
-.summary { margin: 8px 0; color: var(--ct-text2); font-style: italic; }
-.label { color: var(--ct-accent); margin-right: 8px; font-size: 11px; }
+.head { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-3); letter-spacing: 1px; border-bottom: 1px dashed var(--line-strong); padding-bottom: 8px; }
+.req { margin: 12px 0 8px; color: var(--text-1); }
+.summary { margin: 8px 0; color: var(--text-2); font-style: italic; }
+.label { color: var(--accent); margin-right: 8px; font-size: 11px; }
 .qa { display: flex; flex-direction: column; gap: 12px; margin: 14px 0; }
-.qa-item .q { font-size: 12px; color: var(--ct-yellow); margin-bottom: 6px; }
+.qa-item .q { font-size: 12px; color: var(--warn); margin-bottom: 6px; }
 .qa-item :deep(.attach-picker) { margin-top: 6px; }
-.empty { text-align: center; color: var(--ct-text3); padding: 12px; }
-.actions { display: flex; justify-content: flex-end; gap: 8px; border-top: 2px solid var(--ct-border2); padding-top: 12px; }
-.hint { font-size: 10px; color: var(--ct-text3); margin-top: 8px; }
+.empty { text-align: center; color: var(--text-3); padding: 12px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; border-top: 2px solid var(--line-strong); padding-top: 12px; }
+.hint { font-size: 10px; color: var(--text-3); margin-top: 8px; }
 </style>

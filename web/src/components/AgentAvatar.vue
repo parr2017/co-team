@@ -64,5 +64,5 @@ html.dark .av-master { background: #4a8dff; }
 .av-orange { background: #cc7a29; }
 .av-cyan { background: #0e8fa3; }
 .av-pink { background: #c4548f; }
-.av-active { outline: 3px solid var(--ct-accent); outline-offset: 1px; }
+.av-active { outline: 3px solid var(--accent); outline-offset: 1px; }
 </style>

@@ -201,12 +201,12 @@ async function submit() {
 .opts-row { align-items: center; flex-wrap: wrap; }
 .opt { display: flex; align-items: center; gap: 8px; }
 .opt-grow { flex: 1 1 100%; }
-.opt-label { font-size: var(--fs-aux); color: var(--ct-text3); white-space: nowrap; }
-.opt-hint { font-size: var(--fs-meta); color: var(--ct-text3); }
+.opt-label { font-size: var(--fs-aux); color: var(--text-3); white-space: nowrap; }
+.opt-hint { font-size: var(--fs-meta); color: var(--text-3); }
 .model-opt { display: inline-flex; align-items: center; gap: 6px; }
 .model-opt .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
-.model-opt .dot.on { background: var(--ct-green); }
-.model-opt .dot.off { background: var(--ct-red); }
-.model-hint { font-size: var(--fs-meta); color: var(--ct-text3); }
-.form-hint { font-size: var(--fs-aux); color: var(--ct-text3); margin-top: 8px; min-height: 16px; }
+.model-opt .dot.on { background: var(--ok); }
+.model-opt .dot.off { background: var(--danger); }
+.model-hint { font-size: var(--fs-meta); color: var(--text-3); }
+.form-hint { font-size: var(--fs-aux); color: var(--text-3); margin-top: 8px; min-height: 16px; }
 </style>

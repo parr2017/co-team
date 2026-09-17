@@ -118,35 +118,35 @@ function badge(n: string) { return codes.value[n] || '??'; }
 
 <style scoped>
 .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-.agent-card { background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 6px; padding: 12px; cursor: pointer; transition: border-color 0.15s; position: relative; }
-.agent-card:hover { border-color: var(--ct-border2); }
+.agent-card { background: var(--bg-panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; cursor: pointer; transition: border-color 0.15s; position: relative; }
+.agent-card:hover { border-color: var(--line-strong); }
 .agent-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .agent-badge {
   width: 34px; height: 34px; border-radius: 4px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  font-family: var(--ct-mono); font-size: 12px; font-weight: 600;
-  background: var(--ct-panel2); color: var(--ct-text2); border: 1px solid var(--ct-border2);
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  background: var(--bg-raised); color: var(--text-2); border: 1px solid var(--line-strong);
 }
 .agent-id { min-width: 0; }
 .agent-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ct-text3); flex-shrink: 0; }
-.dot.running { background: var(--ct-yellow); animation: card-pulse 1.6s ease-in-out infinite; }
-.dot.done { background: var(--ct-green); }
-.dot.error { background: var(--ct-red); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); flex-shrink: 0; }
+.dot.running { background: var(--warn); animation: card-pulse 1.6s ease-in-out infinite; }
+.dot.done { background: var(--ok); }
+.dot.error { background: var(--danger); }
 @keyframes card-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(154, 108, 10, 0.35); }
-  50% { box-shadow: 0 0 0 4px rgba(154, 108, 10, 0.08); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 35%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 8%, transparent); }
 }
-.agent-role { font-size: 11px; color: var(--ct-text3); }
-.agent-desc { font-size: 11px; color: var(--ct-text3); margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-action { font-size: 11px; color: var(--ct-yellow); margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-action.idle { color: var(--ct-text3); }
+.agent-role { font-size: 11px; color: var(--text-3); }
+.agent-desc { font-size: 11px; color: var(--text-3); margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-action { font-size: 11px; color: var(--warn); margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-action.idle { color: var(--text-3); }
 .agent-skills { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; min-height: 20px; }
-.skill-tag { font-size: var(--fs-meta); color: var(--ct-accent); background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 3px; padding: 1px 6px; }
-.skill-more { font-size: var(--fs-meta); color: var(--ct-text3); padding: 1px 2px; }
-.skill-empty { font-size: var(--fs-meta); color: var(--ct-text3); font-style: italic; }
-.agent-stats { display: flex; gap: 12px; font-size: 11px; color: var(--ct-text3); border-top: 1px solid var(--ct-border-light, var(--ct-border)); padding-top: 8px; }
-.agent-stats b { color: var(--ct-text2); font-weight: 600; }
+.skill-tag { font-size: var(--fs-meta); color: var(--accent); background: var(--bg-page); border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; }
+.skill-more { font-size: var(--fs-meta); color: var(--text-3); padding: 1px 2px; }
+.skill-empty { font-size: var(--fs-meta); color: var(--text-3); font-style: italic; }
+.agent-stats { display: flex; gap: 12px; font-size: 11px; color: var(--text-3); border-top: 1px solid var(--line, var(--line)); padding-top: 8px; }
+.agent-stats b { color: var(--text-2); font-weight: 600; }
 .section-head { margin-bottom: 10px; display: flex; align-items: baseline; gap: 10px; }
-.section-sub { font-size: 11px; color: var(--ct-text3); }
+.section-sub { font-size: 11px; color: var(--text-3); }
 </style>

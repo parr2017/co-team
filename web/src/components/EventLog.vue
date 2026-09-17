@@ -32,14 +32,14 @@ function view(e: EventItem) {
 </script>
 
 <style scoped>
-.log-list { max-height: 320px; overflow-y: auto; background: var(--ct-bg); border-radius: 8px; border: 1px solid var(--el-border-color); }
+.log-list { max-height: 320px; overflow-y: auto; background: var(--bg-page); border-radius: 8px; border: 1px solid var(--el-border-color); }
 .log-entry { padding: 6px 10px; border-bottom: 1px solid var(--el-border-color); font-size: 12px; display: flex; gap: 8px; align-items: baseline; }
-.log-ts { color: var(--ct-text3); flex-shrink: 0; font-family: var(--ct-mono); font-size: var(--fs-meta); }
-.log-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; align-self: center; background: var(--ct-text3); }
-.log-dot.success { background: var(--ct-green); }
-.log-dot.warn { background: var(--ct-yellow); }
-.log-dot.error { background: var(--ct-red); }
-.log-dot.accent { background: var(--ct-accent); }
-.log-msg { color: var(--ct-text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.muted { color: var(--ct-text3); }
+.log-ts { color: var(--text-3); flex-shrink: 0; font-family: var(--font-mono); font-size: var(--fs-meta); }
+.log-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; align-self: center; background: var(--text-3); }
+.log-dot.success { background: var(--ok); }
+.log-dot.warn { background: var(--warn); }
+.log-dot.error { background: var(--danger); }
+.log-dot.accent { background: var(--accent); }
+.log-msg { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muted { color: var(--text-3); }
 </style>

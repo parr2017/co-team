@@ -159,33 +159,33 @@ watch(() => [props.modelValue, props.nodeId] as const, ([open]) => {
 </script>
 
 <style scoped>
-.state { color: var(--ct-text3); text-align: center; padding: 32px 0; font-size: 12px; }
-.files { display: flex; flex-direction: column; margin-bottom: 8px; border: 1px solid var(--ct-border); border-radius: 6px; overflow: hidden; max-height: 180px; overflow-y: auto; }
-.file-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px; font-size: 11px; border-bottom: 1px solid var(--ct-border); background: var(--ct-panel2); border-left: none; border-right: none; border-top: none; cursor: pointer; width: 100%; text-align: left; }
-.file-row:hover { background: var(--ct-bg); }
+.state { color: var(--text-3); text-align: center; padding: 32px 0; font-size: 12px; }
+.files { display: flex; flex-direction: column; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; max-height: 180px; overflow-y: auto; }
+.file-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px; font-size: 11px; border-bottom: 1px solid var(--line); background: var(--bg-raised); border-left: none; border-right: none; border-top: none; cursor: pointer; width: 100%; text-align: left; }
+.file-row:hover { background: var(--bg-page); }
 .file-row:last-child { border-bottom: none; }
-.f-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ct-text2); }
-.f-ins { color: var(--ct-green); }
-.f-del { color: var(--ct-red); }
+.f-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.f-ins { color: var(--ok); }
+.f-del { color: var(--danger); }
 .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.stat { font-size: 11px; color: var(--ct-text3); }
-.patch-wrap { max-height: 56vh; overflow: auto; background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; font-size: 11px; line-height: 1.5; }
-.file-block { border-bottom: 1px solid var(--ct-border); }
+.stat { font-size: 11px; color: var(--text-3); }
+.patch-wrap { max-height: 56vh; overflow: auto; background: var(--bg-page); border: 1px solid var(--line); border-radius: 6px; font-size: 11px; line-height: 1.5; }
+.file-block { border-bottom: 1px solid var(--line); }
 .file-block:last-child { border-bottom: none; }
-.fb-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 5px 12px; background: var(--ct-panel2); border-bottom: 1px solid var(--ct-border); }
-.fb-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ct-text); font-weight: 600; }
-.fb-copy { border: 1px solid var(--ct-border); background: transparent; color: var(--ct-accent); font-size: 10px; padding: 1px 8px; border-radius: 3px; cursor: pointer; }
-.fb-copy:hover { background: var(--ct-bg); }
+.fb-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 5px 12px; background: var(--bg-raised); border-bottom: 1px solid var(--line); }
+.fb-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 600; }
+.fb-copy { border: 1px solid var(--line); background: transparent; color: var(--accent); font-size: 10px; padding: 1px 8px; border-radius: 3px; cursor: pointer; }
+.fb-copy:hover { background: var(--bg-page); }
 .row { display: flex; align-items: baseline; min-width: 0; }
-.row.add { background: rgba(63, 185, 80, 0.12); }
-.row.del { background: rgba(229, 83, 75, 0.10); }
-.row.hunk { color: var(--ct-accent); background: rgba(74, 141, 255, 0.08); }
-.row.meta { color: var(--ct-text3); }
-.no { flex: 0 0 38px; text-align: right; padding: 0 6px; color: var(--ct-text3); opacity: 0.7; user-select: none; font-size: 10px; }
+.row.add { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.row.del { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.row.hunk { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.row.meta { color: var(--text-3); }
+.no { flex: 0 0 38px; text-align: right; padding: 0 6px; color: var(--text-3); opacity: 0.7; user-select: none; font-size: 10px; }
 .sign { flex: 0 0 14px; text-align: center; }
-.row.add .sign { color: var(--ct-green); }
-.row.del .sign { color: var(--ct-red); }
-.code { flex: 1; min-width: 0; white-space: pre; color: var(--ct-text2); padding-right: 12px; }
-.row.add .code { color: var(--ct-green); }
-.row.del .code { color: var(--ct-red); }
+.row.add .sign { color: var(--ok); }
+.row.del .sign { color: var(--danger); }
+.code { flex: 1; min-width: 0; white-space: pre; color: var(--text-2); padding-right: 12px; }
+.row.add .code { color: var(--ok); }
+.row.del .code { color: var(--danger); }
 </style>

@@ -473,7 +473,10 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 .section { margin-bottom: 24px; }
 .section-title { font-family: var(--font-mono); font-size: var(--fs-meta); font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px; }
 .panel { background: var(--bg-panel); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 14px; margin-bottom: 16px; }
-.el-dialog { border: 1px solid var(--line-strong) !important; border-radius: var(--r-panel) !important; }
+.el-dialog {
+  border: 1px solid var(--line-strong) !important; border-radius: var(--r-panel) !important;
+  box-shadow: var(--shadow-float) !important;
+}
 .el-dialog__title { font-family: var(--font-mono); font-size: 13px !important; }
 .gate-tip { font-size: var(--fs-aux); color: var(--text-2); line-height: 1.6; margin-bottom: 10px; }
 .el-button { border-radius: var(--r-ctl) !important; font-weight: 400 !important; }

@@ -84,56 +84,56 @@ function fmtTok(n: number): string {
 <style scoped>
 .track { position: relative; display: flex; flex-direction: column; }
 .station-wrap { position: relative; padding-left: 26px; }
-.rail { position: absolute; left: 9px; top: 0; bottom: 0; width: 2px; background: var(--ct-border); }
+.rail { position: absolute; left: 9px; top: 0; bottom: 0; width: 2px; background: var(--line); }
 .rail.first { top: 26px; }
 .rail.last { bottom: auto; height: 26px; }
 .station {
   position: relative; display: flex; gap: 10px; align-items: flex-start;
   padding: 9px 12px; margin: 6px 0;
-  background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 6px;
+  background: var(--bg-panel); border: 1px solid var(--line); border-radius: 6px;
   cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
 }
-.station:hover { border-color: var(--ct-border2); }
+.station:hover { border-color: var(--line-strong); }
 .station.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-.dot { position: absolute; left: -21px; top: 18px; width: 9px; height: 9px; border-radius: 50%; background: var(--ct-text3); border: 2px solid var(--ct-panel); box-sizing: content-box; margin-left: 1px; }
-.dot.completed { background: var(--ct-green); }
-.dot.running, .dot.retrying { background: var(--ct-yellow); animation: pulse 1.6s ease-in-out infinite; }
-.dot.failed { background: var(--ct-red); }
-.dot.waiting_approval { background: var(--ct-accent); }
-.station.running { border-color: var(--ct-border2); }
+.dot { position: absolute; left: -21px; top: 18px; width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); border: 2px solid var(--bg-panel); box-sizing: content-box; margin-left: 1px; }
+.dot.completed { background: var(--ok); }
+.dot.running, .dot.retrying { background: var(--warn); animation: pulse 1.6s ease-in-out infinite; }
+.dot.failed { background: var(--danger); }
+.dot.waiting_approval { background: var(--accent); }
+.station.running { border-color: var(--line-strong); }
 @keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(154, 108, 10, 0.35); }
-  50% { box-shadow: 0 0 0 5px rgba(154, 108, 10, 0.08); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 35%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--warn) 8%, transparent); }
 }
 .s-main { flex: 1; min-width: 0; }
 .s-top { display: flex; align-items: baseline; gap: 8px; }
-.s-name { font-size: var(--fs-aux); color: var(--ct-text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-name { font-size: var(--fs-aux); color: var(--text-1); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-status { flex-shrink: 0; font-size: var(--fs-meta); margin-left: auto; }
-.s-status.completed { color: var(--ct-green); }
-.s-status.running, .s-status.retrying { color: var(--ct-yellow); }
-.s-status.failed { color: var(--ct-red); }
-.s-status.waiting_approval { color: var(--ct-accent); }
-.s-status.pending, .s-status.planned, .s-status.cancelled, .s-status.queued { color: var(--ct-text3); }
-.s-meta { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-size: var(--fs-meta); color: var(--ct-text3); flex-wrap: wrap; }
-.agent-badge { border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 4px; color: var(--ct-text2); }
-.branch { color: var(--ct-accent); }
-.retry { color: var(--ct-yellow); }
+.s-status.completed { color: var(--ok); }
+.s-status.running, .s-status.retrying { color: var(--warn); }
+.s-status.failed { color: var(--danger); }
+.s-status.waiting_approval { color: var(--accent); }
+.s-status.pending, .s-status.planned, .s-status.cancelled, .s-status.queued { color: var(--text-3); }
+.s-meta { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-size: var(--fs-meta); color: var(--text-3); flex-wrap: wrap; }
+.agent-badge { border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 4px; color: var(--text-2); }
+.branch { color: var(--accent); }
+.retry { color: var(--warn); }
 
 /* ---- 2.2 心跳卡 ---- */
 .heartbeat { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: var(--fs-meta); flex-wrap: wrap; }
-.hb-chip { border: 1px solid var(--ct-border2); border-radius: 999px; padding: 1px 8px; color: var(--ct-text2); background: var(--ct-panel2, transparent); }
-.hb-chip.warn { color: var(--ct-yellow); border-color: var(--ct-yellow); }
-.hb-chip.model { color: var(--ct-accent); border-color: var(--ct-accent); }
-.hb-live { display: inline-flex; align-items: center; gap: 4px; color: var(--ct-green); margin-left: auto; }
-.hb-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--ct-green); animation: blink 1.2s ease-in-out infinite; }
+.hb-chip { border: 1px solid var(--line-strong); border-radius: 999px; padding: 1px 8px; color: var(--text-2); background: var(--bg-raised, transparent); }
+.hb-chip.warn { color: var(--warn); border-color: var(--warn); }
+.hb-chip.model { color: var(--accent); border-color: var(--accent); }
+.hb-live { display: inline-flex; align-items: center; gap: 4px; color: var(--ok); margin-left: auto; }
+.hb-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: blink 1.2s ease-in-out infinite; }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
 /* ---- 2.1 生成直播打字机 ---- */
 .delta {
   margin-top: 6px; padding: 6px 8px;
-  font-size: var(--fs-meta); line-height: 1.5; color: var(--ct-text2);
+  font-size: var(--fs-meta); line-height: 1.5; color: var(--text-2);
   background: var(--bg-inset);
-  border-left: 2px solid var(--ct-accent);
+  border-left: 2px solid var(--accent);
   border-radius: 0 4px 4px 0;
   white-space: pre-wrap; word-break: break-all;
   max-height: 64px; overflow: hidden;

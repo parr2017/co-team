@@ -38,18 +38,18 @@ async function load() {
 </script>
 
 <style scoped>
-.md-body { max-height: 560px; overflow-y: auto; font-size: 13px; line-height: 1.7; color: var(--ct-text2); }
-.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { color: var(--ct-text); border-bottom: 1px solid var(--ct-border); padding-bottom: 6px; margin: 18px 0 10px; }
+.md-body { max-height: 560px; overflow-y: auto; font-size: 13px; line-height: 1.7; color: var(--text-2); }
+.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3) { color: var(--text-1); border-bottom: 1px solid var(--line); padding-bottom: 6px; margin: 18px 0 10px; }
 .md-body :deep(h1) { font-size: 18px; }
 .md-body :deep(h2) { font-size: 15px; }
 .md-body :deep(table) { border-collapse: collapse; width: 100%; margin: 10px 0; }
-.md-body :deep(th), .md-body :deep(td) { border: 1px solid var(--ct-border); padding: 6px 10px; font-size: 12px; text-align: left; }
-.md-body :deep(th) { background: var(--ct-panel2); }
-.md-body :deep(code) { font-family: var(--ct-mono); font-size: 11px; background: var(--ct-panel2); border-radius: 3px; padding: 1px 4px; }
-.md-body :deep(pre) { background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 10px; overflow-x: auto; }
+.md-body :deep(th), .md-body :deep(td) { border: 1px solid var(--line); padding: 6px 10px; font-size: 12px; text-align: left; }
+.md-body :deep(th) { background: var(--bg-raised); }
+.md-body :deep(code) { font-family: var(--font-mono); font-size: 11px; background: var(--bg-raised); border-radius: 3px; padding: 1px 4px; }
+.md-body :deep(pre) { background: var(--bg-page); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
 .md-body :deep(pre code) { background: transparent; padding: 0; }
-.md-body :deep(blockquote) { border-left: 3px solid var(--ct-accent); margin: 8px 0; padding: 4px 12px; color: var(--ct-text3); }
-.meta { margin-top: 10px; font-size: 10px; color: var(--ct-text3); }
+.md-body :deep(blockquote) { border-left: 3px solid var(--accent); margin: 8px 0; padding: 4px 12px; color: var(--text-3); }
+.meta { margin-top: 10px; font-size: 10px; color: var(--text-3); }
 .empty, .error { padding: 40px; text-align: center; }
-.error { color: var(--ct-red); }
+.error { color: var(--danger); }
 </style>

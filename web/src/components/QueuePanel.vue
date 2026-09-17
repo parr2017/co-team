@@ -71,8 +71,8 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.queue-strip { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 10px; border: 1px solid var(--ct-border2); border-radius: 8px; flex-wrap: wrap; }
-.queue-strip.queue-blocked { border-color: var(--ct-red); }
-.queue-info { font-size: var(--fs-aux); color: var(--ct-text2); }
-.queue-reason { font-size: var(--fs-aux); color: var(--ct-red); flex: 1; }
+.queue-strip { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 10px; border: 1px solid var(--line-strong); border-radius: 8px; flex-wrap: wrap; }
+.queue-strip.queue-blocked { border-color: var(--danger); }
+.queue-info { font-size: var(--fs-aux); color: var(--text-2); }
+.queue-reason { font-size: var(--fs-aux); color: var(--danger); flex: 1; }
 </style>

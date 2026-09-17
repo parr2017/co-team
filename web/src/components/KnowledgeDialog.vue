@@ -166,11 +166,11 @@ function fmtTime(ts: string): string {
 .kb { font-size: 13px; }
 .kb-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .kb-list { max-height: calc(80vh - 180px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-.kb-item { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--ct-border); border-radius: 8px; padding: 10px 12px; }
+.kb-item { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .kb-main { flex: 1; min-width: 0; cursor: pointer; }
-.kb-title { font-weight: 600; color: var(--ct-text); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.kb-meta { display: flex; gap: 8px; align-items: center; font-size: 10px; color: var(--ct-text3); margin-top: 4px; flex-wrap: wrap; }
-.kb-content { margin-top: 8px; white-space: pre-wrap; font-size: 12px; color: var(--ct-text2); background: var(--ct-panel2); border-radius: 6px; padding: 10px; }
+.kb-title { font-weight: 600; color: var(--text-1); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kb-meta { display: flex; gap: 8px; align-items: center; font-size: 10px; color: var(--text-3); margin-top: 4px; flex-wrap: wrap; }
+.kb-content { margin-top: 8px; white-space: pre-wrap; font-size: 12px; color: var(--text-2); background: var(--bg-raised); border-radius: 6px; padding: 10px; }
 .kb-ops { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
-.empty { text-align: center; color: var(--ct-text3); padding: 30px; font-size: 12px; }
+.empty { text-align: center; color: var(--text-3); padding: 30px; font-size: 12px; }
 </style>

@@ -62,25 +62,6 @@
   /* ---- 字体 ---- */
   --font-ui: -apple-system, 'Segoe UI', 'Microsoft YaHei', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
-
-  /* ============================================================
-     旧名兼容别名（--ct-*）：迁移期组件零断裂；全部组件 token 化后删除本段
-     ============================================================ */
-  --ct-bg: var(--bg-page);
-  --ct-panel: var(--bg-panel);
-  --ct-panel2: var(--bg-raised);
-  --ct-border: var(--line);
-  --ct-border2: var(--line-strong);
-  --ct-text: var(--text-1);
-  --ct-text2: var(--text-2);
-  --ct-text3: var(--text-3);
-  --ct-accent: var(--accent);
-  --ct-accent-soft: var(--accent-soft);
-  --ct-green: var(--ok);
-  --ct-yellow: var(--warn);
-  --ct-orange: var(--warn);
-  --ct-red: var(--danger);
-  --ct-mono: var(--font-mono);
 }
 
 /* ---- 暗色覆盖（终端 IDE 感：深炭底 / 高对比）---- */
