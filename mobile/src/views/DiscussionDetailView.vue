@@ -343,6 +343,20 @@ function toolCallsOf(m: DiscussionMessage): any[] {
   const calls = (m.meta as any)?.calls;
   return Array.isArray(calls) ? calls : [];
 }
+// ---------- P2-8 小改回滚 ----------
+const undoingMsg = ref<Set<string>>(new Set());
+async function undoWrites(m: DiscussionMessage) {
+  const ids = toolCallsOf(m).map((c: any) => c.undo_id).filter(Boolean);
+  if (!ids.length || undoingMsg.value.has(m.id)) return;
+  undoingMsg.value = new Set([...undoingMsg.value, m.id]);
+  try {
+    const r = await api.undoDiscussionWrites(discId.value, ids);
+    showToast(r.reverted.length ? `已回滚 ${r.reverted.length} 个文件` : '没有需要回滚的改动');
+  } catch (e: any) {
+    showToast(String(e?.message || e));
+    undoingMsg.value = new Set([...undoingMsg.value].filter((x) => x !== m.id));
+  }
+}
 function toolIcon(tool: string): string {
   if (tool.startsWith('mcp__')) return '🔌';
   if (CODE_TOOLS.test(tool)) return '📂';
@@ -595,6 +609,10 @@ const showExp = ref(false);
               </div>
               <div v-if="rec.args_summary" class="tc-args mono">{{ rec.args_summary }}</div>
               <div v-if="rec.output_gist" class="tc-gist mono">{{ rec.output_gist }}</div>
+              <!-- P2-8 小改：diff 落流 + 一键回滚 -->
+              <div v-if="rec.diff" class="tc-diff mono">{{ rec.diff }}</div>
+              <button v-if="rec.undo_id && !undoingMsg.has(row.m.id)" class="tc-undo" @click="undoWrites(row.m)">↩ 回滚此改动</button>
+              <span v-else-if="rec.undo_id" class="tc-undo-done mono">✓ 已回滚</span>
             </div>
           </div>
         </div>
@@ -917,6 +935,9 @@ const showExp = ref(false);
 .tc-status.bad { color: #e5484d; }
 .tc-args { font-size: 10px; opacity: 0.85; word-break: break-all; padding-left: 16px; }
 .tc-gist { font-size: 10px; color: var(--text-3); padding-left: 16px; word-break: break-all; }
+.tc-diff { font-size: 10px; background: var(--panel-2); border-radius: 4px; padding: 4px 8px; margin: 2px 0 2px 16px; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto; }
+.tc-undo { border: 1px solid var(--border, #e5e5e5); background: none; color: var(--text-3); border-radius: 6px; font-size: 10px; padding: 2px 8px; cursor: pointer; margin: 2px 0 2px 16px; }
+.tc-undo-done { font-size: 10px; color: var(--green, #10b981); margin: 2px 0 2px 16px; }
 .detail-chip { font-size: 10px; color: var(--accent, #1989fa); border: 1px solid var(--accent, #1989fa); border-radius: 8px; padding: 0 6px; cursor: pointer; }
 .dp-wrap { display: flex; flex-direction: column; min-height: 0; max-height: 75vh; }
 .dp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border, #e5e5e5); }

@@ -876,6 +876,11 @@ export const api = {
     request<{ status: string; state: 'confirmed' | 'cancelled'; project_id?: string; task_id?: string }>(`/api/discussions/${id}/convert/confirm`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm_id: confirmId, action }),
     }),
+  /** P2-8 群聊小改一键回滚：按 undo_id 恢复写前内容（新文件=删除） */
+  undoDiscussionWrites: (id: string, undoIds: string[]) =>
+    request<{ status: string; reverted: string[]; missing: number }>(`/api/discussions/${id}/undo`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ undo_ids: undoIds }),
+    }),
   status: () => request<StatusResponse>('/api/status'),
   metrics: () => request<MetricsResponse>('/api/metrics'),
   fsList: (path: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(path)}`),

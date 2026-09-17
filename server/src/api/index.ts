@@ -1291,6 +1291,16 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'deleted', id: c.req.param('id') });
   });
 
+  // P2-8 群聊小改一键回滚：按 undo_id 恢复写前内容（新文件=删除）
+  app.post('/api/discussions/:id/undo', async (c) => {
+    const { undoDiscussionWrites } = await import('../discussion');
+    const body = await readJsonAuto<{ undo_ids?: string[] }>(c);
+    const ids = (body.undo_ids || []).map(String).filter(Boolean).slice(0, 20);
+    if (!ids.length) throw new HttpError(400, 'undo_ids is required');
+    const r = await undoDiscussionWrites(discDeps(), c.req.param('id'), ids);
+    return c.json({ status: 'ok', ...r });
+  });
+
   app.post('/api/discussions/:id/messages', async (c) => {
     // 引擎 v2：用户消息不再被 busy 拒收（409 废除）——随时入库；在飞的响应循环
     // 会在每位发言者之间检查新消息并重新路由（轮内真打断）。

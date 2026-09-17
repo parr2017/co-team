@@ -22,7 +22,7 @@
  * - 批量新建文件、架构级改动仍走「生成方案 → 转项目开发」任务管线。
  */
 import { busGet, busSet, busDel, busKeys } from './bus';
-import { emitProgress, addProjectMemory, addAgentMemory, getAgentMemory, getProjectMemory, saveProject, getProject, getTaskGraph } from './store';
+import { emitProgress, addProjectMemory, addAgentMemory, getAgentMemory, getProjectMemory, saveProject, getProject, getTaskGraph, listTaskGraphs } from './store';
 import type { ProjectRecord } from './store';
 import { chat, extractJson, stripCodeFence, salvageToolCalls } from './llm';
 import type { LlmResponse } from './llm';
@@ -35,6 +35,7 @@ import { writeKnowledge, relevantKnowledge, listKnowledge } from './knowledge';
 import { scaffoldProject, initGitOnly } from './scaffold';
 import { applyToolCalls, checkPage } from './tools';
 import { analyzeImages } from './vision';
+import { simpleGit } from 'simple-git';
 import { ingestUserImages, renderImagesForContext, type IncomingImage, type StoredImage } from './media';
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
@@ -108,6 +109,10 @@ export interface ToolCallRecord {
   ok?: boolean;
   /** 外部 MCP 工具标注 */
   mcp?: { server: string; tool: string };
+  /** P2-8 小改：git diff 尾部（前端渲染 diff 块） */
+  diff?: string;
+  /** P2-8 小改：回滚凭证（undo API 凭此恢复写前内容） */
+  undo_id?: string;
 }
 
 /** 单次发言的工作明细（meta.detail）：右侧详情面板分区渲染的数据源 */
@@ -169,6 +174,9 @@ const MAX_TOOL_ITER = 5;
 /** 群内同步命令的超时（秒）；长驻服务用 exec_background */
 const EXEC_TIMEOUT_SEC = 90;
 /** 小改预算：单轮发言写 ≤N 文件、合计 ≤M 行，超出引导转任务 */
+/** 小改预算（P2-8 工作台，兑现 2026-09-09 设计意图）：单轮发言写 ≤N 文件、合计 ≤M 行，超出引导转任务 */
+const SMALL_EDIT_MAX_FILES = 3;
+const SMALL_EDIT_MAX_LINES = 80;
 /** 路由器单轮最多选出的发言者 */
 const MAX_ROUND_SPEAKERS = 3;
 /** 流式 delta 节流 */
@@ -540,7 +548,7 @@ function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
 3. 发言 ≤300 字，给观点、论据、可执行建议；可以直接质疑或补充其他成员，但保持专业克制。
 4. 经验沉淀：陈述通用经验/踩坑/决策理由时写进 experience 字段（自动入库）；或用 write_knowledge 工具显式沉淀。
 5. 需要用户拍板的事项（方向取舍、资源投入、重大分歧）放进 ask_user 字段；普通疑问不要打扰用户。
-6. 禁止修改代码：你没有 write_file/edit_file——你的职责是运行、部署、调试、查明报错原因；任何需要改代码的事项用 convert_to_project 转任务。
+6. 小改直干（工作台）：预算内（单轮 ≤3 文件 / ≤80 行）的修改直接动手（write_file/edit_file），写后 diff 自动落流可一键回滚；超出预算或架构级改动用 convert_to_project 转任务。
 7. 用户插话/新指示打断时：先一句话确认你理解的新方向，再继续动作（队友的话要被复述确认，不能默默吸收）。
 
 ## 真实性纪律（最高优先）
@@ -560,7 +568,7 @@ function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
  {"tool":"look_image","path":"相对路径","question":"要确认的问题"}  分析项目内图片（含 Playwright 截图产物）
 长驻服务（后台启动，返回 pid 与日志路径，随后可 exec 查端口 / read_file 看日志）：
  {"tool":"exec_background","command":"npm run dev"}   停止进程： {"tool":"kill_process","pid":12345}
-禁止修改代码：群聊没有 write_file/edit_file，任何改代码的请求一律 {"tool":"convert_to_project"} 转任务（这是修改代码的唯一出路）
+小改直干（工作台）：修 bug/调文案/小改动直接 {"tool":"write_file","path":"相对路径","content":"文件全文"} 或 {"tool":"edit_file","path":"相对路径","find":"原文片段","replace":"新片段"}——预算：单轮发言 ≤3 文件且合计 ≤80 行，写后自动落 diff 可一键回滚；超出预算或大改动一律 {"tool":"convert_to_project"} 转任务（预算内的小修别推给任务管线）
 知识沉淀： {"tool":"write_knowledge","category":"general-tech|project","title":"标题","content":"内容"}
 转项目开发（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）： {"tool":"convert_to_project","auto_run":true}
 ${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments 字段）：\n${mcpBlock}\n` : ''}
@@ -649,11 +657,18 @@ interface TurnOutcome {
 }
 
 /** Run one batch of the speaker's tool calls; returns per-call result summaries. */
+/** P2-8 小改预算记账：跨一个发言轮的全部工具迭代累积 */
+interface WriteBudget {
+  lines: number;
+  touched: string[];
+}
+
 async function runSpeakerToolCalls(
   deps: DiscussionDeps,
   disc: Discussion,
   agent: string,
   calls: Record<string, any>[],
+  writeBudget?: WriteBudget,
 ): Promise<unknown[]> {
   const results: unknown[] = [];
   const proj = disc.project_id ? await getProject(disc.project_id) : null;
@@ -766,8 +781,50 @@ async function runSpeakerToolCalls(
           catch (e: any) { results.push({ tool: 'kill_process', ok: false, pid, error: String(e?.message || e) }); }
         }
       } else if (name === 'write_file' || name === 'edit_file') {
-        // M11 群聊禁改代码（用户拍板）：群聊只做运行/部署/调试/查报错，改代码一律转任务
-        results.push({ tool: name, ok: false, error: '群聊不允许修改代码——请用 convert_to_project 把改动转成开发任务执行' });
+        // P2-8 工作台：预算内小改直干（兑现"小改预算"设计意图），超预算引导转任务
+        if (!ws) { results.push({ tool: name, ok: false, error: '本讨论未绑定项目目录，无法写文件' }); continue; }
+        // 与任务管线互斥：该工作区有运行中任务时禁写（防并发写冲突）
+        const running = (await listTaskGraphs()).find((g) => g.status === 'running' && g.workspace === ws);
+        if (running) {
+          results.push({ tool: name, ok: false, error: `工作区互斥：任务 ${running.task_id} 正在该项目执行，群聊小改与之冲突——请等任务完成后再改，或直接转任务` });
+          continue;
+        }
+        const rel = String(call.path || '').trim();
+        const abs = path.resolve(ws, rel);
+        if (!rel || !abs.startsWith(path.resolve(ws))) { results.push({ tool: name, ok: false, path: rel, error: '路径为空或越界（目录监狱）' }); continue; }
+        // 预算核算（单轮发言 ≤N 文件 / ≤M 行，跨工具迭代累积）
+        const content = name === 'write_file' ? String(call.content ?? '') : String(call.replace ?? '');
+        const addLines = content ? content.split('\n').length : 0;
+        const budget = writeBudget || { lines: 0, touched: [] };
+        const alreadyTouched = budget.touched.includes(rel);
+        if (budget.touched.length + (alreadyTouched ? 0 : 1) > SMALL_EDIT_MAX_FILES || budget.lines + (alreadyTouched ? 0 : addLines) > SMALL_EDIT_MAX_LINES) {
+          results.push({ tool: name, ok: false, path: rel, budget_exceeded: true, error: `超出小改预算（单轮 ≤${SMALL_EDIT_MAX_FILES} 文件 / ≤${SMALL_EDIT_MAX_LINES} 行，已用 ${budget.touched.length} 文件/${budget.lines} 行）——请用 convert_to_project 转任务` });
+          continue;
+        }
+        // 写前取证（回滚依据）：存在则记内容，不存在记 null（新文件回滚=删除）
+        const prevExists = fs.existsSync(abs) && fs.statSync(abs).isFile();
+        const prevContent = prevExists ? fs.readFileSync(abs, 'utf-8') : null;
+        // 执行写入（复用任务管线工具面：writeFiles/applyEdits 含目录监狱与软错误）
+        const r = await applyToolCalls(ws, [call as { tool: string }], { agent, project_id: disc.project_id });
+        const rr: any = r[0] || {};
+        if (rr.ok === false) { results.push(rr); continue; }
+        // 预算记账
+        if (!alreadyTouched) { budget.touched.push(rel); budget.lines += addLines; }
+        // undo 记录（精确回滚：恢复写前内容，不依赖 git 状态，绝不碰用户自己的未提交改动）
+        let diff = '';
+        try {
+          const g = simpleGit({ baseDir: ws });
+          if (await g.checkIsRepo()) diff = (await g.diff(['--', rel])).slice(-1200);
+        } catch { /* 非 git 仓库无 diff */ }
+        const undoId = newId();
+        const undoList = (await busGet<any[]>(`discussion:${disc.id}:undo`)) || [];
+        undoList.push({ undo_id: undoId, file: rel, prev_content: prevContent, ts: new Date().toISOString(), agent });
+        await busSet(`discussion:${disc.id}:undo`, undoList.slice(-50));
+        results.push({
+          tool: name, ok: true, path: rel, lines: addLines, undo_id: undoId,
+          ...(diff ? { diff } : {}),
+          note: `已写入（本轮小改预算 ${budget.touched.length}/${SMALL_EDIT_MAX_FILES} 文件、${budget.lines}/${SMALL_EDIT_MAX_LINES} 行）。diff 见工具明细，可一键回滚。`,
+        });
             } else if (name === 'convert_to_project' || name === 'convert_task') {
         // 用户拍板前置（2026-09-15）：agent 发起转任务先落「待确认卡片」（任务概要+执行方式），
         // 用户在群里确认后才真正建任务——任务不再"莫名其妙就开始做了"
@@ -847,6 +904,8 @@ function buildCallRecords(calls: Record<string, any>[], results: unknown[]): Too
       gist = String(r.content).slice(0, 200);
     }
     rec.output_gist = gist ? gist.slice(0, 300) : undefined;
+    if (r.undo_id) rec.undo_id = String(r.undo_id);
+    if (r.diff) rec.diff = String(r.diff).slice(-1200);
     out.push(rec);
   }
   return out;
@@ -861,7 +920,7 @@ function toolActivityLine(calls: Record<string, any>[], results: unknown[]): str
     if (t === 'exec' || t === 'exec_command' || t === 'run_command') segs.push(`exec「${String(calls[i].command || '').slice(0, 60)}」exit ${r.returncode ?? '?'}`);
     else if (t === 'exec_background' || t === 'start_process') segs.push(`后台启动「${String(calls[i].command || '').slice(0, 50)}」pid ${r.pid ?? '?'}`);
     else if (t === 'kill_process') segs.push(`停止进程 ${calls[i].pid}${r.ok ? '' : ' 失败'}`);
-    else if (t === 'write_file' || t === 'edit_file') segs.push(`改代码被拒（群聊禁改，转任务）`);
+    else if (t === 'write_file' || t === 'edit_file') segs.push(r.ok ? `✍ 写入 ${String(r.path || '').slice(0, 40)}` : (r.budget_exceeded ? '超小改预算（转任务）' : '写入失败'));
     else if (t === 'write_knowledge') segs.push(r.ok ? '沉淀知识' : '沉淀知识失败');
     else if (t === 'convert_to_project' || t === 'convert_task') segs.push(r.ok ? (r.pending ? '转任务确认卡已发出（待用户确认）' : `转项目开发任务 ${r.task_id}${r.auto_run ? '（已入队）' : ''}`) : '转任务失败');
     else segs.push(t);
@@ -903,6 +962,8 @@ async function runSpeakerTurn(
   let toolUsed = false;
   // P1 明细落盘：本轮全部工具调用记录（跨工具迭代累积），最终随发言消息 meta.detail 持久化
   const turnCalls: ToolCallRecord[] = [];
+  // P2-8 小改预算：跨本轮全部工具迭代累积（≤N 文件 / ≤M 行）
+  const writeBudget: WriteBudget = { lines: 0, touched: [] };
   // 换模链：主选 + 健康后备（同端点组沉底），本轮实际应答的模型记在 chosen 上
   const chain = speakerModelChain(deps, agent, entry);
   let chosen: ModelEntry = chain[0];
@@ -947,7 +1008,7 @@ async function runSpeakerTurn(
     if (calls.length && !last) {
       void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
       toolUsed = true;
-      const results = await runSpeakerToolCalls(deps, disc, agent, calls);
+      const results = await runSpeakerToolCalls(deps, disc, agent, calls, writeBudget);
       const records = buildCallRecords(calls, results);
       turnCalls.push(...records);
       const line = toolActivityLine(calls, results);
@@ -1572,6 +1633,36 @@ export async function convertToProject(deps: DiscussionDeps, discId: string, opt
 }
 
 // ---------- convert confirmation（转任务先过用户拍板，2026-09-15） ----------
+
+/** P2-8 一键回滚：按 undo_id 恢复写前内容（新文件回滚=删除）——精确恢复，不依赖 git 状态，绝不碰用户自己的未提交改动 */
+export async function undoDiscussionWrites(deps: DiscussionDeps, discId: string, undoIds: string[]): Promise<{ reverted: string[]; missing: number }> {
+  const key = `discussion:${discId}:undo`;
+  const list = (await busGet<any[]>(key)) || [];
+  const targets = list.filter((r) => undoIds.includes(String(r.undo_id)));
+  if (!targets.length) return { reverted: [], missing: undoIds.length };
+  const disc = await getDiscussion(discId);
+  const proj = disc?.project_id ? await getProject(disc.project_id) : null;
+  const ws = proj?.workspace || '';
+  if (!ws) throw new DiscussionError(400, '讨论未绑定项目，无法回滚');
+  const reverted: string[] = [];
+  for (const t of targets) {
+    const rel = String(t.file || '');
+    const abs = path.resolve(ws, rel);
+    if (!rel || !abs.startsWith(path.resolve(ws))) continue; // 目录监狱
+    if (t.prev_content === null || t.prev_content === undefined) {
+      try { fs.rmSync(abs, { force: true }); reverted.push(rel); } catch { /* 已不存在 */ }
+    } else {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, String(t.prev_content), 'utf-8');
+      reverted.push(rel);
+    }
+  }
+  await busSet(key, list.filter((r) => !undoIds.includes(String(r.undo_id))));
+  if (reverted.length) {
+    await appendSystemMessage(discId, `↩ 已回滚 ${reverted.length} 个文件的小改：${reverted.join('、').slice(0, 200)}`, undefined, 'card');
+  }
+  return { reverted, missing: undoIds.length - targets.length };
+}
 
 /** P2-5 侦查报告：聚合讨论中实际发生的排查动作（工具消息的 meta.calls），转任务描述携带 */
 function scoutReportFromMessages(messages: DiscussionMessage[]): string {

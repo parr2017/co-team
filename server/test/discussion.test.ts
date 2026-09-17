@@ -281,11 +281,11 @@ describe('round engine: speak-or-silent with real tools', () => {
     expect(msgs.some((m) => m.from === 'system' && /^第 \d+ 轮/.test(m.text))).toBe(false);
   });
 
-  it('M11 禁改代码：exec 真实执行，write_file 被拒并引导转任务', async () => {
+  it('P2-8 工作台：exec 真实执行，write_file 预算内真实写入', async () => {
     const ws = await mkProject();
     const d = await mkDiscussion(['dev'], { project_id: 'p1' });
     h.speaker = (_sys, user) => {
-      if (user.includes('工具执行结果')) return okContent('已核实：echo 输出 hello；改代码被拒，需转任务');
+      if (user.includes('工具执行结果')) return okContent('已核实：echo 输出 hello；文件已写入');
       return JSON.stringify({ tool_calls: [
         { tool: 'exec', command: 'echo hello' },
         { tool: 'write_file', path: 'a.txt', content: 'x\ny\nz' },
@@ -293,34 +293,31 @@ describe('round engine: speak-or-silent with real tools', () => {
     };
     const res = await runDiscussionRound(deps, d.id);
     expect(res.speakers).toEqual(['dev']);
-    expect(fs.existsSync(path.join(ws, 'a.txt'))).toBe(false); // 文件绝不能落盘
+    // P2-8：小改直干——文件真实落盘（原 M11 禁改语义已被工作台预算制替换）
+    expect(fs.readFileSync(path.join(ws, 'a.txt'), 'utf-8')).toBe('x\ny\nz');
     const msgs = await getMessages(d.id);
     const toolLine = msgs.find((m) => m.tool);
     expect(toolLine).toBeTruthy();
     expect(toolLine!.text).toContain('🔧');
     expect(toolLine!.text).toContain('exit 0');
-    expect(toolLine!.text).toContain('转任务');
     const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
     expect((evt!.payload.results as any[])[0]).toMatchObject({ tool: 'exec', returncode: 0 });
-    expect((evt!.payload.results as any[])[1]).toMatchObject({ tool: 'write_file', ok: false });
-    expect(String((evt!.payload.results as any[])[1].error)).toContain('convert_to_project');
+    expect((evt!.payload.results as any[])[1]).toMatchObject({ tool: 'write_file', ok: true });
     expect(plainAgentMsgs(msgs, 'dev').at(-1)!.text).toContain('已核实');
   });
 
-  it('M11 禁改代码：edit_file 同样被拒且文件不落盘', async () => {
+  it('P2-8 工作台：edit_file 真实修改文件', async () => {
     const ws = await mkProject();
     const d = await mkDiscussion(['dev'], { project_id: 'p1' });
     fs.writeFileSync(path.join(ws, 'exist.txt'), 'original\n');
     h.speaker = (_sys, user) => {
-      if (user.includes('工具执行结果')) return okContent('edit_file 也被拒了，转任务处理');
+      if (user.includes('工具执行结果')) return okContent('edit 已生效');
       return JSON.stringify({ tool_calls: [
-        { tool: 'edit_file', path: 'exist.txt', find: 'original', replace: 'hacked' },
+        { tool: 'edit_file', path: 'exist.txt', find: 'original', replace: 'modified' },
       ] });
     };
     await runDiscussionRound(deps, d.id);
-    expect(fs.readFileSync(path.join(ws, 'exist.txt'), 'utf-8')).toContain('original');
-    const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
-    expect(String((evt!.payload.results as any[])[0].error)).toContain('convert_to_project');
+    expect(fs.readFileSync(path.join(ws, 'exist.txt'), 'utf-8')).toContain('modified');
   });
 
   it('jail: outside paths and traversal are refused outright', async () => {
@@ -336,8 +333,8 @@ describe('round engine: speak-or-silent with real tools', () => {
     await runDiscussionRound(deps, d.id);
     expect(fs.existsSync(path.join(tmp, 'evil.txt'))).toBe(false);
     const evt = capturedEvents.find((e) => e.type === 'discussion_tool');
-    // M11：write_file 在进入路径校验前就被"禁改代码"拒绝；exec 的路径越界仍由监狱拦
-    expect(String((evt!.payload.results as any[])[0].error)).toContain('不允许修改代码');
+    // P2-8 工作台：write_file 预算内放行，但越界路径仍由目录监狱拦截（../evil.txt 拒绝）
+    expect(String((evt!.payload.results as any[])[0].error)).toContain('越界');
     expect(String((evt!.payload.results as any[])[1].error)).toContain('路径越界');
     void ws;
   });

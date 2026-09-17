@@ -62,6 +62,10 @@
                   <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
                 </div>
                 <div v-if="rec.output_gist" class="tc-gist mono">{{ rec.output_gist }}</div>
+                <!-- P2-8 小改：diff 落流 + 一键回滚 -->
+                <div v-if="rec.diff" class="tc-diff mono">{{ rec.diff }}</div>
+                <button v-if="rec.undo_id && !undoingMsg.has(row.m.id)" class="tc-undo" @click="undoWrites(row.m)">↩ 回滚此改动</button>
+                <span v-else-if="rec.undo_id" class="tc-undo-done mono">✓ 已回滚</span>
               </div>
             </div>
           </div>
@@ -488,6 +492,21 @@ function toolCallsOf(m: DiscussionMessage): any[] {
   const calls = (m.meta as any)?.calls;
   return Array.isArray(calls) ? calls : [];
 }
+
+// ---------- P2-8 小改回滚 ----------
+const undoingMsg = ref<Set<string>>(new Set());
+async function undoWrites(m: DiscussionMessage) {
+  const ids = toolCallsOf(m).map((c: any) => c.undo_id).filter(Boolean);
+  if (!ids.length || !current.value || undoingMsg.value.has(m.id)) return;
+  undoingMsg.value = new Set([...undoingMsg.value, m.id]);
+  try {
+    const r = await api.undoDiscussionWrites(current.value.id, ids);
+    ElMessage.success(r.reverted.length ? `已回滚 ${r.reverted.length} 个文件` : '没有需要回滚的改动');
+  } catch (e: any) {
+    ElMessage.error(String(e?.message || e));
+    undoingMsg.value = new Set([...undoingMsg.value].filter((x) => x !== m.id));
+  }
+}
 function toolIcon(tool: string): string {
   if (tool.startsWith('mcp__')) return '🔌';
   if (/^read_file|^read$|^read_dir|^readdir|^list_files|^list$|^ls$|^grep|^search|^git_log|^git_diff/.test(tool)) return '📂';
@@ -776,6 +795,10 @@ watch(() => current.value?.id, (id) => {
 .tc-status { font-size: 10px; color: var(--ct-green); }
 .tc-status.bad { color: #e5484d; }
 .tc-gist { font-size: 10px; color: var(--ct-text3); padding-left: 18px; word-break: break-all; }
+.tc-diff { font-size: 10px; color: var(--ct-text2, var(--ct-text)); background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 4px; padding: 4px 8px; margin: 2px 0 2px 18px; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow-y: auto; }
+.tc-undo { border: 1px solid var(--ct-border2); background: var(--ct-panel); color: var(--ct-text3); border-radius: 6px; font-size: 10px; padding: 1px 8px; cursor: pointer; margin: 2px 0 2px 18px; }
+.tc-undo:hover { color: var(--ct-text); border-color: var(--ct-accent); }
+.tc-undo-done { font-size: 10px; color: var(--ct-green); margin: 2px 0 2px 18px; }
 .live-tree { margin-left: 8px; }
 
 /* ---------- 通栏工作流条目（P1-2） ---------- */

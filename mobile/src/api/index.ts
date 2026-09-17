@@ -503,6 +503,9 @@ export const api = {
   /** agent 转任务确认卡的用户拍板：confirm 真正建任务开工，cancel 继续讨论 */
   resolveDiscussionConvert: (id: string, confirmId: string, action: 'confirm' | 'cancel') =>
     post<{ status: string; state: 'confirmed' | 'cancelled'; project_id?: string; task_id?: string }>(`/api/discussions/${id}/convert/confirm`, { confirm_id: confirmId, action }),
+  /** P2-8 群聊小改一键回滚：按 undo_id 恢复写前内容（新文件=删除） */
+  undoDiscussionWrites: (id: string, undoIds: string[]) =>
+    post<{ status: string; reverted: string[]; missing: number }>(`/api/discussions/${id}/undo`, { undo_ids: undoIds }),
   listKnowledge: (params: { category?: string; project_id?: string; source?: string } = {}) => {
     const sp = new URLSearchParams();
     if (params.category) sp.set('category', params.category);
