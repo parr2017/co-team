@@ -401,6 +401,7 @@ function activityLabel(agent: string): string {
   const act = memberActivity[agent] || (thinking.value === agent ? activity.value : '');
   if (act === 'tool') return '正在动手…';
   if (act === 'tool_followup') return '正在看执行结果…';
+  if (act === 'queued') return '排队中…';
   return '正在输入…';
 }
 

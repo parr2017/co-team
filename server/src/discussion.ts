@@ -183,11 +183,14 @@ export interface DiscussionConfig {
   permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number };
   max_rounds?: number;
   project_context_char_cap?: number;
+  /** 并行发言并发上限（P2-4）：同一批发言者并发执行的信号量宽度；超模型池容量自然排队 */
+  parallel_speakers?: number;
 }
 
-let discCfg: Required<Pick<DiscussionConfig, 'max_rounds' | 'project_context_char_cap'>> & { policy: PermissionPolicy } = {
+let discCfg: Required<Pick<DiscussionConfig, 'max_rounds' | 'project_context_char_cap' | 'parallel_speakers'>> & { policy: PermissionPolicy } = {
   max_rounds: MAX_ROUNDS_PER_TRIGGER,
   project_context_char_cap: 24_000,
+  parallel_speakers: 2,
   // 缺省：项目目录（监狱）内完全控制——"启动项目/小改重启"在群内闭环的前提。
   policy: { level: 'full', whitelistCommands: null, maxTimeSec: EXEC_TIMEOUT_SEC },
 };
@@ -197,6 +200,7 @@ export function configureDiscussion(cfg?: DiscussionConfig): void {
   if (!cfg) return;
   if (typeof cfg.max_rounds === 'number' && cfg.max_rounds > 0) discCfg.max_rounds = Math.min(10, Math.floor(cfg.max_rounds));
   if (typeof cfg.project_context_char_cap === 'number' && cfg.project_context_char_cap > 0) discCfg.project_context_char_cap = cfg.project_context_char_cap;
+  if (typeof cfg.parallel_speakers === 'number' && cfg.parallel_speakers >= 1) discCfg.parallel_speakers = Math.min(8, Math.floor(cfg.parallel_speakers));
   if (cfg.permissions) discCfg.policy = policyFromConfig(cfg.permissions);
 }
 
@@ -241,13 +245,22 @@ export async function getMessages(id: string): Promise<DiscussionMessage[]> {
   return (await busGet<DiscussionMessage[]>(msgKey(id))) || [];
 }
 
+/** P2-4 并行发言写锁：并行发言者并发落消息，read-modify-write 竞态会丢消息——
+ *  每讨论串行化（单进程内 promise 链；进程级串行已覆盖 Redis/内存两态）。 */
+const appendLocks = new Map<string, Promise<unknown>>();
+
 async function appendMessage(id: string, msg: DiscussionMessage): Promise<DiscussionMessage> {
-  const key = msgKey(id);
-  const list = (await busGet<DiscussionMessage[]>(key)) || [];
-  list.push(msg);
-  await busSet(key, list.slice(-MAX_MESSAGES));
-  await emitProgress('discussion_message', { discussion_id: id, message: msg });
-  return msg;
+  const job = (appendLocks.get(id) || Promise.resolve()).then(async () => {
+    const key = msgKey(id);
+    const list = (await busGet<DiscussionMessage[]>(key)) || [];
+    list.push(msg);
+    await busSet(key, list.slice(-MAX_MESSAGES));
+    await emitProgress('discussion_message', { discussion_id: id, message: msg });
+    return msg;
+  });
+  // 吞掉链上错误，一次失败不阻塞后续落消息
+  appendLocks.set(id, job.catch(() => undefined));
+  return job;
 }
 
 /** Append a centered system line (status changes, notices). */
@@ -266,6 +279,7 @@ export async function deleteDiscussion(id: string): Promise<void> {
   await busDel(busyKey(id));
   await busDel(stopKey(id));
   await busDel(pendingConvertKey(id));
+  appendLocks.delete(id);
 }
 
 // ---------- concurrency lock ----------
@@ -1131,22 +1145,42 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
   const commitments: string[] = [];
   let interrupted = false;
 
-  for (const agent of route.speakers) {
-    if (await busGet(stopKey(discId))) break;
-    {
-      const live = await getDiscussion(discId);
-      if (!live || live.status === 'converted') break; // 转任务后讨论即封存，剩余成员不再发言
+  // P2-4 并行发言：同一批发言者并发执行（信号量限流，默认 2，config parallel_speakers 可调）。
+  // - 超模型池容量自然排队（scheduler 槽位等待/容量避让不变），排队中状态以 'queued' 事件可见；
+  // - 每个发言者在获得并发槽时重读现场：新插话 → 让位重路由（插话语义不变：在飞的做完当前步，排队的让位）；
+  // - 停止/转任务封存检查同样在槽获得时做（原顺序循环的 break 语义）；
+  // - 同批成员互相看不到同批未完成的发言（各自先给见解），轮末收敛判定等全部完成后进行。
+  const parallel = Math.max(1, Math.min(discCfg.parallel_speakers, route.speakers.length));
+  const sem = createSemaphore(parallel);
+  const outcomes = await Promise.all(route.speakers.map(async (agent) => {
+    await emitProgress('discussion_round', { discussion_id: discId, round, phase: 'queued', agent });
+    await sem.acquire();
+    try {
+      if (await busGet(stopKey(discId))) return { agent, skipped: 'stop' as const };
+      {
+        const live = await getDiscussion(discId);
+        if (!live || live.status === 'converted') return { agent, skipped: 'converted' as const }; // 转任务后讨论即封存
+      }
+      const forced = opts?.forced?.includes(agent) === true;
+      // re-read fresh transcript at slot start（同批成员各自先给见解——互相看不到同批未完成内容）
+      const fresh = await getMessages(discId);
+      if (countUsers(fresh) > startUserCount) {
+        interrupted = true;
+        return { agent, skipped: 'interrupt' as const };
+      }
+      const mem = await getAgentMemory(agent, 5).catch(() => [] as string[]);
+      const identity = speakerIdentityPrompt(deps, agent, mem);
+      const out = await runSpeakerTurn(deps, disc, agent, round, fresh, projectCtx, identity, forced, firstSubstantive, opts?.interruptNote || '');
+      return { agent, out };
+    } finally {
+      sem.release();
     }
-    const forced = opts?.forced?.includes(agent) === true;
-    // re-read fresh transcript each speaker (later speakers see earlier replies)
-    const fresh = await getMessages(discId);
-    if (countUsers(fresh) > startUserCount) {
-      interrupted = true;
-      break;
-    }
-    const mem = await getAgentMemory(agent, 5).catch(() => [] as string[]);
-    const identity = speakerIdentityPrompt(deps, agent, mem);
-    const out = await runSpeakerTurn(deps, disc, agent, round, fresh, projectCtx, identity, forced, firstSubstantive, opts?.interruptNote || '');
+  }));
+
+  for (const r of outcomes) {
+    if ('skipped' in r) continue; // 停止/封存/插话让位：不计入 silent（原 break 语义）
+    const agent = r.agent;
+    const out = r.out;
     if (out.failed) {
       silent.push(agent);
       await appendSystemMessage(discId, `「${agent}」本轮发言未完成：${out.failed}`, round, 'notice');
@@ -1160,6 +1194,12 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
     if (out.asked) asked.push(agent);
     // 承诺式收尾检测：说了"正式启动/接下来我将…"却没调用任何工具 → 记名，由响应循环追问一轮
     if (out.spoke && !out.toolUsed && out.text && COMMITMENT_RE.test(out.text)) commitments.push(agent);
+  }
+
+  // P2-4 并行补刀：在飞成员看不到批中到达的插话（各自开工时读的现场）——轮末统一重读，
+  // 批中出现的新用户消息同样触发重路由（插话必被回应，下一轮优先处理）
+  if (!interrupted && countUsers(await getMessages(discId)) > startUserCount) {
+    interrupted = true;
   }
 
   const stopped = await busGet(stopKey(discId));
@@ -1191,6 +1231,25 @@ export async function runDiscussionRound(deps: DiscussionDeps, discId: string, o
   } finally {
     await busDel(busyKey(discId));
   }
+}
+
+// ---------- P2-4 并行发言信号量 ----------
+
+function createSemaphore(width: number) {
+  let active = 0;
+  const waiters: (() => void)[] = [];
+  return {
+    async acquire(): Promise<void> {
+      if (active < width) { active++; return; }
+      await new Promise<void>((resolve) => waiters.push(resolve));
+      active++;
+    },
+    release(): void {
+      active = Math.max(0, active - 1);
+      const next = waiters.shift();
+      if (next) next();
+    },
+  };
 }
 
 // ---------- moderator (auto mode convergence) ----------

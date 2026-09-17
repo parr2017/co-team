@@ -462,13 +462,17 @@ describe('mid-round interruption (真打断)', () => {
       }
       return okContent('test 的补充');
     };
-    // manual mode trigger loop: round 1 interrupted before test speaks → round 2 mentions test only
+    // manual mode trigger loop: round 1 (parallel batch) → round 2 re-routes to the interjection
     await runResponseLoop(deps, d.id, { forced: undefined, auto: false });
     const msgs = await getMessages(d.id);
     const testMsgs = plainAgentMsgs(msgs, 'test');
-    // test 没在被打断的那一轮开口，且新指示点名它后开口
+    // 并行语义（P2-4）：test 与 dev 同批在飞，批中插话由下一轮重路由回应——
+    // test 的最新发言必须在第 2 轮（收到 interruptNote，插话必被回应）
     expect(testMsgs.length).toBeGreaterThan(0);
-    expect(testMsgs.every((m) => (m.round || 0) >= 2)).toBe(true);
+    const lastTestRound = Math.max(...testMsgs.map((m) => m.round || 0));
+    expect(lastTestRound).toBeGreaterThanOrEqual(2);
+    // 重路由轮带 interruptNote（用户中途补充的新指示被优先回应）
+    expect(h.lastSpeakerCalls.some((c) => c.agent === 'test' && c.user.includes('用户在上一轮中途补充了新指示'))).toBe(true);
     // mention-only routing on the follow-up round
     expect(h.lastSpeakerCalls.filter((c) => c.agent === 'dev').length).toBeLessThanOrEqual(2);
   });

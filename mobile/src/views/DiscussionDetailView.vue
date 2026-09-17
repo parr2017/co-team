@@ -16,7 +16,7 @@ defineOptions({ name: 'DiscussionDetailView' });
 
 const route = useRoute();
 const router = useRouter();
-const { current, experiences, roles, busy, thinking, activity, streams, open, send, react, round, stop, generateScheme, saveScheme, setMode, convert } = useDiscussion();
+const { current, experiences, roles, busy, thinking, activity, streams, memberActivity, open, send, react, round, stop, generateScheme, saveScheme, setMode, convert } = useDiscussion();
 
 const discId = computed(() => String(route.params.id));
 const draft = ref('');
@@ -57,6 +57,22 @@ function roleOf(name: string): string {
 }
 function agentStreaming(agent: string): boolean {
   return Object.values(streams).some((s) => s.agent === agent);
+}
+
+// ---------- P2-4 并行活动（双端一致）：多成员同时动手/输入/排队一眼可见 ----------
+const activeMembers = computed<string[]>(() => {
+  const set = new Set<string>();
+  for (const [a, act] of Object.entries(memberActivity)) if (act) set.add(a);
+  for (const s of Object.values(streams)) if (s.agent) set.add(s.agent);
+  if (thinking.value && thinking.value !== 'router') set.add(thinking.value);
+  return [...set];
+});
+function activityLabel(agent: string): string {
+  const act = memberActivity[agent] || (thinking.value === agent ? activity.value : '');
+  if (act === 'tool') return '正在动手…';
+  if (act === 'tool_followup') return '正在看执行结果…';
+  if (act === 'queued') return '排队中…';
+  return '正在输入…';
 }
 
 // ---------- 消息行模型（与 web DiscussionChat 同构：分组/系统卡片/工具条/引用） ----------
@@ -638,17 +654,15 @@ const showExp = ref(false);
         </div>
       </div>
 
-      <div v-if="thinking === 'router' && !anyStreaming" class="router-hint">
+      <div v-if="thinking === 'router' && !anyStreaming && !activeMembers.length" class="router-hint">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span> 正在看消息，决定谁来回复…
       </div>
-      <div v-else-if="thinking && thinking !== 'router' && !agentStreaming(thinking)" class="row them">
-        <div class="av-slot"><AgentAvatar :name="thinking" :size="32" active /></div>
-        <div class="col col-them">
-          <div class="bubble them-b typing-b">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            <span class="typing-label">{{ activity === 'tool' ? '正在动手执行…' : activity === 'tool_followup' ? '正在看执行结果…' : '正在输入…' }}</span>
-          </div>
-        </div>
+      <!-- P2-4 并行活动行（双端一致）：多成员同时动手/输入/排队一眼可见 -->
+      <div v-else-if="activeMembers.length" class="parallel-line">
+        <span v-for="(a, i) in activeMembers" :key="a" class="pl-chip">
+          <span class="pl-dot" :style="{ background: agentColor(a) }"></span>
+          {{ a }} {{ activityLabel(a) }}<span v-if="i < activeMembers.length - 1" class="pl-sep">·</span>
+        </span>
       </div>
     </div>
 
@@ -922,6 +936,13 @@ const showExp = ref(false);
 .dp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .dp-chip { font-size: 10px; color: var(--accent, #1989fa); background: var(--panel-2); border-radius: 8px; padding: 1px 8px; }
 .dp-model { font-size: 9px; color: var(--text-3); }
+
+/* ---------- P2-4 并行活动行 ---------- */
+.parallel-line { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 12px; font-size: 10px; color: var(--text-3); }
+.pl-chip { display: inline-flex; align-items: center; gap: 4px; }
+.pl-dot { width: 6px; height: 6px; border-radius: 50%; animation: pulse 1.1s infinite; }
+.pl-sep { opacity: 0.5; margin-left: 8px; }
+@keyframes pulse { 50% { opacity: 0.3; } }
 
 .row { display: flex; gap: 7px; }
 .row.me { justify-content: flex-end; }

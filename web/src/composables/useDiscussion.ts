@@ -114,6 +114,9 @@ function subscribe() {
       if (p.phase === 'router') {
         thinking.value = 'router';
         activity.value = '';
+      } else if (p.phase === 'queued') {
+        // P2-4 并行发言：并发槽满时排队中状态可见
+        memberActivity[String(p.agent || '')] = 'queued';
       } else if (p.phase === 'speaker') {
         thinking.value = String(p.agent || '');
         activity.value = String(p.activity || 'thinking');

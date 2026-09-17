@@ -20,6 +20,8 @@ const thinking = ref('');
 const activity = ref('');
 /** 流式气泡：stream_id -> {agent, round, text} */
 const streams = reactive<Record<string, { agent: string; round: number; text: string }>>({});
+/** 成员活动（P2-4 并行呈现）：agent → thinking | tool | tool_followup | queued */
+const memberActivity = reactive<Record<string, string>>({});
 /** agent 名 → 中文角色名（署名拟人化，全局一次） */
 const roles = ref<Record<string, string>>({});
 let rolesLoaded = false;
@@ -101,6 +103,7 @@ function subscribe() {
     } else if (t === 'discussion_tool') {
       thinking.value = String(p.agent || '');
       activity.value = 'tool';
+      memberActivity[String(p.agent || '')] = 'tool';
       if (!busy.value) armBusy();
     } else if (t === 'discussion_reacted') {
       const target = current.value.messages.find((x) => x.id === p.message_id);
@@ -110,11 +113,16 @@ function subscribe() {
         thinking.value = 'router';
         activity.value = '';
         if (!busy.value) armBusy();
+      } else if (p.phase === 'queued') {
+        // P2-4 并行发言：并发槽满时排队中状态可见（双端一致）
+        memberActivity[String(p.agent || '')] = 'queued';
       } else if (p.phase === 'speaker') {
         thinking.value = String(p.agent || '');
         activity.value = String(p.activity || 'thinking');
+        memberActivity[String(p.agent || '')] = String(p.activity || 'thinking');
         armBusy(false);
       } else if (p.phase === 'end') {
+        for (const k of Object.keys(memberActivity)) delete memberActivity[k];
         clearBusy();
       }
     } else if (t === 'discussion_convert_resolved') {
@@ -249,5 +257,5 @@ async function convert(payload: ConvertDiscussionPayload) {
 
 export function useDiscussion() {
   subscribe();
-  return { list, current, experiences, busy, thinking, activity, streams, roles, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
+  return { list, current, experiences, busy, thinking, activity, streams, memberActivity, roles, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
 }

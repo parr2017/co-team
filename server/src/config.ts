@@ -82,11 +82,13 @@ export interface AppConfig {
   };
   /** feature: 每日问题报告 — disabled by default; only reports when explicitly enabled */
   daily_report?: { enabled: boolean; hour: number };
-  /** 群组讨论引擎 v2：组内工具执行策略（缺省=项目目录监狱内完全控制）、每触发轮数上限、全量背景注入预算 */
+  /** 群组讨论引擎 v2：组内工具执行策略（缺省=项目目录监狱内完全控制）、每触发轮数上限、全量背景注入预算、并行发言并发上限 */
   discussion?: {
     permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number };
     max_rounds?: number;
     project_context_char_cap?: number;
+    /** 并行发言并发上限（P2-4）：同一批发言者并发执行的信号量宽度，超模型池容量自然排队 */
+    parallel_speakers?: number;
   };
   /** 2026-09-09 超时语义重做：时长本身不判死——只有确定性死亡/静默超线/人工判定才是失败 */
   llm?: LlmTimeoutConfig;
@@ -259,6 +261,7 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       permissions: raw.discussion?.permissions || undefined,
       max_rounds: raw.discussion?.max_rounds,
       project_context_char_cap: raw.discussion?.project_context_char_cap,
+      parallel_speakers: raw.discussion?.parallel_speakers,
     },
     llm: {
       // 2026-09-09 超时语义重做：秒数可带小数（便于测试调小阈值）；负数按缺省，0 为显式关闭
