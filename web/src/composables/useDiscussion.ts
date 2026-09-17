@@ -28,6 +28,10 @@ const thinking = ref('');
 const activity = ref('');
 /** streaming bubbles: stream_id -> {agent, round, text} */
 const streams = reactive<Record<string, { agent: string; round: number; text: string }>>({});
+/** 实时工具批次（P1-2 工作流条目）：agent → 最近一批 discussion_tool 的 calls+results（干完后由持久化的 meta.calls 接管） */
+const liveTools = reactive<Record<string, { agent: string; calls: any[]; results: any[]; ts: number }>>({});
+/** 成员活动（并行协作呈现）：agent → thinking | tool | tool_followup；'' = 空闲 */
+const memberActivity = reactive<Record<string, string>>({});
 const error = ref('');
 let subscribed = false;
 let busyWatchdog: ReturnType<typeof setTimeout> | null = null;
@@ -92,9 +96,17 @@ function subscribe() {
         if (!busy.value) armBusyWatchdog();
       }
     } else if (msg.type === 'discussion_tool') {
-      // 工具活动行本身会以消息形式持久化；这里只把"正在动手"状态打到指示器
-      thinking.value = String(p.agent || '');
+      // P1-2 工作流条目：实时工具批次进 liveTools（树形渲染）；持久化由 meta.calls 接管
+      const agent = String(p.agent || '');
+      thinking.value = agent;
       activity.value = 'tool';
+      memberActivity[agent] = 'tool';
+      liveTools[agent] = {
+        agent,
+        calls: Array.isArray(p.calls) ? p.calls : [],
+        results: Array.isArray(p.results) ? p.results : [],
+        ts: Date.now(),
+      };
     } else if (msg.type === 'discussion_reacted') {
       const target = current.value.messages.find((x) => x.id === p.message_id);
       if (target) target.reactions = (p.reactions as Record<string, string[]>) || target.reactions;
@@ -105,12 +117,15 @@ function subscribe() {
       } else if (p.phase === 'speaker') {
         thinking.value = String(p.agent || '');
         activity.value = String(p.activity || 'thinking');
+        memberActivity[String(p.agent || '')] = String(p.activity || 'thinking');
         armBusyOnce();
       } else if (p.phase === 'end') {
         busy.value = false;
         thinking.value = '';
         activity.value = '';
         for (const sid of Object.keys(streams)) delete streams[sid];
+        for (const k of Object.keys(memberActivity)) delete memberActivity[k];
+        for (const k of Object.keys(liveTools)) delete liveTools[k];
         if (busyWatchdog) { clearTimeout(busyWatchdog); busyWatchdog = null; }
         void loadList();
       }
@@ -174,6 +189,8 @@ async function open(id: string, keepScroll = false) {
       thinking.value = '';
       activity.value = '';
       for (const sid of Object.keys(streams)) delete streams[sid];
+      for (const k of Object.keys(memberActivity)) delete memberActivity[k];
+      for (const k of Object.keys(liveTools)) delete liveTools[k];
     }
     void loadExperiences(id);
   } catch (e: any) {
@@ -289,5 +306,5 @@ async function convert(payload: ConvertDiscussionPayload) {
 
 export function useDiscussion() {
   subscribe();
-  return { list, current, experiences, busy, thinking, activity, streams, roles, error, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
+  return { list, current, experiences, busy, thinking, activity, streams, liveTools, memberActivity, roles, error, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
 }
