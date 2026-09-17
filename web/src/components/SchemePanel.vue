@@ -77,12 +77,12 @@ function copy() {
 </script>
 
 <style scoped>
-.empty { color: var(--ct-text3); font-size: 12px; padding: 30px 10px; text-align: center; }
-.scheme-md { line-height: 1.7; font-size: 13px; }
-.scheme-md :deep(h1) { font-size: 17px; margin: 4px 0 12px; }
-.scheme-md :deep(h2) { font-size: 14px; margin: 16px 0 6px; border-bottom: 1px solid var(--ct-border); padding-bottom: 4px; }
+.empty { color: var(--text-3); font-size: var(--fs-aux); padding: 30px 10px; text-align: center; }
+.scheme-md { line-height: 1.7; font-size: var(--fs-body); }
+.scheme-md :deep(h1) { font-size: var(--fs-h2); margin: 4px 0 12px; }
+.scheme-md :deep(h2) { font-size: var(--fs-sub); margin: 16px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
 .scheme-md :deep(table) { border-collapse: collapse; margin: 8px 0; }
-.scheme-md :deep(th), .scheme-md :deep(td) { border: 1px solid var(--ct-border); padding: 4px 10px; font-size: 12px; }
-.scheme-md :deep(code) { font-family: var(--ct-mono); font-size: 11px; background: var(--ct-panel2); border-radius: 3px; padding: 0 4px; }
+.scheme-md :deep(th), .scheme-md :deep(td) { border: 1px solid var(--line); padding: 4px 10px; font-size: var(--fs-aux); }
+.scheme-md :deep(code) { font-family: var(--font-mono); font-size: var(--fs-aux); background: var(--bg-inset); border-radius: 3px; padding: 0 4px; }
 .foot { display: flex; gap: 8px; justify-content: flex-end; }
 </style>

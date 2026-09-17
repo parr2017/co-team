@@ -60,10 +60,10 @@
 </template>
 
 <style scoped>
-.scheme-preview { width: 100%; background: var(--ct-bg, #f7f7f8); border: 1px solid var(--ct-border, #e0e0e6); border-radius: 6px; padding: 8px 10px; }
-.sp-text { font-size: 12px; line-height: 1.7; color: var(--ct-text, #303133); max-height: 132px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
-.sp-empty { font-size: 12px; color: var(--ct-text3, #909399); }
-.sp-meta { font-size: 10px; color: var(--ct-text3, #909399); margin-top: 6px; }
+.scheme-preview { width: 100%; background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 8px 10px; }
+.sp-text { font-size: var(--fs-aux); line-height: 1.7; color: var(--text-1); max-height: 132px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.sp-empty { font-size: var(--fs-aux); color: var(--text-3); }
+.sp-meta { font-size: var(--fs-meta); color: var(--text-3); margin-top: 6px; }
 </style>
 
 <script setup lang="ts">

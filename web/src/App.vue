@@ -94,7 +94,7 @@
         </main>
       </div>
 
-      <div class="layout" v-else-if="page === 'discuss'">
+      <div class="layout flush" v-else-if="page === 'discuss'">
         <main class="main">
           <GroupDiscussionView @open-task="detailTaskId = $event" />
         </main>
@@ -465,6 +465,7 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
   border-left: 1px solid var(--line); background: var(--bg-panel);
 }
 .layout.side-hidden .side { display: none; }
+.layout.flush > .main { padding: 0; overflow: hidden; }
 .page-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .page-title { font-size: var(--fs-sub); font-weight: 600; color: var(--text-1); }
 .page-ops { margin-left: auto; display: flex; gap: 4px; }

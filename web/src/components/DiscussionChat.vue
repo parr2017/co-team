@@ -1,172 +1,191 @@
 <template>
   <div class="disc-chat">
     <div class="chat-left">
-      <div ref="wrapEl" class="stream" @scroll="onScroll">
+      <div ref="wrapEl" class="stream-wrap" @scroll="onScroll">
         <div v-if="!rows.length" class="empty">
           还没有聊天内容——发一条消息试试。成员会像真实同事一样：谁有话说谁上，能动手就直接动手。
         </div>
 
-        <template v-for="(row, i) in rows" :key="rowKey(row, i)">
-          <div v-if="row.type === 'time'" class="time-divider">{{ row.label }}</div>
+        <div class="stream">
+          <template v-for="(row, i) in rows" :key="rowKey(row, i)">
+            <!-- 时间分隔（两侧发丝线居中） -->
+            <div v-if="row.type === 'time'" class="sysline"><span class="mono">{{ row.label }}</span></div>
 
-          <!-- 未读分隔线（滚离底部期间到达的新消息起点） -->
-          <div v-else-if="row.type === 'unread'" class="unread-divider"><span>{{ newBelow > 0 ? `${newBelow} 条新消息` : '新消息' }}</span></div>
+            <!-- 未读分隔线（滚离底部期间到达的新消息起点） -->
+            <div v-else-if="row.type === 'unread'" class="unread-divider"><span>{{ newBelow > 0 ? `${newBelow} 条新消息` : '新消息' }}</span></div>
 
-          <!-- 系统：普通小灰条 / notice 更淡 / card 居中卡片 -->
-          <div v-else-if="row.type === 'sys'" class="sys-row">
-            <!-- M5.2 ③：任务 ask_user 提问卡片——可在群里直接回答 -->
-            <div v-if="row.m.kind === 'card' && row.m.meta?.bridge_ask" class="sys-card ask-card">
-              <div class="ask-q">{{ row.m.text }}</div>
-              <div v-if="!answeredAskIds.has(String(row.m.meta.bridge_ask.ask_id))" class="ask-row">
-                <input
-                  v-model="askDrafts[String(row.m.meta.bridge_ask.ask_id)]"
-                  class="ask-input"
-                  placeholder="在群里直接回答，agent 将立即继续…（可附图）"
-                  @keydown.enter="sendAskAnswer(row.m.meta.bridge_ask)"
-                />
-                <AttachPicker v-model="askImgs[String(row.m.meta.bridge_ask.ask_id)]" />
-                <el-button size="small" type="primary" :loading="answeringAsk === String(row.m.meta.bridge_ask.ask_id)" @click="sendAskAnswer(row.m.meta.bridge_ask)">回答</el-button>
-              </div>
-              <div v-else class="ask-done">✓ 已回答，agent 继续执行中</div>
-            </div>
-            <!-- 2026-09-15 转任务确认卡：agent 发起转任务先过用户拍板，确认才开工 -->
-            <div v-else-if="row.m.kind === 'card' && row.m.meta?.convert_confirm" class="sys-card cv-card">
-              <div class="cv-text">{{ row.m.text }}</div>
-              <div v-if="String(row.m.meta.convert_confirm.state) === 'pending'" class="cv-row">
-                <el-button size="small" type="primary" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'confirm')">确认开干</el-button>
-                <el-button size="small" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'cancel')">暂不转</el-button>
-              </div>
-              <div v-else class="cv-done" :class="{ off: String(row.m.meta.convert_confirm.state) === 'cancelled' }">
-                {{ String(row.m.meta.convert_confirm.state) === 'confirmed' ? `✓ 已确认开工${row.m.meta.convert_confirm.task_id ? `，任务 ${row.m.meta.convert_confirm.task_id}` : ''}` : '✕ 已取消，继续讨论' }}
-              </div>
-            </div>
-            <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
-            <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
-            <span v-else class="sys-text">{{ row.m.text }}</span>
-          </div>
-
-          <!-- 工具活动行（P1-2 工作流条目）：折叠摘要，点开看工具树（meta.calls） -->
-          <div v-else-if="row.type === 'tool'" class="tool-block" :class="{ open: expandedTools.has(row.m.id) }">
-            <button class="tool-head mono" @click="toggleTool(row.m.id)">
-              <span class="tool-caret">{{ expandedTools.has(row.m.id) ? '▾' : '▸' }}</span>
-              <span class="tool-agent" :style="{ color: agentColor(row.m.from) }">{{ roleOf(row.m.from) }}</span>
-              <span class="tool-text">{{ row.m.text }}</span>
-              <span class="tool-hint">工具调用</span>
-            </button>
-            <div v-if="expandedTools.has(row.m.id)" class="tool-tree">
-              <div v-for="(rec, ci) in toolCallsOf(row.m)" :key="ci" class="tool-call">
-                <div class="tc-line mono">
-                  <span class="tc-icon">{{ toolIcon(rec.tool) }}</span>
-                  <span class="tc-name">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
-                  <span v-if="rec.args_summary" class="tc-args">{{ rec.args_summary }}</span>
-                  <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
-                </div>
-                <div v-if="rec.output_gist" class="tc-gist mono">{{ rec.output_gist }}</div>
-                <!-- P2-8 小改：diff 落流 + 一键回滚 -->
-                <div v-if="rec.diff" class="tc-diff mono">{{ rec.diff }}</div>
-                <button v-if="rec.undo_id && !undoingMsg.has(row.m.id)" class="tc-undo" @click="undoWrites(row.m)">↩ 回滚此改动</button>
-                <span v-else-if="rec.undo_id" class="tc-undo-done mono">✓ 已回滚</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 通栏工作流条目（用户 / agent；左缘色条标识，无气泡） -->
-          <div v-else class="wf-row" :class="{ me: row.side === 'me' }">
-            <div class="wf-bar" :style="{ background: row.side === 'me' ? undefined : agentColor(row.m.from) }"></div>
-            <div class="wf-col">
-              <div class="wf-head">
-                <span class="wf-role" :style="{ color: row.side === 'me' ? 'var(--ct-accent)' : agentColor(row.m.from) }">{{ roleOf(row.m.from) }}</span>
-                <span v-if="row.side === 'them'" class="wf-id mono">{{ row.m.from }}</span>
-                <span v-if="row.m.model" class="wf-model mono" :title="'模型：' + row.m.model">{{ row.m.model }}</span>
-                <span v-if="row.m.needs_user" class="ask-tag" :class="{ answered: row.answered }">{{ row.answered ? '@你 已回复' : '@你 待拍板' }}</span>
-                <span class="wf-ts mono">{{ fmtHM(row.m.ts) }}</span>
-                <span class="wf-actions">
-                  <button v-if="row.side === 'them' && hasDetail(row.m)" class="wf-btn wf-detail-btn" @click="openDetail(row.m)">详细</button>
-                  <button class="wf-btn" title="回应 👍" @click="onReact(row.m, '👍')">👍</button>
-                  <button class="wf-btn" title="引用回复" @click="startReply(row.m)">↩</button>
-                  <button class="wf-btn" title="复制" @click="copyText(row.m.text)">⧉</button>
-                </span>
-              </div>
-              <div class="wf-body">
-                <div v-if="row.quote" class="quote-bar mono" :title="row.quote.text">↩ {{ row.quote.who }}：{{ row.quote.text }}</div>
-                <!-- 用户附图：图片网格（点击大图预览） -->
-                <div v-if="rowImgUrls(row.m).length" class="img-grid">
-                  <el-image
-                    v-for="(u, i) in rowImgUrls(row.m)"
-                    :key="u"
-                    :src="u"
-                    :preview-src-list="rowImgUrls(row.m)"
-                    :initial-index="i"
-                    fit="cover"
-                    loading="lazy"
-                    class="img-cell"
+            <!-- 系统：ask 问答卡 / 转任务确认卡 / notice / 普通系统行 -->
+            <div v-else-if="row.type === 'sys'" class="sys-row">
+              <!-- M5.2 ③：任务 ask_user 提问卡片——可在群里直接回答 -->
+              <div v-if="row.m.kind === 'card' && row.m.meta?.bridge_ask" class="askcard">
+                <div class="q">需要你拍板</div>
+                <div class="hint">{{ row.m.text }}</div>
+                <div v-if="!answeredAskIds.has(String(row.m.meta.bridge_ask.ask_id))" class="row">
+                  <input
+                    v-model="askDrafts[String(row.m.meta.bridge_ask.ask_id)]"
+                    class="ask-input"
+                    placeholder="在群里直接回答，agent 将立即继续…（可附图）"
+                    @keydown.enter="sendAskAnswer(row.m.meta.bridge_ask)"
                   />
+                  <AttachPicker v-model="askImgs[String(row.m.meta.bridge_ask.ask_id)]" />
+                  <el-button size="small" type="primary" :loading="answeringAsk === String(row.m.meta.bridge_ask.ask_id)" @click="sendAskAnswer(row.m.meta.bridge_ask)">回答</el-button>
                 </div>
-                <div v-if="row.m.text" class="wf-text md" v-html="md(row.m.text)"></div>
+                <div v-else class="done-line ok">✓ 已回答，agent 继续执行中</div>
               </div>
-              <!-- emoji 回应聚合 -->
-              <div v-if="hasReactions(row.m)" class="reactions">
-                <button
-                  v-for="(users, emo) in row.m.reactions"
-                  :key="emo"
-                  class="react-chip"
-                  :class="{ mine: users.includes('user') }"
-                  @click="onReact(row.m, String(emo))"
-                >{{ emo }} <span>{{ users.length }}</span></button>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <!-- 实时工具树（进行中的成员：每批工具调用完成后实时出现） -->
-        <div v-for="(lt, agent) in visibleLiveTools" :key="`lt-${agent}`" class="wf-row live">
-          <div class="wf-bar" :style="{ background: agentColor(String(agent)) }"></div>
-          <div class="wf-col">
-            <div class="wf-head">
-              <span class="wf-live-dot"></span>
-              <span class="wf-role" :style="{ color: agentColor(String(agent)) }">{{ roleOf(String(agent)) }}</span>
-              <span class="wf-id mono">{{ agent }}</span>
-              <span class="wf-live-label">正在动手…</span>
-            </div>
-            <div class="tool-tree live-tree">
-              <div v-for="(rec, ci) in liveRecords(lt)" :key="ci" class="tool-call">
-                <div class="tc-line mono">
-                  <span class="tc-icon">{{ toolIcon(rec.tool) }}</span>
-                  <span class="tc-name">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
-                  <span v-if="rec.args_summary" class="tc-args">{{ rec.args_summary }}</span>
-                  <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+              <!-- 2026-09-15 转任务确认卡：agent 发起转任务先过用户拍板，确认才开工 -->
+              <div v-else-if="row.m.kind === 'card' && row.m.meta?.convert_confirm" class="askcard cv-card">
+                <div class="q">转任务确认</div>
+                <div class="hint cv-text">{{ row.m.text }}</div>
+                <div v-if="String(row.m.meta.convert_confirm.state) === 'pending'" class="row">
+                  <el-button size="small" type="primary" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'confirm')">确认开干</el-button>
+                  <el-button size="small" :loading="cvResolving === cvId(row)" @click="resolveConvert(row, 'cancel')">暂不转</el-button>
                 </div>
-                <div v-if="rec.output_gist" class="tc-gist mono">{{ rec.output_gist }}</div>
+                <div v-else class="done-line" :class="String(row.m.meta.convert_confirm.state) === 'confirmed' ? 'ok' : ''">
+                  {{ String(row.m.meta.convert_confirm.state) === 'confirmed' ? `✓ 已确认开工${row.m.meta.convert_confirm.task_id ? `，任务 ${row.m.meta.convert_confirm.task_id}` : ''}` : '✕ 已取消，继续讨论' }}
+                </div>
+              </div>
+              <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
+              <div v-else-if="row.m.kind === 'notice'" class="notice"><span class="ic">⚙</span><span>{{ row.m.text }}</span></div>
+              <div v-else class="sysline"><span>{{ row.m.text }}</span></div>
+            </div>
+
+            <!-- 工具活动行（P1-2 工作流条目）：tooltree 折叠摘要，点开看工具树（meta.calls） -->
+            <div v-else-if="row.type === 'tool'" class="msg tool-msg">
+              <div class="msg-avatar"></div>
+              <div class="msg-col">
+                <div class="tooltree" :class="{ open: expandedTools.has(row.m.id) }">
+                  <button class="tt-head" @click="toggleTool(row.m.id)">
+                    <span class="tt-caret">{{ expandedTools.has(row.m.id) ? '▾' : '▸' }}</span>
+                    <span class="tt-agent" :style="{ color: agentColor(row.m.from) }">{{ roleOf(row.m.from) }}</span>
+                    <span class="tt-text">{{ row.m.text }}</span>
+                    <span class="tt-meta mono">工具调用<template v-if="toolCallsOf(row.m).length"> × {{ toolCallsOf(row.m).length }}</template></span>
+                  </button>
+                  <div v-if="expandedTools.has(row.m.id)" class="tt-body">
+                    <div v-for="(rec, ci) in toolCallsOf(row.m)" :key="ci" class="tcall">
+                      <div class="tcall-line">
+                        <span class="sym mono">{{ toolIcon(rec.tool) }}</span>
+                        <span class="path mono">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
+                        <span v-if="rec.args_summary" class="args mono">{{ rec.args_summary }}</span>
+                        <span class="st mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗ 失败' : '✓ ok' }}</span>
+                      </div>
+                      <div v-if="rec.output_gist" class="gist mono">{{ rec.output_gist }}</div>
+                      <!-- P2-8 小改：diff 落流 + 一键回滚 -->
+                      <div v-if="rec.diff" class="tc-diff mono">{{ rec.diff }}</div>
+                      <button v-if="rec.undo_id && !undoingMsg.has(row.m.id)" class="tc-undo" @click="undoWrites(row.m)">↩ 回滚此改动</button>
+                      <span v-else-if="rec.undo_id" class="done-line ok">✓ 已回滚</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 消息行：avatar 列 + 内容列（分组后续行 avatar 列留白） -->
+            <div v-else class="msg" :class="{ user: row.side === 'me' }">
+              <div class="msg-avatar">
+                <div v-if="row.head && row.side === 'me'" class="avatar-user">我</div>
+                <AgentAvatar v-else-if="row.head" :name="row.m.from" :size="26" />
+              </div>
+              <div class="msg-col">
+                <div v-if="row.head" class="msg-head">
+                  <span class="who" :style="{ color: row.side === 'me' ? 'var(--accent)' : agentColor(row.m.from) }">{{ roleOf(row.m.from) }}</span>
+                  <span v-if="row.side === 'them'" class="aid mono">{{ row.m.from }}</span>
+                  <span v-if="row.m.model" class="model mono" :title="'模型：' + row.m.model">{{ row.m.model }}</span>
+                  <span v-if="row.m.needs_user" class="ask-tag" :class="{ answered: row.answered }">{{ row.answered ? '@你 已回复' : '@你 待拍板' }}</span>
+                  <span class="ts mono">{{ fmtHM(row.m.ts) }}</span>
+                  <span class="msg-actions">
+                    <button v-if="row.side === 'them' && hasDetail(row.m)" class="msg-btn detail-btn" @click="openDetail(row.m)">详细</button>
+                    <button class="msg-btn" title="回应 👍" @click="onReact(row.m, '👍')">👍</button>
+                    <button class="msg-btn" title="引用回复" @click="startReply(row.m)">↩</button>
+                    <button class="msg-btn" title="复制" @click="copyText(row.m.text)">⧉</button>
+                  </span>
+                </div>
+                <div class="msg-body">
+                  <div v-if="row.quote" class="quote-bar mono" :title="row.quote.text">↩ {{ row.quote.who }}：{{ row.quote.text }}</div>
+                  <!-- 用户附图：图片网格（点击大图预览） -->
+                  <div v-if="rowImgUrls(row.m).length" class="img-grid">
+                    <el-image
+                      v-for="(u, i) in rowImgUrls(row.m)"
+                      :key="u"
+                      :src="u"
+                      :preview-src-list="rowImgUrls(row.m)"
+                      :initial-index="i"
+                      fit="cover"
+                      loading="lazy"
+                      class="img-cell"
+                    />
+                  </div>
+                  <div v-if="row.m.text" class="wf-text md" v-html="md(row.m.text)"></div>
+                </div>
+                <!-- emoji 回应聚合 -->
+                <div v-if="hasReactions(row.m)" class="reactions">
+                  <button
+                    v-for="(users, emo) in row.m.reactions"
+                    :key="emo"
+                    class="react-chip"
+                    :class="{ mine: users.includes('user') }"
+                    @click="onReact(row.m, String(emo))"
+                  >{{ emo }} <span class="mono">{{ users.length }}</span></button>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 实时工具树（进行中的成员：每批工具调用完成后实时出现） -->
+          <div v-for="(lt, agent) in visibleLiveTools" :key="`lt-${agent}`" class="msg">
+            <div class="msg-avatar">
+              <AgentAvatar :name="String(agent)" :size="26" />
+            </div>
+            <div class="msg-col">
+              <div class="msg-head">
+                <span class="live-dot"></span>
+                <span class="who" :style="{ color: agentColor(String(agent)) }">{{ roleOf(String(agent)) }}</span>
+                <span class="aid mono">{{ agent }}</span>
+                <span class="live-label">正在动手…</span>
+              </div>
+              <div class="tooltree open live-tree">
+                <div class="tt-body">
+                  <div v-for="(rec, ci) in liveRecords(lt)" :key="ci" class="tcall">
+                    <div class="tcall-line">
+                      <span class="sym mono">{{ toolIcon(rec.tool) }}</span>
+                      <span class="path mono">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
+                      <span v-if="rec.args_summary" class="args mono">{{ rec.args_summary }}</span>
+                      <span class="st mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗ 失败' : '✓ ok' }}</span>
+                    </div>
+                    <div v-if="rec.output_gist" class="gist mono">{{ rec.output_gist }}</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- 流式发言（未定稿的实时内容，通栏） -->
-        <div v-for="(s, sid) in streams" :key="sid" class="wf-row live">
-          <div class="wf-bar" :style="{ background: agentColor(s.agent) }"></div>
-          <div class="wf-col">
-            <div class="wf-head">
-              <span class="wf-live-dot"></span>
-              <span class="wf-role" :style="{ color: agentColor(s.agent) }">{{ roleOf(s.agent) }}</span>
-              <span class="wf-id mono">{{ s.agent }}</span>
-              <span class="wf-live-label">正在输入…</span>
+          <!-- 流式发言（未定稿的实时内容） -->
+          <div v-for="(s, sid) in streams" :key="sid" class="msg">
+            <div class="msg-avatar">
+              <AgentAvatar :name="s.agent" :size="26" />
             </div>
-            <div class="wf-body"><span class="wf-text">{{ s.text }}</span><span class="caret"></span></div>
+            <div class="msg-col">
+              <div class="msg-head">
+                <span class="live-dot"></span>
+                <span class="who" :style="{ color: agentColor(s.agent) }">{{ roleOf(s.agent) }}</span>
+                <span class="aid mono">{{ s.agent }}</span>
+                <span class="live-label">正在输入…</span>
+              </div>
+              <div class="msg-body"><span class="wf-text dim">{{ s.text }}</span><span class="caret"></span></div>
+            </div>
           </div>
-        </div>
 
-        <!-- 路由器决策中 -->
-        <div v-if="thinking === 'router' && !anyStreaming && !anyLiveTools" class="router-hint mono">
-          <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span> 正在看消息，决定谁来回复…
-        </div>
+          <!-- 路由器决策中 -->
+          <div v-if="thinking === 'router' && !anyStreaming && !anyLiveTools" class="router-hint">
+            <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span> 正在看消息，决定谁来回复…
+          </div>
 
-        <!-- 并行活动状态行（统一工作流视图：多成员同时动手/输入一眼可见） -->
-        <div v-else-if="activeMembers.length && !anyLiveTools" class="parallel-line mono">
-          <span v-for="(a, i) in activeMembers" :key="a" class="pl-chip">
-            <span class="pl-dot" :style="{ background: agentColor(a) }"></span>
-            {{ a }} {{ activityLabel(a) }}<span v-if="i < activeMembers.length - 1" class="pl-sep">·</span>
-          </span>
+          <!-- 并行活动状态行（统一工作流视图：多成员同时动手/输入一眼可见） -->
+          <div v-else-if="activeMembers.length && !anyLiveTools" class="parallel-line">
+            <span v-for="(a, i) in activeMembers" :key="a" class="pl-chip">
+              <span class="pl-dot" :style="{ background: agentColor(a) }"></span>
+              {{ a }} {{ activityLabel(a) }}<span v-if="i < activeMembers.length - 1" class="pl-sep">·</span>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -175,11 +194,14 @@
         <button v-if="!stick && newBelow > 0" class="new-pill mono" @click="scrollToBottom(true)">↓ {{ newBelow }} 条新消息</button>
       </transition>
 
+      <!-- 详情面板收起时的重新展开钮（IDE inspector 形态） -->
+      <button v-if="!detailOpen" class="detail-open-btn" title="展开消息明细面板" @click="detailOpen = true">‹ 明细</button>
+
       <div v-if="pendingUser" class="pending-bar">有成员提出了需要你拍板的问题，回复一条消息即可继续</div>
 
       <!-- 开干确认横条：方案就绪，等你拍板（P1-2） -->
       <div v-if="pendingConvert" class="go-bar">
-        <span class="go-text">⚙️ 方案已就绪，等你拍板开工</span>
+        <span class="go-text">⚙ 方案已就绪，等你拍板开工</span>
         <span class="go-ops">
           <el-button size="small" type="primary" :loading="cvResolving === String(pendingConvert.meta?.convert_confirm?.id || '')" @click="resolveConvert({ m: pendingConvert }, 'confirm')">确认开干</el-button>
           <el-button size="small" :loading="cvResolving === String(pendingConvert.meta?.convert_confirm?.id || '')" @click="resolveConvert({ m: pendingConvert }, 'cancel')">暂不转</el-button>
@@ -187,123 +209,132 @@
       </div>
 
       <div class="input-zone">
-        <div v-if="replyTo" class="reply-bar mono">
-          <span>↩ 回复「{{ replyPreview }}」</span>
-          <button class="rb-x" @click="replyTo = null">×</button>
-        </div>
-        <div class="chips-row" v-if="members.length">
-          <span class="chip-label mono">@点名（只唤被点名者）：</span>
-          <button v-for="m in members" :key="m" class="mention-chip mono" @click="insertMention(m)">@{{ m }}</button>
-        </div>
-        <el-input
-          ref="inputEl"
-          v-model="draft"
-          type="textarea"
-          :rows="2"
-          resize="none"
-          :placeholder="converted ? '本群聊已转任务——输入消息将重新开启群聊，继续沟通或再转新任务' : busy ? '成员正在处理——插话会在成员完成当前步后优先回应你' : '像群里聊天一样说：可 @成员、可让它动手（如：@launcher 把服务跑起来）、可发图、可打断'"
-          @keydown.enter.exact.prevent="sendNow"
-        />
-        <div class="op-row">
-          <el-radio-group v-model="mode" size="small" @change="onModeChange">
-            <el-radio-button value="manual">手动</el-radio-button>
-            <el-radio-button value="auto">自动</el-radio-button>
-          </el-radio-group>
-          <span class="mode-hint mono">{{ mode === 'auto' ? '自动：一条消息驱动多轮，直到成员收敛或你插话' : '手动：你一句它一句，插话即刻受理' }}</span>
-          <div class="ops">
-            <AttachPicker v-model="pendingImages" :disabled="sending" @preview="onPreview" />
-            <el-button v-if="busy" size="small" type="warning" plain @click="stop">打断并停止</el-button>
-            <el-button v-else size="small" @click="moreRound">让成员继续</el-button>
-            <el-button size="small" type="primary" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length)" @click="sendNow">{{ busy ? '插话' : '发送' }}</el-button>
+        <div class="input-inner">
+          <div v-if="replyTo" class="quote-reply">
+            <span class="bar"></span>
+            <span class="quote-text">回复「{{ replyPreview }}」</span>
+            <button class="rb-x" @click="replyTo = null">✕</button>
           </div>
+          <div class="mentions" v-if="members.length">
+            <span class="chip-label">@点名（只唤被点名者）</span>
+            <button v-for="m in members" :key="m" class="mention-chip" @click="insertMention(m)">
+              <span class="pl-dot" :style="{ background: agentColor(m) }"></span>@{{ m }}
+            </button>
+          </div>
+          <div class="inputrow">
+            <el-input
+              ref="inputEl"
+              v-model="draft"
+              type="textarea"
+              :rows="2"
+              resize="none"
+              :placeholder="converted ? '本群聊已转任务——输入消息将重新开启群聊，继续沟通或再转新任务' : busy ? '成员正在处理——插话会在成员完成当前步后优先回应你' : '回复讨论… Enter 发送 / Shift+Enter 换行 / @ 点名成员 / 可让它动手、可发图'"
+              @keydown.enter.exact.prevent="sendNow"
+            />
+            <div class="input-side">
+              <el-radio-group v-model="mode" size="small" class="mode-seg" @change="onModeChange">
+                <el-radio-button value="manual">手动</el-radio-button>
+                <el-radio-button value="auto">自动</el-radio-button>
+              </el-radio-group>
+              <div class="under">
+                <AttachPicker v-model="pendingImages" :disabled="sending" @preview="onPreview" />
+                <el-button v-if="busy" size="small" type="warning" plain @click="stop">打断并停止</el-button>
+                <el-button v-else size="small" @click="moreRound">让成员继续</el-button>
+                <el-button size="small" type="primary" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length)" @click="sendNow">{{ busy ? '插话' : '发送' }}</el-button>
+              </div>
+            </div>
+          </div>
+          <div class="mode-hint">{{ mode === 'auto' ? '自动：一条消息驱动多轮，直到成员收敛或你插话' : '手动：你一句它一句，插话即刻受理' }}</div>
         </div>
       </div>
     </div>
 
-    <!-- 右侧详情面板（P1-2）：解决思路 / 工具调用 / SKILL / 协作 -->
-    <aside v-if="detailMsg" class="detail-panel">
+    <!-- 右侧详情面板（P1-2，改版：常驻可收的 IDE inspector） -->
+    <aside v-show="detailOpen" class="detail-panel">
       <div class="dp-head">
-        <span class="dp-title">
-          <span class="wf-role" :style="{ color: detailMsg.from === 'user' ? 'var(--ct-accent)' : agentColor(detailMsg.from) }">{{ roleOf(detailMsg.from) }}</span>
-          <span v-if="detailMsg.from !== 'user'" class="wf-id mono">{{ detailMsg.from }}</span>
+        <span class="dp-title">消息明细</span>
+        <span v-if="detailMsg" class="dp-sub mono">
+          <template v-if="detailMsg.from !== 'user'">{{ detailMsg.from }} · </template>{{ fmtHM(detailMsg.ts) }}
         </span>
-        <button class="rb-x" @click="detailMsg = null">×</button>
+        <button class="dp-collapse" title="收起面板" @click="detailOpen = false">»</button>
       </div>
       <div class="dp-body">
-        <template v-if="detailData">
-          <!-- 💡 解决思路 -->
-          <section v-if="detailData.evidence" class="dp-sec">
-            <div class="dp-sec-title">💡 解决思路</div>
-            <div class="dp-sec-body">{{ detailData.evidence }}</div>
-          </section>
-          <!-- 📂 看了哪些代码 -->
-          <section v-if="groupedCalls.code.length" class="dp-sec">
-            <div class="dp-sec-title">📂 看了哪些代码（{{ groupedCalls.code.length }}）</div>
-            <div v-for="(rec, i) in groupedCalls.code" :key="`c${i}`" class="dp-call mono">
-              <div class="dp-call-line">
-                <span class="tc-icon">{{ toolIcon(rec.tool) }}</span>
-                <span class="tc-name">{{ rec.tool }}</span>
-                <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+        <template v-if="detailMsg">
+          <template v-if="detailData">
+            <!-- 解决思路 -->
+            <section v-if="detailData.evidence" class="dsec">
+              <div class="dtitle">解决思路</div>
+              <p class="dp-sec-body">{{ detailData.evidence }}</p>
+            </section>
+            <!-- 看了哪些代码 -->
+            <section v-if="groupedCalls.code.length" class="dsec">
+              <div class="dtitle">看过哪些代码 · {{ groupedCalls.code.length }}</div>
+              <div v-for="(rec, i) in groupedCalls.code" :key="`c${i}`" class="fitem-block mono">
+                <div class="fitem-line">
+                  <span class="fi-icon">{{ toolIcon(rec.tool) }}</span>
+                  <span class="fi-name">{{ rec.tool }}</span>
+                  <span class="fi-status mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+                </div>
+                <div v-if="rec.args_summary" class="fi-args">{{ rec.args_summary }}</div>
+                <div v-if="rec.output_gist" class="fi-gist">{{ rec.output_gist }}</div>
               </div>
-              <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
-              <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
-            </div>
-          </section>
-          <!-- ⚙ 命令与验证 -->
-          <section v-if="groupedCalls.cmd.length" class="dp-sec">
-            <div class="dp-sec-title">⚙ 执行了什么命令（{{ groupedCalls.cmd.length }}）</div>
-            <div v-for="(rec, i) in groupedCalls.cmd" :key="`x${i}`" class="dp-call mono">
-              <div class="dp-call-line">
-                <span class="tc-icon">{{ toolIcon(rec.tool) }}</span>
-                <span class="tc-name">{{ rec.tool }}</span>
-                <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+            </section>
+            <!-- 命令与验证 -->
+            <section v-if="groupedCalls.cmd.length" class="dsec">
+              <div class="dtitle">执行了什么命令 · {{ groupedCalls.cmd.length }}</div>
+              <div v-for="(rec, i) in groupedCalls.cmd" :key="`x${i}`" class="fitem-block mono">
+                <div class="fitem-line">
+                  <span class="fi-icon">{{ toolIcon(rec.tool) }}</span>
+                  <span class="fi-name">{{ rec.tool }}</span>
+                  <span class="fi-status mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+                </div>
+                <div v-if="rec.args_summary" class="fi-args">{{ rec.args_summary }}</div>
+                <div v-if="rec.output_gist" class="fi-gist">{{ rec.output_gist }}</div>
               </div>
-              <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
-              <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
-            </div>
-          </section>
-          <!-- 🔌 MCP -->
-          <section v-if="groupedCalls.mcp.length" class="dp-sec">
-            <div class="dp-sec-title">🔌 MCP 调用（{{ groupedCalls.mcp.length }}）</div>
-            <div v-for="(rec, i) in groupedCalls.mcp" :key="`m${i}`" class="dp-call mono">
-              <div class="dp-call-line">
-                <span class="tc-icon">🔌</span>
-                <span class="tc-name">{{ rec.mcp ? `${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
-                <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+            </section>
+            <!-- MCP -->
+            <section v-if="groupedCalls.mcp.length" class="dsec">
+              <div class="dtitle">MCP 调用 · {{ groupedCalls.mcp.length }}</div>
+              <div v-for="(rec, i) in groupedCalls.mcp" :key="`m${i}`" class="fitem-block mono">
+                <div class="fitem-line">
+                  <span class="fi-icon">🔌</span>
+                  <span class="fi-name">{{ rec.mcp ? `${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
+                  <span class="fi-status mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+                </div>
+                <div v-if="rec.args_summary" class="fi-args">{{ rec.args_summary }}</div>
+                <div v-if="rec.output_gist" class="fi-gist">{{ rec.output_gist }}</div>
               </div>
-              <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
-              <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
-            </div>
-          </section>
-          <!-- 📄 文档/沉淀 -->
-          <section v-if="groupedCalls.doc.length" class="dp-sec">
-            <div class="dp-sec-title">📄 文档与沉淀（{{ groupedCalls.doc.length }}）</div>
-            <div v-for="(rec, i) in groupedCalls.doc" :key="`d${i}`" class="dp-call mono">
-              <div class="dp-call-line">
-                <span class="tc-icon">{{ toolIcon(rec.tool) }}</span>
-                <span class="tc-name">{{ rec.tool }}</span>
-                <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
+            </section>
+            <!-- 文档/沉淀 -->
+            <section v-if="groupedCalls.doc.length" class="dsec">
+              <div class="dtitle">文档与沉淀 · {{ groupedCalls.doc.length }}</div>
+              <div v-for="(rec, i) in groupedCalls.doc" :key="`d${i}`" class="fitem-block mono">
+                <div class="fitem-line">
+                  <span class="fi-icon">{{ toolIcon(rec.tool) }}</span>
+                  <span class="fi-name">{{ rec.tool }}</span>
+                </div>
+                <div v-if="rec.args_summary" class="fi-args">{{ rec.args_summary }}</div>
               </div>
-              <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
-            </div>
-          </section>
-          <!-- 🧩 SKILL -->
-          <section v-if="detailData.skills?.length" class="dp-sec">
-            <div class="dp-sec-title">🧩 绑定的 SKILL</div>
-            <div class="dp-chips">
-              <span v-for="s in detailData.skills" :key="s" class="dp-chip mono">{{ s }}</span>
-            </div>
-          </section>
-          <!-- 🤝 协作 -->
-          <section v-if="detailData.mentioned?.length" class="dp-sec">
-            <div class="dp-sec-title">🤝 协作</div>
-            <div class="dp-chips">
-              <span v-for="a in detailData.mentioned" :key="a" class="dp-chip mono">@{{ a }}（{{ roleOf(a) }}）</span>
-            </div>
-          </section>
-          <div class="dp-model mono">模型：{{ detailData.model }} · 第 {{ detailData.round }} 轮</div>
+            </section>
+            <!-- SKILL -->
+            <section v-if="detailData.skills?.length" class="dsec">
+              <div class="dtitle">绑定的 SKILL</div>
+              <div class="chips">
+                <span v-for="s in detailData.skills" :key="s" class="chip mono">{{ s }}</span>
+              </div>
+            </section>
+            <!-- 协作 -->
+            <section v-if="detailData.mentioned?.length" class="dsec">
+              <div class="dtitle">协作</div>
+              <div class="chips">
+                <span v-for="a in detailData.mentioned" :key="a" class="chip mono">@{{ a }}（{{ roleOf(a) }}）</span>
+              </div>
+            </section>
+            <div class="dp-model mono">模型：{{ detailData.model }} · 第 {{ detailData.round }} 轮</div>
+          </template>
+          <div v-else class="dp-empty">这条消息还没有工作明细</div>
         </template>
-        <div v-else class="dp-empty mono">这条消息还没有工作明细</div>
+        <div v-else class="dp-empty">选中消息上的「详细」<br />在这里看它的工作明细：<br />解决思路 / 看过哪些代码 / 命令 / SKILL / 协作</div>
       </div>
     </aside>
   </div>
@@ -318,6 +349,7 @@ import { api } from '../api';
 import { useDiscussion } from '../composables/useDiscussion';
 import { agentColor } from '../utils/agentColor';
 import AttachPicker from './AttachPicker.vue';
+import AgentAvatar from './AgentAvatar.vue';
 
 const emit = defineEmits<{ (e: 'member-info', agent: string): void }>();
 
@@ -567,11 +599,12 @@ function liveRecords(lt: { agent: string; calls: any[]; results: any[] }): any[]
   return out;
 }
 
-// ---------- 右侧详情面板（P1-2） ----------
+// ---------- 右侧详情面板（P1-2；改版后常驻可收） ----------
 const CODE_TOOLS = /^(read_file|read|read_dir|readdir|list_files|list|ls|grep|search|git_log|git_diff)$/;
 const CMD_TOOLS = /^(exec|exec_command|run_command|exec_background|start_process|kill_process|check_page|screenshot|look_image)$/;
 const DOC_TOOLS = /^(write_knowledge|write_doc)$/;
 const detailMsg = ref<DiscussionMessage | null>(null);
+const detailOpen = ref(false);
 
 function hasDetail(m: DiscussionMessage): boolean {
   const meta: any = m.meta || {};
@@ -579,6 +612,7 @@ function hasDetail(m: DiscussionMessage): boolean {
 }
 function openDetail(m: DiscussionMessage) {
   detailMsg.value = m;
+  detailOpen.value = true;
 }
 const detailData = computed(() => {
   const m = detailMsg.value;
@@ -750,93 +784,55 @@ watch(() => current.value?.id, (id) => {
 </script>
 
 <style scoped>
-.disc-chat { display: flex; height: 100%; min-height: 0; background: var(--ct-bg); position: relative; }
+.disc-chat { display: flex; height: 100%; min-height: 0; background: var(--bg-page); position: relative; }
 .chat-left { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
-.stream { flex: 1; display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; overflow-y: auto; }
-.empty { color: var(--ct-text3); text-align: center; padding: 48px 24px; font-size: 12px; line-height: 2; }
+.stream-wrap { flex: 1; overflow-y: auto; }
+.stream { max-width: var(--measure); margin: 0 auto; padding: 18px 24px 12px; display: flex; flex-direction: column; gap: 2px; }
+.empty { color: var(--text-3); text-align: center; padding: 48px 24px; font-size: var(--fs-aux); line-height: 2; }
 
-.time-divider { text-align: center; font-size: 10px; color: var(--ct-text3); margin: 10px 0 6px; opacity: 0.85; }
+/* ---------- 消息行：avatar 列 + 内容列 ---------- */
+.msg { display: grid; grid-template-columns: 26px 1fr; gap: 0 12px; padding: 7px 0; border-radius: 8px; }
+.msg:hover { background: color-mix(in srgb, var(--bg-raised) 55%, transparent); }
+.msg.user { background: linear-gradient(90deg, var(--accent-soft), transparent 70%); }
+.msg-avatar { width: 26px; }
+.avatar-user {
+  width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-text);
+  font-family: var(--font-mono); font-size: var(--fs-meta); font-weight: 700;
+}
+.msg-col { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 
-.unread-divider { display: flex; align-items: center; gap: 8px; margin: 8px 0; color: #e5484d; font-size: 10px; }
-.unread-divider::before, .unread-divider::after { content: ''; flex: 1; height: 1px; background: rgba(229, 72, 77, 0.35); }
+.msg-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.msg-head .who { font-size: 13px; font-weight: 700; }
+.msg-head .aid { font-size: var(--fs-meta); color: var(--text-3); }
+.msg-head .model {
+  font-size: var(--fs-meta); font-family: var(--font-mono); color: var(--text-3);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; height: 16px; line-height: 15px;
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ts { margin-left: auto; font-size: var(--fs-meta); color: var(--text-3); opacity: 0; transition: opacity .15s; }
+.msg:hover .ts { opacity: 1; }
+.msg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
+.msg:hover .msg-actions { opacity: 1; }
+.msg-btn {
+  border: 1px solid var(--line); background: var(--bg-panel); border-radius: var(--r-ctl);
+  font-size: var(--fs-meta); padding: 1px 6px; cursor: pointer; color: var(--text-3); line-height: 1.4;
+}
+.msg-btn:hover { color: var(--text-1); border-color: var(--line-strong); }
+.msg-btn.detail-btn { color: var(--accent); border-color: var(--accent-line); }
 
-/* ---------- 系统形态 ---------- */
-.sys-row { display: flex; justify-content: center; margin: 4px 0; }
-.sys-text { font-size: 11px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 10px; padding: 3px 12px; max-width: 85%; text-align: center; }
-.sys-notice { font-size: 10px; color: var(--ct-text3); font-style: italic; opacity: 0.8; }
-.sys-card { font-size: 12px; color: var(--ct-text); background: var(--ct-panel); border: 1px solid var(--ct-border2); border-radius: 10px; padding: 8px 16px; max-width: 80%; text-align: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04); }
-/* M5.2 ③ ask 提问卡片 */
-.ask-card { text-align: left; max-width: 86%; border-color: var(--ct-orange, #fa8c16); }
-.ask-q { margin-bottom: 8px; white-space: pre-wrap; }
-.ask-row { display: flex; gap: 6px; align-items: center; }
-.ask-input { flex: 1; min-width: 0; background: var(--ct-panel2); border: 1px solid var(--ct-border); border-radius: 4px; color: var(--ct-text); font-size: 12px; padding: 5px 8px; outline: none; }
-.ask-input:focus { border-color: var(--ct-accent); }
-.ask-done { font-size: 11px; color: var(--ct-green); margin-top: 4px; }
-/* 转任务确认卡 */
-.cv-card { text-align: left; max-width: 86%; border-color: var(--ct-accent); }
-.cv-text { white-space: pre-wrap; margin-bottom: 8px; }
-.cv-row { display: flex; gap: 6px; }
-.cv-done { font-size: 11px; color: var(--ct-green); margin-top: 4px; }
-.cv-done.off { color: var(--ct-text3); }
+.ask-tag { font-size: var(--fs-meta); color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 4px; padding: 0 6px; }
+.ask-tag.answered { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
 
-/* ---------- 工具活动块（P1-2 工作流条目） ---------- */
-.tool-block { margin: 2px 0; }
-.tool-head { display: flex; align-items: center; gap: 6px; border: none; background: none; cursor: pointer; padding: 2px 4px 2px 8px; width: 100%; text-align: left; }
-.tool-caret { font-size: 9px; color: var(--ct-text3); width: 10px; }
-.tool-agent { font-size: 10px; font-weight: 600; flex-shrink: 0; }
-.tool-text { font-size: 10px; color: var(--ct-text3); background: var(--ct-panel2); border-radius: 6px; padding: 2px 8px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-hint { font-size: 9px; color: var(--ct-text3); opacity: 0.7; flex-shrink: 0; }
-.tool-tree { margin: 2px 0 4px 18px; display: flex; flex-direction: column; gap: 3px; border-left: 2px solid var(--ct-border); padding-left: 8px; }
-.tool-call { display: flex; flex-direction: column; gap: 1px; }
-.tc-line { display: flex; align-items: baseline; gap: 6px; font-size: 11px; flex-wrap: wrap; }
-.tc-icon { font-size: 10px; }
-.tc-name { color: var(--ct-text); font-weight: 600; }
-.tc-args { color: var(--ct-text2, var(--ct-text)); opacity: 0.85; word-break: break-all; }
-.tc-status { font-size: 10px; color: var(--ct-green); }
-.tc-status.bad { color: #e5484d; }
-.tc-gist { font-size: 10px; color: var(--ct-text3); padding-left: 18px; word-break: break-all; }
-.tc-diff { font-size: 10px; color: var(--ct-text2, var(--ct-text)); background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 4px; padding: 4px 8px; margin: 2px 0 2px 18px; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow-y: auto; }
-.tc-undo { border: 1px solid var(--ct-border2); background: var(--ct-panel); color: var(--ct-text3); border-radius: 6px; font-size: 10px; padding: 1px 8px; cursor: pointer; margin: 2px 0 2px 18px; }
-.tc-undo:hover { color: var(--ct-text); border-color: var(--ct-accent); }
-.tc-undo-done { font-size: 10px; color: var(--ct-green); margin: 2px 0 2px 18px; }
-.live-tree { margin-left: 8px; }
+.msg-body { font-size: var(--fs-body); line-height: 1.62; color: var(--text-1); min-width: 0; }
+.wf-text { word-break: break-word; }
+.wf-text.dim { color: var(--text-2); }
 
-/* ---------- 通栏工作流条目（P1-2） ---------- */
-.wf-row { display: flex; gap: 8px; margin: 6px 0; padding: 6px 8px 6px 0; border-radius: 8px; position: relative; }
-.wf-row:hover { background: var(--ct-panel2); }
-.wf-row.me { background: var(--ct-panel2); }
-.wf-row.live { background: rgba(0, 0, 0, 0.02); }
-html.dark .wf-row.live { background: rgba(255, 255, 255, 0.03); }
-.wf-bar { width: 3px; border-radius: 2px; flex-shrink: 0; align-self: stretch; }
-.wf-row.me .wf-bar { background: var(--ct-accent); }
-.wf-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-
-.wf-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-.wf-role { font-size: 12px; font-weight: 600; }
-.wf-id { font-size: 10px; color: var(--ct-text3); }
-.wf-model { font-size: 9px; color: var(--ct-text3); background: var(--ct-panel); border: 1px solid var(--ct-border2); border-radius: 3px; padding: 0 4px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wf-ts { font-size: 9px; color: var(--ct-text3); margin-left: auto; }
-.wf-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; }
-.wf-row:hover .wf-actions { opacity: 1; }
-.wf-btn { border: 1px solid var(--ct-border); background: var(--ct-panel); border-radius: 6px; font-size: 10px; padding: 1px 6px; cursor: pointer; color: var(--ct-text3); }
-.wf-btn:hover { color: var(--ct-text); border-color: var(--ct-border2); }
-.wf-detail-btn { color: var(--ct-accent); border-color: var(--ct-accent); }
-
-.wf-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ct-accent); animation: pulse 1.1s infinite; align-self: center; }
-@keyframes pulse { 50% { opacity: 0.3; } }
-.wf-live-label { font-size: 10px; color: var(--ct-accent); }
-
-.wf-body { font-size: 13px; line-height: 1.65; min-width: 0; }
-.wf-text { word-break: break-word; color: var(--ct-text); }
-
-.quote-bar { font-size: 10px; opacity: 0.75; border-left: 2px solid currentColor; padding: 2px 0 2px 6px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.quote-bar { font-size: var(--fs-aux); color: var(--text-3); border-left: 2px solid var(--line-strong); padding: 2px 0 2px 8px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 
 .reactions { display: flex; gap: 4px; margin: 2px 0 0; flex-wrap: wrap; }
-.react-chip { font-size: 11px; background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 10px; padding: 0 7px; cursor: pointer; color: var(--ct-text); }
-.react-chip.mine { border-color: var(--ct-accent); background: var(--ct-panel2); }
-
-.ask-tag { font-size: 10px; color: #fff; background: var(--ct-accent); border-radius: 4px; padding: 1px 6px; }
-.ask-tag.answered { background: var(--ct-text3); }
+.react-chip { font-size: var(--fs-aux); background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px; padding: 0 7px; cursor: pointer; color: var(--text-2); }
+.react-chip.mine { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
 
 /* 用户附图：图片网格（最多 3 张，一张撑满两列宽） */
 .img-grid { display: grid; grid-template-columns: repeat(2, 120px); gap: 6px; margin: 2px 0 6px; }
@@ -845,66 +841,213 @@ html.dark .wf-row.live { background: rgba(255, 255, 255, 0.03); }
 
 .wf-text :deep(p) { margin: 0 0 6px; }
 .wf-text :deep(p:last-child) { margin-bottom: 0; }
-.wf-text :deep(code) { font-family: var(--ct-mono); font-size: 11px; background: var(--ct-panel); border: 1px solid var(--ct-border); border-radius: 3px; padding: 0 4px; }
+.wf-text :deep(code) { font-family: var(--font-mono); font-size: 12.5px; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
 .wf-text :deep(ul), .wf-text :deep(ol) { margin: 4px 0; padding-left: 18px; }
 .wf-text :deep(strong) { font-weight: 600; }
-.wf-text :deep(.mention) { color: var(--ct-accent); background: var(--ct-panel); border-radius: 3px; padding: 0 3px; font-weight: 600; }
+.wf-text :deep(.mention) { color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 0 3px; font-weight: 600; }
 
-/* ---------- 并行活动状态行 ---------- */
-.parallel-line { align-self: flex-start; display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 6px 11px; font-size: 10px; color: var(--ct-text3); }
-.pl-chip { display: inline-flex; align-items: center; gap: 4px; }
-.pl-dot { width: 6px; height: 6px; border-radius: 50%; animation: pulse 1.1s infinite; }
-.pl-sep { opacity: 0.5; margin-left: 8px; }
+/* ---------- 工具调用树（IDE 感核心组件） ---------- */
+.tooltree {
+  margin: 4px 0; background: var(--bg-inset); border: 1px solid var(--line);
+  border-radius: var(--r-panel); overflow: hidden; max-width: 860px;
+}
+.tt-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 6px 10px; font-size: var(--fs-aux); color: var(--text-2);
+  border: none; background: color-mix(in srgb, var(--bg-raised) 60%, transparent); cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+.tooltree:not(.open) .tt-head { border-bottom: none; }
+.tt-caret { color: var(--text-3); font-size: 10px; width: 10px; flex: none; }
+.tt-agent { font-weight: 600; flex: none; }
+.tt-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
+.tt-meta { font-family: var(--font-mono); color: var(--text-3); flex: none; }
+.tt-body { padding: 6px 10px 7px; display: flex; flex-direction: column; gap: 4px; }
+.tcall { display: flex; flex-direction: column; gap: 1px; }
+.tcall-line { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-aux); line-height: 1.5; flex-wrap: wrap; }
+.tcall .sym { color: var(--text-3); flex: none; font-size: 10px; }
+.tcall .path { color: var(--text-2); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+.tcall .args { color: var(--text-3); word-break: break-all; }
+.tcall .st { margin-left: auto; font-size: var(--fs-meta); color: var(--ok); flex: none; }
+.tcall .st.bad { color: var(--danger); }
+.gist { font-size: var(--fs-meta); color: var(--text-3); padding-left: 22px; word-break: break-all; }
+.live-tree { margin: 0; }
 
-/* ---------- 流式/路由状态 ---------- */
-.caret { display: inline-block; width: 2px; height: 14px; background: var(--ct-accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 0.9s step-end infinite; }
+.tc-diff { font-size: var(--fs-meta); color: var(--text-2); background: var(--bg-page); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; margin: 2px 0 2px 22px; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow-y: auto; }
+.tc-undo {
+  border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--text-3);
+  border-radius: var(--r-ctl); font-size: var(--fs-meta); padding: 1px 8px; cursor: pointer; margin: 2px 0 2px 22px; align-self: flex-start;
+}
+.tc-undo:hover { color: var(--text-1); border-color: var(--accent-line); }
+.done-line { font-size: var(--fs-meta); color: var(--text-3); }
+.done-line.ok { color: var(--ok); }
+
+/* ---------- 系统行 / notice ---------- */
+.sysline {
+  display: flex; align-items: center; gap: 10px; color: var(--text-3);
+  font-size: var(--fs-aux); padding: 7px 0;
+}
+.sysline::before, .sysline::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.sysline span { flex: none; }
+.sys-row { display: flex; justify-content: center; margin: 4px 0; }
+.sys-card {
+  font-size: var(--fs-aux); color: var(--text-2); background: var(--bg-raised);
+  border: 1px solid var(--line-strong); border-radius: var(--r-panel); padding: 8px 16px;
+  max-width: 80%; text-align: center;
+}
+.notice {
+  display: flex; gap: 9px; align-items: flex-start; max-width: 640px; margin: 8px auto;
+  padding: 8px 12px; border-radius: var(--r-panel);
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--text-2); font-size: 12.5px; line-height: 1.55;
+}
+.notice .ic { color: var(--warn); flex: none; margin-top: 1px; }
+
+/* ---------- 问答卡（需拍板）---------- */
+.askcard {
+  max-width: 640px; width: 100%; margin: 10px auto; background: var(--bg-raised);
+  border: 1px solid var(--accent-line); border-left: 3px solid var(--accent);
+  border-radius: var(--r-panel); padding: 12px 14px;
+}
+.askcard .q { font-size: var(--fs-body); font-weight: 600; margin-bottom: 3px; color: var(--text-1); }
+.askcard .hint { font-size: 12.5px; color: var(--text-2); margin-bottom: 10px; }
+.askcard .row { display: flex; gap: 8px; align-items: center; }
+.ask-input {
+  flex: 1; min-width: 0; height: 30px; padding: 0 10px; background: var(--bg-overlay);
+  border: 1px solid var(--line-strong); border-radius: var(--r-ctl); color: var(--text-1);
+  font-size: 13px; outline: none;
+}
+.ask-input:focus { border-color: var(--accent-line); }
+.cv-text { white-space: pre-wrap; }
+
+/* ---------- 未读分隔 ---------- */
+.unread-divider { display: flex; align-items: center; gap: 10px; margin: 8px 0; color: var(--danger); font-size: var(--fs-meta); }
+.unread-divider::before, .unread-divider::after { content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--danger) 35%, transparent); }
+
+/* ---------- 实时状态 ---------- */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.1s infinite; align-self: center; flex: none; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+.live-label { font-size: var(--fs-meta); color: var(--accent); }
+.caret { display: inline-block; width: 7px; height: 14px; background: var(--accent); margin-left: 4px; vertical-align: text-bottom; border-radius: 1px; animation: blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
-.router-hint { align-self: center; font-size: 11px; color: var(--ct-text3); display: flex; align-items: center; gap: 4px; margin: 8px 0; }
-.dot-t { width: 5px; height: 5px; border-radius: 50%; background: var(--ct-text3); animation: bob 1.2s infinite; }
+.router-hint { align-self: center; font-size: var(--fs-aux); color: var(--text-3); display: flex; align-items: center; gap: 4px; margin: 8px 0; }
+.dot-t { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); animation: bob 1.2s infinite; }
 .dot-t:nth-child(2) { animation-delay: 0.15s; }
 .dot-t:nth-child(3) { animation-delay: 0.3s; }
 @keyframes bob { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
 
-/* ---------- 新消息胶囊 ---------- */
-.new-pill { position: absolute; right: 16px; bottom: 150px; z-index: 5; border: 1px solid var(--ct-border2); background: var(--ct-panel); color: var(--ct-accent); border-radius: 14px; font-size: 11px; padding: 4px 12px; cursor: pointer; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12); }
+/* ---------- 并行活动状态行 ---------- */
+.parallel-line { align-self: flex-start; display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 6px 38px; font-size: var(--fs-meta); color: var(--text-3); }
+.pl-chip { display: inline-flex; align-items: center; gap: 5px; }
+.pl-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
+.parallel-line .pl-dot { animation: pulse 1.1s infinite; }
+.pl-sep { opacity: 0.5; margin-left: 8px; }
+
+/* ---------- 新消息胶囊 / pending / go-bar ---------- */
+.new-pill {
+  position: absolute; right: 16px; bottom: 160px; z-index: 5;
+  border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--accent);
+  border-radius: 14px; font-size: var(--fs-aux); padding: 4px 12px; cursor: pointer; box-shadow: var(--shadow-float);
+}
 .fade-enter-active, .fade-leave-active { transition: opacity 0.18s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
-.pending-bar { margin: 0 10px 6px; font-size: 11px; color: var(--ct-accent); border: 1px dashed var(--ct-accent); border-radius: 8px; padding: 5px 10px; }
+.detail-open-btn {
+  position: absolute; right: 12px; top: 10px; z-index: 5;
+  border: 1px solid var(--line); background: var(--bg-panel); color: var(--text-3);
+  border-radius: var(--r-ctl); font-size: var(--fs-meta); padding: 3px 9px; cursor: pointer;
+}
+.detail-open-btn:hover { color: var(--text-1); border-color: var(--line-strong); }
 
-/* ---------- 开干确认横条（P1-2） ---------- */
-.go-bar { margin: 0 10px 6px; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ct-text); background: var(--ct-panel); border: 1px solid var(--ct-accent); border-radius: 8px; padding: 6px 10px; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.06); }
+.pending-bar {
+  margin: 0 24px 6px; font-size: var(--fs-aux); color: var(--accent);
+  border: 1px dashed var(--accent-line); border-radius: var(--r-panel); padding: 5px 10px;
+}
+
+.go-bar {
+  margin: 0 24px 6px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: var(--fs-aux); color: var(--text-1); background: var(--bg-raised);
+  border: 1px solid var(--accent-line); border-radius: var(--r-panel); padding: 6px 10px;
+}
 .go-text { font-weight: 600; }
 .go-ops { display: flex; gap: 6px; }
 
 /* ---------- 输入区 ---------- */
-.input-zone { border-top: 1px solid var(--ct-border); background: var(--ct-panel); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-.reply-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ct-text3); background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 8px; padding: 4px 8px; }
-.rb-x { border: none; background: none; color: var(--ct-text3); font-size: 14px; cursor: pointer; }
-.chips-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.chip-label { font-size: 10px; color: var(--ct-text3); }
-.mention-chip { font-size: 11px; color: var(--ct-accent); background: var(--ct-bg); border: 1px solid var(--ct-border2); border-radius: 10px; padding: 1px 8px; cursor: pointer; }
-.mention-chip:hover:not(:disabled) { border-color: var(--ct-accent); }
-.mention-chip:disabled { opacity: 0.4; cursor: default; }
-.op-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.mode-hint { font-size: 10px; color: var(--ct-text3); }
-.ops { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.input-zone { flex: none; border-top: 1px solid var(--line); background: var(--bg-panel); padding: 10px 24px 12px; }
+.input-inner { max-width: var(--measure); margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+.quote-reply {
+  display: flex; align-items: center; gap: 8px; font-size: var(--fs-aux); color: var(--text-2);
+  background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 5px 9px;
+}
+.quote-reply .bar { width: 2px; height: 14px; background: var(--accent); border-radius: 2px; flex: none; }
+.quote-reply .quote-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-x { border: none; background: none; color: var(--text-3); font-size: 12px; cursor: pointer; }
+.rb-x:hover { color: var(--text-1); }
+.mentions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.chip-label { font-size: var(--fs-meta); color: var(--text-3); }
+.mention-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px; border-radius: 11px;
+  font-size: var(--fs-aux); color: var(--text-2); border: 1px solid var(--line); background: var(--bg-raised); cursor: pointer;
+}
+.mention-chip:hover { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.inputrow { display: flex; gap: 10px; align-items: flex-end; }
+.inputrow :deep(.el-textarea__inner) {
+  background: var(--bg-overlay); border-color: var(--line-strong); border-radius: var(--r-panel);
+  font-size: var(--fs-body); line-height: 1.5; color: var(--text-1); padding: 9px 12px;
+  min-height: 44px; box-shadow: none;
+}
+.inputrow :deep(.el-textarea__inner:focus) { border-color: var(--accent-line); }
+.input-side { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; flex: none; }
+.mode-seg :deep(.el-radio-button__inner) { background: var(--bg-overlay); border-color: var(--line-strong); color: var(--text-3); }
+.mode-seg :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line);
+}
+.under { display: flex; gap: 6px; align-items: center; }
+.mode-hint { font-size: var(--fs-meta); color: var(--text-3); }
 
-/* ---------- 右侧详情面板（P1-2） ---------- */
-.detail-panel { width: 340px; flex-shrink: 0; border-left: 1px solid var(--ct-border); background: var(--ct-panel); display: flex; flex-direction: column; min-height: 0; }
-.dp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--ct-border); }
-.dp-title { display: flex; align-items: baseline; gap: 6px; }
-.dp-body { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 12px; }
-.dp-empty { font-size: 11px; color: var(--ct-text3); text-align: center; padding: 24px 0; }
-.dp-sec { display: flex; flex-direction: column; gap: 4px; }
-.dp-sec-title { font-size: 11px; font-weight: 600; color: var(--ct-text2, var(--ct-text)); }
-.dp-sec-body { font-size: 12px; color: var(--ct-text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 6px 8px; }
-.dp-call { display: flex; flex-direction: column; gap: 2px; background: var(--ct-bg); border: 1px solid var(--ct-border); border-radius: 6px; padding: 5px 8px; margin-bottom: 4px; }
-.dp-call-line { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
-.dp-call-args { font-size: 10px; color: var(--ct-text2, var(--ct-text)); opacity: 0.85; word-break: break-all; }
-.dp-call-gist { font-size: 10px; color: var(--ct-text3); word-break: break-all; }
-.dp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.dp-chip { font-size: 10px; color: var(--ct-accent); background: var(--ct-bg); border: 1px solid var(--ct-border2); border-radius: 8px; padding: 1px 8px; }
-.dp-model { font-size: 9px; color: var(--ct-text3); }
-.mono { font-family: var(--ct-mono); }
+/* ---------- 右侧详情面板（常驻可收 IDE inspector） ---------- */
+.detail-panel {
+  width: var(--detail-w); flex: none; border-left: 1px solid var(--line); background: var(--bg-panel);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.dp-head {
+  height: 46px; flex: none; display: flex; align-items: center; gap: 9px; padding: 0 14px;
+  border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--text-2);
+}
+.dp-sub { color: var(--text-3); font-weight: 400; font-size: var(--fs-meta); }
+.dp-collapse {
+  margin-left: auto; width: 24px; height: 24px; display: grid; place-items: center;
+  border: none; background: transparent; color: var(--text-3); border-radius: var(--r-ctl); cursor: pointer; font-size: 13px;
+}
+.dp-collapse:hover { background: var(--bg-raised); color: var(--text-1); }
+.dp-body { flex: 1; overflow-y: auto; padding: 14px 16px 20px; display: flex; flex-direction: column; }
+.dsec { margin-bottom: 18px; display: flex; flex-direction: column; gap: 6px; }
+.dtitle {
+  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono);
+  letter-spacing: .08em; text-transform: uppercase; margin-bottom: 2px;
+  display: flex; align-items: center; gap: 8px;
+}
+.dtitle::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.dp-sec-body { font-size: 13px; line-height: 1.65; color: var(--text-2); white-space: pre-wrap; word-break: break-word; margin: 0; }
+.fitem-block { display: flex; flex-direction: column; gap: 2px; padding: 5px 8px; border-radius: 5px; }
+.fitem-block:hover { background: var(--bg-raised); }
+.fitem-line { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-aux); }
+.fi-icon { font-size: 11px; flex: none; }
+.fi-name { color: var(--text-2); font-weight: 600; }
+.fi-status { margin-left: auto; color: var(--ok); flex: none; }
+.fi-status.bad { color: var(--danger); }
+.fi-args { font-size: var(--fs-meta); color: var(--text-3); word-break: break-all; }
+.fi-gist { font-size: var(--fs-meta); color: var(--text-3); word-break: break-all; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  font-size: var(--fs-meta); color: var(--accent); font-family: var(--font-mono);
+  background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 8px; padding: 1px 8px;
+}
+.dp-model { font-size: var(--fs-meta); color: var(--text-3); margin-top: auto; padding-top: 10px; }
+.dp-empty { font-size: var(--fs-aux); color: var(--text-3); text-align: center; padding: 24px 0; line-height: 2; }
+.mono { font-family: var(--font-mono); }
+
+/* 窄屏隐藏详情面板 */
+@media (max-width: 1100px) { .detail-panel { display: none; } }
 </style>
