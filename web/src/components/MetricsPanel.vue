@@ -1,7 +1,8 @@
 <template>
   <div class="section">
     <div class="section-head">
-      <div class="section-title">运行指标</div>
+      <h3 class="sec-h3">运营指标</h3>
+      <span class="sec-hint">每 10s 自动刷新</span>
     </div>
     <div v-if="loadError && !metrics" class="metrics-error">
       <span>指标加载失败{{ loadError }}</span>
@@ -250,6 +251,10 @@ defineExpose({ refresh });
 
 <style scoped>
 /* 统计行（预览 statrow：分割线单容器 + mono 大数字） */
+/* 预览稿主页 section 语言：16px 中文粗标题 + meta hint */
+.sec-h3 { font-size: var(--fs-title); font-weight: 700; color: var(--text-1); }
+.sec-hint { font-size: var(--fs-meta); color: var(--text-3); margin-left: 4px; }
+.section-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 12px; }
 .statrow { display: flex; border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--bg-panel); margin-bottom: 12px; flex-wrap: wrap; }
 .stat { flex: 1; padding: 14px 18px; min-width: 140px; }
 .stat + .stat { border-left: 1px solid var(--line); }

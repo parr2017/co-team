@@ -4,8 +4,9 @@
       <div class="info">
         <div class="sup">
           <span class="dot-run"></span>
-          <span>{{ statusText(hero.status) }}</span>
+          <span>NOW RUNNING</span>
           <span class="mono">· {{ hero.task_id }}</span>
+          <span v-if="hero.level" class="mono">· {{ hero.level }}</span>
           <span v-if="hero.rolling" class="mono">· 第 {{ hero.stage }} 阶段</span>
         </div>
         <h2>{{ hero.description || hero.task_id }}</h2>
@@ -88,6 +89,8 @@ const hero = computed(() => {
     description: (t.description || '').split('\n')[0].slice(0, 80),
     percent: t.nodes.length ? Math.round((done / t.nodes.length) * 100) : 0,
     rolling: !!t.rolling,
+    level: t.level || '',
+
     stage: t.stage || 0,
     stageGoal: t.stage_goal || '',
     infraRetries: t.infra_retries || 0,
@@ -156,7 +159,7 @@ function fmtTok(n: number): string {
 .hero-top .info { flex: 1; min-width: 0; }
 .sup {
   display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
-  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .04em;
+  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono); letter-spacing: .02em;
 }
 .dot-run { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s infinite; flex: none; }
 @keyframes pulse { 50% { opacity: .35; } }

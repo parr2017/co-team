@@ -53,9 +53,15 @@
               <el-button size="small" @click="onReloadAgents">重载 Agent</el-button>
             </div>
           </div>
-          <ActiveTaskHero @open="detailTaskId = $event" />
-          <TaskForm @planned="openReview" @needs-clarify="(tid: string) => openClarify(tid)" />
-          <MetricsPanel ref="metricsRef" />
+          <div class="main-inner">
+            <ActiveTaskHero @open="detailTaskId = $event" />
+            <TaskForm @planned="openReview" @needs-clarify="(tid: string) => openClarify(tid)" />
+            <MetricsPanel ref="metricsRef" />
+            <section class="section">
+              <div class="section-head"><h3 class="sec-h3">最近动态</h3><span class="sec-hint">实时事件流</span></div>
+              <div class="panel home-events"><EventLog :events="events" @clear="clearEvents" /></div>
+            </section>
+          </div>
         </main>
         <aside class="side">
           <AgentCards :agents="agents" @show-detail="detailAgent = $event" />
@@ -467,6 +473,11 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 .layout.side-hidden .side { display: none; }
 .layout.flush > .main { padding: 0; overflow: hidden; }
 .page-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.main-inner { max-width: 1560px; margin: 0 auto; }
+.sec-h3 { font-size: var(--fs-title); font-weight: 700; color: var(--text-1); }
+.sec-hint { font-size: var(--fs-meta); color: var(--text-3); }
+.section-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 12px; }
+.home-events { padding: 6px 10px; }
 .page-title { font-size: var(--fs-sub); font-weight: 600; color: var(--text-1); }
 .page-ops { margin-left: auto; display: flex; gap: 4px; }
 .el-dialog__body { max-height: calc(88vh - 110px); overflow-y: auto; }
