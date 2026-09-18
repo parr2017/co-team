@@ -1,5 +1,17 @@
 <template>
-  <el-dialog :model-value="modelValue" title="设置" width="760px" @open="loadAll" @close="$emit('close')">
+  <el-dialog
+    :model-value="modelValue"
+    width="880px"
+    class="settings-dialog"
+    @open="loadAll"
+    @close="$emit('close')"
+  >
+    <template #header>
+      <div class="sd-head">
+        <span class="sd-title">设置</span>
+        <span class="sd-sub mono">config/config.yaml · 保存即热生效</span>
+      </div>
+    </template>
     <el-tabs v-model="tab">
       <!-- 模型池 -->
       <el-tab-pane label="通用" name="general">
@@ -72,6 +84,17 @@
         </div>
       </el-tab-pane>
       <el-tab-pane label="模型池" name="models">
+        <!-- 预览稿「模型池健康」：只读行区（点+mono名+优先/并发+tag组+右侧mono状态）；编辑表单保留在下方 -->
+        <div v-if="Object.keys(poolStatusSorted).length" class="pool-health">
+          <div class="dtitle">模型池健康 · {{ Object.keys(poolStatusSorted).length }} 个模型</div>
+          <div v-for="(st, name) in poolStatusSorted" :key="name" class="poolrow">
+            <span class="dot" :class="poolDot(st)"></span>
+            <span class="nm mono">{{ name }}</span>
+            <span class="mt mono">优先 {{ st.priority }} · 并发 {{ st.concurrency }}</span>
+            <div class="tags"><span v-for="t in (st.tags || [])" :key="t" class="tag">{{ t }}</span></div>
+            <span class="rt mono">{{ poolState(st) }}</span>
+          </div>
+        </div>
         <div class="provider-list">
           <div v-for="(g, gi) in providers" :key="gi" class="provider-card">
             <div class="pv-head">
@@ -356,6 +379,12 @@
         <el-button size="small" type="primary" :disabled="!importSelected.length" @click="confirmImport">加入模型池（{{ importSelected.length }}）</el-button>
       </template>
     </el-dialog>
+    <template #footer>
+      <div class="sd-foot">
+        <span class="sd-sum mono">{{ providers.reduce((n, g) => n + g.models.length, 0) }} 个模型 · {{ mcpServers.length }} 个 MCP 服务 · {{ agents.length }} 个 Agent</span>
+        <el-button size="small" @click="$emit('close')">关闭</el-button>
+      </div>
+    </template>
   </el-dialog>
 </template>
 
@@ -434,6 +463,26 @@ interface McpRow {
 }
 
 const mcpServers = ref<McpServerConfig[]>([]);
+/** 预览稿「模型池健康」行区数据源：/api/status 运行时快照（只读，与 ModelPoolPanel 同源） */
+const poolStatusSorted = ref<Record<string, any>>({});
+async function loadPoolStatus() {
+  try {
+    const st = await api.status();
+    poolStatusSorted.value = Object.fromEntries(
+      Object.entries((st.model_pool || {}) as Record<string, any>).sort((a: any, b: any) => (a[1].priority ?? 99) - (b[1].priority ?? 99))
+    );
+  } catch { /* 只读区加载失败不阻塞设置页 */ }
+}
+function poolDot(st: any): string {
+  if (!st.healthy) return 'danger';
+  if ((st.cooldown_ms || 0) > 0 || st.active >= st.concurrency) return 'warn';
+  return 'ok';
+}
+function poolState(st: any): string {
+  if ((st.cooldown_ms || 0) > 0) return `冷却 · ${Math.round(st.cooldown_ms / 1000)}s`;
+  if (!st.healthy) return '不可用';
+  return `${st.active}/${st.concurrency} 在用`;
+}
 const mcpRuntime = ref<Record<string, McpServerStatus>>({});
 const mcpSavingList = ref(false);
 const mcpTesting = ref('');
@@ -749,7 +798,7 @@ const editingOriginal = ref<string | null>(null);
 const editing = ref<Partial<AgentDefinition> & { tagsText?: string; skills?: string[] }>({});
 
 async function loadAll() {
-  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport(), loadPerm(), loadMcp()]);
+  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport(), loadPerm(), loadMcp(), loadPoolStatus()]);
 }
 
 async function loadDailyReport() {
@@ -1099,4 +1148,30 @@ async function removeAgent(row: AgentDefinition) {
 .perm-tag { font-family: var(--font-mono); }
 .perm-actions { display: flex; gap: 8px; }
 .mcp-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+/* ---------- 预览稿「设置 overlay」形态 ---------- */
+.sd-head { display: flex; align-items: baseline; gap: 10px; }
+.sd-title { font-size: var(--fs-title); font-weight: 700; color: var(--text-1); }
+.sd-sub { font-size: var(--fs-meta); color: var(--text-3); }
+.sd-foot { display: flex; justify-content: space-between; align-items: center; }
+.sd-sum { font-size: var(--fs-meta); color: var(--text-3); }
+.pool-health { margin-bottom: 14px; }
+.pool-health .dtitle {
+  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono);
+  letter-spacing: .08em; text-transform: uppercase; margin-bottom: 8px;
+  display: flex; align-items: center; gap: 8px;
+}
+.pool-health .dtitle::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.poolrow {
+  display: flex; align-items: center; gap: 12px; padding: 7px 10px; margin-bottom: 6px;
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--bg-raised);
+}
+.poolrow .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.poolrow .dot.ok { background: var(--ok); }
+.poolrow .dot.warn { background: var(--warn); }
+.poolrow .dot.danger { background: var(--danger); }
+.poolrow .nm { font-family: var(--font-mono); font-size: 12.5px; width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+.poolrow .mt { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); width: 130px; flex: none; }
+.poolrow .tags { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; min-width: 0; }
+.poolrow .tags .tag { font-size: var(--fs-meta); font-family: var(--font-mono); color: var(--text-2); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; height: 16px; display: inline-flex; align-items: center; }
+.poolrow .rt { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); flex: none; }
 </style>

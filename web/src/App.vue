@@ -501,6 +501,13 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 .el-table--small { font-size: 13px; }
 .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell { background: color-mix(in srgb, var(--bg-raised) 70%, transparent); }
 .el-tag { border-radius: 4px !important; font-family: var(--font-mono); }
+/* ==== 预览稿：设置 overlay 形态 + EP 全局微调 ==== */
+.settings-dialog { max-width: 92vw; border-radius: var(--r-float) !important; }
+.el-overlay:has(.settings-dialog) { backdrop-filter: blur(2px); background: color-mix(in srgb, var(--bg-page) 72%, transparent); }
+.el-tabs__item.is-active { font-weight: 600; }
+.el-switch { --el-switch-on-color: var(--accent); }
+.el-switch .el-switch__core { min-width: 34px; height: 19px; border-radius: 10px; }
+.el-switch .el-switch__core .el-switch__action { width: 15px; height: 15px; }
 
 /* ==== 企业级 Markdown 排版（.md 全局生效——交付阅读器/文档/聊天气泡） ==== */
 .md { line-height: 1.65; }
