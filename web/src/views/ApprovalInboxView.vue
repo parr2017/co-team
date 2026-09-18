@@ -33,7 +33,8 @@ const NEED_HUMAN_STATUSES = ['waiting_approval', 'clarifying', 'running', 'retry
 async function load() {
   loading.value = true;
   const out: ApprovalItem[] = [];
-  const graphs = Object.values(tasks.value).filter((t) => NEED_HUMAN_STATUSES.includes(t.status) && !!t.task_id);
+  // useDashboard 的 tasks 是 reactive 对象（非 ref）——取 .value 会是 undefined，直接遍历本身
+  const graphs = Object.values(tasks).filter((t) => NEED_HUMAN_STATUSES.includes(t.status) && !!t.task_id);
   try {
     await Promise.all(
       graphs.map(async (t) => {
