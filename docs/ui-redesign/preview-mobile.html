@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Co-Team Mobile 改版风格预览 · 暗色终端 IDE 风</title>
+<style>
+/* ============================================================
+   Co-Team Mobile 改版风格预览（纯静态 mock）
+   与 web 预览同套设计语言：暗=暖橙 / 亮=蓝，token 同值
+   预览控件（页面右下角）不属于产品 UI
+   ============================================================ */
+:root{
+  --bg-page:#0c0d10; --bg-panel:#121419; --bg-raised:#181b21; --bg-overlay:#1d2129; --bg-inset:#0f1115;
+  --line:#23272f; --line-strong:#31363f;
+  --text-1:#e9ebee; --text-2:#98a0ab; --text-3:#626a76;
+  --accent:#ff9349; --accent-text:#0c0d10;
+  --accent-soft:color-mix(in srgb,var(--accent) 12%,transparent);
+  --accent-line:color-mix(in srgb,var(--accent) 38%,transparent);
+  --ok:#3fb96f; --warn:#d29922; --danger:#e5534b;
+  --ag-front:#4ab8a8; --ag-review:#a78bfa; --ag-test:#d29922; --ag-lead:#5aa9e6;
+  --fs-meta:11px; --fs-aux:12px; --fs-body:14px; --fs-sub:15px; --fs-title:16px; --fs-h2:18px;
+  --r-ctl:6px; --r-panel:10px; --r-float:12px;
+  --shadow-float:0 12px 32px rgba(0,0,0,.5);
+  --font-ui:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+html[data-theme="light"]{
+  --bg-page:#f5f6f8; --bg-panel:#fff; --bg-raised:#fff; --bg-overlay:#fff; --bg-inset:#f2f4f7;
+  --line:#e4e7ec; --line-strong:#cdd3db;
+  --text-1:#171a20; --text-2:#5b6472; --text-3:#8f98a5;
+  --accent:#2f6fed; --accent-text:#fff;
+  --shadow-float:0 12px 32px rgba(20,28,40,.16);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#08090b radial-gradient(1200px 600px at 50% -10%,#15181e,#08090b);
+  font:var(--fs-body)/1.55 var(--font-ui);color:var(--text-1);
+  -webkit-font-smoothing:antialiased;min-height:100vh;
+}
+html[data-theme="light"] body{background:#e9ebef radial-gradient(1200px 600px at 50% -10%,#f6f7f9,#e9ebef)}
+.mono{font-family:var(--font-mono)}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:4px;border:2px solid transparent;background-clip:content-box}
+
+/* ---------- 手机壳 ---------- */
+.stage{display:flex;align-items:center;justify-content:center;padding:34px 0 90px;min-height:100vh}
+.phone{
+  width:390px;height:844px;flex:none;border-radius:46px;padding:10px;
+  background:#17181c;border:1px solid #2c2f36;box-shadow:0 30px 80px rgba(0,0,0,.55);
+}
+.screen{position:relative;width:100%;height:100%;border-radius:37px;overflow:hidden;background:var(--bg-page);display:flex;flex-direction:column}
+.notch{position:absolute;top:22px;left:50%;transform:translateX(-50%);width:118px;height:28px;border-radius:16px;background:#000;z-index:40}
+.p-status{
+  height:52px;flex:none;display:flex;align-items:flex-end;justify-content:space-between;
+  padding:0 26px 6px;font-family:var(--font-mono);font-size:12px;color:var(--text-1);position:relative;z-index:30;
+}
+.p-status .gly{letter-spacing:2px;font-size:11px}
+
+/* ---------- 屏幕结构 ---------- */
+.mscr{display:none;flex:1;min-height:0;flex-direction:column}
+.mscr.active{display:flex}
+.p-nav{
+  height:44px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;
+  background:var(--bg-panel);border-bottom:1px solid var(--line);position:relative;z-index:10;
+}
+.p-nav .back{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--text-2);font-size:17px}
+.p-nav .back:hover{background:var(--bg-raised);color:var(--text-1)}
+.p-nav .ttl{font-size:var(--fs-title);font-weight:700}
+.p-nav .st{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+.p-nav .sp{flex:1}
+.p-body{flex:1;overflow-y:auto;min-height:0}
+
+/* ---------- 通用控件（Vant 调参后的质感） ---------- */
+.vbtn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  height:40px;padding:0 18px;border-radius:var(--r-ctl);font-size:14px;font-weight:600;
+  background:var(--accent);color:var(--accent-text);border:1px solid transparent;
+}
+.vbtn.sm{height:30px;padding:0 12px;font-size:12.5px;font-weight:500}
+.vbtn.plain{background:var(--bg-raised);color:var(--text-1);border-color:var(--line-strong);font-weight:500}
+.vbtn.danger{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 30%,transparent);font-weight:500}
+.vbtn.block{width:100%}
+.tag{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:4px;font-size:var(--fs-meta);font-family:var(--font-mono);color:var(--text-2);background:var(--bg-raised);border:1px solid var(--line)}
+.tag.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 10%,transparent);border-color:color-mix(in srgb,var(--ok) 25%,transparent)}
+.tag.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent);border-color:color-mix(in srgb,var(--warn) 25%,transparent)}
+.tag.accent{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-line)}
+.dot{width:6px;height:6px;border-radius:50%;flex:none}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.danger{background:var(--danger)}.dot.run{background:var(--accent);animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.35}}
+.cellgroup{margin:12px 12px 0;border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);overflow:hidden}
+.cell{display:flex;align-items:center;gap:10px;min-height:46px;padding:0 14px;border-bottom:1px solid var(--line);font-size:14px;width:100%;text-align:left}
+.cell:last-child{border-bottom:none}
+.cell:active{background:var(--bg-raised)}
+.cell .ck{color:var(--text-1)}
+.cell .cv{margin-left:auto;color:var(--text-3);font-size:12.5px;font-family:var(--font-mono)}
+.cell .arr{color:var(--text-3);font-size:13px}
+.cell .sub{font-size:var(--fs-meta);color:var(--text-3);margin-top:1px}
+.secttl{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase;padding:14px 16px 6px}
+.switch{width:40px;height:22px;border-radius:11px;background:var(--line-strong);position:relative;flex:none;margin-left:auto}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:var(--text-2);transition:.15s}
+.switch.on{background:var(--accent)}
+.switch.on::after{left:20px;background:var(--accent-text)}
+.search{margin:10px 12px;height:34px;display:flex;align-items:center;gap:7px;padding:0 10px;background:var(--bg-overlay);border:1px solid var(--line);border-radius:var(--r-ctl);color:var(--text-3);font-size:13px}
+
+/* ---------- tabbar ---------- */
+.tabbar{
+  flex:none;display:flex;background:var(--bg-panel);border-top:1px solid var(--line);
+  padding:6px 4px calc(8px + 14px);position:relative;
+}
+.tabbar::after{content:"";position:absolute;bottom:6px;left:50%;transform:translateX(-50%);width:120px;height:4px;border-radius:3px;background:var(--text-3);opacity:.5}
+.titem{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--text-3);font-size:10.5px;position:relative;padding:4px 0}
+.titem .ic{font-size:17px;line-height:1}
+.titem.on{color:var(--accent)}
+.titem .bdg{position:absolute;top:0;right:50%;margin-right:-16px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--accent);color:var(--accent-text);font-family:var(--font-mono);font-size:9.5px;font-weight:700;display:grid;place-items:center}
+
+/* ---------- 列表卡（行化：发丝线而非卡片马赛克） ---------- */
+.rowlist{padding:0 12px}
+.lrow{display:block;width:100%;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);position:relative}
+.lrow:active{background:var(--bg-panel)}
+.rowlist .lrow:last-child{border-bottom:none}
+.lrow .t{display:flex;align-items:center;gap:8px;margin-bottom:3px}
+.lrow .nm{font-size:14.5px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .last{font-size:12.5px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow .meta{display:flex;justify-content:space-between;align-items:center;margin-top:5px}
+.lrow .time{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+.chipbar{display:flex;gap:7px;padding:10px 12px 2px;overflow-x:auto;scrollbar-width:none}
+.chipbar::-webkit-scrollbar{display:none}
+.chip{flex:none;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border:1px solid var(--line);border-radius:15px;background:var(--bg-panel);font-size:12.5px;color:var(--text-2)}
+.chip.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--text-1)}
+.chip .n{font-family:var(--font-mono);font-size:11px;color:var(--text-3)}
+
+/* ---------- 群聊 ---------- */
+.stream{padding:12px 14px 8px;display:flex;flex-direction:column;gap:2px}
+.msg{display:grid;grid-template-columns:26px 1fr;gap:0 9px;padding:5px 0}
+.avatar{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;margin-top:2px;font-family:var(--font-mono);font-size:10px;font-weight:700;color:#0c0d10}
+.avatar.front{background:var(--ag-front)}.avatar.review{background:var(--ag-review)}
+.avatar.user{background:var(--accent);color:var(--accent-text)}
+.mhead{display:flex;align-items:baseline;gap:7px;margin-bottom:2px}
+.mhead .who{font-size:12.5px;font-weight:700}
+.mhead .model{font-size:var(--fs-meta);font-family:var(--font-mono);color:var(--text-3);border:1px solid var(--line);border-radius:4px;padding:0 4px;height:15px;line-height:14px}
+.mhead .ts{margin-left:auto;font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);opacity:.7}
+.mbody{font-size:var(--fs-body);line-height:1.58}
+.mbody .dim{color:var(--text-2)}
+.msg.user{background:linear-gradient(90deg,var(--accent-soft),transparent 72%);border-radius:8px}
+.msg.user .who{color:var(--accent)}
+.tooltree{margin:5px 0;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r-panel);overflow:hidden}
+.tt-head{display:flex;align-items:center;gap:7px;padding:5px 9px;font-size:var(--fs-aux);color:var(--text-2);border-bottom:1px solid var(--line)}
+.tt-head .n{font-family:var(--font-mono);color:var(--text-3)}
+.tt-body{padding:5px 9px 6px;display:flex;flex-direction:column;gap:2px}
+.tcall{display:flex;align-items:center;gap:7px;font-size:var(--fs-aux);line-height:1.45}
+.tcall .sym{color:var(--text-3);font-family:var(--font-mono)}
+.tcall .path{font-family:var(--font-mono);color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tcall .st{margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--ok);flex:none}
+.tcall.err .st{color:var(--danger)}
+.tcall.err .path{color:var(--danger)}
+.syscard{margin:8px auto;max-width:82%;text-align:center;font-size:var(--fs-aux);color:var(--text-2);background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--r-panel);padding:7px 12px}
+.notice{margin:8px 0;padding:8px 11px;border-radius:var(--r-panel);background:color-mix(in srgb,var(--warn) 7%,transparent);border:1px solid color-mix(in srgb,var(--warn) 22%,transparent);color:var(--text-2);font-size:12.5px;line-height:1.5}
+.askcard{margin:9px 0;background:var(--bg-raised);border:1px solid var(--accent-line);border-left:3px solid var(--accent);border-radius:var(--r-panel);padding:11px 12px}
+.askcard .q{font-size:var(--fs-body);font-weight:600;margin-bottom:2px}
+.askcard .hint{font-size:12px;color:var(--text-2);margin-bottom:9px}
+.askcard .row{display:flex;gap:7px}
+.askcard input{flex:1;min-width:0;height:32px;padding:0 10px;background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:var(--r-ctl);font-size:13px;outline:none;color:var(--text-1)}
+.live{display:flex;align-items:center;gap:8px;padding:6px 0;color:var(--text-2);font-size:12.5px}
+.live .cursor{width:6px;height:13px;background:var(--accent);animation:blink 1s steps(1) infinite;border-radius:1px}
+@keyframes blink{50%{opacity:0}}
+.chat-input{flex:none;border-top:1px solid var(--line);background:var(--bg-panel);padding:8px 12px 10px}
+.mentions{display:flex;gap:6px;margin-bottom:7px;overflow-x:auto;scrollbar-width:none}
+.mentions::-webkit-scrollbar{display:none}
+.mention{flex:none;display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:12px;font-size:11.5px;color:var(--text-2);border:1px solid var(--line);background:var(--bg-raised)}
+.mention .dot{width:5px;height:5px}
+.inrow{display:flex;gap:8px;align-items:flex-end}
+.inrow textarea{flex:1;min-width:0;height:40px;resize:none;padding:8px 11px;background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:12px;font-size:var(--fs-body);line-height:1.4;outline:none;color:var(--text-1)}
+.inrow textarea:focus{border-color:var(--accent-line)}
+.sendbtn{width:40px;height:40px;border-radius:12px;background:var(--accent);color:var(--accent-text);display:grid;place-items:center;font-size:15px;flex:none}
+.inmode{display:flex;gap:8px;margin-top:7px;align-items:center}
+.inmode .mpill{display:flex;background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:var(--r-ctl);overflow:hidden}
+.inmode .mpill button{padding:4px 11px;font-size:11.5px;color:var(--text-3)}
+.inmode .mpill button.on{background:var(--accent-soft);color:var(--accent)}
+.inmode .lhint{font-size:var(--fs-meta);color:var(--text-3);margin-left:auto}
+
+/* ---------- 底部 sheet（明细抽屉 / 动作面板） ---------- */
+.sheetveil{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:50;display:none}
+.sheetveil.on{display:block}
+.sheet{
+  position:absolute;left:0;right:0;bottom:0;z-index:51;display:none;
+  background:var(--bg-panel);border:1px solid var(--line-strong);border-bottom:none;
+  border-radius:var(--r-float) var(--r-float) 0 0;box-shadow:var(--shadow-float);
+  max-height:72%;flex-direction:column;
+}
+.sheet.on{display:flex}
+.grab{width:36px;height:4px;border-radius:3px;background:var(--line-strong);margin:8px auto 2px;flex:none}
+.sheet-head{display:flex;align-items:center;gap:8px;padding:8px 16px 10px;border-bottom:1px solid var(--line);flex:none}
+.sheet-head .t{font-size:14px;font-weight:700}
+.sheet-head .m{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+.sheet-head .x{margin-left:auto;color:var(--text-3);font-size:15px;width:26px;height:26px;border-radius:6px;display:grid;place-items:center}
+.sheet-body{overflow-y:auto;padding:12px 16px 22px}
+.dsec{margin-bottom:15px}
+.dsec .dt{font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase;margin-bottom:7px;display:flex;align-items:center;gap:8px}
+.dsec .dt::after{content:"";flex:1;height:1px;background:var(--line)}
+.dsec p{font-size:13px;line-height:1.6;color:var(--text-2)}
+.fitem{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:5px 4px}
+.fitem .path{font-family:var(--font-mono);color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fitem .plus{margin-left:auto;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--ok)}
+.asheet .aitem{display:flex;align-items:center;justify-content:center;min-height:48px;font-size:15px;border-bottom:1px solid var(--line);color:var(--text-1);width:100%}
+.asheet .aitem:active{background:var(--bg-raised)}
+.asheet .aitem.mut{color:var(--text-3);font-size:12.5px;min-height:38px}
+
+/* ---------- 任务详情 ---------- */
+.taskhead{padding:12px 16px 0}
+.taskhead .sup{display:flex;align-items:center;gap:7px;font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono);margin-bottom:4px}
+.taskhead h2{font-size:17px;font-weight:700;line-height:1.35}
+.pbar{height:5px;border-radius:3px;background:var(--bg-inset);overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.pipeline{margin:12px 16px 0;border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);padding:4px 0}
+.pnode{display:flex;gap:10px;padding:9px 14px;align-items:flex-start}
+.pnode .rail{display:flex;flex-direction:column;align-items:center;width:14px;flex:none;align-self:stretch}
+.pnode .rail i{width:8px;height:8px;border-radius:50%;border:2px solid var(--line-strong);margin-top:4px;flex:none}
+.pnode .rail s{width:2px;flex:1;background:var(--line)}
+.pnode.done .rail i{background:var(--ok);border-color:var(--ok)}
+.pnode.run .rail i{background:var(--accent);border-color:var(--accent);animation:pulse 1.6s infinite}
+.pnode.fail .rail i{background:var(--danger);border-color:var(--danger)}
+.pnode .pi{flex:1;min-width:0;padding-bottom:8px}
+.pnode .pn{font-size:13.5px;font-weight:600}
+.pnode .pm{display:flex;gap:8px;align-items:center;margin-top:2px;font-size:var(--fs-meta);color:var(--text-3);font-family:var(--font-mono)}
+.profile{margin:12px 16px 0;border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);padding:12px 14px}
+.kv{display:flex;flex-direction:column;gap:7px}
+.kv .row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px}
+.kv .k{color:var(--text-2);flex:none}
+.kv .v{font-family:var(--font-mono);color:var(--text-1);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hintline{margin-top:9px;font-size:var(--fs-meta);color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,transparent);border:1px solid color-mix(in srgb,var(--warn) 22%,transparent);border-radius:var(--r-ctl);padding:6px 9px}
+.actrow{display:flex;gap:8px;padding:14px 16px 8px}
+.actrow .vbtn{flex:1}
+.intervene{flex:none;border-top:1px solid var(--line);background:var(--bg-panel);padding:8px 12px 10px;display:flex;gap:8px;align-items:center}
+.intervene input{flex:1;min-width:0;height:36px;padding:0 11px;background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:10px;font-size:13px;outline:none;color:var(--text-1)}
+.intervene .att{width:36px;height:36px;border-radius:10px;border:1px solid var(--line-strong);display:grid;place-items:center;color:var(--text-2)}
+
+/* ---------- 表单（任务创建/设置） ---------- */
+.field{margin:0 12px 12px}
+.field .fl{font-size:12.5px;color:var(--text-2);margin-bottom:5px;display:flex;justify-content:space-between}
+.field .fl .req{color:var(--danger)}
+.inp{width:100%;min-height:44px;padding:11px 12px;background:var(--bg-overlay);border:1px solid var(--line-strong);border-radius:var(--r-ctl);font-size:var(--fs-body);line-height:1.5;outline:none;color:var(--text-1);resize:none;font-family:var(--font-ui)}
+.inp:focus{border-color:var(--accent-line)}
+.inp.mono{font-family:var(--font-mono);font-size:12.5px}
+.radios{display:flex;gap:8px}
+.radios .rbtn{flex:1;height:40px;border:1px solid var(--line-strong);border-radius:var(--r-ctl);background:var(--bg-raised);font-size:13px;color:var(--text-2)}
+.radios .rbtn.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent);font-weight:600}
+.footpad{height:30px}
+
+/* ---------- 指标 ---------- */
+.statrow{display:flex;border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);margin:12px 12px 0}
+.stat{flex:1;padding:12px 14px}
+.stat + .stat{border-left:1px solid var(--line)}
+.stat .k{font-size:var(--fs-aux);color:var(--text-2)}
+.stat .v{font-family:var(--font-mono);font-size:20px;font-weight:700;margin-top:2px}
+.stat .d{font-size:var(--fs-meta);font-family:var(--font-mono);margin-top:1px;color:var(--ok)}
+.bars{display:flex;align-items:flex-end;gap:3px;height:96px;margin-top:10px}
+.bars i{flex:1;border-radius:2px 2px 0 0;background:color-mix(in srgb,var(--accent) 55%,var(--bg-inset))}
+.bars i.hot{background:var(--accent)}
+
+/* ---------- 审批 ---------- */
+.acard{margin:0 12px;border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);padding:12px 14px;margin-bottom:10px}
+.acard .top{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.acard .tt{font-size:14px;font-weight:600;flex:1}
+.acard .ds{font-size:12.5px;color:var(--text-2);line-height:1.55;margin-bottom:10px}
+.acard .btns{display:flex;gap:8px}
+.acard .btns .vbtn{flex:1;height:34px}
+
+/* ---------- 预览控件（非产品 UI） ---------- */
+.preview-bar{
+  position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:99;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center;max-width:92vw;
+  background:rgba(23,25,30,.92);border:1px solid #31363f;border-radius:12px;padding:8px 12px;
+  backdrop-filter:blur(6px);font-size:12px;color:#98a0ab;box-shadow:0 10px 30px rgba(0,0,0,.5);
+}
+.preview-bar .grp{display:flex;align-items:center;gap:5px}
+.preview-bar .lbl{font-size:10px;color:#626a76;font-family:var(--font-mono);letter-spacing:.06em;margin-right:2px}
+.preview-bar button{height:24px;padding:0 9px;border-radius:6px;border:1px solid #23272f;color:#98a0ab;font-size:11.5px;background:transparent}
+.preview-bar button.on{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="phone">
+    <div class="screen" id="screenRoot">
+      <div class="notch"></div>
+      <div class="p-status"><span class="mono">9:41</span><span class="gly">▪▪ ⌁ ▮</span></div>
+
+      <!-- ============ 屏1 讨论列表 ============ -->
+      <section class="mscr active" id="m-chatlist">
+        <div class="p-nav"><span class="ttl">群组沟通</span><span class="st">13 条讨论</span><span class="sp"></span><button class="back">＋</button></div>
+        <div class="search">⌕ 搜索讨论…</div>
+        <div class="chipbar">
+          <button class="chip on">全部 <span class="n">13</span></button>
+          <button class="chip">讨论中 <span class="n">5</span></button>
+          <button class="chip">已转项目 <span class="n">8</span></button>
+        </div>
+        <div class="p-body">
+          <div class="rowlist">
+            <button class="lrow">
+              <div class="t"><span class="nm">修改UI</span><span class="tag accent">讨论中</span></div>
+              <div class="last">front-dev：导航栏已改粉底，正在产出统计页…</div>
+              <div class="meta"><span class="time">20:54</span><span class="tag">未读 3</span></div>
+            </button>
+            <button class="lrow">
+              <div class="t"><span class="nm">功能优化</span><span class="tag ok">已转项目</span></div>
+              <div class="last">test：npm test 40/40 全绿，可合并。</div>
+              <div class="meta"><span class="time">昨天</span></div>
+            </button>
+            <button class="lrow">
+              <div class="t"><span class="nm">关于学习英语app的开发</span><span class="tag ok">已转项目</span></div>
+              <div class="last">review：打卡链路数据契约已确认。</div>
+              <div class="meta"><span class="time">09-16</span></div>
+            </button>
+            <button class="lrow">
+              <div class="t"><span class="nm">这个报表系统跟专业bi比起来还有哪些缺陷</span><span class="tag">讨论中</span></div>
+              <div class="last">lead：权限粒度与行级安全是主要差距…</div>
+              <div class="meta"><span class="time">09-12</span></div>
+            </button>
+            <button class="lrow">
+              <div class="t"><span class="nm">运行项目</span><span class="tag">讨论中</span></div>
+              <div class="last">front-dev：5123 端口已可用。</div>
+              <div class="meta"><span class="time">09-09</span></div>
+            </button>
+          </div>
+          <div class="footpad"></div>
+        </div>
+        <div class="tabbar">
+          <button class="titem" data-go="m-tasks"><span class="ic">◫</span>任务<span class="bdg">3</span></button>
+          <button class="titem on"><span class="ic">≡</span>讨论<span class="bdg">1</span></button>
+          <button class="titem"><span class="ic">◈</span>项目</button>
+          <button class="titem" data-go="m-approvals"><span class="ic">✓</span>审批</button>
+          <button class="titem" data-go="m-settings"><span class="ic">⚙</span>我的</button>
+        </div>
+      </section>
+
+      <!-- ============ 屏2 群聊详情 ============ -->
+      <section class="mscr" id="m-chat">
+        <div class="p-nav">
+          <button class="back" data-go="m-chatlist">‹</button>
+          <span class="ttl">修改UI</span><span class="st">accountapp · 3 成员</span>
+          <span class="sp"></span><button class="back" onclick="toggleSheet('sheetProfile')">⋯</button>
+        </div>
+        <div class="p-body">
+          <div class="stream">
+            <div class="syscard">讨论已重新开启 · 任务事件回流中</div>
+            <div class="msg user">
+              <div class="avatar user">我</div>
+              <div>
+                <div class="mhead"><span class="who">我</span><span class="ts mono">20:18</span></div>
+                <div class="mbody">收入、支出类型支持删除和添加，界面大改成可爱风，好了给我看图。</div>
+              </div>
+            </div>
+            <div class="msg">
+              <div class="avatar front">FD</div>
+              <div>
+                <div class="mhead"><span class="who" style="color:var(--ag-front)">front-dev</span><span class="model">glm-5.2</span><span class="ts">20:43</span></div>
+                <div class="mbody">
+                  <div class="tooltree">
+                    <div class="tt-head"><span class="dot ok"></span>工具调用 <span class="n">×8</span><span style="margin-left:auto" class="mono">6.4s</span></div>
+                    <div class="tt-body">
+                      <div class="tcall"><span class="sym">▸</span><span class="path">write_file src/pages/stats/stats.vue</span><span class="st">+38 −12</span></div>
+                      <div class="tcall"><span class="sym">▸</span><span class="path">edit_file src/pages/history/history.vue</span><span class="st">+16 −4</span></div>
+                      <div class="tcall"><span class="sym">▸</span><span class="path">exec「npm test」</span><span class="st">40/40</span></div>
+                    </div>
+                  </div>
+                  功能验证通过，导航栏粉底 <span class="dim mono">#FFB7C5</span>、统计页粉紫渐变已落地。<button style="color:var(--accent);font-size:12px" onclick="toggleSheet('sheetDetail')">查看明细 »</button>
+                </div>
+              </div>
+            </div>
+            <div class="msg">
+              <div class="avatar review">RV</div>
+              <div>
+                <div class="mhead"><span class="who" style="color:var(--ag-review)">review</span><span class="model">deepseek-v4-pro</span><span class="ts">20:44</span></div>
+                <div class="mbody">建议统计页环形图加动画，历史页用卡片式布局。</div>
+              </div>
+            </div>
+            <div class="askcard">
+              <div class="q">需要你拍板</div>
+              <div class="hint">是否认可当前可爱风方向？认可后产出全套预览图。</div>
+              <div class="row"><input value="认可，但是功能不全"><button class="vbtn sm">发送</button></div>
+            </div>
+            <div class="notice">⚙ front-dev 本批工具连续失败 2 次——建议转任务处理。</div>
+            <div class="live"><span class="dot run"></span>front-dev 正在动手执行<span class="mono" style="font-size:11px;color:var(--text-3)">· 3.2s</span><span class="cursor"></span></div>
+          </div>
+        </div>
+        <div class="chat-input">
+          <div class="mentions">
+            <span class="mention"><span class="dot" style="background:var(--ag-front)"></span>front-dev</span>
+            <span class="mention"><span class="dot" style="background:var(--ag-review)"></span>review</span>
+            <span class="mention"><span class="dot" style="background:var(--ag-test)"></span>test</span>
+          </div>
+          <div class="inrow">
+            <textarea>收入、支出类型 支持删除和添加</textarea>
+            <button class="sendbtn">➤</button>
+          </div>
+          <div class="inmode">
+            <div class="mpill"><button class="on">手动</button><button>自动</button></div>
+            <span class="lhint">长按消息可复制 / 引用 / 回应</span>
+          </div>
+        </div>
+        <!-- 明细抽屉 -->
+        <div class="sheetveil" id="veil1" onclick="closeSheets()"></div>
+        <div class="sheet" id="sheetDetail">
+          <div class="grab"></div>
+          <div class="sheet-head"><span class="t">消息明细</span><span class="m">front-dev · 20:43:37</span><button class="x" onclick="closeSheets()">✕</button></div>
+          <div class="sheet-body">
+            <div class="dsec"><div class="dt">解决思路</div><p>先验证分类增删契约（默认项保护+引用拦截），再统一导航栏与统计页共用粉紫渐变，避免逐页硬编码。</p></div>
+            <div class="dsec"><div class="dt">看过哪些代码</div>
+              <div class="fitem"><span class="path">src/pages/settings/settings.vue</span><span class="plus">+12</span></div>
+              <div class="fitem"><span class="path">src/pages/stats/stats.vue</span><span class="plus">+38 −12</span></div>
+              <div class="fitem"><span class="path">src/pages/history/history.vue</span><span class="plus">+16 −4</span></div>
+            </div>
+            <div class="dsec"><div class="dt">命令 · 协作</div>
+              <div class="kv">
+                <div class="row"><span class="k">npm test</span><span class="v">40/40 PASS</span></div>
+                <div class="row"><span class="k">耗时</span><span class="v">2m 41s</span></div>
+                <div class="row"><span class="k">技能</span><span class="v">uniapp-h5 · vite-config</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- 长按动作面板 -->
+        <div class="sheetveil" id="veil2" onclick="closeSheets()"></div>
+        <div class="sheet asheet" id="sheetActions">
+          <div class="grab"></div>
+          <button class="aitem">⧉ 复制</button>
+          <button class="aitem">↩ 引用回复</button>
+          <button class="aitem">👍 ✅ 👀 回应</button>
+          <button class="aitem mut" onclick="closeSheets()">取消</button>
+        </div>
+      </section>
+
+      <!-- ============ 屏3 任务列表 ============ -->
+      <section class="mscr" id="m-tasks">
+        <div class="p-nav"><span class="ttl">任务中心</span><span class="st">47 · 运行 2</span><span class="sp"></span><button class="back">＋</button></div>
+        <div class="search">⌕ 搜索任务…</div>
+        <div class="chipbar">
+          <button class="chip on">全部 <span class="n">47</span></button>
+          <button class="chip"><span class="dot run"></span>运行 <span class="n">2</span></button>
+          <button class="chip"><span class="dot warn"></span>待澄清 <span class="n">1</span></button>
+          <button class="chip"><span class="dot ok"></span>完成 <span class="n">38</span></button>
+          <button class="chip"><span class="dot danger"></span>失败 <span class="n">3</span></button>
+        </div>
+        <div class="p-body">
+          <div class="rowlist">
+            <button class="lrow" data-go="m-task">
+              <div class="t"><span class="nm">实现记账分类增删与粉紫可爱风 UI 统一</span></div>
+              <div class="meta"><span class="tag accent"><span class="dot run"></span>运行中</span><span class="time mono">jr3gdkxq · 68%</span></div>
+            </button>
+            <button class="lrow" data-go="m-task">
+              <div class="t"><span class="nm">报表系统权限粒度与行级安全改造</span></div>
+              <div class="meta"><span class="tag warn">待澄清 · 2 题</span><span class="time mono">ywwrotjt · 22%</span></div>
+            </button>
+            <button class="lrow">
+              <div class="t"><span class="nm">审批收件箱聚合五类待办</span></div>
+              <div class="meta"><span class="tag ok">已完成</span><span class="time mono">ec00a4c · 100%</span></div>
+            </button>
+            <button class="lrow">
+              <div class="t"><span class="nm">合并 coteam/task-ui 分支到 main</span></div>
+              <div class="meta"><span class="tag" style="color:var(--danger);border-color:color-mix(in srgb,var(--danger) 30%,transparent)">失败 · 重试 2</span><span class="time mono">p8cirvu9</span></div>
+            </button>
+          </div>
+          <div class="cellgroup">
+            <div class="cell"><span class="ck">执行队列</span><span class="cv">1 运行 · 1 排队</span></div>
+            <button class="cell"><span class="ck" style="color:var(--text-2)">恢复队列 / 清空</span><span class="arr">›</span></button>
+          </div>
+          <div class="footpad"></div>
+        </div>
+        <div class="tabbar">
+          <button class="titem on"><span class="ic">◫</span>任务<span class="bdg">3</span></button>
+          <button class="titem" data-go="m-chatlist"><span class="ic">≡</span>讨论<span class="bdg">1</span></button>
+          <button class="titem"><span class="ic">◈</span>项目</button>
+          <button class="titem" data-go="m-approvals"><span class="ic">✓</span>审批</button>
+          <button class="titem" data-go="m-settings"><span class="ic">⚙</span>我的</button>
+        </div>
+      </section>
+
+      <!-- ============ 屏4 任务详情（战情室） ============ -->
+      <section class="mscr" id="m-task">
+        <div class="p-nav"><button class="back" data-go="m-tasks">‹</button><span class="ttl mono" style="font-size:14px">jr3gdkxq</span><span class="sp"></span><button class="back" onclick="toggleSheet('sheetMore')">⋯</button></div>
+        <div class="p-body">
+          <div class="taskhead">
+            <div class="sup"><span class="dot run"></span>NOW · ledger-app-r2 · heavy</div>
+            <h2>实现记账分类增删与粉紫可爱风 UI 统一</h2>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:9px">
+              <div class="pbar" style="flex:1"><i style="width:68%"></i></div>
+              <span class="mono" style="font-size:13px;color:var(--accent);font-weight:700">68%</span>
+            </div>
+          </div>
+          <div class="pipeline">
+            <div class="pnode done"><div class="rail"><i></i><s></s></div><div class="pi"><div class="pn">需求澄清</div><div class="pm">lead · 2m10s · ✓</div></div></div>
+            <div class="pnode done"><div class="rail"><i></i><s></s></div><div class="pi"><div class="pn">计划评审（5 节点）</div><div class="pm">review · 6m44s · ✓</div></div></div>
+            <div class="pnode run"><div class="rail"><i></i><s></s></div><div class="pi"><div class="pn">execute · 前端实现</div><div class="pm">front-dev · glm-5.2 · 4m12s · 重试 0</div></div></div>
+            <div class="pnode"><div class="rail"><i></i></div><div class="pi"><div class="pn" style="color:var(--text-3)">主 Agent 合并</div><div class="pm">等待前置</div></div></div>
+          </div>
+          <div class="profile">
+            <div class="secttl" style="padding:0 0 8px">执行档案 · 第 2 轮</div>
+            <div class="kv">
+              <div class="row"><span class="k">上下文</span><span class="v">38.2k / 200k tok</span></div>
+              <div class="row"><span class="k">工具统计</span><span class="v">24 调用 · 0 失败</span></div>
+              <div class="row"><span class="k">技能加载</span><span class="v">uniapp-h5（正文已拉取）</span></div>
+              <div class="row"><span class="k">实时输出</span><span class="v" style="color:var(--ok)">✓ npm test 40/40</span></div>
+            </div>
+            <div class="hintline">ⓘ knowledge 节点未拉取技能正文（sk-manifest 级命中）</div>
+          </div>
+          <div class="actrow">
+            <button class="vbtn">批准执行</button>
+            <button class="vbtn danger">拒绝</button>
+            <button class="vbtn plain" onclick="toggleSheet('sheetMore')">⋯</button>
+          </div>
+          <div class="footpad"></div>
+        </div>
+        <div class="intervene">
+          <input placeholder="插入对话，agent 将在轮间收到…">
+          <button class="att">📎</button>
+          <button class="sendbtn" style="width:36px;height:36px;border-radius:10px">➤</button>
+        </div>
+        <!-- ⋯ 动作 -->
+        <div class="sheetveil" id="veil3" onclick="closeSheets()"></div>
+        <div class="sheet asheet" id="sheetMore">
+          <div class="grab"></div>
+          <button class="aitem">更换 Agent / 更换模型</button>
+          <button class="aitem">补授白名单并开跑</button>
+          <button class="aitem">转修复任务</button>
+          <button class="aitem">回滚 · 创建快照</button>
+          <button class="aitem">编辑目标</button>
+          <button class="aitem mut" onclick="closeSheets()">取消</button>
+        </div>
+      </section>
+
+      <!-- ============ 屏5 任务创建 ============ -->
+      <section class="mscr" id="m-create">
+        <div class="p-nav"><button class="back" data-go="m-tasks">‹</button><span class="ttl">发起任务</span></div>
+        <div class="p-body">
+          <div class="secttl">需求描述</div>
+          <div class="field">
+            <textarea class="inp" style="min-height:96px" placeholder="描述要完成的需求（越清晰，澄清越少）…">实现记账分类增删与粉紫可爱风 UI 统一</textarea>
+          </div>
+          <div class="cellgroup">
+            <button class="cell"><span class="ck">绑定项目</span><span class="cv">ledger-app-r2</span><span class="arr">›</span></button>
+            <button class="cell"><span class="ck">工作区目录</span><span class="cv mono">D:\pxx\projects\ledger…</span><span class="arr">›</span></button>
+          </div>
+          <div class="secttl">任务档级</div>
+          <div class="field"><div class="radios"><button class="rbtn">light（跳沙箱/冒烟验收）</button><button class="rbtn on">heavy（完整管线）</button></div></div>
+          <div class="secttl">权限白名单</div>
+          <div class="field">
+            <textarea class="inp mono" style="min-height:52px" placeholder="输入命令首词，空格/逗号分隔">npm, git, node</textarea>
+            <div style="font-size:11px;color:var(--text-3);margin-top:5px">目录监狱恒开；白名单命令自动放行，其余需审批</div>
+          </div>
+          <div class="field"><button class="vbtn block">发起任务</button></div>
+          <div class="footpad"></div>
+        </div>
+      </section>
+
+      <!-- ============ 屏6 审批 ============ -->
+      <section class="mscr" id="m-approvals">
+        <div class="p-nav"><span class="ttl">我的审批</span><span class="st">3 项待办</span></div>
+        <div class="p-body">
+          <div class="secttl">节点审批</div>
+          <div class="acard">
+            <div class="top"><span class="tt">计划评审 · 5 节点</span><span class="tag warn">待审</span></div>
+            <div class="ds">报表系统权限粒度改造：澄清→评审→3×dev→test→合并，预计 40 分钟。</div>
+            <div class="btns"><button class="vbtn">批准</button><button class="vbtn danger">拒绝</button><button class="vbtn plain">详情</button></div>
+          </div>
+          <div class="secttl">Agent 提问</div>
+          <div class="acard">
+            <div class="top"><span class="tt">front-dev · 任务频道</span><span class="tag accent">待回答</span></div>
+            <div class="ds">历史页卡片布局需要复用 stats.vue 的渐变 token，确认统一抽象成公共样式？</div>
+            <div class="btns"><button class="vbtn">回答</button><button class="vbtn plain">去处理</button></div>
+          </div>
+          <div class="secttl">待审批命令</div>
+          <div class="acard">
+            <div class="top"><span class="tt mono" style="font-size:13px">npm install vant@4</span><span class="tag">白名单外</span></div>
+            <div class="btns"><button class="vbtn">批准执行</button><button class="vbtn danger">拒绝</button></div>
+          </div>
+          <div class="footpad"></div>
+        </div>
+        <div class="tabbar">
+          <button class="titem" data-go="m-tasks"><span class="ic">◫</span>任务</button>
+          <button class="titem" data-go="m-chatlist"><span class="ic">≡</span>讨论</button>
+          <button class="titem"><span class="ic">◈</span>项目</button>
+          <button class="titem on"><span class="ic">✓</span>审批<span class="bdg">3</span></button>
+          <button class="titem" data-go="m-settings"><span class="ic">⚙</span>我的</button>
+        </div>
+      </section>
+
+      <!-- ============ 屏7 指标 ============ -->
+      <section class="mscr" id="m-metrics">
+        <div class="p-nav"><button class="back" data-go="m-settings">‹</button><span class="ttl">运行指标</span><span class="st">30 天</span></div>
+        <div class="p-body">
+          <div class="statrow">
+            <div class="stat"><div class="k">任务总数</div><div class="v">47</div><div class="d">+12 本周</div></div>
+            <div class="stat"><div class="k">成功率</div><div class="v">92.4%</div><div class="d">+3.1pt</div></div>
+          </div>
+          <div class="statrow">
+            <div class="stat"><div class="k">Token</div><div class="v">1.28M</div><div class="d" style="color:var(--text-3)">持平</div></div>
+            <div class="stat"><div class="k">成本</div><div class="v">¥86.4</div><div class="d" style="color:var(--danger)">−9.2</div></div>
+          </div>
+          <div class="cellgroup">
+            <div class="cell" style="flex-direction:column;align-items:stretch;min-height:150px;padding:12px 14px">
+              <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--text-2);margin-bottom:6px"><span>每日任务吞吐</span><span class="mono" style="font-size:11px;color:var(--text-3)">近 30 天</span></div>
+              <div class="bars">
+                <i style="height:34%"></i><i style="height:46%"></i><i style="height:40%"></i><i style="height:55%"></i><i style="height:48%"></i>
+                <i style="height:63%"></i><i style="height:57%"></i><i style="height:72%"></i><i style="height:66%"></i><i style="height:80%"></i>
+                <i style="height:60%"></i><i style="height:85%"></i><i style="height:74%"></i><i style="height:68%"></i><i style="height:90%"></i>
+                <i style="height:76%"></i><i style="height:83%"></i><i style="height:71%"></i><i style="height:94%"></i><i style="height:79%"></i>
+                <i style="height:87%"></i><i style="height:75%"></i><i class="hot" style="height:100%"></i><i style="height:84%"></i>
+                <i style="height:91%"></i><i style="height:78%"></i><i style="height:95%"></i><i style="height:82%"></i><i style="height:86%"></i><i style="height:80%"></i>
+              </div>
+            </div>
+          </div>
+          <div class="footpad"></div>
+        </div>
+      </section>
+
+      <!-- ============ 屏8 设置（我的） ============ -->
+      <section class="mscr" id="m-settings">
+        <div class="p-nav"><span class="ttl">我的</span><span class="sp"></span><button class="back" data-go="m-metrics">指标 ›</button></div>
+        <div class="p-body">
+          <div class="cellgroup">
+            <button class="cell" data-go="m-metrics"><span class="ck">运行指标</span><span class="arr">›</span></button>
+            <button class="cell"><span class="ck">团队成员</span><span class="cv">4 agents</span><span class="arr">›</span></button>
+            <button class="cell"><span class="ck">MCP 服务</span><span class="cv">1 在线 / 2</span><span class="arr">›</span></button>
+          </div>
+          <div class="secttl">执行与安全</div>
+          <div class="cellgroup">
+            <button class="cell"><span class="ck">默认权限级别<span class="sub">目录监狱恒开</span></span><span class="cv">whitelist_auto</span><span class="arr">›</span></button>
+            <div class="cell"><span class="ck">沙箱隔离<span class="sub">heavy 任务独立克隆执行</span></span><button class="switch on" onclick="this.classList.toggle('on')"></button></div>
+            <div class="cell"><span class="ck">每日日报<span class="sub">07:00 汇总任务与成本</span></span><button class="switch on" onclick="this.classList.toggle('on')"></button></div>
+          </div>
+          <div class="secttl">连接</div>
+          <div class="cellgroup">
+            <div class="cell"><span class="ck">服务状态</span><span class="cv"><span class="dot ok"></span> 已连接 · 8855</span></div>
+            <div class="cell"><span class="ck">模型池</span><span class="cv">8 模型 · 1 冷却</span></div>
+          </div>
+          <div style="padding:14px 12px"><button class="vbtn plain block">保存并生效</button></div>
+          <div class="footpad"></div>
+        </div>
+        <div class="tabbar">
+          <button class="titem" data-go="m-tasks"><span class="ic">◫</span>任务</button>
+          <button class="titem" data-go="m-chatlist"><span class="ic">≡</span>讨论</button>
+          <button class="titem"><span class="ic">◈</span>项目</button>
+          <button class="titem" data-go="m-approvals"><span class="ic">✓</span>审批</button>
+          <button class="titem on"><span class="ic">⚙</span>我的</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<!-- 预览控件（非产品 UI） -->
+<div class="preview-bar">
+  <div class="grp"><span class="lbl">屏幕</span>
+    <button data-scr="m-chatlist" class="on">讨论列表</button>
+    <button data-scr="m-chat">群聊</button>
+    <button data-scr="m-tasks">任务列表</button>
+    <button data-scr="m-task">任务详情</button>
+    <button data-scr="m-create">创建</button>
+    <button data-scr="m-approvals">审批</button>
+    <button data-scr="m-metrics">指标</button>
+    <button data-scr="m-settings">我的</button>
+  </div>
+  <div class="grp"><span class="lbl">主题（暗=橙 / 亮=蓝）</span>
+    <button data-thm="dark" class="on">暗色</button>
+    <button data-thm="light">亮色</button>
+  </div>
+  <div class="grp"><span class="lbl">小样</span>
+    <button onclick="toggleSheet('sheetActions')">长按菜单</button>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelectorAll(s);
+function setScreen(k){
+  $('.mscr').forEach(e=>e.classList.toggle('active',e.id===k));
+  $('[data-scr]').forEach(b=>b.classList.toggle('on',b.dataset.scr===k));
+  closeSheets();
+  document.querySelectorAll('.mscr.active .p-body').forEach(b=>b.scrollTop=0);
+}
+function setTheme(t){
+  document.documentElement.dataset.theme=t;
+  $('[data-thm]').forEach(b=>b.classList.toggle('on',b.dataset.thm===t));
+}
+function toggleSheet(id){
+  const s=document.getElementById(id);
+  const v=s.parentElement.querySelector('.sheetveil');
+  const on=s.classList.toggle('on');
+  if(v)v.classList.toggle('on',on);
+}
+function closeSheets(){
+  document.querySelectorAll('.sheet.on').forEach(s=>s.classList.remove('on'));
+  document.querySelectorAll('.sheetveil.on').forEach(v=>v.classList.remove('on'));
+}
+$('[data-scr]').forEach(b=>b.onclick=()=>setScreen(b.dataset.scr));
+$('[data-thm]').forEach(b=>b.onclick=()=>setTheme(b.dataset.thm));
+$('[data-go]').forEach(b=>b.onclick=e=>{e.stopPropagation();setScreen(b.dataset.go)});
+</script>
+</body>
+</html>
