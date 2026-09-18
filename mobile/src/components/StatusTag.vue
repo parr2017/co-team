@@ -28,15 +28,19 @@ const text = computed(() => props.label || props.status);
 </template>
 
 <style scoped>
+/* 预览样式：方角 mono 小标签（4px 圆角 + 发丝线 + 语义 tint），保留状态点 */
 .st-tag {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
+  font-size: var(--fs-meta);
+  font-family: var(--font-mono);
+  font-weight: 500;
   line-height: 1;
-  padding: 4px 9px;
-  border-radius: 999px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 4px;
+  border: 1px solid transparent;
   white-space: nowrap;
 }
 .st-tag::before {
@@ -44,10 +48,11 @@ const text = computed(() => props.label || props.status);
   width: 5px; height: 5px;
   border-radius: 50%;
   background: currentColor;
+  flex: none;
 }
-.st-tag.green { color: var(--ct-green); background: var(--ct-green-soft); }
-.st-tag.yellow { color: var(--ct-yellow); background: var(--ct-yellow-soft); }
-.st-tag.red { color: var(--ct-red); background: var(--ct-red-soft); }
-.st-tag.accent { color: var(--ct-accent); background: var(--ct-accent-soft); }
-.st-tag.neutral { color: var(--text-2); background: var(--panel-2); }
+.st-tag.green { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
+.st-tag.yellow { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+.st-tag.red { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+.st-tag.accent { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+.st-tag.neutral { color: var(--text-2); background: var(--bg-raised); border-color: var(--line); }
 </style>

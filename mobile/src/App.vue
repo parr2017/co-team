@@ -78,19 +78,21 @@ function dismissTokenGate() {
 
 <style scoped>
 .app-root { height: 100dvh; display: flex; flex-direction: column; }
-.gate-mask { position: fixed; inset: 0; z-index: 2001; background: var(--mask, rgba(0, 0, 0, 0.7)); display: flex; align-items: flex-end; }
+.gate-mask { position: fixed; inset: 0; z-index: 2001; background: rgba(0, 0, 0, 0.6); display: flex; align-items: flex-end; }
 .gate-panel {
-  width: 100%; background: var(--panel, #1a1c20); border-radius: 16px 16px 0 0;
+  width: 100%; background: var(--bg-panel); border: 1px solid var(--line-strong); border-bottom: none;
+  border-radius: var(--r-float) var(--r-float) 0 0; box-shadow: var(--shadow-float);
   padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
 }
-.gate-title { font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
-.gate-tip { font-size: 13px; color: var(--text-2); line-height: 1.6; margin-bottom: 12px; }
+.gate-title { font-size: var(--fs-title); font-weight: 700; color: var(--text-1); margin-bottom: 6px; }
+.gate-tip { font-size: var(--fs-aux); color: var(--text-2); line-height: 1.6; margin-bottom: 12px; }
 .gate-field {
-  width: 100%; box-sizing: border-box; background: var(--panel-2, #24262b); border: 1px solid var(--border);
-  border-radius: 8px; color: var(--text); font-size: 15px; padding: 10px 12px; outline: none;
+  width: 100%; box-sizing: border-box; background: var(--bg-overlay); border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl); color: var(--text-1); font-size: var(--fs-sub); padding: 10px 12px; outline: none;
 }
+.gate-field:focus { border-color: var(--accent-line); }
 .gate-actions { display: flex; gap: 10px; margin-top: 12px; }
 .gate-actions .wx-btn { flex: 1; }
-.gate-save { background: var(--accent); color: #fff; border: none; }
+.gate-save { background: var(--accent); color: var(--accent-text); border: none; }
 .gate-save:disabled { opacity: 0.5; }
 </style>

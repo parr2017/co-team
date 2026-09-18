@@ -10,7 +10,7 @@ function apply(mode: ThemeMode) {
   localStorage.setItem('coteam-theme', mode);
   // PWA/浏览器 chrome 主题色跟随（index.html 的静态 theme-color 不随主题变）
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', mode === 'light' ? '#f5f6f8' : '#0b0c0e');
+  if (meta) meta.setAttribute('content', mode === 'light' ? '#f5f6f8' : '#0c0d10');
 }
 
 apply(theme.value);
