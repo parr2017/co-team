@@ -28,7 +28,7 @@
         </button>
       </div>
       <div class="disc-foot">
-        <el-button size="small" type="primary" class="new-disc-btn" @click="createVisible = true">+ 发起讨论</el-button>
+        <button class="new-disc-btn" @click="createVisible = true">+ 发起讨论</button>
       </div>
     </aside>
 
@@ -37,7 +37,7 @@
       <template v-if="current">
         <header class="chat-head">
           <div class="ch-title">{{ current.title }}</div>
-          <el-tag v-if="boundProject" size="small" type="success" effect="plain">{{ boundProject.name }}</el-tag>
+          <span v-if="boundProject" class="tag">{{ boundProject.name }}</span>
           <span class="tag" :class="current.mode === 'auto' ? 'tag-accent' : ''">{{ current.mode === 'auto' ? '自动模式' : '手动模式' }}</span>
           <span v-if="current.task_id" class="tag mono" @click="emit('open-task', current.task_id)" style="cursor:pointer">任务 {{ current.task_id }}<template v-if="taskCount > 1"> +{{ taskCount - 1 }}</template></span>
           <span v-if="current.scheme_version" class="tag mono">方案 v{{ current.scheme_version }}</span>
@@ -62,19 +62,19 @@
             </el-popover>
           </div>
           <div class="ch-ops">
-            <el-button size="small" text :disabled="!current.scheme" @click="schemeVisible = true">查看方案</el-button>
-            <el-button size="small" text :loading="genLoading" :disabled="converted" @click="onGenScheme">生成方案</el-button>
+            <button class="op-btn" :disabled="!current.scheme" @click="schemeVisible = true">查看方案</button>
+            <button class="op-btn" :disabled="genLoading || converted" @click="onGenScheme">{{ genLoading ? '生成中…' : '生成方案' }}</button>
             <!-- 转任务不封存（2026-09-15）：converted 时按钮保留但需先发消息复活讨论 -->
-            <el-button
-              size="small" text type="primary"
+            <button
+              class="op-btn accent"
               :disabled="!current.scheme || converted"
               :title="converted ? '发一条消息重新开启群聊后，即可再转后续任务' : ''"
               @click="convertVisible = true"
-            >转任务</el-button>
-            <el-button v-if="current.task_id" size="small" text @click="emit('open-task', current.task_id!)">开发任务 ›</el-button>
-            <el-button size="small" text @click="expOpen = !expOpen">沉淀经验{{ experiences.length ? ` (${experiences.length})` : '' }}</el-button>
+            >转任务</button>
+            <button v-if="current.task_id" class="op-btn" @click="emit('open-task', current.task_id!)">开发任务 ›</button>
+            <button class="op-btn" @click="expOpen = !expOpen">沉淀经验{{ experiences.length ? ` (${experiences.length})` : '' }}</button>
             <el-popconfirm title="删除该讨论及其记录？" @confirm="remove(current.id)">
-              <template #reference><el-button size="small" text type="danger">删除</el-button></template>
+              <template #reference><button class="op-btn danger">删除</button></template>
             </el-popconfirm>
           </div>
         </header>
@@ -274,8 +274,13 @@ void busy;
 .disc-item .meta { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
 .disc-item .time { font-size: var(--fs-meta); color: var(--text-3); }
 .pending-mark { color: var(--accent); font-weight: 600; }
-.disc-foot { padding: 8px 12px 12px; border-top: 1px solid var(--line); }
-.new-disc-btn { width: 100%; }
+.disc-foot { padding: 6px 10px 10px; }
+.new-disc-btn {
+  width: calc(100% - 0px); height: 26px; border-radius: var(--r-ctl); border: 1px solid transparent;
+  background: transparent; color: var(--text-3); font-size: 12px; cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.new-disc-btn:hover { background: var(--bg-raised); color: var(--text-1); border-color: var(--line); }
 .gd-empty { font-size: var(--fs-aux); color: var(--text-3); padding: 20px 10px; line-height: 1.8; }
 
 /* 通用 tag（发丝线 mono 小标签） */
@@ -291,11 +296,10 @@ void busy;
 /* ---------- 中：聊天主区 ---------- */
 .chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-page); }
 .chat-head {
-  min-height: 46px; flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 18px;
-  border-bottom: 1px solid var(--line); background: var(--bg-panel); flex-wrap: wrap;
+  height: 46px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 18px;
+  border-bottom: 1px solid var(--line); background: var(--bg-panel); flex-wrap: nowrap; min-width: 0;
 }
-.ch-title { font-size: var(--fs-title); font-weight: 700; color: var(--text-1); }
-.chat-head .el-tag { font-family: var(--font-mono); }
+.ch-title { font-size: var(--fs-title); font-weight: 700; color: var(--text-1); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
 .spacer { flex: 1; }
 .gh-members { display: flex; }
 .gh-av { margin-left: -6px; border: 2px solid var(--bg-panel); border-radius: 7px; cursor: pointer; }
@@ -305,7 +309,19 @@ void busy;
 .mc-role { font-size: 13px; font-weight: 700; }
 .mc-id { font-size: var(--fs-meta); color: var(--text-3); }
 .mc-tags, .mc-last { font-size: var(--fs-meta); color: var(--text-3); }
-.ch-ops { display: flex; gap: 2px; flex-wrap: wrap; }
+.ch-ops { display: flex; gap: 2px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: none; }
+.ch-ops::-webkit-scrollbar { display: none; }
+.op-btn {
+  height: 24px; padding: 0 9px; border-radius: var(--r-ctl); border: 1px solid transparent;
+  background: transparent; color: var(--text-2); font-size: 12px; white-space: nowrap; cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.op-btn:hover:not(:disabled) { background: var(--bg-raised); color: var(--text-1); border-color: var(--line); }
+.op-btn:disabled { opacity: .45; cursor: not-allowed; }
+.op-btn.accent { color: var(--accent); }
+.op-btn.accent:hover:not(:disabled) { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+.op-btn.danger { color: var(--danger); }
+.op-btn.danger:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 
 /* 经验沉淀折叠区 */
 .gd-exp { border-bottom: 1px solid var(--line); padding: 10px 18px; max-height: 180px; overflow-y: auto; background: var(--bg-panel); }

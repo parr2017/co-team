@@ -56,14 +56,17 @@
                 <div class="tooltree" :class="{ open: expandedTools.has(row.m.id) }">
                   <button class="tt-head" @click="toggleTool(row.m.id)">
                     <span class="tt-caret">{{ expandedTools.has(row.m.id) ? '▾' : '▸' }}</span>
+                    <span class="tt-dot" :class="toolFailCount(row.m) ? 'err' : 'ok'"></span>
                     <span class="tt-agent" :style="{ color: agentColor(row.m.from) }">{{ roleOf(row.m.from) }}</span>
                     <span class="tt-text">{{ row.m.text }}</span>
-                    <span class="tt-meta mono">工具调用<template v-if="toolCallsOf(row.m).length"> × {{ toolCallsOf(row.m).length }}</template></span>
+                    <span class="tt-meta mono">
+                      <template v-if="toolFailCount(row.m)"><b class="tt-fail">{{ toolFailCount(row.m) }} 失败</b> · </template>工具调用<template v-if="toolCallsOf(row.m).length"> × {{ toolCallsOf(row.m).length }}</template>
+                    </span>
                   </button>
                   <div v-if="expandedTools.has(row.m.id)" class="tt-body">
                     <div v-for="(rec, ci) in toolCallsOf(row.m)" :key="ci" class="tcall">
                       <div class="tcall-line">
-                        <span class="sym mono">{{ toolIcon(rec.tool) }}</span>
+                        <span class="sym mono">▸</span>
                         <span class="path mono">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
                         <span v-if="rec.args_summary" class="args mono">{{ rec.args_summary }}</span>
                         <span class="st mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗ 失败' : '✓ ok' }}</span>
@@ -140,13 +143,13 @@
                 <span class="live-dot"></span>
                 <span class="who" :style="{ color: agentColor(String(agent)) }">{{ roleOf(String(agent)) }}</span>
                 <span class="aid mono">{{ agent }}</span>
-                <span class="live-label">正在动手…</span>
+                <span class="live-label">正在动手执行</span><span class="mono live-eta">{{ liveEta((lt as any).ts) }}</span>
               </div>
               <div class="tooltree open live-tree">
                 <div class="tt-body">
                   <div v-for="(rec, ci) in liveRecords(lt)" :key="ci" class="tcall">
                     <div class="tcall-line">
-                      <span class="sym mono">{{ toolIcon(rec.tool) }}</span>
+                      <span class="sym mono">▸</span>
                       <span class="path mono">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
                       <span v-if="rec.args_summary" class="args mono">{{ rec.args_summary }}</span>
                       <span class="st mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗ 失败' : '✓ ok' }}</span>
@@ -211,7 +214,7 @@
       <div class="input-zone">
         <div class="input-inner">
           <div v-if="replyTo" class="quote-reply">
-            <span class="bar"></span>
+            <span class="bar author" :style="{ background: replyAuthorColor }"></span>
             <span class="quote-text">回复「{{ replyPreview }}」</span>
             <button class="rb-x" @click="replyTo = null">✕</button>
           </div>
@@ -271,7 +274,6 @@
               <div class="dtitle">看过哪些代码 · {{ groupedCalls.code.length }}</div>
               <div v-for="(rec, i) in groupedCalls.code" :key="`c${i}`" class="fitem-block mono">
                 <div class="fitem-line">
-                  <span class="fi-icon">{{ toolIcon(rec.tool) }}</span>
                   <span class="fi-name">{{ rec.tool }}</span>
                   <span class="fi-status mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
                 </div>
@@ -284,7 +286,6 @@
               <div class="dtitle">执行了什么命令 · {{ groupedCalls.cmd.length }}</div>
               <div v-for="(rec, i) in groupedCalls.cmd" :key="`x${i}`" class="fitem-block mono">
                 <div class="fitem-line">
-                  <span class="fi-icon">{{ toolIcon(rec.tool) }}</span>
                   <span class="fi-name">{{ rec.tool }}</span>
                   <span class="fi-status mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
                 </div>
@@ -297,7 +298,6 @@
               <div class="dtitle">MCP 调用 · {{ groupedCalls.mcp.length }}</div>
               <div v-for="(rec, i) in groupedCalls.mcp" :key="`m${i}`" class="fitem-block mono">
                 <div class="fitem-line">
-                  <span class="fi-icon">🔌</span>
                   <span class="fi-name">{{ rec.mcp ? `${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
                   <span class="fi-status mono" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
                 </div>
@@ -310,7 +310,6 @@
               <div class="dtitle">文档与沉淀 · {{ groupedCalls.doc.length }}</div>
               <div v-for="(rec, i) in groupedCalls.doc" :key="`d${i}`" class="fitem-block mono">
                 <div class="fitem-line">
-                  <span class="fi-icon">{{ toolIcon(rec.tool) }}</span>
                   <span class="fi-name">{{ rec.tool }}</span>
                 </div>
                 <div v-if="rec.args_summary" class="fi-args">{{ rec.args_summary }}</div>
@@ -341,7 +340,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch, watchEffect } from 'vue';
 import { ElMessage, ElImageViewer } from 'element-plus';
 import { renderMarkdown } from '../utils/md';
 import type { DiscussionMessage } from '../api';
@@ -539,14 +538,11 @@ async function undoWrites(m: DiscussionMessage) {
     undoingMsg.value = new Set([...undoingMsg.value].filter((x) => x !== m.id));
   }
 }
-function toolIcon(tool: string): string {
-  if (tool.startsWith('mcp__')) return '🔌';
-  if (/^read_file|^read$|^read_dir|^readdir|^list_files|^list$|^ls$|^grep|^search|^git_log|^git_diff/.test(tool)) return '📂';
-  if (/^exec|^exec_command|^run_command|^exec_background|^start_process|^kill_process|^check_page|^screenshot|^look_image/.test(tool)) return '⚙';
-  if (/^write_knowledge|^write_doc/.test(tool)) return '📄';
-  if (/^convert_to_project|^convert_task/.test(tool)) return '🚀';
-  return '🔧';
+/** 本批工具失败数（头行红点/失败计数用） */
+function toolFailCount(m: DiscussionMessage): number {
+  return toolCallsOf(m).filter((c: any) => c.ok === false).length;
 }
+
 
 /** 实时工具批次：只显示当前讨论绑定成员的进行中批次（round end 后由 useDiscussion 清空） */
 const visibleLiveTools = computed(() => {
@@ -556,6 +552,20 @@ const visibleLiveTools = computed(() => {
   }
   return out;
 });
+
+/** 实时批次已用秒数（1s tick，仅存在活跃批次时有意义） */
+const nowTick = ref(Date.now());
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+watchEffect((onCleanup) => {
+  const active = Object.keys(visibleLiveTools.value).length > 0 || Object.keys(streams).length > 0;
+  if (active && !tickTimer) tickTimer = setInterval(() => { nowTick.value = Date.now(); }, 1000);
+  if (!active && tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+  onCleanup(() => { if (tickTimer) { clearInterval(tickTimer); tickTimer = null; } });
+});
+function liveEta(ts: number): string {
+  const sec = Math.max(0, Math.round((nowTick.value - ts) / 1000));
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`;
+}
 
 /** 实时批次 → 记录形态（与 meta.calls 同构，含完整输出要点） */
 function liveRecords(lt: { agent: string; calls: any[]; results: any[] }): any[] {
@@ -604,7 +614,7 @@ const CODE_TOOLS = /^(read_file|read|read_dir|readdir|list_files|list|ls|grep|se
 const CMD_TOOLS = /^(exec|exec_command|run_command|exec_background|start_process|kill_process|check_page|screenshot|look_image)$/;
 const DOC_TOOLS = /^(write_knowledge|write_doc)$/;
 const detailMsg = ref<DiscussionMessage | null>(null);
-const detailOpen = ref(false);
+const detailOpen = ref(true);
 
 function hasDetail(m: DiscussionMessage): boolean {
   const meta: any = m.meta || {};
@@ -711,6 +721,11 @@ function startReply(m: DiscussionMessage) {
   void nextTick(() => inputEl.value?.focus());
 }
 
+const replyAuthorColor = computed(() => {
+  const src = (current.value?.messages || []).find((x) => x.id === replyTo.value);
+  return src ? agentColor(src.from) : '';
+});
+
 const replyPreview = computed(() => {
   const src = (current.value?.messages || []).find((x) => x.id === replyTo.value);
   return src ? `${roleOf(src.from)}：${src.text.slice(0, 40)}` : '';
@@ -791,10 +806,10 @@ watch(() => current.value?.id, (id) => {
 .empty { color: var(--text-3); text-align: center; padding: 48px 24px; font-size: var(--fs-aux); line-height: 2; }
 
 /* ---------- 消息行：avatar 列 + 内容列 ---------- */
-.msg { display: grid; grid-template-columns: 26px 1fr; gap: 0 12px; padding: 7px 0; border-radius: 8px; }
+.msg { display: grid; grid-template-columns: 30px 1fr; gap: 0 12px; padding: 7px 0; border-radius: 6px; }
 .msg:hover { background: color-mix(in srgb, var(--bg-raised) 55%, transparent); }
-.msg.user { background: linear-gradient(90deg, var(--accent-soft), transparent 70%); }
-.msg-avatar { width: 26px; }
+.msg.user { background: linear-gradient(90deg, var(--accent-soft), transparent 70%); border-radius: 8px; }
+.msg-avatar { width: 30px; }
 .avatar-user {
   width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
   background: var(--accent); color: var(--accent-text);
@@ -849,7 +864,7 @@ watch(() => current.value?.id, (id) => {
 /* ---------- 工具调用树（IDE 感核心组件） ---------- */
 .tooltree {
   margin: 4px 0; background: var(--bg-inset); border: 1px solid var(--line);
-  border-radius: var(--r-panel); overflow: hidden; max-width: 860px;
+  border-radius: var(--r-panel); overflow: hidden;
 }
 .tt-head {
   display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
@@ -858,15 +873,19 @@ watch(() => current.value?.id, (id) => {
   border-bottom: 1px solid var(--line);
 }
 .tooltree:not(.open) .tt-head { border-bottom: none; }
-.tt-caret { color: var(--text-3); font-size: 10px; width: 10px; flex: none; }
+.tt-caret { color: var(--text-3); font-size: 11px; width: 11px; flex: none; }
+.tt-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.tt-dot.ok { background: var(--ok); }
+.tt-dot.err { background: var(--danger); }
+.tt-fail { color: var(--danger); font-weight: 600; }
 .tt-agent { font-weight: 600; flex: none; }
 .tt-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
 .tt-meta { font-family: var(--font-mono); color: var(--text-3); flex: none; }
 .tt-body { padding: 6px 10px 7px; display: flex; flex-direction: column; gap: 4px; }
 .tcall { display: flex; flex-direction: column; gap: 1px; }
 .tcall-line { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-aux); line-height: 1.5; flex-wrap: wrap; }
-.tcall .sym { color: var(--text-3); flex: none; font-size: 10px; }
-.tcall .path { color: var(--text-2); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; }
+.tcall .sym { color: var(--text-3); flex: none; font-size: 11px; }
+.tcall .path { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tcall .args { color: var(--text-3); word-break: break-all; }
 .tcall .st { margin-left: auto; font-size: var(--fs-meta); color: var(--ok); flex: none; }
 .tcall .st.bad { color: var(--danger); }
@@ -980,7 +999,8 @@ watch(() => current.value?.id, (id) => {
   display: flex; align-items: center; gap: 8px; font-size: var(--fs-aux); color: var(--text-2);
   background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 5px 9px;
 }
-.quote-reply .bar { width: 2px; height: 14px; background: var(--accent); border-radius: 2px; flex: none; }
+.quote-reply .bar { width: 2px; height: 14px; background: var(--line-strong); border-radius: 2px; flex: none; }
+.quote-reply .bar.author { background: var(--accent); }
 .quote-reply .quote-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rb-x { border: none; background: none; color: var(--text-3); font-size: 12px; cursor: pointer; }
 .rb-x:hover { color: var(--text-1); }
@@ -1033,7 +1053,6 @@ watch(() => current.value?.id, (id) => {
 .fitem-block { display: flex; flex-direction: column; gap: 2px; padding: 5px 8px; border-radius: 5px; }
 .fitem-block:hover { background: var(--bg-raised); }
 .fitem-line { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-aux); }
-.fi-icon { font-size: 11px; flex: none; }
 .fi-name { color: var(--text-2); font-weight: 600; }
 .fi-status { margin-left: auto; color: var(--ok); flex: none; }
 .fi-status.bad { color: var(--danger); }
