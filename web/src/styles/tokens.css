@@ -59,6 +59,22 @@
   --detail-w: 360px;   /* 群聊详情面板（常驻可收） */
   --side-w: 340px;     /* 工作台右栏 */
 
+  /* ---- agent 身份调色板（与 utils/agentColor.ts 同源，主题无关；改色须两端同步） ---- */
+  --ag-dev: #178a3e;
+  --ag-test: #b8860b;
+  --ag-review: #7c53c4;
+  --ag-deploy: #cc7a29;
+  --ag-docs: #0e8fa3;
+  --ag-refactor: #c4548f;
+  --ag-launcher: #2f6fed;
+  --ag-grader: #c4548f;
+  --ag-fallback: #8a6d3b;
+
+  /* ---- 对话框宽度档位 ---- */
+  --w-dialog-sm: 560px;
+  --w-dialog-md: 680px;
+  --w-dialog-lg: 760px;
+
   /* ---- 字体 ---- */
   --font-ui: -apple-system, 'Segoe UI', 'Microsoft YaHei', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;

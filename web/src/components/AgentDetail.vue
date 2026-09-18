@@ -93,7 +93,7 @@ async function load() {
 .p-name { font-size: 17px; font-weight: 700; }
 .p-role { font-size: 12px; color: var(--text-3); }
 .p-exp { color: var(--text-3); }
-.p-section-title { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.6px; margin: 14px 0 6px; }
+.p-section-title { font-size: var(--fs-meta); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.6px; margin: 14px 0 6px; }
 .p-value { background: var(--bg-page); border-radius: 6px; padding: 10px 12px; font-size: 12px; color: var(--text-2); }
 .p-action { color: var(--warn); margin-top: 4px; }
 .p-model { color: var(--accent); margin-top: 4px; }

@@ -56,13 +56,12 @@ const colorClass = computed(() => {
   user-select: none;
   letter-spacing: 0.5px;
 }
-.av-master { background: #2f6fed; }
-html.dark .av-master { background: #4a8dff; }
-.av-green { background: #178a3e; }
-.av-yellow { background: #b8860b; }
-.av-purple { background: #7c53c4; }
-.av-orange { background: #cc7a29; }
-.av-cyan { background: #0e8fa3; }
-.av-pink { background: #c4548f; }
+.av-master { background: var(--ag-launcher); }
+.av-green { background: var(--ag-dev); }
+.av-yellow { background: var(--ag-test); }
+.av-purple { background: var(--ag-review); }
+.av-orange { background: var(--ag-deploy); }
+.av-cyan { background: var(--ag-docs); }
+.av-pink { background: var(--ag-refactor); }
 .av-active { outline: 3px solid var(--accent); outline-offset: 1px; }
 </style>

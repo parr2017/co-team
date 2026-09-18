@@ -480,7 +480,7 @@
     />
 
     <!-- A3 合并确认弹窗 -->
-    <el-dialog :model-value="mergeConfirmOpen" title="确认合并" width="560px" append-to-body @close="mergeConfirmOpen = false">
+    <el-dialog :model-value="mergeConfirmOpen" title="确认合并" width="var(--w-dialog-sm)" append-to-body @close="mergeConfirmOpen = false">
       <MdView :source="mergeMsg" />
       <div class="mono" style="margin-top: 8px; color: var(--text-3)">合并后成果进入主分支；任务分支保留可回溯。</div>
       <template #footer>
@@ -490,7 +490,7 @@
     </el-dialog>
 
     <!-- A2 协同文档列表 -->
-    <el-dialog v-model="docsOpen" title="协同文档（SSOT 单一事实来源）" width="680px" append-to-body>
+    <el-dialog v-model="docsOpen" title="协同文档（SSOT 单一事实来源）" width="var(--w-dialog-md)" append-to-body>
       <div v-if="!docsList.length" class="mono" style="color: var(--text-3)">暂无协同文档</div>
       <div v-for="d in docsList" :key="d.type" class="doc-row">
         <el-button link type="primary" @click="docView = { title: `docs/${d.type}.md（v${d.version}）`, content: d.content }">
@@ -501,12 +501,12 @@
     </el-dialog>
 
     <!-- A2/A1 文档与产出文件内容查看器 -->
-    <el-dialog :model-value="!!docView" :title="docView?.title || '查看'" width="760px" top="6vh" append-to-body @close="docView = null">
+    <el-dialog :model-value="!!docView" :title="docView?.title || '查看'" width="var(--w-dialog-lg)" top="6vh" append-to-body @close="docView = null">
       <div class="md" v-html="mdRender(docView?.content || '')"></div>
     </el-dialog>
 
     <!-- A1 实时产出视图 -->
-    <el-dialog v-model="outputOpen" title="实时产出（沙箱工作副本 · 只读）" width="680px" append-to-body>
+    <el-dialog v-model="outputOpen" title="实时产出（沙箱工作副本 · 只读）" width="var(--w-dialog-md)" append-to-body>
       <div class="output-bar">
         <span class="mono" style="color: var(--text-3)">{{ outputAvailable ? `沙箱: ${outputSandbox}` : '沙箱已清理或任务未在沙箱中执行' }}</span>
         <el-button size="small" @click="refreshOutput">刷新</el-button>

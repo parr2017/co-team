@@ -416,7 +416,7 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 .app-shell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 /* 顶栏（44px）：品牌位 + 产品化 tab + 指标 pill */
 .app-header {
-  flex-shrink: 0; z-index: 50; height: 44px; padding: 0 16px;
+  flex-shrink: 0; z-index: 50; height: 46px; padding: 0 16px;
   display: flex; align-items: center; justify-content: space-between; gap: 20px;
   background: var(--bg-panel); border-bottom: 1px solid var(--line);
 }
@@ -491,7 +491,8 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 .el-dialog__title { font-family: var(--font-mono); font-size: 13px !important; }
 .gate-tip { font-size: var(--fs-aux); color: var(--text-2); line-height: 1.6; margin-bottom: 10px; }
 .el-button { border-radius: var(--r-ctl) !important; font-weight: 400 !important; }
-.el-table { --el-table-border-color: var(--line); --el-table-bg-color: var(--bg-panel); --el-table-tr-bg-color: var(--bg-panel); --el-table-header-bg-color: var(--bg-raised); }
+.el-overlay { --el-overlay-color-lighter: color-mix(in srgb, var(--bg-page) 72%, transparent); --el-mask-color: color-mix(in srgb, var(--bg-page) 72%, transparent); }
+.el-table { --el-table-border-color: var(--line); --el-table-bg-color: var(--bg-panel); --el-table-tr-bg-color: var(--bg-panel); --el-table-header-bg-color: var(--bg-raised); --el-table-header-text-color: var(--text-3); }
 /* 表格语言（预览稿）：th = 11px mono 大写字距；td 13px；行 hover 用 token */
 .el-table th.el-table__cell > .cell {
   font-family: var(--font-mono); font-size: var(--fs-meta); font-weight: 600;
