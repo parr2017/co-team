@@ -341,8 +341,8 @@ async function submit() {
 
 .wl-chip {
   padding: 4px 12px; border-radius: 14px; font-size: 13px;
-  background: var(--panel-2, #f5f5f5); color: var(--text-2, #666);
+  background: var(--panel-2); color: var(--text-2);
   border: 1px solid transparent;
 }
-.wl-chip.on { background: rgba(7, 193, 96, 0.12); color: var(--green, #07c160); border-color: var(--green, #07c160); }
+.wl-chip.on { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); border-color: var(--ok); }
 </style>

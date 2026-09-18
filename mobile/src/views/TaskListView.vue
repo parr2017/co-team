@@ -433,7 +433,7 @@ onUnmounted(() => {
 .s-badge {
   position: absolute; top: -5px; right: -9px;
   min-width: 18px; height: 18px; padding: 0 5px;
-  border-radius: 10px; background: var(--red); color: #fff;
+  border-radius: 10px; background: var(--accent); color: var(--accent-text);
   font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
   box-shadow: 0 0 0 2.5px var(--panel);
 }
@@ -457,16 +457,7 @@ onUnmounted(() => {
 }
 .s-digest.unread { color: var(--text); }
 
-/* status meta cluster on the right of line 2 */
 .s-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.s-pill {
-  font-size: 11px; font-weight: 500; border-radius: 5px; padding: 2px 7px; line-height: 1.4;
-}
-.s-pill.run { color: var(--yellow); background: rgba(255, 180, 84, 0.1); border: 1px solid rgba(255, 180, 84, 0.3); }
-.s-pill.queue { color: var(--text-3); background: rgba(148, 163, 184, 0.1); border: 1px solid rgba(148, 163, 184, 0.3); }
-.s-pill.wait { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-soft); }
-.s-pill.bad { color: var(--red); background: rgba(255, 93, 110, 0.1); border: 1px solid rgba(255, 93, 110, 0.3); }
-.s-pill.ok { color: var(--green); background: rgba(52, 245, 197, 0.08); border: 1px solid rgba(52, 245, 197, 0.28); }
 .s-proj {
   font-size: 11px; color: var(--text-3); background: var(--panel-2);
   border-radius: 999px; padding: 2px 8px; max-width: 96px;
@@ -503,9 +494,9 @@ onUnmounted(() => {
 .q-tag {
   font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 5px;
   color: var(--accent); background: var(--accent-soft);
-  border: 1px solid rgba(34, 211, 238, 0.3);
+  border: 1px solid var(--accent-line);
 }
-.q-tag.bad { color: var(--red); background: rgba(255, 93, 110, 0.1); border-color: rgba(255, 93, 110, 0.3); }
+.q-tag.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
 .q-info { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q-reason { margin-top: 6px; font-size: 12px; color: var(--red); line-height: 1.4; }
 </style>
@@ -528,7 +519,7 @@ onUnmounted(() => {
   background: transparent; border: none; text-align: left; cursor: pointer;
 }
 .hero-main:active { background: var(--panel-2); }
-.hero-num { font-size: 30px; font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.hero-num { font-size: 30px; /* 大数字 mono 化 */ font-family: var(--font-mono); font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
 .hero-num.alert { color: var(--red); }
 .hero-label { font-size: var(--fs-sm); color: var(--text-3); }
 .hero-div { width: 1px; background: var(--border); transform: scaleX(0.5); margin: 10px 0; }
@@ -540,5 +531,5 @@ onUnmounted(() => {
 .hs-item + .hs-item { border-left: 1px solid var(--border); transform: scaleX(0.999); }
 .hs-item + .hs-item::before { content: none; }
 .hs-num { font-size: 15px; font-weight: 600; color: var(--text-2); line-height: 1; font-variant-numeric: tabular-nums; }
-.hs-label { font-size: 10.5px; color: var(--text-3); }
+.hs-label { font-size: var(--fs-meta); color: var(--text-3); }
 </style>
