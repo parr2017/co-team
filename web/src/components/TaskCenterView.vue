@@ -51,15 +51,12 @@
     />
 
     <div class="table-foot">
-      <el-pagination
-        v-if="total > pageSize"
-        small
-        layout="prev, pager, next"
-        :total="total"
-        :page-size="pageSize"
-        :current-page="currentPage"
-        @current-change="(p: number) => emit('page-change', p)"
-      />
+      <div v-if="total > pageSize" class="pageno">
+        <span>每页 {{ pageSize }}</span>
+        <button :disabled="currentPage <= 1" @click="emit('page-change', currentPage - 1)">‹</button>
+        <button v-for="p in pageList" :key="p" :class="{ on: p === currentPage }" @click="emit('page-change', p)">{{ p }}</button>
+        <button :disabled="currentPage >= pageCount" @click="emit('page-change', currentPage + 1)">›</button>
+      </div>
     </div>
   </div>
 </template>
@@ -70,6 +67,14 @@ import { api } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import TaskTable from './TaskTable.vue';
 import QueuePanel from './QueuePanel.vue';
+
+const pageCount = computed(() => Math.max(1, Math.ceil((props.total || 0) / (props.pageSize || 20))));
+const pageList = computed(() => {
+  const cur = props.currentPage || 1;
+  const out: number[] = [];
+  for (let p = Math.max(1, cur - 2); p <= Math.min(pageCount.value, cur + 2); p++) out.push(p);
+  return out;
+});
 
 const props = defineProps<{ tasks: Record<string, any>; total?: number; currentPage?: number; pageSize?: number }>();
 
@@ -183,4 +188,9 @@ onUnmounted(() => {
 .search-row { margin-bottom: 10px; }
 .search-input { max-width: 320px; }
 .table-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
+.pageno { display: flex; justify-content: flex-end; gap: 6px; padding-top: 14px; color: var(--text-3); font-size: 12.5px; align-items: center; }
+.pageno button { width: 26px; height: 26px; border: 1px solid var(--line); border-radius: var(--r-ctl); color: var(--text-2); font-family: var(--font-mono); font-size: 12px; background: none; cursor: pointer; }
+.pageno button:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text-1); }
+.pageno button.on { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+.pageno button:disabled { opacity: .4; cursor: not-allowed; }
 </style>

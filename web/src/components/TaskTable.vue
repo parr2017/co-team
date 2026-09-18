@@ -5,8 +5,8 @@
         <div class="t-name" :title="row.description">{{ row.description || '（无描述）' }}</div>
         <div class="t-sub mono">
           <span>{{ row.task_id }}</span>
-          <el-tag v-if="row.project_id" size="small" type="info" class="t-mini-tag">项目</el-tag>
-          <el-tag v-if="row.level" size="small" effect="plain" :type="levelType(row.level)" class="t-mini-tag">{{ levelLabel(row.level) }}</el-tag>
+          <span class="tag">项目</span>
+          <span class="tag">{{ levelLabel(row.level) }}</span>
         </div>
       </template>
     </el-table-column>
@@ -29,9 +29,9 @@
 
     <el-table-column label="进度" width="150">
       <template #default="{ row }">
-        <div class="t-progress">
-          <el-progress :percentage="row.percent" :stroke-width="6" :show-text="false" />
-          <span class="t-progress-text mono">{{ row.done }}/{{ row.total }}</span>
+        <div class="t-progress" :title="`${row.done}/${row.total} 节点完成`">
+          <div class="pbar"><i :style="{ width: row.percent + '%', background: row.percent === 100 ? 'var(--ok)' : 'var(--accent)' }"></i></div>
+          <span class="t-progress-text mono">{{ row.percent }}%</span>
         </div>
       </template>
     </el-table-column>
@@ -56,37 +56,27 @@
       </template>
     </el-table-column>
 
-    <el-table-column label="操作" width="210" fixed="right">
+    <el-table-column label="操作" width="150" fixed="right">
       <template #default="{ row }">
-        <el-button v-if="row.status === 'planned'" size="small" type="primary" link @click.stop="emit('review', row.task_id)">审核计划</el-button>
-        <el-button v-else-if="row.status === 'clarifying'" size="small" type="warning" link @click.stop="emit('clarify', row.task_id)">回复澄清</el-button>
-        <template v-else>
-          <el-button size="small" type="primary" link @click.stop="emit('show-detail', row.task_id)">详情</el-button>
-          <el-button size="small" type="primary" link @click.stop="emit('show-logs', row.task_id, row.currentNodeId)">日志</el-button>
-          <el-button
-            v-if="canRestart(row.status)"
-            size="small"
-            type="primary"
-            link
-            @click.stop="onRestart(row)"
-          >重启</el-button>
-          <el-button
-            v-if="canCancel(row.status)"
-            size="small"
-            type="danger"
-            link
-            @click.stop="emit('cancel', row.task_id)"
-          >取消</el-button>
-          <el-dropdown trigger="click" @command="(cmd: string) => onMore(cmd, row)">
-            <el-button size="small" type="primary" link class="t-more" @click.stop>更多</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="dag">拓扑图</el-dropdown-item>
-                <el-dropdown-item command="delete" divided>删除任务</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </template>
+        <div class="acts">
+          <button v-if="row.status === 'planned'" class="t-act accent" @click.stop="emit('review', row.task_id)">审核计划</button>
+          <button v-else-if="row.status === 'clarifying'" class="t-act accent" @click.stop="emit('clarify', row.task_id)">回复澄清</button>
+          <template v-else>
+            <button class="t-act accent" @click.stop="emit('show-detail', row.task_id)">详情</button>
+            <button class="t-act" @click.stop="emit('show-logs', row.task_id, row.currentNodeId)">日志</button>
+            <button v-if="canRestart(row.status)" class="t-act" @click.stop="onRestart(row)">重启</button>
+            <button v-if="canCancel(row.status)" class="t-act danger" @click.stop="emit('cancel', row.task_id)">取消</button>
+            <el-dropdown trigger="click" @command="(cmd: string) => onMore(cmd, row)">
+              <button class="t-act t-more" @click.stop>更多</button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="dag">拓扑图</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>删除任务</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </template>
+        </div>
       </template>
     </el-table-column>
   </el-table>
@@ -237,14 +227,26 @@ function fmtTime(ts: string): string {
 @keyframes pulse { 50% { opacity: .35; } }
 .t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; font-size: 13px; font-weight: 600; color: var(--text-1); line-height: 1.4; }
 .t-sub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: var(--fs-meta); color: var(--text-3); }
-.t-mini-tag { transform: scale(0.85); }
+.task-table .tag { display: inline-flex; align-items: center; height: 16px; padding: 0 6px; border-radius: 4px; flex: none; font-size: var(--fs-meta); font-family: var(--font-mono); color: var(--text-3); background: var(--bg-raised); border: 1px solid var(--line); }
 .t-agent { display: flex; align-items: center; gap: 6px; font-size: var(--fs-aux); color: var(--text-2); }
 .t-dim { color: var(--text-3); font-size: var(--fs-aux); }
 .t-progress { display: flex; align-items: center; gap: 8px; }
-.t-progress { --el-fill-color-blank: transparent; }
-.t-progress :deep(.el-progress) { flex: 1; }
-.t-progress-text { font-size: var(--fs-aux); color: var(--text-2); flex-shrink: 0; }
+.pbar { width: 90px; height: 4px; border-radius: 3px; background: var(--bg-inset); overflow: hidden; flex: none; }
+.pbar i { display: block; height: 100%; border-radius: 3px; }
+.t-progress-text { font-size: var(--fs-aux); color: var(--text-2); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .t-tok { font-size: var(--fs-aux); color: var(--text-2); font-variant-numeric: tabular-nums; }
 .t-error { color: var(--danger); font-size: var(--fs-aux); }
-.t-more { margin-left: 12px; }
+.acts { display: flex; gap: 4px; opacity: .55; transition: opacity .15s; }
+.task-table :deep(.el-table__row:hover) .acts,
+.acts:focus-within { opacity: 1; }
+.t-act {
+  border: none; background: none; color: var(--text-2); font-size: var(--fs-aux);
+  padding: 2px 5px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.t-act:hover { background: var(--bg-raised); color: var(--text-1); }
+.t-act.accent { color: var(--accent); }
+.t-act.danger { color: var(--danger); }
+.t-act.danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
+.t-more { margin-left: 4px; }
+.task-table :deep(td.el-table__cell) { padding: 9px 0; }
 </style>

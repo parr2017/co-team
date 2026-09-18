@@ -481,6 +481,14 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 .gate-tip { font-size: var(--fs-aux); color: var(--text-2); line-height: 1.6; margin-bottom: 10px; }
 .el-button { border-radius: var(--r-ctl) !important; font-weight: 400 !important; }
 .el-table { --el-table-border-color: var(--line); --el-table-bg-color: var(--bg-panel); --el-table-tr-bg-color: var(--bg-panel); --el-table-header-bg-color: var(--bg-raised); }
+/* 表格语言（预览稿）：th = 11px mono 大写字距；td 13px；行 hover 用 token */
+.el-table th.el-table__cell > .cell {
+  font-family: var(--font-mono); font-size: var(--fs-meta); font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3);
+}
+.el-table { font-size: 13px; }
+.el-table--small { font-size: 13px; }
+.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell { background: color-mix(in srgb, var(--bg-raised) 70%, transparent); }
 .el-tag { border-radius: 4px !important; font-family: var(--font-mono); }
 
 /* ==== 企业级 Markdown 排版（.md 全局生效——交付阅读器/文档/聊天气泡） ==== */
