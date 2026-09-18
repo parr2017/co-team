@@ -340,6 +340,11 @@ function toolCallsOf(m: DiscussionMessage): any[] {
   const calls = (m.meta as any)?.calls;
   return Array.isArray(calls) ? calls : [];
 }
+
+/** 本批工具失败数（头行红点/失败计数用） */
+function toolFailCount(m: DiscussionMessage): number {
+  return toolCallsOf(m).filter((c: any) => c.ok === false).length;
+}
 // ---------- P2-8 小改回滚 ----------
 const undoingMsg = ref<Set<string>>(new Set());
 async function undoWrites(m: DiscussionMessage) {
@@ -353,14 +358,6 @@ async function undoWrites(m: DiscussionMessage) {
     showToast(String(e?.message || e));
     undoingMsg.value = new Set([...undoingMsg.value].filter((x) => x !== m.id));
   }
-}
-function toolIcon(tool: string): string {
-  if (tool.startsWith('mcp__')) return '🔌';
-  if (CODE_TOOLS.test(tool)) return '📂';
-  if (CMD_TOOLS.test(tool)) return '⚙';
-  if (DOC_TOOLS.test(tool)) return '📄';
-  if (/^convert_to_project|^convert_task/.test(tool)) return '🚀';
-  return '🔧';
 }
 function hasDetail(m: DiscussionMessage): boolean {
   const meta: any = m.meta || {};
@@ -587,20 +584,22 @@ const showExp = ref(false);
             </div>
           </div>
           <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
-          <span v-else-if="row.m.kind === 'notice'" class="sys-notice">{{ row.m.text }}</span>
+          <div v-else-if="row.m.kind === 'notice'" class="sys-notice"><span class="ic">⚙</span><span>{{ row.m.text }}</span></div>
           <span v-else class="sys-text">{{ row.m.text }}</span>
         </div>
 
         <div v-else-if="row.type === 'tool'" class="tool-block">
           <div class="tool-head" @click="toggleTool(row.m.id)">
             <span class="tool-caret mono">{{ expandedTools.has(row.m.id) ? '▾' : '▸' }}</span>
+            <span class="tool-dot" :class="toolFailCount(row.m) ? 'err' : 'ok'"></span>
             <span class="tool-agent" :style="{ color: agentColor(row.m.from) }">{{ roleOf(row.m.from) }}</span>
             <span class="tool-text">{{ row.m.text }}</span>
+            <span class="tool-meta mono"><b v-if="toolFailCount(row.m)" class="tool-fail">{{ toolFailCount(row.m) }} 失败</b><template v-if="toolFailCount(row.m)"> · </template>工具调用<template v-if="toolCallsOf(row.m).length"> × {{ toolCallsOf(row.m).length }}</template></span>
           </div>
           <div v-if="expandedTools.has(row.m.id)" class="tool-tree">
             <div v-for="(rec, ci) in toolCallsOf(row.m)" :key="ci" class="tool-call">
               <div class="tc-line mono">
-                <span class="tc-icon">{{ toolIcon(rec.tool) }}</span>
+                <span class="tc-icon mono">▸</span>
                 <span class="tc-name">{{ rec.mcp ? `mcp:${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span>
                 <span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span>
               </div>
@@ -691,6 +690,11 @@ const showExp = ref(false);
         <span>↩ 回复「{{ replyPreview }}」</span>
         <span class="rb-x" @click="replyTo = null">×</span>
       </div>
+      <div v-if="members.length" class="mention-row">
+        <button v-for="m in members" :key="m" class="mention-chip" @click="draft = (draft + (draft && !draft.endsWith(' ') ? ' ' : '') + `@${m} `).slice(0, 4000)">
+          <span class="mdot" :style="{ background: agentColor(m) }"></span>@{{ m }}
+        </button>
+      </div>
       <div class="input-row">
         <span class="at-btn" @click="mentionSheet = true">＠</span>
         <span class="at-btn" @click="pickImages">📷</span>
@@ -704,9 +708,16 @@ const showExp = ref(false);
           class="input-field"
           @keydown.enter.exact.prevent="sendNow"
         />
-        <van-button class="send-btn" round type="primary" size="small" :loading="sending" :disabled="(!draft.trim() && !pendingImages.length)" @click="sendNow">
-          {{ busy ? '插话' : '发送' }}
-        </van-button>
+        <button class="send-btn" :disabled="sending || (!draft.trim() && !pendingImages.length)" @click="sendNow">
+          <span v-if="!sending" class="mono">➤</span><van-loading v-else size="16" />
+        </button>
+      </div>
+      <div class="inmode">
+        <div class="mpill">
+          <button :class="{ on: current?.mode !== 'auto' }" @click="setMode('manual')">手动</button>
+          <button :class="{ on: current?.mode === 'auto' }" @click="setMode('auto')">自动</button>
+        </div>
+        <span class="lhint">长按消息可复制 / 引用 / 回应</span>
       </div>
     <!-- 待发图片条：van-uploader 受控（不发不落盘，随消息一起 dataURL 提交） -->
     <van-uploader
@@ -727,6 +738,7 @@ const showExp = ref(false);
     <!-- P1-3 工作明细抽屉：解决思路 / 工具调用 / SKILL / 协作 -->
     <van-popup v-model:show="detailSheet" position="bottom" round :style="{ maxHeight: '75%' }">
       <div v-if="detailMsg" class="dp-wrap">
+        <div class="dp-grab"></div>
         <div class="dp-head">
           <span class="dp-title">
             <span class="dp-role" :style="{ color: agentColor(detailMsg.from) }">{{ roleOf(detailMsg.from) }}</span>
@@ -737,27 +749,27 @@ const showExp = ref(false);
         <div class="dp-body">
           <template v-if="detailData">
             <div v-if="detailData.evidence" class="dp-sec">
-              <div class="dp-sec-title">💡 解决思路</div>
+              <div class="dp-sec-title">解决思路</div>
               <div class="dp-sec-body">{{ detailData.evidence }}</div>
             </div>
             <div v-if="groupedCalls.code.length" class="dp-sec">
-              <div class="dp-sec-title">📂 看了哪些代码（{{ groupedCalls.code.length }}）</div>
+              <div class="dp-sec-title">看了哪些代码（{{ groupedCalls.code.length }}）</div>
               <div v-for="(rec, i) in groupedCalls.code" :key="`c${i}`" class="dp-call mono">
-                <div class="dp-call-line"><span>{{ toolIcon(rec.tool) }}</span><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
+                <div class="dp-call-line"><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
                 <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
                 <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
               </div>
             </div>
             <div v-if="groupedCalls.cmd.length" class="dp-sec">
-              <div class="dp-sec-title">⚙ 执行了什么命令（{{ groupedCalls.cmd.length }}）</div>
+              <div class="dp-sec-title">执行了什么命令（{{ groupedCalls.cmd.length }}）</div>
               <div v-for="(rec, i) in groupedCalls.cmd" :key="`x${i}`" class="dp-call mono">
-                <div class="dp-call-line"><span>{{ toolIcon(rec.tool) }}</span><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
+                <div class="dp-call-line"><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
                 <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
                 <div v-if="rec.output_gist" class="dp-call-gist">{{ rec.output_gist }}</div>
               </div>
             </div>
             <div v-if="groupedCalls.mcp.length" class="dp-sec">
-              <div class="dp-sec-title">🔌 MCP 调用（{{ groupedCalls.mcp.length }}）</div>
+              <div class="dp-sec-title">MCP 调用（{{ groupedCalls.mcp.length }}）</div>
               <div v-for="(rec, i) in groupedCalls.mcp" :key="`m${i}`" class="dp-call mono">
                 <div class="dp-call-line"><span>🔌</span><span class="tc-name">{{ rec.mcp ? `${rec.mcp.server}.${rec.mcp.tool}` : rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
                 <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
@@ -765,18 +777,18 @@ const showExp = ref(false);
               </div>
             </div>
             <div v-if="groupedCalls.doc.length" class="dp-sec">
-              <div class="dp-sec-title">📄 文档与沉淀（{{ groupedCalls.doc.length }}）</div>
+              <div class="dp-sec-title">文档与沉淀（{{ groupedCalls.doc.length }}）</div>
               <div v-for="(rec, i) in groupedCalls.doc" :key="`d${i}`" class="dp-call mono">
-                <div class="dp-call-line"><span>{{ toolIcon(rec.tool) }}</span><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
+                <div class="dp-call-line"><span class="tc-name">{{ rec.tool }}</span><span class="tc-status" :class="{ bad: rec.ok === false }">{{ rec.ok === false ? '✗' : '✓' }}</span></div>
                 <div v-if="rec.args_summary" class="dp-call-args">{{ rec.args_summary }}</div>
               </div>
             </div>
             <div v-if="detailData.skills?.length" class="dp-sec">
-              <div class="dp-sec-title">🧩 绑定的 SKILL</div>
+              <div class="dp-sec-title">绑定的 SKILL</div>
               <div class="dp-chips"><span v-for="s in detailData.skills" :key="s" class="dp-chip mono">{{ s }}</span></div>
             </div>
             <div v-if="detailData.mentioned?.length" class="dp-sec">
-              <div class="dp-sec-title">🤝 协作</div>
+              <div class="dp-sec-title">协作</div>
               <div class="dp-chips"><span v-for="a in detailData.mentioned" :key="a" class="dp-chip mono">@{{ a }}（{{ roleOf(a) }}）</span></div>
             </div>
             <div class="dp-model mono">模型：{{ detailData.model }} · 第 {{ detailData.round }} 轮</div>
@@ -904,7 +916,14 @@ const showExp = ref(false);
 /* ---------- 系统形态 ---------- */
 .sys-row { display: flex; justify-content: center; margin: 4px 0; }
 .sys-text { font-size: var(--fs-meta); color: var(--text-3); background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 3px 10px; max-width: 88%; text-align: center; }
-.sys-notice { font-size: var(--fs-meta); color: var(--text-3); font-style: italic; text-align: center; max-width: 88%; }
+.sys-notice {
+  display: flex; gap: 8px; align-items: flex-start; max-width: 92%; margin: 8px auto;
+  padding: 8px 11px; border-radius: var(--r-panel);
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--text-2); font-size: 12.5px; line-height: 1.5;
+}
+.sys-notice .ic { color: var(--warn); flex: none; margin-top: 1px; }
 .sys-card { font-size: var(--fs-aux); color: var(--text-1); background: var(--bg-panel); border: 1px solid var(--line-strong); border-radius: var(--r-panel); padding: 9px 14px; max-width: 86%; text-align: center; }
 /* ask 提问卡（accent 左缘） */
 .ask-card { text-align: left; max-width: 92%; border: 1px solid var(--accent-line); border-left: 3px solid var(--accent); background: var(--bg-raised); }
@@ -917,7 +936,7 @@ const showExp = ref(false);
 .ask-input:focus { border-color: var(--accent-line); }
 .ask-done { font-size: var(--fs-meta); color: var(--ok); margin-top: 4px; }
 /* 转任务确认卡 */
-.cv-card { text-align: left; max-width: 92%; border-color: var(--accent-line); }
+.cv-card { text-align: left; max-width: 92%; border-color: var(--accent-line); border-left: 3px solid var(--accent); }
 .cv-text { white-space: pre-wrap; margin-bottom: 8px; }
 .cv-row { display: flex; gap: 6px; }
 .cv-done { font-size: var(--fs-meta); color: var(--ok); margin-top: 4px; }
@@ -1004,9 +1023,35 @@ const showExp = ref(false);
 .img-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 2px 0 6px; }
 .img-grid .img-cell { width: 100%; height: 84px; object-fit: cover; border-radius: 8px; display: block; }
 .img-grid .img-cell:first-child:last-child, .img-grid .img-cell:only-child { width: 100%; height: 150px; }
-.input-field { flex: 1; background: var(--bg-overlay); border-radius: 12px; padding: 4px 12px; --van-field-text-area-min-height: 36px; }
+.input-field { flex: 1; background: var(--bg-overlay); border-radius: 12px; padding: 4px 12px; --van-field-text-area-min-height: 40px; }
 .input-field :deep(.van-field__control) { color: var(--text-1); font-size: var(--fs-body); }
-.send-btn { flex-shrink: 0; height: 36px; }
+.send-btn {
+  flex-shrink: 0; width: 40px; height: 40px; border-radius: 12px; border: none;
+  background: var(--accent); color: var(--accent-text); font-size: 15px;
+  display: grid; place-items: center;
+}
+.send-btn:disabled { opacity: .45; }
+/* 工具树头行：ok 点 + 右侧 mono 元信息 */
+.tool-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.tool-dot.ok { background: var(--ok); }
+.tool-dot.err { background: var(--danger); }
+.tool-fail { color: var(--danger); font-weight: 600; }
+.tool-meta { margin-left: auto; flex: none; font-family: var(--font-mono); color: var(--text-3); font-size: var(--fs-meta); }
+/* 输入区：@chips 常驻行 + 模式 pill + 长按 hint */
+.mention-row { display: flex; gap: 6px; margin-bottom: 7px; overflow-x: auto; scrollbar-width: none; }
+.mention-row::-webkit-scrollbar { display: none; }
+.mention-chip {
+  flex: none; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px;
+  border-radius: 12px; font-size: 11.5px; color: var(--text-2); border: 1px solid var(--line); background: var(--bg-raised);
+}
+.mention-chip .mdot { width: 5px; height: 5px; border-radius: 50%; }
+.inmode { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.mpill { display: flex; background: var(--bg-overlay); border: 1px solid var(--line-strong); border-radius: var(--r-ctl); overflow: hidden; }
+.mpill button { padding: 4px 11px; font-size: 11.5px; color: var(--text-3); border: none; background: none; }
+.mpill button.on { background: var(--accent-soft); color: var(--accent); }
+.lhint { margin-left: auto; font-size: var(--fs-meta); color: var(--text-3); }
+/* 明细抽屉 grab 条 */
+.dp-grab { width: 36px; height: 4px; border-radius: 3px; background: var(--line-strong); margin: 8px auto 2px; }
 
 /* ---------- 明细抽屉（dtitle mono 大写 + 发丝线） ---------- */
 .dp-wrap { display: flex; flex-direction: column; min-height: 0; max-height: 75vh; }
