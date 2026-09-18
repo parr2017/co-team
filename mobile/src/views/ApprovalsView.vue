@@ -3,7 +3,7 @@
  * M10-C 我的审批：聚合收件箱——把散落在各任务详情里的"等你处理"集中到一个流：
  * 节点审批 / 监督者提案 / 待审批命令 / ask 提问 / 节点澄清。全部一键处理。
  */
-import { onUnmounted, ref } from 'vue';
+import { computed, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showToast, showConfirmDialog } from 'vant';
 import { api } from '../api';
@@ -141,6 +141,10 @@ refresh();
 timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 10000);
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
+const presentKinds = computed(() => {
+  const order = ['node', 'proposal', 'command', 'ask', 'clarify'];
+  return order.filter((k) => items.value.some((x) => x.kind === k));
+});
 const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清' };
 /** kind 不在 StatusTag 语义表内，映射到相近的审批语义色 */
 const kindTone: Record<string, string> = { node: 'waiting_approval', proposal: 'waiting_approval', command: 'waiting_approval', ask: 'waiting_approval', clarify: 'waiting_clarify' };
@@ -174,7 +178,9 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
       <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
       <van-skeleton v-if="loading && !items.length" :row="3" class="sk" />
       <van-empty v-else-if="!loading && !items.length" description="当前没有等你处理的事项" />
-      <div v-for="it in items" :key="it.key" class="wx-group ap-card">
+      <template v-for="kind in presentKinds" :key="kind">
+        <div class="secttl">{{ kindLabel[kind] || kind }}</div>
+        <div v-for="it in items.filter((x) => x.kind === kind)" :key="it.key" class="wx-group ap-card">
         <div class="ap-head">
           <StatusTag :status="kindTone[it.kind]" :label="kindLabel[it.kind] || it.kind" />
           <span class="ap-task mono" @click="goTask(it.taskId)">{{ it.taskId }} ›</span>
@@ -183,13 +189,14 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
         <MdView v-if="it.detail" class="ap-detail" :source="it.detail" />
         <div v-if="it.act" class="ap-actions">
           <van-button size="small" type="primary" :loading="busy(it.key)" @click="decide(it, true)">批准</van-button>
-          <van-button v-if="it.rejectable" size="small" :loading="busy(it.key)" @click="decide(it, false)">拒绝</van-button>
+          <van-button v-if="it.rejectable" size="small" class="reject-btn" :loading="busy(it.key)" @click="decide(it, false)">拒绝</van-button>
           <van-button size="small" plain @click="goTask(it.taskId)">详情</van-button>
         </div>
         <div v-else class="ap-actions">
           <van-button size="small" plain type="primary" @click="goTask(it.taskId)">去处理</van-button>
         </div>
-      </div>
+        </div>
+      </template>
       </van-pull-refresh>
     </div>
   </div>
@@ -208,4 +215,14 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
 .ap-actions { display: flex; gap: 8px; }
 .sk { padding: 16px; }
 .body .van-pull-refresh { min-height: 40vh; }
+
+/* 预览稿：分节 mono 标题 + 拒绝 danger 形态 */
+.secttl {
+  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono);
+  letter-spacing: .08em; text-transform: uppercase; padding: 14px 14px 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.secttl::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.reject-btn { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); }
+.ap-actions .van-button { height: 34px; }
 </style>

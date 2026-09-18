@@ -202,9 +202,11 @@ function fmtTok(n: number): string {
 .err-btn { margin-top: 12px; max-width: 180px; }
 
 .stat-card { padding: 16px 14px 12px; }
-.stat-row { display: flex; gap: 8px; }
+.stat-row { display: flex; border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--bg-panel); overflow: hidden; }
+.stat-row .stat-item { flex: 1; border-left: 1px solid var(--line); }
+.stat-row .stat-item:first-child { border-left: none; }
 .stat-item { flex: 1; text-align: center; }
-.stat-num { font-size: 22px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.stat-num { font-size: 22px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums;  font-family: var(--font-mono); }
 .stat-item.ok .stat-num { color: var(--green); }
 .stat-label { font-size: var(--fs-aux); color: var(--text-3); margin-top: 2px; }
 .q-rows { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 8px; }

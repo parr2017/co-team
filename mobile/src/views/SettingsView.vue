@@ -26,7 +26,7 @@
       </van-cell-group>
 
       <div class="save-bar">
-        <van-button type="primary" size="small" round :loading="saving" @click="save">保存并生效</van-button>
+        <van-button class="save-btn" plain :loading="saving" @click="save">保存并生效</van-button>
       </div>
     </div>
 
@@ -96,13 +96,20 @@ function onLevelPicked({ selectedOptions }: { selectedOptions: { value: string; 
 </script>
 
 <style scoped>
-.settings-page { min-height: 100vh; background: var(--page-bg, #0b0d10); padding-bottom: 60px; }
+.settings-page { min-height: 100vh; background: var(--bg-page); padding-bottom: 60px; }
 .section { margin-top: 12px; }
-.section-title { font-size: 15px; font-weight: 600; color: var(--text-1, #fff); padding: 4px 20px; }
+.section-title {
+  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono);
+  letter-spacing: .08em; text-transform: uppercase; padding: 14px 14px 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .section-desc { font-size: var(--fs-meta); color: var(--text-3); padding: 2px 20px 8px; line-height: 1.5; }
 .whitelist { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; }
 .cmd-tag { font-size: var(--fs-aux); color: var(--text-2); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; }
 .whitelist .empty { font-size: var(--fs-meta); color: var(--text-3); }
 .save-bar { display: flex; justify-content: center; margin-top: 16px; }
 .mono { font-family: Consolas, monospace; }
+
+.save-btn { width: 100%; height: 40px; border-radius: var(--r-ctl); background: var(--bg-raised); color: var(--text-1); border: 1px solid var(--line-strong); font-weight: 500; }
 </style>

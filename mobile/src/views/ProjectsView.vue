@@ -215,7 +215,7 @@ async function submitCreate() {
 .p-sub { font-size: var(--fs-aux); color: var(--text-2); margin-bottom: 7px; }
 .p-prog { display: flex; align-items: center; gap: 8px; }
 .p-track { flex: 1; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
-.p-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), #0369a1); box-shadow: 0 0 8px rgba(34, 211, 238, 0.45); transition: width 0.5s ease; }
+.p-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.5s ease; }
 .p-pct { font-size: var(--fs-aux); font-weight: 600; color: var(--text-2); width: 36px; text-align: right; }
 
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0; }
