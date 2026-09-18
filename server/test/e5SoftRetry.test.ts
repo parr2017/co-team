@@ -31,7 +31,7 @@ import { ModelPool } from '../src/scheduler';
 import { Orchestrator } from '../src/orchestrator/orchestrator';
 import type { ModelConfig, TaskNode } from '../src/types';
 
-function cfg(overrides: Partial<ModelConfig> & { name: string }): ModelConfig {
+function cfg(overrides: Partial<ModelConfig> & { id: string; name: string }): ModelConfig {
   return { api_key: 'k', base_url: 'http://localhost:9', max_tokens: 128000, ...overrides } as ModelConfig;
 }
 
@@ -61,7 +61,7 @@ describe('E5 软重试与动态输出预算', () => {
     fs.mkdirSync(devDir, { recursive: true });
     fs.writeFileSync(path.join(devDir, 'agent.yaml'), 'name: dev\ntags: [code]\nrole: 开发\n');
     await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
-    const pool = new ModelPool([cfg({ name: 'm1', tags: ['code'] })]);
+    const pool = new ModelPool([cfg({ id: 'm1', name: 'm1', tags: ['code'] })]);
     orchestrator = new Orchestrator({
       agentsDir: tmp,
       modelPool: pool,

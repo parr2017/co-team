@@ -9,7 +9,7 @@ import type { ModelConfig, ModelEntry, TaskNode } from '../src/types';
 
 // feature: 降级策略优化 —— 节点级/agent级模型指定、等待容量、突破冷却、主 Agent 兜底
 
-function cfg(overrides: Partial<ModelConfig> & { name: string }): ModelConfig {
+function cfg(overrides: Partial<ModelConfig> & { id: string; name: string }): ModelConfig {
   return { api_key: 'k', base_url: 'http://localhost:9', ...overrides } as ModelConfig;
 }
 
@@ -36,9 +36,9 @@ describe('model pinning & degradation (resolvePrimary)', () => {
     orchestrator = new Orchestrator({
       agentsDir: tmp,
       modelPool: new ModelPool([
-        cfg({ name: 'm-strong', priority: 1, tags: ['code'], professional_weight: 90 }),
-        cfg({ name: 'm-cheap', priority: 2, tags: ['code'], professional_weight: 50 }),
-        cfg({ name: 'm-image', priority: 3, tags: ['image'], professional_weight: 40 }),
+        cfg({ id: 'm-strong', name: 'm-strong', priority: 1, tags: ['code'], professional_weight: 90 }),
+        cfg({ id: 'm-cheap', name: 'm-cheap', priority: 2, tags: ['code'], professional_weight: 50 }),
+        cfg({ id: 'm-image', name: 'm-image', priority: 3, tags: ['image'], professional_weight: 40 }),
       ]),
       policy: { level: 'approve_required', whitelistCommands: null, maxTimeSec: 10 },
       maxRetries: 2,

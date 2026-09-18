@@ -30,7 +30,7 @@
       <div class="opt">
         <span class="opt-label">主 Agent 模型</span>
         <el-select v-model="mainModel" size="small" style="width: 220px" :loading="modelsLoading" placeholder="自动选择">
-          <el-option v-for="m in modelOptions" :key="m.name" :label="m.label" :value="m.name">
+          <el-option v-for="m in modelOptions" :key="m.id" :label="m.label" :value="m.id">
             <span class="model-opt">
               <i class="dot" :class="m.healthy ? 'on' : 'off'"></i>
               {{ m.name }}
@@ -122,7 +122,7 @@ const nodeClarify = ref('brief');
 const acceptancePolicy = ref<'tolerant' | 'strict'>('tolerant');
 // 高频命令建议清单：任务技术栈所需（如 Flutter 的 flutter/dart）直接勾选，或手动输入任意命令
 const COMMON_WHITELIST = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java', 'ls', 'cat', 'mkdir', 'cp', 'mv', 'rm', 'chmod'];
-const modelOptions = ref<{ name: string; healthy: boolean; label: string }[]>([]);
+const modelOptions = ref<{ id: string; name: string; healthy: boolean; label: string }[]>([]);
 const modelsLoading = ref(false);
 
 async function loadModels() {
@@ -131,8 +131,9 @@ async function loadModels() {
     const d = await api.getModelPool();
     const health = (d as any).health || {};
     modelOptions.value = d.model_pool.map((m) => ({
+      id: m.id,
       name: m.name,
-      healthy: health[m.name]?.healthy !== false,
+      healthy: health[m.id]?.healthy !== false,
       label: m.name,
     }));
   } catch {

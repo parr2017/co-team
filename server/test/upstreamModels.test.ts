@@ -95,13 +95,13 @@ describe('PUT /api/config/model-pool name uniqueness', () => {
       modelPool: { replaceModels: () => { throw new Error('must not be called'); } } as any,
       taskQueue: {} as any,
     });
-    const dup = { name: 'm1', api_key: 'k', base_url: 'http://x/v1' };
+    const dup = { id: 'm1', name: 'm1', api_key: 'k', base_url: 'http://x/v1' };
     const res = await app.request('/api/config/model-pool', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_pool: [dup, { ...dup }] }),
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
-    expect(JSON.stringify(body)).toContain('duplicate model name');
+    expect(JSON.stringify(body)).toContain('duplicate model');
   });
 });

@@ -96,7 +96,16 @@ export async function assertStandaloneWorkspace(
 const TOKEN_RE = /"[^"]*"|'[^']*'|\S+/g;
 // absolute path candidates embedded in a token: drive paths, POSIX roots, and
 // `..` escapes — incl. `--flag=D:\x` / `--flag=/x` forms via the boundary class.
-const PATH_IN_TOKEN = /(?:^|[=,:[\s])((?:[A-Za-z]:[\\/]|\/|\.\.[\\/])[^"'\s,;]*)/g;
+// Windows（spawn shell:true → cmd.exe）：单段裸 `/xxx` 是命令旗标（schtasks /create、del /f）
+// 而非 POSIX 绝对路径——按 POSIX 根判定会让目录监狱误杀所有单斜杠旗标命令（2026-09-19 实证），
+// 故 win32 下裸斜杠只认 ≥2 段的 `/a/b` 形态（cmd.exe 解析为当前盘根，git -C /home/x 是真越界）；
+// 环境变量间接路径检查独立兜底。
+const PATH_IN_TOKEN = process.platform === 'win32'
+  ? /(?:^|[=,:[\s])((?:[A-Za-z]:[\\/]|\.\.[\\/])[^"'\s,;]*)/g
+  : /(?:^|[=,:[\s])((?:[A-Za-z]:[\\/]|\/|\.\.[\\/])[^"'\s,;]*)/g;
+const POSIXISH_MULTI_SEGMENT = process.platform === 'win32'
+  ? /(?:^|[\s=])(\/[^\s"',;]+\/[^\s"',;]+)/g
+  : null;
 
 /**
  * Scan a command string for filesystem paths that resolve outside the jail.
@@ -113,7 +122,11 @@ export function assertWithinJail(command: string, jailRoot: string): { ok: boole
       violations.add(tok);
       continue;
     }
-    for (const m of (tok + ' ').matchAll(PATH_IN_TOKEN)) {
+    const candidates = [
+      ...(tok + ' ').matchAll(PATH_IN_TOKEN),
+      ...(POSIXISH_MULTI_SEGMENT ? (tok + ' ').matchAll(POSIXISH_MULTI_SEGMENT) : []),
+    ];
+    for (const m of candidates) {
       const cand = m[1];
       if (!cand || cand === '/') continue;
       const abs = path.resolve(jail, cand);

@@ -132,9 +132,9 @@ function segmentSensitive(segment: string): SegmentResult {
     if (SC_DANGEROUS_SUBS.has(sub)) return { reason: '服务操控', strict: true };
   }
 
-  // schtasks create/delete/change
+  // schtasks create/delete/change（Windows 真实语法是斜杠旗标 /create，两种形态都要拦）
   if (bin === 'schtasks') {
-    const sub = (args[0] || '').toLowerCase();
+    const sub = (args[0] || '').toLowerCase().replace(/^\//, '');
     if (SCHEDTASKS_DANGEROUS_SUBS.has(sub)) return { reason: '定时任务操控', strict: true };
   }
 

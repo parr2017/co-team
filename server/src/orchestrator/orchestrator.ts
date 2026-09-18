@@ -3389,7 +3389,7 @@ export class Orchestrator {
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,
         });
         const resp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta);
-        this.pool!.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
+        this.pool!.recordUsage(entry.id, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
         record.tokens += resp.promptTokens + resp.completionTokens;
         // 缓存命中观测：服务端回传 cached_tokens 时记录（vLLM APC / LM Studio prompt cache）
@@ -3435,7 +3435,7 @@ export class Orchestrator {
           await emitProgress('agent_activity', { task_id: taskId, node_id: node.id, agent: plugin.name, text: '思考烧穿输出预算，降强度软重试…', model: entry.name });
           messages.push({ role: 'user', content: `你上一轮的思考耗尽了全部输出预算（${roundBudget} token）且没有输出任何正文。不要重新展开长思考：基于已有信息直接输出最终 JSON 结果；文件内容用 write_file 工具分批落盘，最终 JSON 的 files 留空数组。` });
           const retryResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta, { extraBody: { reasoning_effort: 'low' } });
-          this.pool!.recordUsage(entry.name, retryResp.promptTokens, retryResp.completionTokens);
+          this.pool!.recordUsage(entry.id, retryResp.promptTokens, retryResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + retryResp.promptTokens + retryResp.completionTokens);
           record.tokens += retryResp.promptTokens + retryResp.completionTokens;
           this.logger.info('LLM round telemetry', { taskId, nodeId: node.id, model: entry.name, round: round + 1, max_tokens: roundBudget, prompt_tokens: retryResp.promptTokens, cached_tokens: retryResp.cachedTokens ?? null, completion_tokens: retryResp.completionTokens, first_token_ms: retryResp.firstTokenMs ?? null, elapsed_ms: retryResp.elapsedMs, soft_retry: true });
@@ -3562,7 +3562,7 @@ export class Orchestrator {
           messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
           // Do one more round to get final output
           const finalResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta);
-          this.pool!.recordUsage(entry.name, finalResp.promptTokens, finalResp.completionTokens);
+          this.pool!.recordUsage(entry.id, finalResp.promptTokens, finalResp.completionTokens);
           this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + finalResp.promptTokens + finalResp.completionTokens);
           record.tokens += finalResp.promptTokens + finalResp.completionTokens;
           roundEntry.telemetry = {
@@ -3635,7 +3635,7 @@ export class Orchestrator {
           fresh.push(toolCalls[ti]);
           freshIdx.push(ti);
         }
-        const freshResults = await applyToolCalls(workspace, fresh, knowledgeCtx);
+        const freshResults = await applyToolCalls(workspace, fresh, knowledgeCtx, policy);
         freshIdx.forEach((orig, i) => { positioned[orig] = freshResults[i]; });
         const results = positioned;
         // 证据门计数：只计实际执行过工具的轮（末轮"强制终稿"的工具请求不执行，不计）

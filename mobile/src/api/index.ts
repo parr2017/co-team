@@ -163,7 +163,7 @@ export interface AgentLiveState {
   tokens?: number;
 }
 
-export interface ModelPoolItem { name: string; }
+export interface ModelPoolItem { id: string; name: string; }
 
 export interface FsListing {
   path: string;

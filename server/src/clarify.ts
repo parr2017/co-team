@@ -41,7 +41,7 @@ export async function assessRequirement(request: string, pool: ModelPool | null,
       2048,
       0
     );
-    pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
+    pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
     const parsed = extractJson(stripCodeFence(resp.content));
     if (!parsed || typeof parsed.clear !== 'boolean') return heuristicAssessment(request);
     return {
@@ -116,7 +116,7 @@ export async function generateNodeBrief(
       2048,
       0
     );
-    pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
+    pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
     const parsed = extractJson(stripCodeFence(resp.content));
     if (!parsed) return fallback;
     return {

@@ -163,7 +163,7 @@ function makeNode(over: Partial<TaskNode> = {}): TaskNode {
 async function runOne(graph0: { description: string; workspace: string }, orchOpts = {}) {
   closeBus();
   await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
-  const pool = new ModelPool([{ name: 'm1', api_key: 'k', base_url: 'http://localhost:9' }]);
+  const pool = new ModelPool([{ id: 'm1', name: 'm1', api_key: 'k', base_url: 'http://localhost:9' }]);
   const orch = makeOrchestrator(pool, orchOpts);
   await orch.loadAgents();
   await saveTaskGraph('t-ctx', [makeNode()], [], graph0 as any);
@@ -182,7 +182,7 @@ describe('输出预算分档（不再无脑 128000）', () => {
 
     chatCalls.length = 0;
     chatScript = [okNode()];
-    const pool2 = new ModelPool([{ name: 'm2', api_key: 'k', base_url: 'http://localhost:9', max_tokens: 5000 }]);
+    const pool2 = new ModelPool([{ id: 'm2', name: 'm2', api_key: 'k', base_url: 'http://localhost:9', max_tokens: 5000 }]);
     const orch2 = makeOrchestrator(pool2, { outputTiers: { simple: 8000, normal: 32000, complex: 64000 } });
     await orch2.loadAgents();
     await saveTaskGraph('t-ctx2', [makeNode({ complexity: 'simple' })], [], { description: 'x', workspace: tmp, status: 'running' } as any);
@@ -240,7 +240,7 @@ describe('断崖压缩在真实循环内生效 + 重复调用去重', () => {
       okNode(),
     ];
     // M7：折叠线由模型窗口推导（min(窗口×0.6, 窗口−4096)）——用小窗口模型（4096）表达"强制折叠"
-    const pool = new ModelPool([{ name: 'm1', api_key: 'k', base_url: 'http://localhost:9', context_length: 4096 }]);
+    const pool = new ModelPool([{ id: 'm1', name: 'm1', api_key: 'k', base_url: 'http://localhost:9', context_length: 4096 }]);
     const orch = makeOrchestrator(pool, { context: { max_prompt_tokens: 2000, workspace_tree_max_chars: 500, goal_max_chars: 500 } });
     await orch.loadAgents();
     await saveTaskGraph('t-ctx3', [makeNode()], [], { description: 'x', workspace: tmp, status: 'running' } as any);

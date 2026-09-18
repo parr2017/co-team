@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
-import { canExecute, executeCommand, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
+import { canExecute, executeCommand, executeCommandAsync, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { classifyCommand, canExecuteChain } from './commandGuard';
 import { writeKnowledge } from './knowledge';
@@ -492,7 +492,7 @@ export async function lookImage(workspace: string, imagePath: string, question: 
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number; find?: string; replace?: string; arguments?: Record<string, unknown> }[] | undefined, knowledgeCtx?: KnowledgeToolContext): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; command?: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number; find?: string; replace?: string; arguments?: Record<string, unknown> }[] | undefined, knowledgeCtx?: KnowledgeToolContext, policy?: PermissionPolicy): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -716,6 +716,22 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
       } catch (e: any) {
         results.push({ tool: name, ok: false, server, error: String(e?.message || e).slice(0, 200) });
       }
+    } else if (name === 'run_command' || name === 'exec' || name === 'exec_command') {
+      if (!policy) {
+        results.push({ tool: name, ok: false, error: 'execution policy not available' });
+      } else {
+        const command = String(call.command || '').trim();
+        if (!command) {
+          results.push({ tool: name, ok: false, error: 'command 不能为空' });
+        } else {
+          const cls = classifyCommand(command);
+          if (cls.strict) {
+            results.push({ tool: name, ok: false, error: `绝对禁止的命令（${cls.reasons.join('、')}）` });
+          } else {
+            results.push({ tool: name, ...(await executeCommandAsync(command, workspace, policy)) });
+          }
+        }
+      }
     } else {
       results.push({ tool: name, ok: false, error: `tool '${name}' not allowed mid-run` });
     }
@@ -771,11 +787,11 @@ export function applyFinalOutput(workspace: string, output: Record<string, any>,
     if (!jail.ok) {
       return { command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, workspace) };
     }
-    // SEC-P0 高危形态守卫：删除/系统级/解释器内联代码/强推——无论执行策略，
-    // 一律暂存待人工审批（「⚠ 敏感操作」），绝不直接执行
+    // SEC-P0 守卫收紧到 strict：仅绝对禁止命令（sudo/schtasks/vssadmin 等）拦截，
+    // 可配置敏感命令（rm/git push 等）在任务管线全放行（目录监狱仍生效）
     const cls = classifyCommand(command);
-    if (cls.sensitive && policy.level !== 'plan_only') {
-      return { command, allowed: false, needs_approval: true, sensitive: true, returncode: -1, stdout: '', stderr: `⚠ 敏感操作待人工审批：${cls.reasons.join('、')}` };
+    if (cls.strict) {
+      return { command, allowed: false, needs_approval: true, sensitive: true, returncode: -1, stdout: '', stderr: `绝对禁止的命令（${cls.reasons.join('、')}）——任何配置下都不允许执行` };
     }
     // SEC-P0 链式命令逐段过白名单（`git log && del x` 不再借首词放行）
     if (policy.level !== 'full' && !canExecuteChain(policy, command, (seg) => canExecute(policy, seg))) {

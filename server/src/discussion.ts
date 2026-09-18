@@ -742,12 +742,9 @@ async function runSpeakerToolCalls(
         if (!canExecute(discCfg.policy, command)) { results.push({ tool: 'exec', ok: false, error: `命令不在群内执行白名单（策略 ${discCfg.policy.level}）` }); continue; }
         const jail = assertWithinJail(command, ws);
         if (!jail.ok) { results.push({ tool: 'exec', ok: false, error: jailViolationMessage(jail.violations, ws) }); continue; }
-        // M11/SEC-P0：敏感命令群聊执行策略
-        // - strict（绝对禁止）：任何配置下都拦截（sudo/schtasks/vssadmin 等）
-        // - sensitive（可配置）：allow_sensitive: true 时放行（rm/python -c/git push 等）
+        // M11/SEC-P0：群聊敏感命令全放行——仅保留 strict 绝对禁止拦截（sudo/schtasks/vssadmin 等）
         const cls = classifyCommand(command);
         if (cls.strict) { results.push({ tool: 'exec', ok: false, sensitive: true, error: `绝对禁止的命令（${cls.reasons.join('、')}）——任何配置下都不允许在群聊执行` }); continue; }
-        if (cls.sensitive && !discCfg.policy.allow_sensitive) { results.push({ tool: 'exec', ok: false, sensitive: true, error: `敏感命令群聊禁止执行（${cls.reasons.join('、')}）——需要时请 convert_to_project 转任务，或在 discussion.permissions 设置 allow_sensitive: true` }); continue; }
         const r = await executeCommandAsync(command, ws, discCfg.policy, EXEC_TIMEOUT_SEC);
         results.push({
           tool: 'exec', command, allowed: r.allowed, returncode: r.returncode,
@@ -761,7 +758,6 @@ async function runSpeakerToolCalls(
         if (!jail.ok) { results.push({ tool: 'exec_background', ok: false, error: jailViolationMessage(jail.violations, ws) }); continue; }
         const clsBg = classifyCommand(command);
         if (clsBg.strict) { results.push({ tool: 'exec_background', ok: false, sensitive: true, error: `绝对禁止的命令（${clsBg.reasons.join('、')}）——任何配置下都不允许在群聊执行` }); continue; }
-        if (clsBg.sensitive && !discCfg.policy.allow_sensitive) { results.push({ tool: 'exec_background', ok: false, sensitive: true, error: `敏感命令群聊禁止后台执行（${clsBg.reasons.join('、')}）` }); continue; }
         const logDir = path.join(ws, '.coteam-logs');
         fs.mkdirSync(logDir, { recursive: true });
         const logPath = path.join(logDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 6)}.log`);

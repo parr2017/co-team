@@ -13,7 +13,7 @@ const description = ref('');
 const workspace = ref('');
 const level = ref('standard');
 const mainModel = ref('');
-const models = ref<{ name: string }[]>([]);
+const models = ref<{ id: string; name: string }[]>([]);
 const submitting = ref(false);
 const simpleMode = ref(false);
 const allowSelfRef = ref(false);
@@ -281,7 +281,7 @@ async function submit() {
     <van-popup v-model:show="showModelPicker" position="bottom" round>
       <van-picker
         title="主 Agent 模型"
-        :columns="[{ text: '自动选择', value: '' }, ...models.map((m) => ({ text: m.name, value: m.name }))]"
+        :columns="[{ text: '自动选择', value: '' }, ...models.map((m) => ({ text: m.name, value: m.id }))]"
         @confirm="onModelConfirm"
         @cancel="showModelPicker = false"
       />

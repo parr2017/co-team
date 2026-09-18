@@ -121,7 +121,8 @@
             </div>
             <div v-for="(m, mi) in g.models" :key="mi" class="model-row">
               <div class="mr-line">
-                <el-input v-model="m.name" size="small" placeholder="model-name" class="mr-name" />
+                <el-input v-model="m.id" size="small" placeholder="model-id (唯一标识)" class="mr-id" />
+                <el-input v-model="m.name" size="small" placeholder="model-name (显示名称)" class="mr-name" />
                 <el-select v-model="m.tags" multiple filterable allow-create default-first-option size="small" placeholder="擅长领域 / 标签" class="mr-tags">
                   <el-option v-for="t in CAPABILITY_TAGS" :key="t" :label="CAPABILITY_TAG_LABELS[t] || t" :value="t" />
                 </el-select>
@@ -749,6 +750,7 @@ function flattenProviders(): ModelConfig[] {
   return providers.value.flatMap((g) =>
     g.models.map((m) => ({
       ...m,
+      id: m.id || `${(g.base_url || '').trim()}/${m.name}`.replace(/[^a-zA-Z0-9/_-]/g, '-'),
       tags: (m.tags || []).map((t) => t.trim()).filter(Boolean),
       base_url: (g.base_url || '').trim(),
       api_key: (g.api_key || '').trim(),
@@ -1005,15 +1007,19 @@ async function saveModels() {
   const models = flattenProviders();
   const seen = new Set<string>();
   for (const m of models) {
+    if (!m.id) {
+      ElMessage.error('每个模型都需要填写 ID');
+      return;
+    }
     if (!m.name) {
       ElMessage.error('每个模型都需要填写名称');
       return;
     }
-    if (seen.has(m.name)) {
-      ElMessage.error(`模型名称重复：${m.name}（名称是全池唯一键）`);
+    if (seen.has(m.id)) {
+      ElMessage.error(`模型 ID 重复：${m.id}（ID 是全池唯一键）`);
       return;
     }
-    seen.add(m.name);
+    seen.add(m.id);
   }
   savingModels.value = true;
   try {

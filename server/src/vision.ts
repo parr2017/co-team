@@ -76,7 +76,7 @@ export async function analyzeImages(pool: ModelPool, prompt: string, images: { b
   }
   try {
     const resp = await chatVision(entry, prompt, images);
-    pool.recordUsage(entry.name, resp.promptTokens, resp.completionTokens);
+    pool.recordUsage(entry.id, resp.promptTokens, resp.completionTokens);
     if (!resp.content.trim()) {
       pool.markFailure(entry);
       return { ok: false, retryable: true, model: entry.name, error: `视觉模型 ${entry.name} 返回空分析（可稍后重试）` };

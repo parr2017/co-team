@@ -85,9 +85,9 @@ export class ModelPool {
     return this.cooldownRemainingMs(m) === 0;
   }
 
-  /** Look up a model entry by name (used for task-pinned main-agent models). */
-  getModel(name: string): ModelEntry | null {
-    return this.models.find((m) => m.name === name) ?? null;
+  /** Look up a model entry by id (used for task-pinned main-agent models). */
+  getModel(id: string): ModelEntry | null {
+    return this.models.find((m) => m.id === id) ?? null;
   }
 
   availableSlots(m: ModelEntry): number {
@@ -168,7 +168,7 @@ export class ModelPool {
   /** Ordered degradation list: primary first, then remaining healthy models by priority (capacity-hit endpoint groups sink, 不剔除——全灭时仍可硬撞). */
   fallbackChain(primary: ModelEntry, tags?: string[]): ModelEntry[] {
     const rest = this.filterByTags(this.models, tags)
-      .filter((m) => m.name !== primary.name && this.isHealthy(m))
+      .filter((m) => m !== primary && this.isHealthy(m))
       .sort(
         (a, b) =>
           Number(this.capacityBlocked(a)) - Number(this.capacityBlocked(b)) ||
@@ -220,15 +220,15 @@ export class ModelPool {
     return m.priority + m.slowCount + failPenalty;
   }
 
-  recordUsage(modelName: string, promptTokens: number, completionTokens: number): void {
-    const entry = this.models.find((m) => m.name === modelName);
+  recordUsage(modelId: string, promptTokens: number, completionTokens: number): void {
+    const entry = this.models.find((m) => m.id === modelId);
     const cost = entry ? ((promptTokens + completionTokens) / 1000) * entry.cost_per_1k : 0;
-    const u = this.usage.get(modelName) || { prompt_tokens: 0, completion_tokens: 0, calls: 0, cost: 0 };
+    const u = this.usage.get(modelId) || { prompt_tokens: 0, completion_tokens: 0, calls: 0, cost: 0 };
     u.prompt_tokens += promptTokens;
     u.completion_tokens += completionTokens;
     u.calls += 1;
     u.cost = Math.round((u.cost + cost) * 1e6) / 1e6;
-    this.usage.set(modelName, u);
+    this.usage.set(modelId, u);
   }
 
   totalTokens(): number {
@@ -255,8 +255,10 @@ export class ModelPool {
   getStatus(): Record<string, unknown> {
     return Object.fromEntries(
       this.models.map((m) => [
-        m.name,
+        m.id,
         {
+          name: m.name,
+          provider: m.provider,
           concurrency: m.concurrency,
           active: m.activeSlots,
           available: this.availableSlots(m),

@@ -1465,12 +1465,12 @@ export function createApi(ctx: ApiContext): Hono {
     const pool = body.model_pool;
     if (!Array.isArray(pool)) throw new HttpError(400, 'model_pool must be an array');
     for (const m of pool) {
-      if (!m.name || !m.api_key || !m.base_url) throw new HttpError(400, 'each model needs name, api_key and base_url');
+      if (!m.id || !m.name || !m.api_key || !m.base_url) throw new HttpError(400, 'each model needs id, name, api_key and base_url');
     }
-    const names = new Set<string>();
+    const ids = new Set<string>();
     for (const m of pool) {
-      if (names.has(m.name)) throw new HttpError(400, `duplicate model name: ${m.name} (name is the pool's unique key)`);
-      names.add(m.name);
+      if (ids.has(m.id)) throw new HttpError(400, `duplicate model id: ${m.id} (id is the pool's unique key)`);
+      ids.add(m.id);
     }
     saveModelPool(pool);
     ctx.config.model_pool = pool;
@@ -1481,22 +1481,25 @@ export function createApi(ctx: ApiContext): Hono {
   app.post('/api/config/model-pool/test', async (c) => {
     const { chat } = await import('../llm');
     const { makeEntry } = await import('../scheduler');
-    const body = await c.req.json<{ name?: string; api_key?: string; base_url?: string }>();
+    const body = await c.req.json<{ id?: string; name?: string; api_key?: string; base_url?: string }>();
 
-    if (!body.name) throw new HttpError(400, 'name is required');
+    if (!body.id && !body.name) throw new HttpError(400, 'id or name is required');
 
-    // name-only form: test an already-configured pool entry without re-entering its key
+    // id-only form: test an already-configured pool entry without re-entering its key
     let apiKey = body.api_key;
     let baseUrl = body.base_url;
+    let testName = body.name;
     if (!apiKey || !baseUrl) {
-      const existing = ctx.modelPool.getModel(body.name);
-      if (!existing) throw new HttpError(404, `model not in pool: ${body.name} (api_key/base_url required for unknown models)`);
+      const existing = ctx.modelPool.getModel(body.id || body.name || '');
+      if (!existing) throw new HttpError(404, `model not in pool: ${body.id || body.name} (api_key/base_url required for unknown models)`);
       apiKey = apiKey || existing.api_key;
       baseUrl = baseUrl || existing.base_url;
+      testName = testName || existing.name;
     }
 
     const entry = makeEntry({
-      name: body.name,
+      id: body.id || `test-${Date.now()}`,
+      name: testName || body.name || 'test',
       api_key: apiKey,
       base_url: baseUrl,
     });

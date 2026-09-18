@@ -7,7 +7,8 @@ dashboard:
 model_pool:
   # 混合推理模型（Qwen3 系）可加 chat_template_kwargs: {enable_thinking: false} 关闭思考——
   # E17 实测思考可耗尽整个输出预算导致正文空假性失败；编排/结构化输出场景关闭更稳
-  - api_key: sk_your_api_key_here
+  - id: rhythm/deepseek-v4-flash
+    api_key: sk_your_api_key_here
     base_url: https://tokenrhythm.studio/v1
     concurrency: 4
     cost_per_1k: 0.005
@@ -21,7 +22,8 @@ model_pool:
       - code
       - logic
       - review
-  - api_key: sk_your_api_key_here
+  - id: rhythm/glm-5.3-flash
+    api_key: sk_your_api_key_here
     base_url: https://tokenrhythm.studio/v1
     concurrency: 4
     cost_per_1k: 0.004
@@ -34,7 +36,8 @@ model_pool:
     tags:
       - code
       - debug
-  - name: qwen3.6
+  - id: local/qwen3.6
+    name: qwen3.6
     max_tokens: 128000
     context_length: 256000
     provider: ''
@@ -135,8 +138,8 @@ discussion:
   permissions:
     level: full
     # whitelist_commands: [npm, node, git, netstat]
-    allow_sensitive: false  # true 时群聊放行敏感命令（rm/python -c/git push 等）
-                            # 绝对禁止命令（sudo/schtasks/vssadmin/robocopy /mir 等）仍拦截
+    allow_sensitive: false  # 2026-09-19 起已无实际作用：可配置敏感命令（rm/python -c/git push 等）
+                            # 在任务管线与群聊全放行；仅绝对禁止命令（sudo/schtasks/vssadmin 等）任何配置下拦截
   max_rounds: 3                     # 一条用户消息最多驱动的讨论轮数（含轮内插话重启）
   project_context_char_cap: 24000   # 项目背景+全量经验注入的字符预算（超出按最旧经验省略并显式标注）
 knowledge:

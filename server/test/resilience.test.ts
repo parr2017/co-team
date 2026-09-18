@@ -43,8 +43,8 @@ describe('M3 CAPACITY_RE：容量信号识别（退避重试不记失败）', ()
 
 describe('M4 effectivePriority：失败软沉底 + 时间回血', () => {
   const configs = [
-    { name: 'fast-flaky', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 50, tags: ['code'] },
-    { name: 'steady', api_key: 'k', base_url: 'u', priority: 10, professional_weight: 90, tags: ['code'] },
+    { id: 'fast-flaky', name: 'fast-flaky', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 50, tags: ['code'] },
+    { id: 'steady', name: 'steady', api_key: 'k', base_url: 'u', priority: 10, professional_weight: 90, tags: ['code'] },
   ];
   it('刚失败的链首模型被稳定模型反超', () => {
     const pool = new ModelPool(configs);

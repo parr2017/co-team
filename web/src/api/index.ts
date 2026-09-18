@@ -344,6 +344,8 @@ export interface MetricsResponse {
 }
 
 export interface ModelConfig {
+  /** 模型唯一标识符（全池唯一键） */
+  id: string;
   name: string;
   provider?: string;
   api_key: string;

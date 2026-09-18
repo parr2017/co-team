@@ -64,8 +64,8 @@ beforeEach(async () => {
   await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
   agentBehaviors.length = 0;
   const pool = new ModelPool([
-    { name: 'fake-a', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
-    { name: 'fake-b', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
+    { id: 'fake-a', name: 'fake-a', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
+    { id: 'fake-b', name: 'fake-b', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
   ]);
   orchestrator = new Orchestrator({
     agentsDir: tmp, modelPool: pool, policy: { whitelistCommands: null, maxTimeSec: 10 },

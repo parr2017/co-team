@@ -38,7 +38,7 @@
               @update:model-value="(v: string) => (n.model_id = v || undefined)"
             >
               <el-option label="自动调度" value="" />
-              <el-option v-for="m in modelOptions" :key="m.name" :label="m.name" :value="m.name">
+              <el-option v-for="m in modelOptions" :key="m.id" :label="m.name" :value="m.id">
                 <span class="model-opt">
                   <i class="dot" :class="m.healthy ? 'on' : 'off'"></i>
                   {{ m.name }}
@@ -123,7 +123,7 @@ const feedback = ref('');
 const replanning = ref(false);
 const approving = ref(false);
 const agentOptions = ref<string[]>([]);
-const modelOptions = ref<{ name: string; healthy: boolean; tags: string }[]>([]);
+const modelOptions = ref<{ id: string; name: string; healthy: boolean; tags: string }[]>([]);
 
 function statusLabel(s?: string) {
   return statusText(s || '');
@@ -145,8 +145,9 @@ async function onOpen() {
     const d = await api.getModelPool();
     const health = (d as any).health || {};
     modelOptions.value = d.model_pool.map((m) => ({
+      id: m.id,
       name: m.name,
-      healthy: health[m.name]?.healthy !== false,
+      healthy: health[m.id]?.healthy !== false,
       tags: (m.tags || []).join('·'),
     }));
   } catch {

@@ -424,7 +424,7 @@
               <div class="mg-body mg-row">
                 <span class="mg-model mono">{{ task.main_model_id || '自动选择' }}</span>
                 <el-select v-model="newModel" size="small" style="width: 220px" placeholder="选择新模型">
-                  <el-option v-for="m in modelOptions" :key="m.name" :value="m.name" :label="m.name">
+                  <el-option v-for="m in modelOptions" :key="m.id" :value="m.id" :label="m.name">
                     <span class="model-opt"><i class="dot" :class="m.healthy ? 'on' : 'off'"></i>{{ m.name }}</span>
                   </el-option>
                 </el-select>
@@ -555,7 +555,7 @@ let pollTimer: number | undefined;
 
 // manage tab state (improvements 6/9/10/11)
 const progress = ref<ProgressInfo | null>(null);
-const modelOptions = ref<{ name: string; healthy: boolean; cost: number }[]>([]);
+const modelOptions = ref<{ id: string; name: string; healthy: boolean; cost: number }[]>([]);
 const newModel = ref('');
 const changingModel = ref(false);
 const goal = ref<{ content: string }>({ content: '' });
@@ -995,7 +995,7 @@ async function loadModels() {
   try {
     const d = await api.getModelPool();
     const health = (d as any).health || {};
-    modelOptions.value = d.model_pool.map((m) => ({ name: m.name, healthy: health[m.name]?.healthy !== false, cost: m.cost_per_1k || 0 }));
+    modelOptions.value = d.model_pool.map((m) => ({ id: m.id, name: m.name, healthy: health[m.id]?.healthy !== false, cost: m.cost_per_1k || 0 }));
   } catch { /* ignore */ }
 }
 

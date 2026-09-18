@@ -10,7 +10,7 @@ import type { ModelConfig, TaskNode } from '../src/types';
 // 2026-09-15（c2g0ya6d 复盘）：413 上下文超限分型——不毒化模型健康、折叠瘦身重试、
 // 大窗口模型优先；全链烧光才转人工
 
-function cfg(overrides: Partial<ModelConfig> & { name: string }): ModelConfig {
+function cfg(overrides: Partial<ModelConfig> & { id: string; name: string }): ModelConfig {
   return { api_key: 'k', base_url: 'http://localhost:9', ...overrides } as ModelConfig;
 }
 
@@ -37,9 +37,9 @@ describe('413 上下文超限分型（context_overflow）', () => {
     orchestrator = new Orchestrator({
       agentsDir: tmp,
       modelPool: new ModelPool([
-        cfg({ name: 'm-small', priority: 1, tags: ['code'], professional_weight: 90, context_length: 8192 }),
-        cfg({ name: 'm-mid', priority: 2, tags: ['code'], professional_weight: 50, context_length: 131072 }),
-        cfg({ name: 'm-big', priority: 3, tags: ['code'], professional_weight: 40, context_length: 200000 }),
+        cfg({ id: 'm-small', name: 'm-small', priority: 1, tags: ['code'], professional_weight: 90, context_length: 8192 }),
+        cfg({ id: 'm-mid', name: 'm-mid', priority: 2, tags: ['code'], professional_weight: 50, context_length: 131072 }),
+        cfg({ id: 'm-big', name: 'm-big', priority: 3, tags: ['code'], professional_weight: 40, context_length: 200000 }),
       ]),
       policy: { level: 'approve_required', whitelistCommands: null, maxTimeSec: 10 },
       maxRetries: 2,

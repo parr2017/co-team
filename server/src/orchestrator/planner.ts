@@ -255,7 +255,7 @@ async function llmPlan(request: string, pool: ModelPool, router: Router, model: 
       { role: 'user', content: plannerUserMsg },
     ]);
     getLogger().info('Planner response', { model: model.name, content_chars: resp.content.length, elapsed_ms: resp.elapsedMs, completion_tokens: resp.completionTokens });
-    pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
+    pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
     const graph = extractJson(stripCodeFence(resp.content));
     return normalizePlan(graph, available, skillMap);
   } catch (e) {
@@ -345,7 +345,7 @@ export async function generateStagePlan(request: string, pool: ModelPool | null,
       { role: 'user', content },
     ]);
     getLogger().info('Planner response', { model: model.name, content_chars: resp.content.length, elapsed_ms: resp.elapsedMs, completion_tokens: resp.completionTokens });
-    pool.recordUsage(model.name, resp.promptTokens, resp.completionTokens);
+    pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
     const parsed = extractJson(stripCodeFence(resp.content));
     if (!parsed) return null;
 

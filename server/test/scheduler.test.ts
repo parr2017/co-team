@@ -3,9 +3,9 @@ import { ModelPool } from '../src/scheduler';
 
 describe('ModelPool', () => {
   const configs = [
-    { name: 'cheap', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 30, cost_per_1k: 0.001, tags: ['general'] },
-    { name: 'coder', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 90, cost_per_1k: 0.01, tags: ['code'] },
-    { name: 'weak', api_key: 'k', base_url: 'u', priority: 2, professional_weight: 30, cost_per_1k: 0.001, tags: [] },
+    { id: 'cheap', name: 'cheap', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 30, cost_per_1k: 0.001, tags: ['general'] },
+    { id: 'coder', name: 'coder', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 90, cost_per_1k: 0.01, tags: ['code'] },
+    { id: 'weak', name: 'weak', api_key: 'k', base_url: 'u', priority: 2, professional_weight: 30, cost_per_1k: 0.001, tags: [] },
   ];
 
   it('selects by complexity: simple prefers cheapest, complex prefers strongest', () => {
@@ -44,7 +44,7 @@ describe('ModelPool', () => {
   });
 
   it('tracks slots', () => {
-    const pool = new ModelPool([{ name: 'm', api_key: 'k', base_url: 'u', concurrency: 1 }]);
+    const pool = new ModelPool([{ id: 'm', name: 'm', api_key: 'k', base_url: 'u', concurrency: 1 }]);
     const m = (pool as any).models[0];
     expect(pool.tryAcquire(m)).toBe(true);
     expect(pool.tryAcquire(m)).toBe(false);
@@ -54,7 +54,7 @@ describe('ModelPool', () => {
 });
 
 describe('ModelPool failure cooldown (circuit breaker)', () => {
-  const configs = [{ name: 'flakey', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 50, cost_per_1k: 0, tags: [] }];
+  const configs = [{ id: 'flakey', name: 'flakey', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 50, cost_per_1k: 0, tags: [] }];
 
   it('cooldown grows exponentially with consecutive failures and expires', () => {
     const pool = new ModelPool(configs);
@@ -79,9 +79,9 @@ describe('ModelPool failure cooldown (circuit breaker)', () => {
 // "个别模型 429" = 整组限流。软避让只改顺序与窗口，不落健康分、到期自愈。
 describe('ModelPool endpoint-group capacity avoidance', () => {
   const groupConfigs = [
-    { name: 'g1a', api_key: 'ka', base_url: 'u1', priority: 1, professional_weight: 90, cost_per_1k: 0.01, tags: ['code'] },
-    { name: 'g1b', api_key: 'ka', base_url: 'u1', priority: 1, professional_weight: 80, cost_per_1k: 0.01, tags: ['code'] },
-    { name: 'g2a', api_key: 'kb', base_url: 'u2', priority: 2, professional_weight: 70, cost_per_1k: 0.02, tags: ['code'] },
+    { id: 'g1a', name: 'g1a', api_key: 'ka', base_url: 'u1', priority: 1, professional_weight: 90, cost_per_1k: 0.01, tags: ['code'] },
+    { id: 'g1b', name: 'g1b', api_key: 'ka', base_url: 'u1', priority: 1, professional_weight: 80, cost_per_1k: 0.01, tags: ['code'] },
+    { id: 'g2a', name: 'g2a', api_key: 'kb', base_url: 'u2', priority: 2, professional_weight: 70, cost_per_1k: 0.02, tags: ['code'] },
   ];
 
   it('容量信号让同端点组整体避让，其他组顶上', () => {
@@ -96,7 +96,7 @@ describe('ModelPool endpoint-group capacity avoidance', () => {
   });
 
   it('避让只改顺序不排除：全池同组限流仍能选出（链可硬撞）', () => {
-    const pool = new ModelPool([{ name: 'only', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 50, cost_per_1k: 0, tags: [] }]);
+    const pool = new ModelPool([{ id: 'only', name: 'only', api_key: 'k', base_url: 'u', priority: 1, professional_weight: 50, cost_per_1k: 0, tags: [] }]);
     pool.noteCapacityHit(pool.getModel('only')!);
     expect(pool.selectModel([])!.name).toBe('only');
     expect(pool.fallbackChain(pool.getModel('only')!).length).toBe(1);
@@ -117,8 +117,8 @@ describe('ModelPool endpoint-group capacity avoidance', () => {
     try {
       // 确定性选择：weight 0 的备胎永不被加权摇中，避让窗口内必落 g2a、过期后必回 g1a
       const pool = new ModelPool([
-        { name: 'g1a', api_key: 'ka', base_url: 'u1', priority: 1, professional_weight: 90, cost_per_1k: 0.01, tags: ['code'] },
-        { name: 'g2a', api_key: 'kb', base_url: 'u2', priority: 1, professional_weight: 0, cost_per_1k: 0.02, tags: ['code'] },
+        { id: 'g1a', name: 'g1a', api_key: 'ka', base_url: 'u1', priority: 1, professional_weight: 90, cost_per_1k: 0.01, tags: ['code'] },
+        { id: 'g2a', name: 'g2a', api_key: 'kb', base_url: 'u2', priority: 1, professional_weight: 0, cost_per_1k: 0.02, tags: ['code'] },
       ]);
       pool.noteCapacityHit(pool.getModel('g1a')!);
       expect(pool.selectModel(['code'])!.name).toBe('g2a');

@@ -29,8 +29,8 @@ const TINY_PNG = Buffer.from(
 describe('ModelPool.selectVisionModel（严格 image 定点选型）', () => {
   it('只选带 image tag 的模型，绝不回退全池', () => {
     const pool = new ModelPool([
-      { name: 'text-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
-      { name: 'vision-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['image', 'doc'] },
+      { id: 'text-model', name: 'text-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
+      { id: 'vision-model', name: 'vision-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['image', 'doc'] },
     ]);
     for (let i = 0; i < 20; i++) {
       const m = pool.selectVisionModel();
@@ -39,13 +39,13 @@ describe('ModelPool.selectVisionModel（严格 image 定点选型）', () => {
   });
 
   it('池内无 image 模型时返回 null（不静默降级到纯文本模型）', () => {
-    const pool = new ModelPool([{ name: 'text-only', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
+    const pool = new ModelPool([{ id: 'text-only', name: 'text-only', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
     expect(pool.selectVisionModel()).toBeNull();
     expect(pool.hasTag('image')).toBe(false);
   });
 
   it('image 模型全忙或冷却时返回 null', () => {
-    const pool = new ModelPool([{ name: 'vision', api_key: 'k', base_url: 'http://localhost:9', tags: ['image'], concurrency: 1 }]);
+    const pool = new ModelPool([{ id: 'vision', name: 'vision', api_key: 'k', base_url: 'http://localhost:9', tags: ['image'], concurrency: 1 }]);
     const m = pool.selectVisionModel()!;
     expect(m).not.toBeNull();
     pool.tryAcquire(m);
@@ -59,7 +59,7 @@ describe('ModelPool.selectVisionModel（严格 image 定点选型）', () => {
 
 describe('analyzeImages（软错误分型）', () => {
   it('未配置 image 模型 → 不可重试软错误 + 文本降级指引', async () => {
-    const pool = new ModelPool([{ name: 'text-only', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
+    const pool = new ModelPool([{ id: 'text-only', name: 'text-only', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
     const r = await analyzeImages(pool, '看图', [{ base64: 'aGk=', mediaType: 'image/png' }]);
     expect(r.ok).toBe(false);
     expect(r.retryable).toBe(false);
@@ -68,7 +68,7 @@ describe('analyzeImages（软错误分型）', () => {
   });
 
   it('image 模型全忙 → 等待后可重试软错误', async () => {
-    const pool = new ModelPool([{ name: 'vision', api_key: 'k', base_url: 'http://localhost:9', tags: ['image'], concurrency: 1 }]);
+    const pool = new ModelPool([{ id: 'vision', name: 'vision', api_key: 'k', base_url: 'http://localhost:9', tags: ['image'], concurrency: 1 }]);
     const m = pool.getModel('vision')!;
     pool.tryAcquire(m);
     const r = await analyzeImages(pool, '看图', [{ base64: 'aGk=', mediaType: 'image/png' }]);
@@ -78,7 +78,7 @@ describe('analyzeImages（软错误分型）', () => {
   });
 
   it('空图片数组 → 直接拒绝', async () => {
-    const pool = new ModelPool([{ name: 'vision', api_key: 'k', base_url: 'http://localhost:9', tags: ['image'] }]);
+    const pool = new ModelPool([{ id: 'vision', name: 'vision', api_key: 'k', base_url: 'http://localhost:9', tags: ['image'] }]);
     const r = await analyzeImages(pool, '看图', []);
     expect(r.ok).toBe(false);
     expect(r.error).toContain('没有可分析的图片');

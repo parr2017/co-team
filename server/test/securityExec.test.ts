@@ -73,16 +73,25 @@ describe('SEC-P0 applyFinalOutput 敏感命令强制审批', () => {
     return ws;
   };
 
-  it('full 策略下敏感命令也不执行——暂存待审批并带 sensitive 标', () => {
+  it('full 策略下可配置敏感命令直接执行（2026-09-19 放行决策），绝对禁止命令仍拦截', () => {
     const ws = mkWs();
     const out = applyFinalOutput(ws, { commands: ['del canary.txt', 'echo done'] }, { level: 'full', whitelistCommands: null, maxTimeSec: 10 });
-    expect(fs.readFileSync(path.join(ws, 'canary.txt'), 'utf-8')).toBe('keep me'); // 未被执行
-    expect(out.pending_commands).toEqual(['del canary.txt']);
-    expect(out.sensitive_commands).toEqual(['del canary.txt']);
+    expect(fs.existsSync(path.join(ws, 'canary.txt'))).toBe(false); // 敏感命令已直接执行
+    expect(out.pending_commands).toBeUndefined();
     const r = out.command_results.find((c: any) => c.command === 'del canary.txt');
-    expect(r.sensitive).toBe(true);
-    expect(r.stderr).toContain('敏感操作');
+    expect(r.returncode).toBe(0);
     expect(out.command_results.find((c: any) => c.command === 'echo done').returncode).toBe(0);
+    fs.rmSync(ws, { recursive: true, force: true });
+  });
+
+  it('绝对禁止命令（strict）任何策略下都拦截——暂存待审批并带 sensitive 标', () => {
+    const ws = mkWs();
+    const out = applyFinalOutput(ws, { commands: ['schtasks /create /tn evil /tr cmd'] }, { level: 'full', whitelistCommands: null, maxTimeSec: 10 });
+    expect(out.pending_commands).toEqual(['schtasks /create /tn evil /tr cmd']);
+    expect(out.sensitive_commands).toEqual(['schtasks /create /tn evil /tr cmd']);
+    const r = out.command_results.find((c: any) => c.command === 'schtasks /create /tn evil /tr cmd');
+    expect(r.sensitive).toBe(true);
+    expect(r.stderr).toContain('绝对禁止');
     fs.rmSync(ws, { recursive: true, force: true });
   });
 
