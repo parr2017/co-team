@@ -88,7 +88,7 @@ async function send() {
         :disabled="sending"
         @keydown.enter.prevent="send"
       />
-      <button class="iv-send" :disabled="(!draft.trim() && !pendingImages.length) || sending" @click="send">{{ sending ? '…' : '发送' }}</button>
+      <button class="iv-send" :disabled="(!draft.trim() && !pendingImages.length) || sending" @click="send"><span class="mono">➤</span></button>
       <van-uploader
         v-if="pendingImages.length"
         v-model="pendingImages"
@@ -127,11 +127,11 @@ async function send() {
 .iv-input:focus { border-color: var(--accent); }
 .iv-input:disabled { opacity: 0.6; }
 .iv-send {
-  height: 38px; padding: 0 18px; border: none; border-radius: 10px;
-  background: var(--me-bubble); color: var(--me-text);
-  font-size: 15px; font-weight: 700; cursor: pointer; flex-shrink: 0;
-  transition: transform 0.1s ease, opacity 0.15s ease;
+  flex: none; width: 36px; height: 36px; border-radius: 10px; border: none;
+  background: var(--accent); color: var(--accent-text); font-size: 14px;
+  display: grid; place-items: center;
 }
+.iv-send:disabled { opacity: .45; }
 .iv-send:disabled { opacity: 0.4; }
 .iv-send:not(:disabled):active { transform: scale(0.94); filter: brightness(0.96); }
 .iv-hint {

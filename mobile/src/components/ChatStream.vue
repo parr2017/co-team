@@ -583,21 +583,10 @@ commands: {{ (item.entry.meta?.commands || []).join(' | ') }}</pre>
 .me-col { display: flex; flex-direction: column; align-items: flex-end; max-width: 76%; min-width: 0; }
 .who-name { font-size: var(--fs-meta); color: var(--text-3); margin: 0 2px 3px; }
 
-.bubble { padding: 10px 12px; border-radius: var(--r-lg); font-size: var(--fs-base); background: var(--panel-2); border: 1px solid var(--border); position: relative; word-break: break-word; box-shadow: var(--shadow-bubble); }
-.them-b { border-top-left-radius: 2px; }
-.them-b::before {
-  content: ''; position: absolute; top: 0; left: -7px;
-  border: 4px solid transparent; border-top-color: var(--border); border-right-color: var(--border);
-}
-.me-b { background: var(--bubble-me); border: none; border-top-right-radius: 2px; color: var(--me-text); font-weight: 500; }
-/* 用户介入附图：气泡内图片网格 */
-.img-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 2px 0 6px; }
-.img-grid .img-cell { width: 100%; height: 84px; object-fit: cover; border-radius: 8px; display: block; }
-.img-grid .img-cell:first-child:last-child, .img-grid .img-cell:only-child { width: 100%; height: 150px; }
-.me-b::before {
-  content: ''; position: absolute; top: 0; right: -7px;
-  border: 4px solid transparent; border-top-color: var(--accent); border-left-color: var(--accent);
-}
+.bubble { padding: 10px 12px; border-radius: var(--r-panel); font-size: var(--fs-base); background: var(--panel-2); border: 1px solid var(--border); position: relative; word-break: break-word; box-shadow: none; }
+.them-b { border-top-left-radius: var(--r-panel); }
+.them-b::before { display: none; }
+.me-b { background: linear-gradient(90deg, var(--accent-soft), transparent 72%); border: none; border-top-right-radius: var(--r-panel); color: var(--text-1); font-weight: 400; }
 .them-b.fatal { border-color: var(--red); }
 .them-b.fatal::before { border-top-color: var(--red); border-right-color: var(--red); }
 
@@ -646,7 +635,7 @@ details summary { font-size: var(--fs-aux); color: var(--text-3); }
 /* M2 实时问答 */
 .ask-live { font-size: var(--fs-meta); color: var(--accent-text); background: var(--warn); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; animation: ask-pulse 1.6s ease-in-out infinite; }
 @keyframes ask-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-.bubble.ask-b { border: 1px solid var(--warn); box-shadow: 0 0 0 1px var(--accent-line); }
+.bubble.ask-b { border: 1px solid var(--accent-line); border-left: 3px solid var(--accent); box-shadow: none; }
 .ask-answer { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
 .ask-input { flex: 1; min-width: 0; background: var(--bg-overlay); border: 1px solid var(--line); border-radius: 4px; font-size: 13px; padding: 6px 8px; outline: none; }
 .answer-b { border-left: 3px solid var(--ok); }

@@ -587,9 +587,24 @@ function fmtTime(ts: string) {
   } catch { return ts; }
 }
 
-function nodeIcon(status: string): string {
-  return ({ completed: 'checked', failed: 'close', running: 'clock-o', retrying: 'replay', interrupted: 'replay', waiting_approval: 'edit', cancelled: 'cross' } as Record<string, string>)[status] || 'arrow';
+/** 预览稿 pipeline 轨道：节点状态 → 轨道圆点分档 */
+function nodeState(status: string): string {
+  if (['completed', 'success'].includes(status)) return 'done';
+  if (['running', 'retrying'].includes(status)) return 'run';
+  if (status === 'failed') return 'fail';
+  return '';
 }
+
+/** 任务级动作 sheet（⋯）：复用既有入口 */
+const taskMoreOpen = ref(false);
+async function onTaskMore(action: any) {
+  const name = String(action?.name || '');
+  if (name === '编辑目标') { goalOpen.value = true; }
+  else if (name === '快照与回滚') { tab.value = 'exec'; setTimeout(() => (document.querySelector('.snap-list') as HTMLElement | null)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 250); }
+  else if (name === '取消任务') await cancel();
+  else if (name === '重启任务') await restart();
+}
+
 </script>
 
 <template>
@@ -598,6 +613,7 @@ function nodeIcon(status: string): string {
       <template #right>
         <span v-if="isRunning" class="nav-status running" @click="cancel">取消</span>
         <span v-else-if="canRestart" class="nav-status running" @click="restart">重启</span>
+        <span class="nav-status" @click="taskMoreOpen = true">⋯</span>
         <!-- 状态与进度不在 nav 右侧展示：长文本会与居中标题重叠，完整信息见"执行详情"tab -->
       </template>
     </van-nav-bar>
@@ -762,18 +778,14 @@ function nodeIcon(status: string): string {
 
             <div class="wx-group">
               <div
-                v-for="n in task.nodes"
+                v-for="(n, ni) in task.nodes"
                 :key="n.id"
-                class="wx-cell node-cell"
-                :class="n.status"
+                class="pnode"
+                :class="nodeState(n.status)"
                 @click="pickNode(n.id)"
               >
-                <van-icon
-                  :name="nodeIcon(n.status)"
-                  :size="18"
-                  :color="n.status === 'completed' ? 'var(--green)' : n.status === 'failed' ? 'var(--red)' : 'var(--text-3)'"
-                />
-                <div class="n-body">
+                <div class="rail"><i></i><s v-if="ni < task.nodes.length - 1"></s></div>
+                <div class="pi"><div class="n-body">
                   <div class="n-name">{{ n.name }}</div>
                   <div class="n-sub">
                     <span class="n-agent">{{ n.agent }}</span>
@@ -867,7 +879,7 @@ function nodeIcon(status: string): string {
                   </div>
                   <ChatStream :task-id="taskId" :filter-node-id="n.id" class="node-chat" />
                 </div>
-              </div>
+              </div></div>
             </div>
           </div>
         </van-tab>
@@ -917,6 +929,19 @@ function nodeIcon(status: string): string {
       <button class="wx-btn err-btn" @click="loadFailed = false; void refresh()">重新加载</button>
     </div>
     <van-loading v-else class="loading" vertical>加载中…</van-loading>
+
+    <!-- 任务级动作收纳（⋯）：编辑目标 / 快照回滚 / 生命周期，复用既有入口 -->
+    <van-action-sheet
+      v-model:show="taskMoreOpen"
+      :actions="[
+        { name: '编辑目标' },
+        { name: '快照与回滚' },
+        ...(isRunning ? [{ name: '取消任务' }] : canRestart ? [{ name: '重启任务' }] : []),
+      ]"
+      cancel-text="取消"
+      close-on-click-action
+      @select="onTaskMore"
+    />
 
     <!-- 换 Agent：节点转交其他成员（此前重复绑定了两个 sheet，第二个无 @select 导致选中无效） -->
     <van-action-sheet
@@ -1372,4 +1397,16 @@ function nodeIcon(status: string): string {
 /* 溢出总保护 */
 .wx-group, .wx-cell { min-width: 0; overflow-wrap: anywhere; }
 .acc-body { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- 预览稿 pipeline 节点轨道 ---- */
+.pipeline { padding: 4px 0; }
+.pnode { display: flex; gap: 10px; padding: 9px 12px; align-items: stretch; cursor: pointer; }
+.pnode .rail { display: flex; flex-direction: column; align-items: center; width: 14px; flex: none; }
+.pnode .rail i { width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--line-strong); margin-top: 5px; flex: none; background: transparent; }
+.pnode .rail s { width: 2px; flex: 1; background: var(--line); text-decoration: none; }
+.pnode.done .rail i { background: var(--ok); border-color: var(--ok); }
+.pnode.run .rail i { background: var(--accent); border-color: var(--accent); animation: ppulse 1.6s infinite; }
+.pnode.fail .rail i { background: var(--danger); border-color: var(--danger); }
+.pnode .pi { flex: 1; min-width: 0; }
+@keyframes ppulse { 50% { opacity: .35; } }
 </style>

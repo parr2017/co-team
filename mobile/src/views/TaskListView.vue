@@ -7,7 +7,6 @@ import { useTheme } from '../composables/useTheme';
 import StatusTag from '../components/StatusTag.vue';
 import type { TaskGraph, QueueSnapshot } from '../api';
 import { useDashboard } from '../composables/useDashboard';
-import AgentAvatar from '../components/AgentAvatar.vue';
 
 defineOptions({ name: 'TaskListView' });
 
@@ -42,12 +41,6 @@ const sorted = computed(() => [...list.value].sort((a, b) => (b.updated_at || ''
 const visible = computed(() => sorted.value.filter(matchesFilter));
 
 /** the agent leading this task drives the conversation avatar */
-function avatarAgent(t: TaskGraph): string {
-  const working = t.nodes.find((n) => ['running', 'retrying', 'waiting_approval'].includes(n.status));
-  if (working) return working.agent;
-  return t.nodes.find((n) => n.agent !== 'orchestrator')?.agent || 'dev';
-}
-
 /** top-right time like the WeChat session list (今天 14:32 / 昨天 / MM月DD日) */
 function sessionTime(ts?: string): string {
   if (!ts) return '';
@@ -308,7 +301,6 @@ onUnmounted(() => {
     <van-search
       v-model="keyword"
       placeholder="搜索"
-      shape="round"
       background="transparent"
       @search="onSearch"
     />
@@ -355,45 +347,38 @@ onUnmounted(() => {
             <div class="empty-text">点右上角 + 发起第一个任务</div>
           </div>
 
-          <!-- WeChat session-list rows -->
-          <div v-for="t in visible" :key="t.task_id" class="session" @click="openTask(t)">
-            <div class="s-avatar">
-              <AgentAvatar :name="avatarAgent(t)" :size="48" />
-              <span v-if="badgeCount(t)" class="s-badge">{{ badgeCount(t) > 99 ? '99+' : badgeCount(t) }}</span>
-              <span v-else-if="needsAttention(t)" class="s-dot"></span>
+          <!-- 预览稿 lrow：名称+状态 tag / 摘要 / meta(mono time · task_id · 未读徽标) -->
+          <div v-for="t in visible" :key="t.task_id" class="lrow" @click="openTask(t)">
+            <div class="t">
+              <span class="nm">{{ t.description || t.task_id }}</span>
+              <StatusTag
+                v-if="t.status === 'running' || t.status === 'retrying'"
+                status="running"
+                label="执行中"
+                class="wx-pulse"
+              />
+              <StatusTag v-else-if="t.status === 'queued'" status="queued" label="排队中" />
+              <StatusTag v-else-if="t.status === 'waiting_approval' || t.status === 'clarifying' || t.status === 'planned'" :status="t.status" label="待处理" />
+              <StatusTag v-else-if="t.status === 'failed'" status="failed" label="失败" />
+              <StatusTag v-else-if="t.status === 'success'" status="success" label="完成" />
+              <StatusTag v-else-if="t.status === 'completed_with_warnings'" status="completed_with_warnings" label="完成·有警告" />
             </div>
-            <div class="s-body">
-              <div class="s-line1">
-                <span class="s-title">{{ t.description || t.task_id }}</span>
-                <span class="s-time">{{ sessionTime(t.updated_at) }}</span>
-              </div>
-              <div class="s-line2">
-                <span class="s-digest" :class="{ unread: needsAttention(t) }">{{ digest(t) }}</span>
-                <span class="s-meta">
-                  <van-button
-                    v-if="canRestart(t.status)"
-                    size="mini"
-                    plain
-                    type="primary"
-                    class="s-restart"
-                    @click.stop="onRestart(t)"
-                  >重启</van-button>
-                  <StatusTag
-                    v-if="t.status === 'running' || t.status === 'retrying'"
-                    status="running"
-                    label="执行中"
-                    class="wx-pulse"
-                  />
-                  <StatusTag v-else-if="t.status === 'queued'" status="queued" label="排队中" />
-                  <StatusTag v-else-if="t.status === 'waiting_approval' || t.status === 'clarifying' || t.status === 'planned'" :status="t.status" label="待处理" />
-                  <StatusTag v-else-if="t.status === 'failed'" status="failed" label="失败" />
-                  <StatusTag v-else-if="t.status === 'success'" status="success" label="完成" />
-                  <StatusTag v-else-if="t.status === 'completed_with_warnings'" status="completed_with_warnings" label="完成·有警告" />
-                  <span v-if="t.project_id && projectNames[t.project_id]" class="s-proj">{{ projectNames[t.project_id] }}</span>
-                </span>
-              </div>
+            <div class="last" :class="{ unread: needsAttention(t) }">{{ digest(t) }}</div>
+            <div class="meta">
+              <span class="time mono">{{ sessionTime(t.updated_at) }}<template v-if="t.project_id && projectNames[t.project_id]"> · {{ projectNames[t.project_id] }}</template></span>
+              <span class="mtags">
+                <span v-if="badgeCount(t)" class="tag accent">{{ badgeCount(t) > 99 ? '99+' : badgeCount(t) }}</span>
+                <van-button
+                  v-if="canRestart(t.status)"
+                  size="mini"
+                  plain
+                  type="primary"
+                  class="s-restart"
+                  @click.stop="onRestart(t)"
+                >重启</van-button>
+                <span class="l-id mono">{{ t.task_id }}</span>
+              </span>
             </div>
-            <van-icon class="s-chevron" name="arrow" size="15" color="var(--text-3)" />
           </div>
         </van-list>
       </div>
@@ -402,6 +387,18 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 预览稿 chipbar：30px 圆胶囊筛选 */
+.filter-row { display: flex; gap: 7px; padding: 10px 12px 2px; overflow-x: auto; scrollbar-width: none; }
+.filter-row::-webkit-scrollbar { display: none; }
+.f-chip {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+  border: 1px solid var(--line); border-radius: 15px; background: var(--bg-panel);
+  font-size: 12.5px; color: var(--text-2);
+}
+.f-chip b { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); font-weight: 500; }
+.f-chip.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text-1); }
+.f-chip.on b { color: var(--accent); }
+
 .page { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 /* pull-refresh wraps WITHOUT scrolling; the inner .pull is the touch scroller */
 .pull-wrap { flex: 1; min-height: 0; overflow: hidden; }
@@ -412,74 +409,18 @@ onUnmounted(() => {
 .empty-text { font-size: 13px; color: var(--text-3); }
 
 /* WeChat session row: breathing space, two-line rhythm, quiet chevron */
-.session {
-  display: flex; gap: 13px;
-  padding: 13px 16px 13px 16px;
-  background: var(--panel);
-  position: relative;
-  align-items: center;
-  transition: background 0.12s ease;
-  border-bottom: 1px solid var(--border);
-}
-.session + .session::before {
-  content: ''; position: absolute;
-  left: 77px; right: 0; top: 0;
-  height: 1px; background: var(--border);
-  transform: scaleY(0.5);
-}
-.session:active { background: var(--panel-2); }
-
-.s-avatar { position: relative; flex-shrink: 0; }
-.s-badge {
-  position: absolute; top: -5px; right: -9px;
-  min-width: 18px; height: 18px; padding: 0 5px;
-  border-radius: 10px; background: var(--accent); color: var(--accent-text);
-  font-size: var(--fs-meta); font-weight: 600; line-height: 18px; text-align: center;
-  box-shadow: 0 0 0 2.5px var(--panel);
-}
-.s-dot {
-  position: absolute; top: -1px; right: -1px;
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--red); box-shadow: 0 0 0 2.5px var(--panel);
-}
-
-.s-body { flex: 1; min-width: 0; }
-.s-line1 { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.s-title {
-  font-size: 16.5px; color: var(--text); font-weight: 500; line-height: 1.35;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.s-time { font-size: var(--fs-aux); color: var(--text-3); flex-shrink: 0; margin-top: 1px; }
-.s-line2 { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 4px; }
-.s-digest {
-  font-size: 13.5px; color: var(--text-2); line-height: 1.4;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
-}
-.s-digest.unread { color: var(--text); }
-
-.s-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.s-proj {
-  font-size: var(--fs-meta); color: var(--text-3); background: var(--panel-2);
-  border-radius: 999px; padding: 2px 8px; max-width: 96px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.s-chevron { flex-shrink: 0; opacity: 0.55; }
-
-.filter-row { display: flex; gap: 8px; padding: 12px 16px 4px; overflow-x: auto; }
-.f-chip {
-  flex-shrink: 0;
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 6px 13px;
-  font-size: var(--fs-sm); color: var(--text-2);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 999px; cursor: pointer;
-  transition: all 0.15s ease;
-}
-.f-chip b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-.f-chip.on { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
-.f-chip.on b { color: var(--accent); }
-.s-restart { height: 24px; padding: 0 10px; border-radius: 999px; font-weight: 500; }
+.lrow { display: block; width: 100%; text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); position: relative; }
+.lrow:active { background: var(--panel-2); }
+.lrow .t { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.lrow .nm { font-size: 14.5px; font-weight: 600; color: var(--text-1); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .last { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .last.unread { color: var(--text); }
+.lrow .meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 5px; }
+.lrow .time { font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .mtags { display: flex; align-items: center; gap: 6px; flex: none; }
+.lrow .tag.accent { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 4px; padding: 0 6px; height: 16px; display: inline-flex; align-items: center; font-size: var(--fs-meta); font-family: var(--font-mono); }
+.lrow .l-id { font-size: var(--fs-meta); color: var(--text-3); }
+.s-restart { height: 24px; padding: 0 10px; border-radius: var(--r-ctl); font-weight: 500; }
 
 /* queue strips between search and the session list */
 .queue-strip {

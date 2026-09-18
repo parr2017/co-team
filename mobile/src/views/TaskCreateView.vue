@@ -208,20 +208,17 @@ async function submit() {
       <div class="wx-caption">任务归属</div>
       <div class="wx-group">
         <div class="wx-cell link" @click="projectsReady ? (showProjectPicker = true) : (projectsFailed && retryProjects())">
-          <van-icon name="apps-o" size="20" color="var(--green)" />
           <span class="cell-label">所属项目</span>
           <span class="cell-value">{{ projectsFailed ? '加载失败 · 点击重试' : projectsReady ? (projectName || '不关联项目') : '加载中…' }}</span>
           <van-icon v-if="projectsReady && !projectsFailed" name="arrow" size="14" color="var(--text-3)" />
           <van-loading v-else size="14" />
         </div>
         <div class="wx-cell link" @click="showPicker = true">
-          <van-icon name="folder-o" size="20" color="var(--green)" />
           <span class="cell-label">工作区目录</span>
           <span class="cell-value">{{ workspace || (projectId ? '跟随项目' : '点击选择') }}</span>
           <van-icon name="arrow" size="14" color="var(--text-3)" />
         </div>
         <div class="wx-cell link" @click="modelsReady ? (showModelPicker = true) : (modelsFailed && retryModels())">
-          <van-icon name="medal-o" size="20" color="#10aeff" />
           <span class="cell-label">主 Agent 模型</span>
           <span class="cell-value">{{ modelsFailed ? '加载失败 · 点击重试' : modelsReady ? (mainModel || '自动选择') : '加载中…' }}</span>
           <van-icon v-if="modelsReady && !modelsFailed" name="arrow" size="14" color="var(--text-3)" />
@@ -241,18 +238,10 @@ async function submit() {
 
       <!-- 分级：微信单选 cell 组 -->
       <div v-if="!simpleMode" class="wx-caption">任务分级</div>
-      <div v-if="!simpleMode" class="wx-group">
-        <div
-          v-for="l in LEVELS"
-          :key="l.value"
-          class="wx-cell link"
-          @click="level = l.value"
-        >
-          <span class="cell-label">{{ l.label }}</span>
-          <span class="cell-value">{{ l.hint }}</span>
-          <van-icon v-if="level === l.value" name="success" size="18" color="var(--green)" />
-        </div>
+      <div v-if="!simpleMode" class="level-seg">
+        <button v-for="l in LEVELS" :key="l.value" class="lv-btn" :class="{ on: level === l.value }" @click="level = l.value">{{ l.label }}</button>
       </div>
+      <div v-if="!simpleMode" class="lv-hint">{{ LEVELS.find((l) => l.value === level)?.hint || '' }}</div>
 
       <!-- 白名单命令（高级模式）：按任务技术栈放行命令首词 -->
       <div v-if="!simpleMode" class="wx-group">
@@ -345,4 +334,10 @@ async function submit() {
   border: 1px solid transparent;
 }
 .wl-chip.on { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); border-color: var(--ok); }
+
+/* 预览稿档级分段（40px rbtn） */
+.level-seg { display: flex; gap: 8px; margin: 0 12px 8px; }
+.lv-btn { flex: 1; height: 40px; border: 1px solid var(--line-strong); border-radius: var(--r-ctl); background: var(--bg-raised); font-size: 13px; color: var(--text-2); }
+.lv-btn.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.lv-hint { margin: 0 12px 12px; font-size: var(--fs-meta); color: var(--text-3); }
 </style>

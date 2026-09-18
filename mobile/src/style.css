@@ -333,7 +333,7 @@ input, textarea, select { font-size: 16px; font-family: inherit; }
 .wx-btn {
   display: block;
   width: 100%;
-  height: 46px;
+  height: 40px;
   border: none;
   border-radius: var(--r-ctl);
   background: var(--accent);
