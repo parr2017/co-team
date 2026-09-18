@@ -128,7 +128,7 @@ function nodeIcon(status: string): string {
 .stat-item.ok .stat-num { color: var(--green); }
 .stat-item.run .stat-num { color: var(--wx-orange); }
 .stat-item.bad .stat-num { color: var(--red); }
-.stat-label { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+.stat-label { font-size: var(--fs-aux); color: var(--text-3); margin-top: 2px; }
 .wx-caption.flat { padding: 8px 2px 0; text-transform: none; letter-spacing: 0; }
 
 .task-block + .task-block { position: relative; }
@@ -139,11 +139,11 @@ function nodeIcon(status: string): string {
 .t-row { display: flex; align-items: center; gap: 8px; padding: 12px 14px; cursor: pointer; }
 .t-row:active { background: var(--panel-2); }
 .t-desc { flex: 1; min-width: 0; font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.t-tok { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.t-tok { font-size: var(--fs-meta); color: var(--text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .t-nodes { border-top: 1px dashed var(--border); padding: 6px 14px 10px; }
 .n-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
 .n-name { flex: 1; min-width: 0; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.n-meta { font-size: 11px; color: var(--text-3); flex-shrink: 0; }
+.n-meta { font-size: var(--fs-meta); color: var(--text-3); flex-shrink: 0; }
 
 .err-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 64px 0; }
 .err-text { font-size: 14px; color: var(--text-2); }

@@ -101,7 +101,7 @@ watch(
 .fs-head { display: flex; justify-content: space-between; align-items: center; padding: 0 16px 10px; }
 .fs-title { font-size: 17px; font-weight: 600; color: var(--text); }
 .fs-use { font-size: 15px; color: var(--accent); }
-.fs-path { font-size: 12px; color: var(--wx-blue); padding: 0 16px 8px; word-break: break-all; }
+.fs-path { font-size: var(--fs-aux); color: var(--wx-blue); padding: 0 16px 8px; word-break: break-all; }
 .fs-up { margin: 0 12px; }
 .fs-loading { margin: 20px auto; }
 .fs-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: 14px; }

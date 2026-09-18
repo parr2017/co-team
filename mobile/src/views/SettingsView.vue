@@ -99,10 +99,10 @@ function onLevelPicked({ selectedOptions }: { selectedOptions: { value: string; 
 .settings-page { min-height: 100vh; background: var(--page-bg, #0b0d10); padding-bottom: 60px; }
 .section { margin-top: 12px; }
 .section-title { font-size: 15px; font-weight: 600; color: var(--text-1, #fff); padding: 4px 20px; }
-.section-desc { font-size: 11px; color: var(--text-3, #8a9099); padding: 2px 20px 8px; line-height: 1.5; }
+.section-desc { font-size: var(--fs-meta); color: var(--text-3); padding: 2px 20px 8px; line-height: 1.5; }
 .whitelist { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; }
-.cmd-tag { font-size: 12px; color: var(--text-2, #cfd4da); background: rgba(127, 127, 127, 0.14); border: 1px solid rgba(127, 127, 127, 0.25); border-radius: 4px; padding: 2px 8px; }
-.whitelist .empty { font-size: 11px; color: var(--text-3, #8a9099); }
+.cmd-tag { font-size: var(--fs-aux); color: var(--text-2); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; }
+.whitelist .empty { font-size: var(--fs-meta); color: var(--text-3); }
 .save-bar { display: flex; justify-content: center; margin-top: 16px; }
 .mono { font-family: Consolas, monospace; }
 </style>

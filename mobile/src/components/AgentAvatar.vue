@@ -72,7 +72,7 @@ const background = computed(() => {
   user-select: none;
   letter-spacing: 1px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
   transition: transform 0.12s ease;
 }
 .agent-avatar:active { transform: scale(0.94); }

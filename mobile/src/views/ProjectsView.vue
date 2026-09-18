@@ -183,8 +183,8 @@ async function submitCreate() {
 </template>
 
 <style scoped>
-.ws-hint { font-size: 10px; color: var(--text-3); padding: 2px 16px 8px; }
-.self-ref-hint { font-size: 11px; color: var(--text-3); margin-left: 8px; }
+.ws-hint { font-size: var(--fs-meta); color: var(--text-3); padding: 2px 16px 8px; }
+.self-ref-hint { font-size: var(--fs-meta); color: var(--text-3); margin-left: 8px; }
 .page { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 .pull-wrap { flex: 1; min-height: 0; overflow: hidden; }
 .pull { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
@@ -196,9 +196,9 @@ async function submitCreate() {
 .p-icon {
   position: relative; width: 46px; height: 46px; border-radius: 11px;
   background: var(--accent);
-  color: #fff; display: flex; align-items: center; justify-content: center;
+  color: var(--accent-text); display: flex; align-items: center; justify-content: center;
   font-size: 19px; font-weight: 800; flex-shrink: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid color-mix(in srgb, var(--accent-text) 18%, transparent);
   overflow: visible;
 }
 .p-icon.running {
@@ -212,11 +212,11 @@ async function submitCreate() {
 }
 .p-body { flex: 1; min-width: 0; }
 .p-name { font-size: 16.5px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
-.p-sub { font-size: 12.5px; color: var(--text-2); margin-bottom: 7px; }
+.p-sub { font-size: var(--fs-aux); color: var(--text-2); margin-bottom: 7px; }
 .p-prog { display: flex; align-items: center; gap: 8px; }
 .p-track { flex: 1; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
 .p-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), #0369a1); box-shadow: 0 0 8px rgba(34, 211, 238, 0.45); transition: width 0.5s ease; }
-.p-pct { font-size: 12px; font-weight: 600; color: var(--text-2); width: 36px; text-align: right; }
+.p-pct { font-size: var(--fs-aux); font-weight: 600; color: var(--text-2); width: 36px; text-align: right; }
 
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 72px 0; }
 .empty-title { font-size: 16px; color: var(--text-2); font-weight: 600; margin-top: 6px; }

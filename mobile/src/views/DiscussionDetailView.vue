@@ -926,12 +926,12 @@ const showExp = ref(false);
 /* ---------- 工具活动行（tooltree 盒） ---------- */
 .tool-block { margin: 4px 0; background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-panel); overflow: hidden; }
 .tool-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--line); font-size: var(--fs-aux); color: var(--text-2); background: color-mix(in srgb, var(--bg-raised) 60%, transparent); }
-.tool-caret { font-size: 10px; color: var(--text-3); width: 10px; flex: none; }
+.tool-caret { font-size: var(--fs-meta); color: var(--text-3); width: 10px; flex: none; }
 .tool-agent { font-size: var(--fs-meta); font-weight: 600; flex-shrink: 0; }
 .tool-tree { margin: 0; display: flex; flex-direction: column; gap: 3px; padding: 6px 10px 7px; }
 .tool-call { display: flex; flex-direction: column; gap: 1px; }
 .tc-line { display: flex; align-items: baseline; gap: 5px; font-size: var(--fs-aux); flex-wrap: wrap; }
-.tc-icon { font-size: 10px; }
+.tc-icon { font-size: var(--fs-meta); }
 .tc-name { font-weight: 600; word-break: break-all; color: var(--text-2); }
 .tc-status { font-size: var(--fs-meta); color: var(--ok); }
 .tc-status.bad { color: var(--danger); }
@@ -949,11 +949,11 @@ const showExp = ref(false);
 .av-me {
   width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center;
   background: var(--accent); color: var(--accent-text);
-  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  font-family: var(--font-mono); font-size: var(--fs-meta); font-weight: 700;
 }
 .msg-col { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .mhead { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
-.mhead .who { font-size: 12.5px; font-weight: 700; }
+.mhead .who { font-size: var(--fs-aux); font-weight: 700; }
 .who-model { font-size: var(--fs-meta); color: var(--text-3); background: var(--bg-panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; height: 15px; line-height: 14px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ask-tag { font-size: var(--fs-meta); color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 4px; padding: 0 5px; }
 .ask-tag.answered { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
@@ -964,7 +964,7 @@ const showExp = ref(false);
 .mbody { font-size: var(--fs-body); line-height: 1.58; color: var(--text-1); min-width: 0; word-break: break-word; position: relative; }
 .b-text.dim { color: var(--text-2); }
 .b-text :deep(.mention) { color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 0 3px; font-weight: 600; }
-.b-text :deep(code) { font-family: var(--font-mono); font-size: 12px; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+.b-text :deep(code) { font-family: var(--font-mono); font-size: var(--fs-aux); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
 .b-text :deep(p) { margin: 0 0 4px; }
 .b-text :deep(p:last-child) { margin-bottom: 0; }
 .b-text :deep(ul), .b-text :deep(ol) { margin: 2px 0; padding-left: 16px; }

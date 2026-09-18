@@ -1126,7 +1126,7 @@ function nodeIcon(status: string): string {
 .action-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 10px 16px;
-  background: var(--ct-yellow-soft); border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--warn) 14%, transparent); border-bottom: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }

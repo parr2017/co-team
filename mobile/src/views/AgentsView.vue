@@ -182,11 +182,11 @@ function goTaskOf(name: string) {
 }
 .m-busy-text { color: var(--wx-orange); }
 .m-skills { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
-.m-skill { font-size: 10px; color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); border: 1px solid rgba(76, 194, 255, 0.22); border-radius: 4px; padding: 0 5px; }
-.m-skill-more { font-size: 10px; color: var(--text-3); }
+.m-skill { font-size: var(--fs-meta); color: var(--wx-blue); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 4px; padding: 0 5px; }
+.m-skill-more { font-size: var(--fs-meta); color: var(--text-3); }
 .m-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
-.m-model { font-size: 11px; color: var(--wx-blue); background: rgba(76, 194, 255, 0.08); border: 1px solid rgba(76, 194, 255, 0.22); border-radius: 5px; padding: 2px 7px; }
-.m-count { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.m-model { font-size: var(--fs-meta); color: var(--wx-blue); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 5px; padding: 2px 7px; }
+.m-count { font-size: var(--fs-meta); color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 .empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 72px 0; }
 .empty-text { font-size: 14px; color: var(--text-3); }

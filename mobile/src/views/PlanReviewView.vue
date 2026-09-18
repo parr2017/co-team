@@ -131,10 +131,10 @@ function nodeStatusColor(s: string): string {
 .n-body { flex: 1; min-width: 0; }
 .n-name { font-size: 16px; color: var(--text); margin-bottom: 2px; }
 .n-flag {
-  font-size: 11px; color: var(--wx-orange);
+  font-size: var(--fs-meta); color: var(--wx-orange);
   border: 1px solid var(--wx-orange); border-radius: 3px; padding: 0 3px; margin-left: 4px;
 }
-.n-sub { display: flex; gap: 8px; font-size: 12px; color: var(--text-3); }
+.n-sub { display: flex; gap: 8px; font-size: var(--fs-aux); color: var(--text-3); }
 .n-agent { color: var(--wx-blue); flex-shrink: 0; }
 .n-reason {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

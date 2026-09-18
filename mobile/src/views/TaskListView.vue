@@ -434,7 +434,7 @@ onUnmounted(() => {
   position: absolute; top: -5px; right: -9px;
   min-width: 18px; height: 18px; padding: 0 5px;
   border-radius: 10px; background: var(--accent); color: var(--accent-text);
-  font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
+  font-size: var(--fs-meta); font-weight: 600; line-height: 18px; text-align: center;
   box-shadow: 0 0 0 2.5px var(--panel);
 }
 .s-dot {
@@ -449,7 +449,7 @@ onUnmounted(() => {
   font-size: 16.5px; color: var(--text); font-weight: 500; line-height: 1.35;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.s-time { font-size: 12px; color: var(--text-3); flex-shrink: 0; margin-top: 1px; }
+.s-time { font-size: var(--fs-aux); color: var(--text-3); flex-shrink: 0; margin-top: 1px; }
 .s-line2 { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 4px; }
 .s-digest {
   font-size: 13.5px; color: var(--text-2); line-height: 1.4;
@@ -459,7 +459,7 @@ onUnmounted(() => {
 
 .s-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .s-proj {
-  font-size: 11px; color: var(--text-3); background: var(--panel-2);
+  font-size: var(--fs-meta); color: var(--text-3); background: var(--panel-2);
   border-radius: 999px; padding: 2px 8px; max-width: 96px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -492,13 +492,13 @@ onUnmounted(() => {
 .queue-strip.queue-blocked { border-color: var(--red); }
 .q-head { display: flex; align-items: center; gap: 8px; }
 .q-tag {
-  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 5px;
+  font-size: var(--fs-meta); font-weight: 600; padding: 2px 8px; border-radius: 5px;
   color: var(--accent); background: var(--accent-soft);
   border: 1px solid var(--accent-line);
 }
 .q-tag.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
-.q-info { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.q-reason { margin-top: 6px; font-size: 12px; color: var(--red); line-height: 1.4; }
+.q-info { flex: 1; min-width: 0; font-size: var(--fs-aux); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-reason { margin-top: 6px; font-size: var(--fs-aux); color: var(--red); line-height: 1.4; }
 </style>
 
 <style scoped>
