@@ -27,9 +27,20 @@
   /* ---- 强调色（暗 = 暖橙）---- */
   --accent: #ff9349;
   --accent-text: #0c0d10;
-  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
   --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
   --accent-press: color-mix(in srgb, var(--accent) 82%, #000);
+
+  /* ---- agent 身份调色板（与 web utils/agentColor.ts 同源，主题无关；改色须两端同步） ---- */
+  --ag-dev: #178a3e;
+  --ag-test: #b8860b;
+  --ag-review: #7c53c4;
+  --ag-deploy: #cc7a29;
+  --ag-docs: #0e8fa3;
+  --ag-refactor: #c4548f;
+  --ag-launcher: #2f6fed;
+  --ag-grader: #c4548f;
+  --ag-fallback: #8a6d3b;
 
   /* ---- 语义色 ---- */
   --ok: #3fb96f;
@@ -147,6 +158,11 @@
   --van-nav-bar-arrow-size: 20px;
   --van-nav-bar-icon-color: var(--text-2);
   --van-nav-bar-height: 44px;
+  /* 预览 p-nav 版式：标题左对齐（默认绝对定位居中 → 左置） */
+  --van-nav-bar-title-text-color: var(--text-1);
+  --van-cell-group-inset-radius: var(--r-panel);
+  --van-search-content-background: var(--bg-overlay);
+  --van-button-default-height: 40px;
   --van-nav-bar-text-color: var(--accent);
   --van-tabbar-background: var(--bg-panel);
   --van-tabbar-item-active-color: var(--accent);
@@ -227,7 +243,7 @@ html.light {
   --text-3: #8f98a5;
   --accent: #2f6fed;
   --accent-text: #ffffff;
-  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
   --accent-press: color-mix(in srgb, var(--accent) 82%, #000);
   --ok: #1a7f37;
   --warn: #9a6700;
@@ -376,3 +392,14 @@ input, textarea, select { font-size: 16px; font-family: inherit; }
 /* 统一按压反馈 */
 .pressable:active { transform: scale(0.97); }
 .pressable { transition: transform 0.12s ease; }
+
+/* ---- 预览稿 p-nav 版式：nav-bar 标题左对齐 ---- */
+.van-nav-bar__title {
+  position: absolute !important;
+  left: 46px !important;
+  right: auto !important;
+  transform: none !important;
+  text-align: left !important;
+  font-weight: 700 !important;
+  font-size: var(--fs-title) !important;
+}
