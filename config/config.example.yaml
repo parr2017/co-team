@@ -135,6 +135,8 @@ discussion:
   permissions:
     level: full
     # whitelist_commands: [npm, node, git, netstat]
+    allow_sensitive: false  # true 时群聊放行敏感命令（rm/python -c/git push 等）
+                            # 绝对禁止命令（sudo/schtasks/vssadmin/robocopy /mir 等）仍拦截
   max_rounds: 3                     # 一条用户消息最多驱动的讨论轮数（含轮内插话重启）
   project_context_char_cap: 24000   # 项目背景+全量经验注入的字符预算（超出按最旧经验省略并显式标注）
 knowledge:

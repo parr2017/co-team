@@ -18,13 +18,15 @@ export interface PermissionPolicy {
   level: PermissionLevel;
   whitelistCommands: string[] | null;
   maxTimeSec: number;
+  /** 群聊放行敏感命令（rm/python -c/git push 等）；绝对禁止命令（sudo/schtasks 等）不受此开关影响 */
+  allow_sensitive?: boolean;
 }
 
 /** 已告警过的非法 level（每进程每值一次——o3xmkraj 实测 `level: normal` 静默回退
  *  whitelist_auto，用户想要的审批语义从未生效却无人知晓） */
 const warnedInvalidLevels = new Set<string>();
 
-export function policyFromConfig(permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number } | null): PermissionPolicy {
+export function policyFromConfig(permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number; allow_sensitive?: boolean } | null): PermissionPolicy {
   const whitelistCommands = permissions?.whitelist_commands ?? null;
   const raw = (permissions?.level || '').trim();
   if (raw && !isPermissionLevel(raw) && !warnedInvalidLevels.has(raw)) {
@@ -37,6 +39,7 @@ export function policyFromConfig(permissions?: { level?: string; whitelist_comma
     level,
     whitelistCommands,
     maxTimeSec: permissions?.max_time_sec ?? 300,
+    allow_sensitive: permissions?.allow_sensitive ?? false,
   };
 }
 
@@ -54,6 +57,7 @@ export function policyWithLevel(
     level: isPermissionLevel(raw) ? raw : base.level,
     whitelistCommands,
     maxTimeSec: base.maxTimeSec,
+    allow_sensitive: base.allow_sensitive,
   };
 }
 

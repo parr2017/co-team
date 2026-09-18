@@ -84,7 +84,7 @@ export interface AppConfig {
   daily_report?: { enabled: boolean; hour: number };
   /** 群组讨论引擎 v2：组内工具执行策略（缺省=项目目录监狱内完全控制）、每触发轮数上限、全量背景注入预算、并行发言并发上限 */
   discussion?: {
-    permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number };
+    permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number; allow_sensitive?: boolean };
     max_rounds?: number;
     project_context_char_cap?: number;
     /** 并行发言并发上限（P2-4）：同一批发言者并发执行的信号量宽度，超模型池容量自然排队 */
