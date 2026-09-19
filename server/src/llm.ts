@@ -151,11 +151,11 @@ export async function listUpstreamModels(apiKey: string, baseUrl: string): Promi
  * `onDelta` (7th arg) receives raw content deltas as they arrive (streaming mode only;
  * the non-streaming path cannot report progress). Consumers must treat it as best-effort.
  */
-export async function chat(entry: ModelEntry, messages: { role: string; content: string }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown> }): Promise<LlmResponse> {
+export async function chat(entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown>; onReason?: (delta: string) => void }): Promise<LlmResponse> {
   const client = getClient(entry);
   // 输出上限是模型属性（model_pool 的 max_tokens），调用方不传即取模型配置
   const cap = maxTokens ?? entry.max_tokens ?? 128000;
-  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody);
+  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody, opts?.onReason);
   return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs, opts?.extraBody);
 }
 
@@ -183,7 +183,7 @@ function startWatchdog(
   }, every);
 }
 
-async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>): Promise<LlmResponse> {
+async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>, onReason?: (delta: string) => void): Promise<LlmResponse> {
   const startedAt = Date.now();
   const controller = new AbortController();
   const effectiveSignal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
@@ -228,8 +228,15 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
       // 思考熔断（o3xmkraj 复盘）：聚合网关对推理通道常不受 max_tokens 约束（实测
       // 32000 档返回 38369 token 且正文空）——纯思考超当轮预算 1.5× 仍无正文时
       // 客户端主动止损，不再陪跑溢出尾巴（每轮省数分钟）。
-      const rc = (choice?.delta as { reasoning_content?: unknown } | undefined)?.reasoning_content;
-      if (typeof rc === 'string' && rc) reasoningChars += rc.length;
+      const rc = (choice?.delta as { reasoning_content?: unknown; reasoning?: unknown } | undefined)?.reasoning_content
+        ?? (choice?.delta as { reasoning?: unknown } | undefined)?.reasoning;
+      if (typeof rc === 'string' && rc) {
+        reasoningChars += rc.length;
+        // 思考流回调（协作会话展示"思考过程"用）：与 onDelta 同纪律——消费者异常绝不打断流
+        if (onReason) {
+          try { onReason(rc); } catch { /* ignore */ }
+        }
+      }
       if (!sawContent && reasoningChars / 4 > maxTokens * 1.5) {
         controller.abort(new Error('reasoning_burnout'));
         throw new Error(`LLM 调用失败：reasoning_burnout(纯思考已超 ${Math.round(maxTokens * 1.5)} token 仍无正文——客户端提前止损)`);

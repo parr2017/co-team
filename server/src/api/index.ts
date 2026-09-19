@@ -15,6 +15,7 @@ import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
 import { mergeTaskBranch } from '../git';
 import { DiscussionError } from '../discussion';
+import { ConvoError } from '../convo';
 import { WorkspaceError, assertStandaloneWorkspace, slugifyProjectName, prepareSelfdevClone, removeSelfdev } from '../workspace';
 import { getDocRegistry } from '../ssot';
 import { listFiles, readFile } from '../tools';
@@ -23,6 +24,7 @@ import type { AppConfig, OrchestrationConfig } from '../config';
 import { PROJECT_ROOT } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
 import type { FeishuHandler } from '../feishu/webhook';
+import { registerConvoRoutes } from './convos';
 import { getLogger } from '../logger';
 import type { McpManager } from '../mcp/manager';
 import type { McpServerConfig, McpServerStatus } from '../mcp/types';
@@ -63,7 +65,7 @@ const gbkDecoder: TextDecoder | null = (() => {
   try { return new TextDecoder('gbk'); } catch { return null; }
 })();
 
-async function readJsonAuto<T>(c: Context): Promise<T> {
+export async function readJsonAuto<T>(c: Context): Promise<T> {
   const buf = await c.req.arrayBuffer();
   if (!buf.byteLength) return c.req.json<T>();
   let text: string;
@@ -102,8 +104,8 @@ export function createApi(ctx: ApiContext): Hono {
   });
 
   app.onError((err, c) => {
-    // DiscussionError/WorkspaceError carry their own HTTP status (409 busy / 400 validation / ...)
-    const status = err instanceof HttpError || err instanceof DiscussionError || err instanceof WorkspaceError ? err.status : 500;
+    // DiscussionError/ConvoError/WorkspaceError carry their own HTTP status (409 busy / 400 validation / ...)
+    const status = err instanceof HttpError || err instanceof DiscussionError || err instanceof ConvoError || err instanceof WorkspaceError ? err.status : 500;
     logger.error('API error', { error: err.message, status, stack: err.stack });
     return c.json({ detail: err.message }, status as any);
   });
@@ -1478,6 +1480,33 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'saved', model_pool: pool });
   });
 
+  // feature: 模型标签模板 —— 用户自定义命名标签组合（如「视觉+推理」），模型行一键应用
+  app.get('/api/config/model-tag-templates', (c) => {
+    return c.json({ templates: ctx.config.model_tag_templates ?? [] });
+  });
+
+  app.put('/api/config/model-tag-templates', async (c) => {
+    const { saveTagTemplates } = await import('../configStore');
+    const body = await c.req.json<{ templates?: any[] }>();
+    const templates = body.templates;
+    if (!Array.isArray(templates)) throw new HttpError(400, 'templates must be an array');
+    const cleaned = templates.map((t) => ({
+      name: String(t?.name ?? '').trim(),
+      tags: Array.isArray(t?.tags) ? t.tags.map((x: any) => String(x).trim()).filter(Boolean) : [],
+    }));
+    for (const t of cleaned) {
+      if (!t.name) throw new HttpError(400, 'each template needs a name');
+    }
+    const names = new Set<string>();
+    for (const t of cleaned) {
+      if (names.has(t.name)) throw new HttpError(400, `duplicate template name: ${t.name}`);
+      names.add(t.name);
+    }
+    saveTagTemplates(cleaned);
+    ctx.config.model_tag_templates = cleaned;
+    return c.json({ status: 'saved', templates: cleaned });
+  });
+
   app.post('/api/config/model-pool/test', async (c) => {
     const { chat } = await import('../llm');
     const { makeEntry } = await import('../scheduler');
@@ -1787,6 +1816,10 @@ export function createApi(ctx: ApiContext): Hono {
     const skills = reloadSkills(ctx.config.agents_dir, path.join(PROJECT_ROOT, 'skills'));
     return c.json({ status: 'reloaded', total: skills.length, skills: skills.map((s) => ({ name: s.name, source: s.source })) });
   });
+
+  // ---------- 协作会话（单 agent 长对话直接操作项目） ----------
+
+  registerConvoRoutes(app, ctx);
 
   // ---------- feishu bot (event subscription mode) ----------
 

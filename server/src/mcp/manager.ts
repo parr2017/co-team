@@ -169,7 +169,10 @@ export class McpManager implements McpBridge {
 
   private agentAllowed(agent: string, serverName: string): boolean {
     const allowed = this.agentServers?.(agent);
-    return Array.isArray(allowed) && allowed.includes(serverName);
+    if (!Array.isArray(allowed)) return false;
+    // '*' 通配：协作会话主 agent（partner）等"面向用户的通用 agent"可见全部已配置服务
+    if (allowed.includes('*')) return true;
+    return allowed.includes(serverName);
   }
 
   /** agent 可见且已连接的工具（server 白名单 ∩ allow_tools） */

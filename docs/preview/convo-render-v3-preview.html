@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>协作会话 · 内容渲染重设计 v3</title>
+<style>
+:root {
+  --bg-page:#0c0d10; --bg-panel:#121419; --bg-raised:#181b21; --bg-overlay:#1d2129; --bg-inset:#0f1115;
+  --line:#23272f; --line-strong:#31363f; --text-1:#e9ebee; --text-2:#98a0ab; --text-3:#626a76;
+  --accent:#ff9349; --accent-text:#0c0d10; --ok:#3fb96f; --warn:#d29922; --danger:#e5534b;
+  --fs-meta:11px; --fs-aux:12px; --fs-body:14px;
+  --r-ctl:6px; --r-panel:10px;
+  --font-ui:-apple-system,'Segoe UI','Microsoft YaHei',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono','SF Mono',Consolas,monospace;
+}
+html.light {
+  --bg-page:#f5f6f8; --bg-panel:#ffffff; --bg-raised:#ffffff; --bg-overlay:#ffffff; --bg-inset:#f2f4f7;
+  --line:#e4e7ec; --line-strong:#cdd3db; --text-1:#171a20; --text-2:#5b6472; --text-3:#8f98a5;
+  --accent:#2f6fed; --accent-text:#ffffff; --ok:#1a7f37; --warn:#9a6700; --danger:#cf222e;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font-ui); background:var(--bg-page); color:var(--text-1); font-size:var(--fs-body); }
+.top { position:fixed; top:0; left:0; right:0; height:44px; background:var(--bg-panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; padding:0 16px; z-index:10; }
+.top h1 { font-size:15px; font-weight:600; }
+.top .sp { flex:1; }
+.theme-btn { font-size:12px; padding:4px 12px; border-radius:6px; border:1px solid var(--line-strong); background:none; color:var(--text-2); cursor:pointer; }
+.note { font-size:11px; color:var(--text-3); }
+
+.wrap { max-width:820px; margin:0 auto; padding:64px 20px 80px; }
+.day-sep { text-align:center; font-size:var(--fs-meta); color:var(--text-3); display:flex; align-items:center; gap:12px; margin:18px 0; }
+.day-sep::before,.day-sep::after { content:''; flex:1; height:1px; background:var(--line); }
+
+/* ============ 用户消息：轻量内联条 ============ */
+.user-row { display:flex; flex-direction:row-reverse; gap:8px; margin:14px 0 6px; }
+.user-msg { max-width:75%; background:color-mix(in srgb,var(--accent) 12%,var(--bg-panel)); border:1px solid color-mix(in srgb,var(--accent) 25%,transparent); border-radius:10px 10px 2px 10px; padding:8px 12px; font-size:13px; line-height:1.6; white-space:pre-wrap; }
+.user-msg .imgs { display:flex; gap:5px; margin-top:6px; }
+.user-msg .imgs .ph { width:72px; height:54px; border-radius:4px; background:var(--bg-inset); border:1px solid var(--line-strong); display:flex; align-items:center; justify-content:center; font-size:10px; color:var(--text-3); }
+
+/* ============ 轮次块 ============ */
+.turn { margin:16px 0; border:1px solid var(--line); border-radius:var(--r-panel); background:var(--bg-panel); overflow:hidden; }
+.turn-head { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line); background:var(--bg-inset); }
+.t-avatar { width:22px; height:22px; border-radius:6px; background:var(--accent); color:var(--accent-text); font-size:11px; font-weight:700; display:flex; align-items:center; justify-content:center; flex:none; }
+.t-name { font-size:13px; font-weight:600; }
+.t-model { font-family:var(--font-mono); font-size:10px; color:var(--text-3); }
+.t-meta { margin-left:auto; display:flex; gap:8px; font-size:10px; color:var(--text-3); font-family:var(--font-mono); }
+.t-running { width:7px; height:7px; border-radius:50%; background:var(--ok); animation:lp 1.4s infinite; }
+@keyframes lp { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* 活动区：终端日志流 */
+.activity { padding:8px 12px; display:flex; flex-direction:column; gap:1px; }
+.act-line { font-family:var(--font-mono); font-size:11px; color:var(--text-2); display:flex; gap:8px; line-height:1.9; }
+.act-line .ok { color:var(--ok); flex:none; } .act-line .err { color:var(--danger); flex:none; } .act-line .rn { color:var(--text-3); flex:none; }
+.act-line .args { color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.act-line .res { color:var(--text-3); margin-left:auto; flex:none; }
+.act-line.dim { opacity:.75; }
+
+/* 思考：单行折叠，展开为缩进浅字 */
+.think { border-top:1px dashed var(--line); }
+.think > summary { list-style:none; display:flex; align-items:center; gap:8px; padding:7px 12px; font-size:var(--fs-meta); color:var(--text-3); cursor:pointer; user-select:none; }
+.think > summary::-webkit-details-marker { display:none; }
+.think > summary .car { transition:transform .15s; font-size:9px; display:inline-flex; }
+.think[open] > summary .car { transform:rotate(90deg); }
+.think > summary:hover { color:var(--text-2); }
+.think-body { padding:2px 12px 10px 24px; font-size:11px; line-height:1.75; color:var(--text-3); white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow-y:auto; }
+
+/* 结论区 */
+.conclusion { padding:14px 18px 6px; }
+.conclusion .md { line-height:1.75; font-size:14px; overflow-wrap:anywhere; }
+.conclusion .md h4 { font-size:14px; margin:10px 0 4px; }
+.conclusion .md p { margin:6px 0; color:var(--text-1); }
+.conclusion .md li { margin-left:18px; color:var(--text-2); margin:4px 0; }
+.conclusion .md code { font-family:var(--font-mono); font-size:12px; background:var(--bg-inset); padding:1px 5px; border-radius:4px; border:1px solid var(--line); }
+.conclusion .md pre { background:var(--bg-page); border:1px solid var(--line); border-radius:6px; padding:10px 12px; font-family:var(--font-mono); font-size:12px; line-height:1.7; overflow-x:auto; margin:8px 0; color:var(--text-2); }
+
+/* 结论脚注：diff 摘要条 */
+.turn-foot { display:flex; align-items:center; gap:10px; padding:8px 18px 12px; flex-wrap:wrap; }
+.foot-chip { font-family:var(--font-mono); font-size:10px; color:var(--text-2); border:1px solid var(--line-strong); border-radius:99px; padding:2px 10px; display:inline-flex; gap:6px; align-items:center; }
+.foot-chip .add { color:var(--ok); } .foot-chip .del { color:var(--danger); }
+.foot-btn { margin-left:auto; font-size:10px; padding:3px 10px; border-radius:6px; border:1px solid var(--line-strong); background:none; color:var(--text-2); cursor:pointer; }
+.foot-btn:hover { color:var(--accent); border-color:var(--accent); }
+
+/* 运行中态 */
+.live-think { padding:8px 12px 2px 12px; }
+.live-think .lt-label { font-size:10px; color:var(--text-3); letter-spacing:.1em; margin-bottom:2px; }
+.live-think .lt-body { font-size:11px; line-height:1.7; color:var(--text-3); white-space:pre-wrap; max-height:140px; overflow-y:auto; }
+.cursor { display:inline-block; width:7px; height:13px; background:var(--accent); vertical-align:-2px; animation:blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity:0; } }
+
+/* 异常卡：更轻的内联条 */
+.inline-card { margin:10px 0 0 0; border:1px solid color-mix(in srgb,var(--warn) 35%,transparent); background:color-mix(in srgb,var(--warn) 6%,var(--bg-panel)); border-radius:8px; padding:7px 12px; font-size:11px; color:var(--warn); display:flex; align-items:center; gap:8px; }
+.inline-card.danger { border-color:color-mix(in srgb,var(--danger) 35%,transparent); background:color-mix(in srgb,var(--danger) 6%,var(--bg-panel)); color:var(--danger); }
+.inline-card .cmd { font-family:var(--font-mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.inline-card button { margin-left:auto; flex:none; font-size:10px; padding:2px 10px; border-radius:5px; border:1px solid currentColor; background:none; color:inherit; cursor:pointer; opacity:.9; }
+.approve-acts { display:flex; gap:6px; margin-left:auto; }
+.approve-acts button { font-size:10px; padding:2px 10px; border-radius:5px; border:1px solid var(--line-strong); background:none; color:var(--text-2); cursor:pointer; }
+.approve-acts button.p { border-color:var(--accent); color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>协作会话 · 内容渲染重设计 v3</h1>
+  <span class="note">一轮一块：执行日志 → 思考折叠 → 结论正文</span>
+  <span class="sp"></span>
+  <button class="theme-btn" onclick="document.documentElement.classList.toggle('light')">亮 / 暗</button>
+</div>
+
+<div class="wrap">
+  <div class="day-sep">今天 16:20</div>
+
+  <!-- 用户消息 -->
+  <div class="user-row"><div class="user-msg">看看 package.json，把构建流程总结一下<div class="imgs"><div class="ph">截图.png</div></div></div></div>
+
+  <!-- ============ 轮次块（已完成）：活动 + 思考 + 结论 ============ -->
+  <div class="turn">
+    <div class="turn-head">
+      <div class="t-avatar">搭</div>
+      <div class="t-name">搭档</div>
+      <div class="t-model">deepseek-v4-flash</div>
+      <div class="t-meta"><span>3 次工具</span><span>8.4s</span></div>
+    </div>
+
+    <div class="activity">
+      <div class="act-line"><span class="ok">✓</span><span class="args">read_file package.json</span><span class="res">1.2KB</span></div>
+      <div class="act-line"><span class="ok">✓</span><span class="args">exec「npm run build」</span><span class="res">exit 0 · 11.2s</span></div>
+      <div class="act-line"><span class="err">✗</span><span class="args">list_directory src/</span><span class="res">已纠偏 → read_dir</span></div>
+      <div class="act-line dim"><span class="rn">↳</span><span class="args">别名归一后重试成功（3 个文件）</span></div>
+    </div>
+
+    <details class="think">
+      <summary><span class="car">▶</span>思考 6.4s<span style="margin-left:auto;opacity:.6">构建脚本 4 个，无测试命令</span></summary>
+      <div class="think-body">先读 package.json 确认 scripts。dev:h5 与 build:h5 都走 uni CLI，说明是 uni-app 项目。跑一次 build:h5 验证产物……注意 list_directory 不是本系统工具，可用 read_dir 代替。结论里应提醒用户没有 test 命令，建议补。</div>
+    </details>
+
+    <div class="conclusion">
+      <div class="md">
+        <p>这是个 <b>uni-app 项目</b>（H5 + Android），构建流程两条：</p>
+        <li><code>npm run dev:h5</code> — 开发服务（uni dev）</li>
+        <li><code>npm run build:h5</code> — 产物构建（uni build），刚跑过一次，exit 0</li>
+        <p>注意 <code>scripts</code> 里没有 test 命令，需要的话我可以补 vitest。</p>
+      </div>
+    </div>
+
+    <div class="turn-foot">
+      <span class="foot-chip">📊 M pages/Login.vue <span class="add">+9</span> <span class="del">−2</span></span>
+      <span class="foot-chip">M styles/mobile.css <span class="add">+3</span> <span class="del">−1</span></span>
+      <button class="foot-btn">查看 diff</button>
+    </div>
+  </div>
+
+  <!-- 用户追问 + 第二轮（含审批卡） -->
+  <div class="user-row"><div class="user-msg">好，把 vitest 补上然后推到远端</div></div>
+
+  <div class="turn">
+    <div class="turn-head">
+      <div class="t-avatar">搭</div>
+      <div class="t-name">搭档</div>
+      <div class="t-model">glm-4.7</div>
+      <div class="t-meta"><span>5 次工具</span><span>21.7s</span></div>
+    </div>
+
+    <div class="activity">
+      <div class="act-line"><span class="ok">✓</span><span class="args">exec「npm i -D vitest」</span><span class="res">exit 0 · 14.3s</span></div>
+      <div class="act-line"><span class="ok">✓</span><span class="args">write_file vitest.config.ts</span><span class="res">+12</span></div>
+      <div class="act-line"><span class="ok">✓</span><span class="args">edit_file package.json</span><span class="res">+2 −0</span></div>
+      <div class="act-line"><span class="ok">✓</span><span class="args">exec「npx vitest run」</span><span class="res">exit 0 · 2.1s</span></div>
+    </div>
+
+    <!-- 审批：轻量内联条 -->
+    <div class="inline-card danger">
+      <span>待审批</span><span class="cmd">git push origin main</span>
+      <div class="approve-acts">
+        <button>拒绝</button><button>总是允许</button><button class="p">批准一次</button>
+      </div>
+    </div>
+
+    <details class="think">
+      <summary><span class="car">▶</span>思考 3.1s</summary>
+      <div class="think-body">vitest 装好且空跑通过；push 属于白名单外命令，按策略 park 等用户拍板——等批准后再收尾。</div>
+    </details>
+
+    <div class="conclusion">
+      <div class="md">
+        <p>vitest 已就位（配置 + 首个冒烟用例通过）。<code>git push</code> 在等你批准——批准后我完成推送并汇报。</p>
+      </div>
+    </div>
+    <div class="turn-foot"></div>
+  </div>
+
+  <!-- ============ 运行中轮次块 ============ -->
+  <div class="turn">
+    <div class="turn-head">
+      <div class="t-avatar">搭</div>
+      <div class="t-name">搭档</div>
+      <div class="t-model">Qwen3.6</div>
+      <div class="t-meta"><span class="t-running"></span><span>运行中</span></div>
+    </div>
+
+    <div class="activity">
+      <div class="act-line"><span class="ok">✓</span><span class="args">read_file src/main.ts</span><span class="res">116 行</span></div>
+      <div class="act-line"><span class="ok">✓</span><span class="args">grep "createRouter"</span><span class="res">4 处</span></div>
+      <div class="act-line dim"><span class="rn">▸</span><span class="args">正在读取 router.ts…</span></div>
+    </div>
+
+    <div class="live-think">
+      <div class="lt-label">思考</div>
+      <div class="lt-body" id="liveThink"></div>
+    </div>
+
+    <div class="conclusion">
+      <div class="md" id="liveOut">路由集中在 <code>src/router.ts</code><span class="cursor"></span></div>
+    </div>
+    <div class="turn-foot"></div>
+  </div>
+
+  <!-- 降级：内联条 -->
+  <div class="inline-card">
+    <span>降级</span><span>主模型 deepseek-v4-flash 连接超时，本轮已用 glm-4.7 继续</span><button>改回主模型</button>
+  </div>
+</div>
+
+<script>
+// 思考流动画 + 打字动画（模拟运行中）
+const thinkText = 'main.ts 只挂载了 App 与 router；要判断「页面注册是否集中」，需读 router.ts 的路由表结构……';
+const outText = '，包含 6 个页面：任务、群聊、协作、项目、成员、指标。';
+let ti = 0, oi = 0;
+const lt = document.getElementById('liveThink'), lo = document.getElementById('liveOut');
+const keepCursor = () => { const c = lo.querySelector('.cursor'); lo.innerHTML = '路由集中在 <code>src/router.ts</code>' + outText.slice(0, oi) + '<span class="cursor"></span>'; };
+setInterval(() => { if (ti < thinkText.length) { ti += 2; lt.textContent = thinkText.slice(0, ti); } }, 60);
+setInterval(() => { if (oi < outText.length) { oi += 1; keepCursor(); } }, 90);
+</script>
+</body>
+</html>

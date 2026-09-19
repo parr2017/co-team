@@ -13,6 +13,7 @@ const activeTab = computed(() => {
   if (route.meta.tab === 'agents') return 'agents';
   if (route.meta.tab === 'projects') return 'projects';
   if (route.meta.tab === 'discussions') return 'discussions';
+  if (route.meta.tab === 'convo') return 'convo';
   if (route.meta.tab === 'metrics') return 'metrics';
   return 'tasks';
 });
@@ -41,7 +42,7 @@ function dismissTokenGate() {
 <template>
   <div class="app-root">
     <router-view v-slot="{ Component }">
-      <keep-alive include="TaskListView,AgentsView,ProjectsView,DiscussionListView">
+      <keep-alive include="TaskListView,AgentsView,ProjectsView,DiscussionListView,ConvoListView">
         <component :is="Component" />
       </keep-alive>
     </router-view>
@@ -55,6 +56,7 @@ function dismissTokenGate() {
         </template>
       </van-tabbar-item>
       <van-tabbar-item to="/discussions" name="discussions" icon="friends-o">沟通</van-tabbar-item>
+      <van-tabbar-item to="/convo" name="convo" icon="user-o">协作</van-tabbar-item>
       <van-tabbar-item to="/projects" name="projects" icon="apps-o">项目</van-tabbar-item>
       <van-tabbar-item to="/agents" name="agents" icon="manager-o">成员</van-tabbar-item>
       <van-tabbar-item to="/metrics" name="metrics" icon="bar-chart-o">指标</van-tabbar-item>

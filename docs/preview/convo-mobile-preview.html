@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>协作会话 · Mobile 预览 v3</title>
+<style>
+:root {
+  --bg-page:#f5f6f8; --bg-panel:#ffffff; --bg-raised:#ffffff; --bg-overlay:#ffffff; --bg-inset:#f2f4f7;
+  --line:#e4e7ec; --line-strong:#cdd3db; --text-1:#171a20; --text-2:#5b6472; --text-3:#8f98a5;
+  --accent:#2f6fed; --accent-text:#ffffff; --ok:#1a7f37; --warn:#9a6700; --danger:#cf222e;
+  --font-ui:-apple-system,'Segoe UI','Microsoft YaHei',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono','SF Mono',Consolas,monospace;
+}
+html.dark {
+  --bg-page:#0c0d10; --bg-panel:#121419; --bg-raised:#181b21; --bg-overlay:#1d2129; --bg-inset:#0f1115;
+  --line:#23272f; --line-strong:#31363f; --text-1:#e9ebee; --text-2:#98a0ab; --text-3:#626a76;
+  --accent:#ff9349; --accent-text:#0c0d10; --ok:#3fb96f; --warn:#d29922; --danger:#e5534b;
+}
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+body { font-family:var(--font-ui); background:#07080a; color:var(--text-1); display:flex; flex-direction:column; align-items:center; min-height:100vh; padding:26px 14px; gap:14px; }
+.ic { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; vertical-align:-3px; flex:none; }
+.ic.sm { width:13px; height:13px; vertical-align:-2px; }
+.mono { font-family:var(--font-mono); }
+.page-title { font-size:14px; color:var(--text-2); display:flex; gap:8px; align-items:center; }
+.page-title button { padding:5px 14px; border-radius:6px; border:1px solid var(--line-strong); background:none; color:var(--text-2); cursor:pointer; font-size:12px; font-family:var(--font-ui); }
+.page-title button.on { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
+
+.phone { width:375px; height:790px; border-radius:34px; border:9px solid #1c1e24; box-shadow:0 24px 64px rgba(0,0,0,.6); background:var(--bg-page); overflow:hidden; position:relative; display:flex; flex-direction:column; }
+.screen { flex:1; display:none; flex-direction:column; min-height:0; }
+.screen.on { display:flex; }
+
+.navbar { height:52px; display:flex; align-items:center; gap:8px; padding:12px 12px 0; background:var(--bg-panel); border-bottom:1px solid var(--line); flex:none; }
+.navbar .tt { font-size:15px; font-weight:600; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.nbtn { height:28px; min-width:28px; padding:0 8px; border-radius:6px; border:1px solid var(--line-strong); background:none; color:var(--text-2); font-size:12px; display:flex; align-items:center; justify-content:center; gap:4px; flex:none; }
+.nbtn:active { color:var(--accent); border-color:var(--accent); }
+.modelpill { height:28px; padding:0 9px; border-radius:6px; border:1px solid color-mix(in srgb,var(--accent) 40%,transparent); background:none; color:var(--accent); font-size:11px; display:flex; align-items:center; gap:5px; flex:none; }
+
+/* 列表 */
+.conv-list { flex:1; overflow:auto; padding:10px; display:flex; flex-direction:column; gap:8px; }
+.group-label { font-size:11px; color:var(--text-3); padding:4px 2px; }
+.conv-card { background:var(--bg-panel); border:1px solid var(--line); border-radius:10px; padding:11px 13px; display:flex; flex-direction:column; gap:4px; }
+.conv-card:active { border-color:var(--accent); }
+.conv-card .t { font-size:13px; font-weight:600; display:flex; align-items:center; gap:7px; }
+.conv-card .m { font-size:11px; color:var(--text-3); display:flex; gap:7px; align-items:center; }
+.dot { width:6px; height:6px; border-radius:50%; flex:none; background:var(--text-3); }
+.dot.run { background:var(--ok); } .dot.wait { background:var(--warn); }
+.newbtn { margin:2px 10px 10px; padding:10px; border-radius:10px; border:1px solid var(--line-strong); background:var(--bg-panel); color:var(--text-2); font-size:13px; text-align:center; display:flex; align-items:center; justify-content:center; gap:6px; }
+.tabbar { height:58px; background:var(--bg-panel); border-top:1px solid var(--line); display:flex; flex:none; padding-bottom:6px; }
+.tab { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:10px; color:var(--text-3); }
+.tab .bar { width:18px; height:2px; background:var(--text-3); border-radius:2px; margin-bottom:2px; }
+.tab.on { color:var(--accent); } .tab.on .bar { background:var(--accent); }
+
+/* 详情 */
+.projline { padding:5px 12px; font-size:10px; color:var(--text-3); font-family:var(--font-mono); background:var(--bg-panel); border-bottom:1px solid var(--line); flex:none; }
+.stream { flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; scroll-behavior:smooth; }
+.day-sep { text-align:center; font-size:10px; color:var(--text-3); display:flex; align-items:center; gap:8px; margin:2px 0; }
+.day-sep::before,.day-sep::after { content:''; flex:1; height:1px; background:var(--line); }
+.row { display:flex; gap:7px; }
+.row.me { flex-direction:row-reverse; }
+.avatar { width:24px; height:24px; border-radius:6px; flex:none; display:flex; align-items:center; justify-content:center; font-size:10px; color:#fff; }
+.avatar.partner { background:var(--accent); color:var(--accent-text); font-weight:700; }
+.avatar.u { background:var(--bg-overlay); color:var(--text-2); border:1px solid var(--line-strong); }
+.bubble { background:var(--bg-raised); border:1px solid var(--line); border-radius:10px; padding:8px 11px; font-size:13px; line-height:1.6; max-width:255px; user-select:none; }
+.row.me .bubble { background:color-mix(in srgb,var(--accent) 10%,var(--bg-raised)); border-color:color-mix(in srgb,var(--accent) 28%,transparent); }
+.ph { width:74px; height:55px; border-radius:5px; background:var(--bg-inset); border:1px solid var(--line-strong); display:flex; align-items:center; justify-content:center; font-size:10px; color:var(--text-3); margin-top:6px; }
+.imgrow { display:flex; gap:5px; }
+.syscard { border:1px solid var(--line); border-radius:10px; background:var(--bg-inset); font-size:11px; margin-left:31px; overflow:hidden; }
+.syscard .hd { padding:6px 10px; color:var(--text-2); display:flex; align-items:center; gap:6px; }
+.tool-line { font-family:var(--font-mono); font-size:10px; padding:2px 10px; color:var(--text-2); }
+.tool-line .ok { color:var(--ok); }
+.t-green { color:var(--ok); } .t-red { color:var(--danger); } .t-acc { color:var(--accent); }
+.degrade { border-color:color-mix(in srgb,var(--warn) 40%,transparent); color:var(--warn); }
+.approve { border-color:color-mix(in srgb,var(--danger) 40%,transparent); }
+.approve .cmd { font-family:var(--font-mono); font-size:11px; margin:0 10px 7px; padding:5px 8px; border-radius:5px; background:var(--bg-page); color:var(--danger); border:1px solid color-mix(in srgb,var(--danger) 25%,transparent); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.acts { display:flex; gap:6px; padding:0 10px 9px; }
+.btn-p { flex:1; padding:7px; border-radius:6px; border:none; background:var(--accent); color:var(--accent-text); font-size:12px; font-family:var(--font-ui); }
+.btn-g { flex:1; padding:7px; border-radius:6px; border:1px solid var(--line-strong); background:none; color:var(--text-2); font-size:12px; font-family:var(--font-ui); }
+.filecard { display:flex; align-items:center; gap:8px; padding:8px 10px; }
+.filecard .name { font-family:var(--font-mono); color:var(--text-1); }
+.askcard { border-color:color-mix(in srgb,var(--accent) 35%,transparent); }
+.askcard .q { display:flex; gap:6px; align-items:baseline; }
+.askcard .ans { display:flex; gap:6px; padding:0 10px 9px; }
+.askcard input { flex:1; padding:6px 9px; border-radius:6px; border:1px solid var(--line-strong); background:var(--bg-panel); color:var(--text-1); font-size:12px; outline:none; }
+.interrupt-sep { display:flex; align-items:center; gap:7px; color:var(--danger); font-size:10px; margin-left:31px; }
+.interrupt-sep .sq { width:8px; height:8px; border:2px solid var(--danger); border-radius:2px; flex:none; }
+.interrupt-sep::after { content:''; flex:1; height:1px; background:color-mix(in srgb,var(--danger) 30%,transparent); }
+.queued { align-self:flex-end; display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--warn); padding:2px 9px; border:1px solid color-mix(in srgb,var(--warn) 40%,transparent); border-radius:99px; }
+.sysnote { margin-left:31px; font-size:10px; color:var(--text-3); }
+.typing { display:none; align-items:center; gap:7px; margin-left:31px; color:var(--text-3); font-size:11px; }
+.typing.on { display:flex; }
+.typing .tdots::after { content:'…'; animation:td 1.2s steps(4) infinite; }
+@keyframes td { 0%{content:''} 25%{content:'·'} 50%{content:'··'} 75%{content:'···'} }
+
+/* 输入栏 */
+.composer { flex:none; border-top:1px solid var(--line); background:var(--bg-panel); padding:7px 9px 10px; display:flex; flex-direction:column; gap:6px; }
+.chips { display:none; flex-wrap:wrap; gap:5px; }
+.chips.on { display:flex; }
+.chip { display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 8px; border-radius:6px; border:1px solid var(--line-strong); background:var(--bg-inset); color:var(--text-2); }
+.chip b { cursor:pointer; font-weight:400; display:inline-flex; }
+.comp-r1 { display:flex; align-items:center; gap:7px; font-size:10px; color:var(--text-3); }
+.mode-toggle { display:inline-flex; border:1px solid var(--line-strong); border-radius:6px; overflow:hidden; }
+.mode-toggle button { padding:2px 9px; font-size:10px; border:none; background:none; color:var(--text-2); font-family:var(--font-ui); display:inline-flex; align-items:center; gap:4px; }
+.mode-toggle button.on { background:var(--accent); color:var(--accent-text); }
+.comp-r2 { display:flex; gap:6px; align-items:flex-end; }
+.comp-r2 textarea { flex:1; height:38px; resize:none; padding:9px 11px; border-radius:10px; border:1px solid var(--line-strong); background:var(--bg-inset); color:var(--text-1); font-family:var(--font-ui); font-size:13px; outline:none; }
+.comp-r2 textarea:focus { border-color:var(--accent); }
+.send { width:38px; height:38px; border-radius:10px; border:none; background:var(--accent); color:var(--accent-text); display:flex; align-items:center; justify-content:center; flex:none; }
+
+/* 底部动作面板 */
+.sheet-mask { position:absolute; inset:0; background:rgba(0,0,0,.55); display:none; z-index:20; align-items:flex-end; }
+.sheet-mask.on { display:flex; }
+.sheet { width:100%; background:var(--bg-panel); border-radius:14px 14px 0 0; padding:8px 0 14px; max-height:72%; overflow:auto; }
+.sheet .sh { text-align:center; font-size:11px; color:var(--text-3); padding:8px 0 4px; display:flex; align-items:center; justify-content:center; gap:6px; }
+.sheet .si { padding:13px 18px; font-size:14px; text-align:center; display:flex; align-items:center; justify-content:center; gap:8px; }
+.sheet .si:active { background:var(--bg-inset); }
+.sheet .si.danger { color:var(--danger); }
+.sheet .si.cur { color:var(--accent); }
+.sheet .gap { height:6px; background:var(--bg-inset); }
+.sheet .frow { display:flex; flex-direction:column; gap:5px; padding:8px 18px; }
+.sheet .frow label { font-size:11px; color:var(--text-3); text-align:left; }
+.sheet .frow input,.sheet .frow select { padding:8px 10px; border-radius:6px; border:1px solid var(--line-strong); background:var(--bg-inset); color:var(--text-1); font-size:13px; outline:none; }
+.sheet .btnrow { display:flex; gap:8px; padding:10px 18px 0; }
+.sheet .btnrow button { flex:1; padding:9px; border-radius:8px; font-size:13px; font-family:var(--font-ui); }
+
+/* 全屏层 */
+.fullpage { position:absolute; inset:0; background:var(--bg-page); z-index:30; display:none; flex-direction:column; }
+.fullpage.on { display:flex; }
+.fullpage .fph { height:48px; display:flex; align-items:center; gap:8px; padding:12px 12px 0; background:var(--bg-panel); border-bottom:1px solid var(--line); font-size:14px; font-weight:600; }
+.fullpage .fpb { flex:1; overflow:auto; padding:12px; font-family:var(--font-mono); font-size:11px; line-height:1.7; }
+.dfile .fn { color:var(--text-2); padding:4px 0; border-bottom:1px solid var(--line); margin-bottom:4px; font-size:11px; }
+.dl { white-space:pre; }
+.dl.add { background:color-mix(in srgb,var(--ok) 12%,transparent); color:var(--ok); }
+.dl.del { background:color-mix(in srgb,var(--danger) 12%,transparent); color:var(--danger); }
+.dl.ctx { color:var(--text-2); }
+.mdbody { font-family:var(--font-ui); font-size:13px; line-height:1.8; color:var(--text-2); }
+.mdbody h3 { color:var(--text-1); font-size:14px; margin:6px 0; }
+.mdbody li { margin-left:16px; }
+
+.toast { position:absolute; left:50%; bottom:110px; transform:translateX(-50%); background:rgba(0,0,0,.8); color:#fff; font-size:12px; padding:8px 16px; border-radius:8px; z-index:40; opacity:0; pointer-events:none; transition:opacity .2s; }
+.toast.on { opacity:1; }
+.lightbox { position:absolute; inset:0; background:rgba(0,0,0,.85); z-index:35; display:none; align-items:center; justify-content:center; }
+.lightbox.on { display:flex; }
+.lightbox .fake { width:82%; height:46%; background:linear-gradient(135deg,#262c3a,#171b25); border:1px solid var(--line-strong); border-radius:10px; display:flex; align-items:center; justify-content:center; color:var(--text-3); font-size:12px; }
+</style>
+</head>
+<body>
+<!-- SVG 图标库（Vant 风格线性图标，实施时替换为 van-icon） -->
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-picture" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 15l-4.5-4.5L9 18"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/></symbol>
+  <symbol id="i-diff" viewBox="0 0 24 24"><rect x="3" y="4" width="7.5" height="16" rx="1.5"/><rect x="13.5" y="4" width="7.5" height="16" rx="1.5"/><path d="M5.2 9h3.1M5.2 12.5h3.1M16 9h2.5M17.25 7.75v2.5M16 12.5h2.5"/></symbol>
+  <symbol id="i-rollback" viewBox="0 0 24 24"><path d="M1.5 4.5v6h6"/><path d="M4 15a9 9 0 1 0 2.1-9.4L1.5 10.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="10" y="10" width="4" height="4"/><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="11" width="15" height="9.5" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5L2.8 19.5h18.4L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.3v.01"/></symbol>
+  <symbol id="i-question" viewBox="0 0 24 24"><path d="M21 11.8a8.6 8.6 0 0 1-8.6 8.6c-1.4 0-2.7-.3-3.8-.9L3 21l1.5-4.9A8.6 8.6 0 1 1 21 11.8z"/><path d="M9.7 9.3a2.4 2.4 0 0 1 4.7.6c0 1.6-2.4 2-2.4 3.2"/><path d="M12 16.4v.01"/></symbol>
+  <symbol id="i-tool" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2.5v9"/><path d="M17.8 6a8.5 8.5 0 1 1-11.6 0"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.2l3.4 2"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19.5 12H5"/><path d="M11 5.5L4.5 12l6.5 6.5"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M17 3.5a2.6 2.6 0 1 1 3.7 3.7L7.3 20.6 3 21.7l1.1-4.3L17 3.5z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.5 6.5h17"/><path d="M8.5 6.5V4.8a1.3 1.3 0 0 1 1.3-1.3h4.4a1.3 1.3 0 0 1 1.3 1.3v1.7"/><path d="M6 6.5l1 13.2a2 2 0 0 0 2 1.8h6a2 2 0 0 0 2-1.8l1-13.2"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5.5 15H4.8A1.8 1.8 0 0 1 3 13.2V4.8A1.8 1.8 0 0 1 4.8 3h8.4A1.8 1.8 0 0 1 15 4.8v.7"/></symbol>
+  <symbol id="i-quote" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6.5L9.5 17 4 11.5"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.3"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0"/><circle cx="17.5" cy="9.5" r="2.4"/><path d="M16.3 15.3a5.3 5.3 0 0 1 5 4.7"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h12M9 12h12M9 18h12"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>
+  <symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.5 0-2.9-.4-4.1-1L3 20l1-5.4A8.5 8.5 0 1 1 21 11.5z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2.1 2.1M16.9 16.9L19 19M19 5l-2.1 2.1M7.1 16.9L5 19"/></symbol>
+</svg>
+
+<div class="page-title">
+  <span>协作会话 · Mobile（/m/convo）</span>
+  <button class="on" id="tabList" onclick="show('list')">列表页</button>
+  <button id="tabDetail" onclick="show('detail')">会话详情</button>
+</div>
+
+<div class="phone">
+  <!-- 列表页 -->
+  <div class="screen on" id="scr-list">
+    <div class="navbar">
+      <div class="tt">协作会话</div>
+      <button class="nbtn" onclick="toast('搜索（示意）')"><svg class="ic sm"><use href="#i-search"/></svg></button>
+      <button class="nbtn" onclick="openSheet('newSheet')"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+    </div>
+    <div class="conv-list" id="convList">
+      <div class="group-label">人事管理系统</div>
+      <div class="conv-card" onclick="openConvo(0)">
+        <div class="t"><span class="dot run"></span>修复登录页手机端遮挡</div>
+        <div class="m"><span class="mono">deepseek-v4-flash</span><span>运行中</span><span style="margin-left:auto">刚刚</span></div>
+      </div>
+      <div class="conv-card" onclick="openConvo(1)">
+        <div class="t"><span class="dot wait"></span>移动端适配方案讨论</div>
+        <div class="m"><span class="mono">glm-4.7</span><span>待审批</span><span style="margin-left:auto">5分钟前</span></div>
+      </div>
+      <div class="conv-card" onclick="openConvo(2)">
+        <div class="t"><span class="dot"></span>考勤模块重构调研</div>
+        <div class="m"><span class="mono">deepseek-v4-flash</span><span>空闲</span><span style="margin-left:auto">2小时前</span></div>
+      </div>
+      <div class="group-label">co-team</div>
+      <div class="conv-card" onclick="openConvo(3)">
+        <div class="t"><span class="dot"></span>协作任务 · 事件卡片优化</div>
+        <div class="m"><span class="mono">kimi-k2.6</span><span>空闲</span><span style="margin-left:auto">昨天</span></div>
+      </div>
+    </div>
+    <div class="newbtn" onclick="openSheet('newSheet')"><svg class="ic sm"><use href="#i-plus"/></svg>新建会话（选项目 · 模型 · 人设）</div>
+    <div class="tabbar">
+      <div class="tab"><span class="bar"></span><svg class="ic sm"><use href="#i-list"/></svg>任务</div>
+      <div class="tab"><span class="bar"></span><svg class="ic sm"><use href="#i-msg"/></svg>群聊</div>
+      <div class="tab on"><span class="bar"></span><svg class="ic sm"><use href="#i-users"/></svg>协作</div>
+      <div class="tab"><span class="bar"></span><svg class="ic sm"><use href="#i-gear"/></svg>设置</div>
+    </div>
+  </div>
+
+  <!-- 详情页 -->
+  <div class="screen" id="scr-detail">
+    <div class="navbar">
+      <button class="nbtn" onclick="show('list')"><svg class="ic sm"><use href="#i-arrow-left"/></svg></button>
+      <div class="tt" id="dTitle">修复登录页手机端遮挡</div>
+      <button class="modelpill mono" id="dModel" onclick="openSheet('modelSheet')"><svg class="ic sm"><use href="#i-cpu"/></svg><span>ds-v4</span></button>
+      <button class="nbtn" onclick="openSheet('moreSheet')"><svg class="ic sm"><use href="#i-more"/></svg></button>
+    </div>
+    <div class="projline" id="dProj">D:\pxx\projects\hr-system</div>
+    <div class="stream" id="stream">
+      <div class="day-sep">今天 14:32</div>
+
+      <div class="row me"><div class="avatar u">我</div><div class="bubble" onclick="lightbox(event)">看下登录页手机端的问题，按钮被底部遮挡了。<div class="imgrow"><div class="ph">截图1.png</div><div class="ph">截图2.png</div></div></div></div>
+      <div class="row me"><div class="avatar u">我</div><div class="bubble">对了布局参考现有 notes 页的写法</div></div>
+      <div class="queued"><svg class="ic sm"><use href="#i-clock"/></svg>排队中 · 本轮结束后处理</div>
+
+      <div class="row"><div class="avatar partner">搭</div><div class="bubble">先看登录页和相关样式的现状，再定位遮挡原因。</div></div>
+
+      <div class="syscard">
+        <div class="hd"><svg class="ic sm"><use href="#i-tool"/></svg>工具 · 4 次 <span style="color:var(--text-3)">read ×2 · build · 写入</span></div>
+        <div class="tool-line"><span class="ok">ok</span>read_file pages/Login.vue（240 行）</div>
+        <div class="tool-line"><span class="ok">ok</span>exec「npm run build」exit 0 · 3.2s</div>
+        <div class="tool-line"><span class="ok">ok</span>edit_file pages/Login.vue +9 −4</div>
+      </div>
+
+      <div class="syscard">
+        <div class="hd"><svg class="ic sm"><use href="#i-diff"/></svg>本轮改动 · 2 个文件 <b class="t-green">+12</b> <b class="t-red">−3</b></div>
+        <div class="tool-line">M pages/Login.vue +9 −2</div>
+        <div class="tool-line">M styles/mobile.css +3 −1</div>
+      </div>
+
+      <div class="syscard degrade" id="degrade"><div class="hd"><svg class="ic sm"><use href="#i-warn"/></svg>主模型连接超时，本轮已降级为 glm-4.7</div></div>
+
+      <div class="syscard approve" id="apCard">
+        <div class="hd"><svg class="ic sm"><use href="#i-lock"/></svg>待审批命令 · approve_required</div>
+        <div class="cmd" id="apCmd">git push origin fix/mobile-login</div>
+        <div class="acts" id="apActs">
+          <button class="btn-g" onclick="approve('reject')">拒绝</button>
+          <button class="btn-p" onclick="approve('once')">批准一次</button>
+          <button class="btn-g" onclick="approve('always')">总是允许</button>
+        </div>
+      </div>
+
+      <div class="syscard filecard"><svg class="ic sm"><use href="#i-doc"/></svg><span class="name">登录页-修复说明.md</span>
+        <span style="margin-left:auto;display:flex;gap:5px"><button class="nbtn" onclick="openFull('filePage')">预览</button></span>
+      </div>
+
+      <div class="syscard askcard" id="askCard">
+        <div class="q"><svg class="ic sm t-acc"><use href="#i-question"/></svg>重置按钮在手机端还需要保留吗？方案 A 会隐藏它。</div>
+        <div class="ans"><input id="askInput" placeholder="输入回答"><button class="btn-p" onclick="answerAsk()">回复</button></div>
+      </div>
+
+      <div class="row"><div class="avatar partner">搭</div><div class="bubble">已修复：底部操作区加 safe-area 兜底，375px 宽度不再遮挡；构建与类型检查通过。<br><span style="color:var(--text-3);font-style:italic">另外我准备顺手把</span></div></div>
+      <div class="interrupt-sep"><span class="sq"></span>已打断 · 输入新指令继续</div>
+
+      <div class="typing" id="typing"><span>搭档</span><span class="tdots"></span></div>
+    </div>
+    <div class="composer">
+      <div class="chips" id="chips"></div>
+      <div class="comp-r1">
+        <span>插话</span>
+        <div class="mode-toggle">
+          <button class="on" id="mQueue" onclick="setMode('queue')"><svg class="ic sm"><use href="#i-clock"/></svg>排队</button>
+          <button id="mInter" onclick="setMode('interrupt')"><svg class="ic sm"><use href="#i-power"/></svg>打断</button>
+        </div>
+        <span id="modeHint" style="margin-left:auto">本轮结束后自动继续</span>
+      </div>
+      <div class="comp-r2">
+        <textarea id="ta" placeholder="输入消息…"></textarea>
+        <button class="nbtn" style="height:38px" onclick="addImg()"><svg class="ic sm"><use href="#i-picture"/></svg></button>
+        <button class="nbtn" style="height:38px" onclick="addFile()"><svg class="ic sm"><use href="#i-doc"/></svg></button>
+        <button class="nbtn" style="height:38px" onclick="stopTurn()"><svg class="ic sm"><use href="#i-stop"/></svg></button>
+        <button class="send" onclick="send()"><svg class="ic sm"><use href="#i-send"/></svg></button>
+      </div>
+    </div>
+
+    <!-- 模型面板 -->
+    <div class="sheet-mask" id="modelSheet" onclick="maskClick(event,'modelSheet')"><div class="sheet" onclick="event.stopPropagation()">
+      <div class="sh"><svg class="ic sm"><use href="#i-cpu"/></svg>切换主模型</div>
+      <div class="si mono cur t-acc" onclick="pickModel('deepseek-v4-flash','ds-v4',this)">deepseek-v4-flash</div>
+      <div class="si mono" onclick="pickModel('glm-4.7','glm-4.7',this)">glm-4.7</div>
+      <div class="si mono" onclick="pickModel('kimi-k2.6','kimi-k2.6',this)">kimi-k2.6</div>
+      <div class="si mono" onclick="pickModel('qwen3-coder','qwen3',this)">qwen3-coder · 本地</div>
+    </div></div>
+
+    <!-- 更多面板 -->
+    <div class="sheet-mask" id="moreSheet" onclick="maskClick(event,'moreSheet')"><div class="sheet" onclick="event.stopPropagation()">
+      <div class="sh">会话操作</div>
+      <div class="si" onclick="closeSheet('moreSheet');openFull('diffPage')"><svg class="ic sm"><use href="#i-diff"/></svg>本轮 diff 汇总</div>
+      <div class="si" onclick="rollback()"><svg class="ic sm"><use href="#i-rollback"/></svg>回滚快照</div>
+      <div class="si" onclick="closeSheet('moreSheet');openSheet('renameSheet')"><svg class="ic sm"><use href="#i-edit"/></svg>重命名</div>
+      <div class="gap"></div>
+      <div class="si danger" onclick="deleteConvo()"><svg class="ic sm"><use href="#i-trash"/></svg>删除会话</div>
+    </div></div>
+
+    <!-- 新建面板 -->
+    <div class="sheet-mask" id="newSheet" onclick="maskClick(event,'newSheet')"><div class="sheet" onclick="event.stopPropagation()">
+      <div class="sh"><svg class="ic sm"><use href="#i-plus"/></svg>新建协作会话</div>
+      <div class="frow"><label>项目目录</label><select id="nProj"><option>D:\pxx\projects\hr-system</option><option>D:\pxx\co-team</option><option>D:\pxx\projects\mall-api</option></select></div>
+      <div class="frow"><label>标题（留空自动生成）</label><input id="nTitle" placeholder="例如：修复登录页手机端遮挡"></div>
+      <div class="frow"><label>主模型</label><select id="nModel"><option>deepseek-v4-flash</option><option>glm-4.7</option><option>kimi-k2.6</option><option>qwen3-coder</option></select></div>
+      <div class="frow"><label>人设</label><select><option>搭档 · 协作工程师（默认）</option><option>dev</option><option>review</option><option>docs</option></select></div>
+      <div class="btnrow"><button class="btn-g" onclick="closeSheet('newSheet')">取消</button><button class="btn-p" onclick="createConvo()">创建</button></div>
+    </div></div>
+
+    <!-- 重命名面板 -->
+    <div class="sheet-mask" id="renameSheet" onclick="maskClick(event,'renameSheet')"><div class="sheet" onclick="event.stopPropagation()">
+      <div class="sh">重命名会话</div>
+      <div class="frow"><input id="rnInput" value="修复登录页手机端遮挡"></div>
+      <div class="btnrow"><button class="btn-g" onclick="closeSheet('renameSheet')">取消</button><button class="btn-p" onclick="doRename()">保存</button></div>
+    </div></div>
+
+    <!-- 长按消息面板 -->
+    <div class="sheet-mask" id="lpSheet" onclick="maskClick(event,'lpSheet')"><div class="sheet" onclick="event.stopPropagation()">
+      <div class="sh">消息操作</div>
+      <div class="si" onclick="lpCopy()"><svg class="ic sm"><use href="#i-copy"/></svg>复制</div>
+      <div class="si" onclick="lpQuote()"><svg class="ic sm"><use href="#i-quote"/></svg>引用回复</div>
+      <div class="si" onclick="closeSheet('lpSheet');openFull('diffPage')"><svg class="ic sm"><use href="#i-diff"/></svg>查看本轮 diff</div>
+    </div></div>
+
+    <!-- diff 全屏 -->
+    <div class="fullpage" id="diffPage">
+      <div class="fph"><button class="nbtn" onclick="closeFull('diffPage')"><svg class="ic sm"><use href="#i-arrow-left"/></svg></button>本轮 diff · 2 个文件</div>
+      <div class="fpb">
+        <div class="dfile"><div class="fn">pages/Login.vue +9 −2</div>
+          <div class="dl ctx">@@ -120,7 +120,14 @@</div>
+          <div class="dl del">-.login-actions { display:flex; gap:8px; }</div>
+          <div class="dl add">+.login-actions {</div>
+          <div class="dl add">+  display:flex; gap:8px;</div>
+          <div class="dl add">+  padding-bottom: env(safe-area-inset-bottom);</div>
+          <div class="dl add">+}</div>
+          <div class="dl ctx"> .login-actions .btn { flex:1; }</div>
+        </div>
+        <div class="dfile"><div class="fn">styles/mobile.css +3 −1</div>
+          <div class="dl del">-/* mobile bottom */</div>
+          <div class="dl add">+:root { --safe-bottom: env(safe-area-inset-bottom, 0px); }</div>
+          <div class="dl add">+.page-bottom { padding-bottom: var(--safe-bottom); }</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 文件预览全屏 -->
+    <div class="fullpage" id="filePage">
+      <div class="fph"><button class="nbtn" onclick="closeFull('filePage')"><svg class="ic sm"><use href="#i-arrow-left"/></svg></button>登录页-修复说明.md</div>
+      <div class="fpb mdbody">
+        <h3>修复说明：登录页手机端遮挡</h3>
+        <p>问题：375px 宽度下底部操作区被移动端浏览器工具栏遮挡。</p>
+        <p>改动：</p>
+        <li>pages/Login.vue：.login-actions 增加 safe-area 兜底</li>
+        <li>styles/mobile.css：统一底部留白变量</li>
+        <p>验证：build / 类型检查均通过；375×667 与 390×844 比对无遮挡。</p>
+      </div>
+    </div>
+
+    <div class="lightbox" id="lb" onclick="this.classList.remove('on')"><div class="fake">截图预览 · 点击任意处关闭</div></div>
+    <div class="toast" id="toast"></div>
+  </div>
+</div>
+
+<script>
+function show(s){
+  document.querySelectorAll('.screen').forEach(e=>e.classList.remove('on'));
+  document.getElementById('scr-'+s).classList.add('on');
+  document.getElementById('tabList').classList.toggle('on',s==='list');
+  document.getElementById('tabDetail').classList.toggle('on',s==='detail');
+}
+function openConvo(i){
+  show('detail');
+  if(i===1){ setM('glm-4.7'); document.getElementById('dProj').textContent='D:\\pxx\\projects\\hr-system'; }
+  if(i===3){ setM('kimi-k2.6'); document.getElementById('dProj').textContent='D:\\pxx\\co-team'; }
+  if(i===0){ setM('ds-v4'); }
+}
+function setM(short){ document.getElementById('dModel').querySelector('span').textContent=short; }
+function openSheet(id){document.getElementById(id).classList.add('on');}
+function closeSheet(id){document.getElementById(id).classList.remove('on');}
+function maskClick(ev,id){ if(ev.target.classList.contains('sheet-mask'))closeSheet(id); }
+function openFull(id){document.getElementById(id).classList.add('on');}
+function closeFull(id){document.getElementById(id).classList.remove('on');}
+function lightbox(){document.getElementById('lb').classList.add('on');}
+let toastTimer;
+function toast(t){ const el=document.getElementById('toast'); el.textContent=t; el.classList.add('on'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('on'),1600); }
+
+function pickModel(full,short,el){
+  setM(short);
+  document.querySelectorAll('#modelSheet .si').forEach(s=>s.classList.remove('t-acc'));
+  el.classList.add('t-acc'); closeSheet('modelSheet'); addNote('模型已切换为 '+full);
+}
+function addNote(html){
+  const d=document.createElement('div'); d.className='sysnote'; d.textContent=html;
+  document.getElementById('stream').appendChild(d); scrollEnd();
+}
+function approve(kind){
+  const card=document.getElementById('apCard'),cmd=document.getElementById('apCmd'),acts=document.getElementById('apActs');
+  if(kind==='once'){ cmd.textContent='已批准 · 执行中…';
+    setTimeout(()=>{ card.classList.remove('approve'); cmd.style.color='var(--ok)'; cmd.textContent='git push origin fix/mobile-login · exit 0'; acts.innerHTML='<span style="color:var(--ok);font-size:12px;display:inline-flex;align-items:center;gap:4px"><svg class="ic sm"><use href="#i-check"/></svg>已执行完成</span>'; },1200);
+  } else if(kind==='reject'){ card.style.opacity=.55; acts.innerHTML='<span style="color:var(--text-3);font-size:12px">已拒绝</span>'; }
+  else { card.classList.remove('approve'); card.style.borderColor='var(--line)'; acts.innerHTML='<span style="color:var(--ok);font-size:12px;display:inline-flex;align-items:center;gap:4px"><svg class="ic sm"><use href="#i-check"/></svg>已授权 · 本会话不再询问</span>'; cmd.style.color='var(--text-2)'; }
+}
+function answerAsk(){
+  const v=document.getElementById('askInput').value.trim(); if(!v)return;
+  document.getElementById('askCard').querySelector('.ans').outerHTML=`<div style="padding:0 10px 9px;font-size:11px;color:var(--ok);display:flex;align-items:center;gap:4px"><svg class="ic sm"><use href="#i-check"/></svg>已回答：${v.replace(/</g,'&lt;')}</div>`;
+  addNote('阻塞提问已回答');
+}
+function rollback(){ closeSheet('moreSheet'); if(confirm('回滚到会话开始时的快照？本轮改动将被还原。')){ toast('快照已回滚'); addNote('快照已回滚（示例）'); } }
+function doRename(){
+  const v=document.getElementById('rnInput').value.trim()||'未命名';
+  document.getElementById('dTitle').textContent=v; closeSheet('renameSheet'); toast('已重命名');
+}
+function deleteConvo(){ closeSheet('moreSheet'); if(confirm('删除该会话？消息与审批记录将一并删除（工作区文件不动）。')){ show('list'); toast('已删除'); } }
+
+/* 长按 */
+let lpTimer=null,lpTarget=null;
+function bindLp(b){
+  b.addEventListener('touchstart',()=>{ lpTimer=setTimeout(()=>{ lpTarget=b; openSheet('lpSheet'); },480); },{passive:true});
+  b.addEventListener('touchend',()=>clearTimeout(lpTimer));
+  b.addEventListener('touchmove',()=>clearTimeout(lpTimer));
+  b.addEventListener('contextmenu',e=>{ e.preventDefault(); lpTarget=b; openSheet('lpSheet'); });
+}
+document.querySelectorAll('.bubble').forEach(bindLp);
+function lpCopy(){ closeSheet('lpSheet'); toast('已复制'); }
+function lpQuote(){
+  closeSheet('lpSheet');
+  const t=(lpTarget?lpTarget.textContent:'').slice(0,40);
+  const ta=document.getElementById('ta'); ta.value='> '+t+'…\n'; ta.focus();
+}
+
+let mode='queue',busy=false,typingTimer=null,turnNo=0;
+const queue=[];
+const REPLIES=[
+  '收到，先定位相关文件与现状，再给最小改动方案。',
+  '已定位：底部容器缺 safe-area 兜底。改动两个文件并跑构建验证。',
+  '构建与类型检查均通过，diff 卡片里可逐行确认改动。',
+  '需要提交到分支的话说一声（会先走审批确认）。'
+];
+function setMode(m){
+  mode=m;
+  document.getElementById('mQueue').classList.toggle('on',m==='queue');
+  document.getElementById('mInter').classList.toggle('on',m==='interrupt');
+  document.getElementById('modeHint').textContent=m==='queue'?'本轮结束后自动继续':'立即中止当前执行';
+}
+function scrollEnd(){ const s=document.getElementById('stream'); s.scrollTop=s.scrollHeight; }
+const pending={imgs:[],files:[]};
+function renderChips(){
+  const c=document.getElementById('chips'); c.innerHTML='';
+  [...pending.imgs.map(i=>({k:'i',t:i})),...pending.files.map(f=>({k:'f',t:f}))].forEach(it=>{
+    const d=document.createElement('span'); d.className='chip';
+    d.innerHTML=`<svg class="ic sm"><use href="${it.k==='i'?'#i-picture':'#i-doc'}"/></svg>${it.k==='i'?'图 ':'文 '}${it.t}<b><svg class="ic sm"><use href="#i-close"/></svg></b>`;
+    d.querySelector('b').onclick=()=>{ (it.k==='i'?pending.imgs:pending.files).splice((it.k==='i'?pending.imgs:pending.files).indexOf(it.t),1); renderChips(); };
+    c.appendChild(d);
+  });
+  c.classList.toggle('on',pending.imgs.length+pending.files.length>0);
+}
+let n=0;
+function addImg(){ pending.imgs.push('截图'+(++n)+'.png'); renderChips(); }
+function addFile(){ pending.files.push('需求说明.md'); renderChips(); }
+function addUserBubble(text,extra){
+  const col=document.getElementById('stream');
+  const d=document.createElement('div'); d.className='row me';
+  let inner=text.replace(/</g,'&lt;');
+  if(extra.imgs) inner+='<div class="imgrow">'+extra.imgs.map(i=>`<div class="ph">${i}</div>`).join('')+'</div>';
+  if(extra.files) inner+=`<div style="margin-top:5px;font-size:10px;color:var(--text-3)">文件：${extra.files.join(' · ')}</div>`;
+  d.innerHTML=`<div class="avatar u">我</div><div class="bubble">${inner}</div>`;
+  col.appendChild(d); bindLp(d.querySelector('.bubble')); scrollEnd();
+}
+function agentReply(text){
+  const d=document.createElement('div'); d.className='row';
+  d.innerHTML=`<div class="avatar partner">搭</div><div class="bubble">${text}</div>`;
+  document.getElementById('stream').appendChild(d); bindLp(d.querySelector('.bubble')); scrollEnd();
+}
+function send(){
+  const ta=document.getElementById('ta'); const text=ta.value.trim();
+  if(!text&&!pending.imgs.length&&!pending.files.length)return;
+  const extra={imgs:[...pending.imgs],files:[...pending.files]};
+  pending.imgs=[];pending.files=[];renderChips();
+  addUserBubble(text||'（附件）',extra); ta.value='';
+  if(busy){
+    if(mode==='interrupt'){ doInterrupt(); queue.length=0; startTurn(); }
+    else { const q=document.createElement('div'); q.className='queued'; q.innerHTML='<svg class="ic sm"><use href="#i-clock"/></svg>排队中'; document.getElementById('stream').appendChild(q); queue.push(text); scrollEnd(); }
+    return;
+  }
+  startTurn();
+}
+function startTurn(){
+  busy=true; document.getElementById('typing').classList.add('on'); turnNo++;
+  typingTimer=setTimeout(()=>{
+    showTyping(false); busy=false;
+    agentReply(REPLIES[(turnNo-1)%REPLIES.length]);
+    if(queue.length){ queue.splice(0); addNote('排队消息已合并处理'); addUserBubble('（合并的排队消息）',{}); startTurn(); }
+  },2200);
+}
+function doInterrupt(){
+  clearTimeout(typingTimer); showTyping(false); busy=false;
+  const sep=document.createElement('div'); sep.className='interrupt-sep';
+  sep.innerHTML='<span class="sq"></span>已打断 · 输入新指令继续';
+  document.getElementById('stream').appendChild(sep); scrollEnd();
+}
+function showTyping(on){ document.getElementById('typing').classList.toggle('on',on); }
+</script>
+</body>
+</html>

@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>协作会话 · web 渲染 v5（对齐 ZCode）</title>
+<style>
+:root {
+  --bg-page:#0c0d10; --bg-panel:#121419; --bg-raised:#181b21; --bg-inset:#0f1115;
+  --line:#23272f; --line-strong:#31363f; --text-1:#e9ebee; --text-2:#a8b0ba; --text-3:#6d7581;
+  --accent:#ff9349; --accent-text:#0c0d10; --ok:#43c075; --warn:#d29922; --danger:#e5534b;
+  --tag-bg:#1d222b;
+  --font-ui:'PingFang SC','Segoe UI','Microsoft YaHei',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono','SF Mono','Cascadia Code',Consolas,monospace;
+}
+html.light {
+  --bg-page:#f6f7f9; --bg-panel:#ffffff; --bg-raised:#ffffff; --bg-inset:#f2f4f7;
+  --line:#e4e7ec; --line-strong:#ccd2da; --text-1:#171a20; --text-2:#525b68; --text-3:#8a93a0;
+  --accent:#2f6fed; --accent-text:#ffffff; --ok:#1a7f37; --warn:#9a6700; --danger:#cf222e;
+  --tag-bg:#eef1f5;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font-ui); background:var(--bg-page); color:var(--text-1); font-size:15px; }
+.top { position:sticky; top:0; height:50px; background:var(--bg-panel); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 18px; z-index:10; }
+.top h1 { font-size:15px; font-weight:600; }
+.top .work { font-family:var(--font-mono); font-size:11px; color:var(--ok); display:flex; align-items:center; gap:6px; }
+.top .work .dot { width:6px; height:6px; border-radius:50%; background:var(--ok); }
+.top .sp { flex:1; }
+button.tbtn { font-size:12px; padding:5px 13px; border-radius:6px; border:1px solid var(--line-strong); background:none; color:var(--text-2); cursor:pointer; }
+button.tbtn:hover { color:var(--accent); border-color:var(--accent); }
+
+.wrap { max-width:840px; margin:0 auto; padding:24px 22px 110px; }
+.day-sep { text-align:center; font-size:11px; color:var(--text-3); display:flex; align-items:center; gap:14px; margin:20px 0; }
+.day-sep::before,.day-sep::after { content:''; flex:1; height:1px; background:var(--line); }
+
+/* 用户消息 */
+.user-row { display:flex; justify-content:flex-end; margin:14px 0 10px; }
+.user-msg { max-width:78%; background:color-mix(in srgb,var(--accent) 11%,var(--bg-panel)); border:1px solid color-mix(in srgb,var(--accent) 24%,transparent); border-radius:12px 12px 3px 12px; padding:10px 14px; font-size:15px; line-height:1.7; white-space:pre-wrap; }
+.user-msg .imgs { display:flex; gap:6px; margin-top:8px; }
+.user-msg .imgs .ph { width:84px; height:62px; border-radius:6px; background:var(--bg-inset); border:1px solid var(--line-strong); display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--text-3); }
+
+/* 轮次头：搭档 + 模型 + 步数/耗时 */
+.turn-head { display:flex; align-items:center; gap:9px; margin:18px 0 8px; }
+.t-avatar { width:24px; height:24px; border-radius:7px; background:var(--accent); color:var(--accent-text); font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center; flex:none; }
+.t-name { font-size:14px; font-weight:700; }
+.t-model { font-family:var(--font-mono); font-size:11px; color:var(--text-3); padding:2px 9px; border:1px solid var(--line); border-radius:99px; }
+.t-meta { margin-left:auto; display:flex; gap:10px; font-size:11px; color:var(--text-3); font-family:var(--font-mono); align-items:center; }
+.t-running { width:7px; height:7px; border-radius:50%; background:var(--ok); animation:lp 1.3s infinite; }
+@keyframes lp { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+/* 执行日志（v4 精修保留） */
+.acts { position:relative; padding:2px 0 4px 0; }
+.acts::before { content:''; position:absolute; left:7px; top:10px; bottom:12px; width:1px; background:linear-gradient(to bottom,var(--line-strong),transparent); }
+.act-line { position:relative; display:flex; align-items:center; gap:9px; padding:5px 10px 5px 22px; border-radius:7px; font-size:12px; min-height:30px; }
+.act-line:hover { background:var(--bg-inset); }
+.act-line::before { content:''; position:absolute; left:4px; top:50%; transform:translateY(-50%); width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 14%,transparent); }
+.act-line.err::before { background:var(--danger); box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 14%,transparent); }
+.act-line.live::before { background:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent); animation:lp 1s infinite; }
+.tool-tag { font-family:var(--font-mono); font-size:10.5px; font-weight:600; color:var(--text-1); background:var(--tag-bg); border:1px solid var(--line); border-radius:5px; padding:2px 7px; flex:none; }
+.act-args { color:var(--text-1); font-family:var(--font-mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.act-res { margin-left:auto; flex:none; font-family:var(--font-mono); font-size:10.5px; color:var(--text-3); display:flex; gap:6px; }
+.act-res .pill { padding:1px 8px; border-radius:99px; border:1px solid color-mix(in srgb,var(--ok) 35%,transparent); color:var(--ok); }
+.act-res .pill.bad { border-color:color-mix(in srgb,var(--danger) 35%,transparent); color:var(--danger); }
+.act-res .pill.dim { border-color:var(--line-strong); color:var(--text-3); }
+
+/* 思考（ZCode：单行折叠 + 摘要） */
+.think { margin:6px 0; }
+.think > summary { list-style:none; display:flex; align-items:center; gap:9px; padding:7px 10px; font-size:12px; color:var(--text-3); cursor:pointer; user-select:none; border-radius:7px; }
+.think > summary::-webkit-details-marker { display:none; }
+.think > summary .car { transition:transform .15s; font-size:9px; display:inline-flex; }
+.think[open] > summary .car { transform:rotate(90deg); }
+.think > summary .tt { color:var(--text-2); font-weight:600; }
+.think > summary .tv { margin-left:auto; font-size:11px; color:var(--text-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:46%; }
+.think > summary:hover { background:var(--bg-inset); }
+.think-body { margin:0 0 6px 12px; padding:2px 0 6px 14px; border-left:2px solid var(--line-strong); font-size:12.5px; line-height:1.85; color:var(--text-2); white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow-y:auto; }
+
+/* 结论：全宽 markdown（ZCode 式，无容器边框） */
+.ans { padding:4px 0 2px; }
+.ans .md { line-height:1.9; font-size:15px; overflow-wrap:anywhere; }
+.ans .md h4 { font-size:15px; margin:12px 0 6px; }
+.ans .md p { margin:9px 0; }
+.ans .md b { font-weight:700; }
+.ans .md li { margin:6px 0 6px 20px; }
+.ans .md code { font-family:var(--font-mono); font-size:12.5px; background:var(--bg-inset); padding:2px 7px; border-radius:5px; border:1px solid var(--line); }
+.ans .md pre { background:var(--bg-page); border:1px solid var(--line); border-radius:8px; padding:12px 14px; font-family:var(--font-mono); font-size:12.5px; line-height:1.75; overflow-x:auto; margin:10px 0; }
+.ans .md table { border-collapse:collapse; margin:10px 0; font-size:13px; width:100%; }
+.ans .md th,.ans .md td { border:1px solid var(--line-strong); padding:6px 12px; text-align:left; }
+.ans .md th { background:var(--bg-inset); font-weight:600; }
+
+/* 变更行（ZCode：「1 个文件已更改 +1053 -0」） */
+.changes { margin:14px 0 4px; display:flex; flex-direction:column; gap:5px; font-family:var(--font-mono); font-size:12px; }
+.changes .sum { color:var(--text-2); display:flex; gap:10px; align-items:center; cursor:pointer; }
+.changes .sum .n { font-weight:700; }
+.changes .sum .add { color:var(--ok); font-weight:700; }
+.changes .sum .del { color:var(--danger); font-weight:700; }
+.changes .sum .car { color:var(--text-3); font-size:9px; transition:transform .15s; }
+.changes .sum.open .car { transform:rotate(90deg); }
+.changes .file { display:none; color:var(--text-2); padding-left:18px; }
+.changes .sum.open + .file { display:flex; gap:10px; }
+.changes .file .add { color:var(--ok); } .changes .file .del { color:var(--danger); }
+
+/* 操作行（ZCode：撤销 · 复制 · 赞 · 踩 · 分叉 · 时间戳） */
+.ops { display:flex; align-items:center; gap:4px; margin:10px 0 0; padding:2px 0; }
+.ops button { font-size:11.5px; color:var(--text-3); background:none; border:none; padding:4px 9px; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:5px; }
+.ops button:hover { color:var(--text-1); background:var(--bg-inset); }
+.ops button.on { color:var(--accent); }
+.ops .ts { margin-left:auto; font-family:var(--font-mono); font-size:10.5px; color:var(--text-3); }
+
+/* 内联卡 */
+.inline { margin:12px 0 6px; border-radius:9px; padding:8px 14px; font-size:12.5px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.inline.warn { border:1px solid color-mix(in srgb,var(--warn) 30%,transparent); background:color-mix(in srgb,var(--warn) 7%,var(--bg-panel)); color:var(--warn); }
+.inline.danger { border:1px solid color-mix(in srgb,var(--danger) 30%,transparent); background:color-mix(in srgb,var(--danger) 7%,var(--bg-panel)); color:var(--danger); }
+.inline .cmd { font-family:var(--font-mono); font-size:12px; }
+.inline .sp { flex:1; }
+.inline button { font-size:11.5px; padding:4px 12px; border-radius:6px; border:1px solid var(--line-strong); background:none; color:var(--text-2); cursor:pointer; }
+.inline button.p { border-color:color-mix(in srgb,var(--accent) 55%,transparent); color:var(--accent); font-weight:600; }
+
+/* 运行中 */
+.live-think { margin:8px 0 4px; border-left:2px solid var(--line-strong); padding-left:14px; }
+.live-think .lab { font-size:10.5px; color:var(--text-3); letter-spacing:.14em; margin-bottom:3px; }
+.live-think .bd { font-size:12.5px; line-height:1.8; color:var(--text-3); white-space:pre-wrap; max-height:150px; overflow-y:auto; }
+.cursor { display:inline-block; width:8px; height:16px; background:var(--accent); vertical-align:-3px; animation:bk 1s steps(2) infinite; }
+@keyframes bk { 50% { opacity:0; } }
+
+/* 输入区（ZCode 文案） */
+.dock { position:fixed; left:0; right:0; bottom:0; background:linear-gradient(to top,var(--bg-page) 78%,transparent); padding:14px 22px 16px; }
+.dock-inner { max-width:840px; margin:0 auto; background:var(--bg-panel); border:1px solid var(--line-strong); border-radius:14px; padding:12px 14px 10px; box-shadow:0 10px 34px rgba(0,0,0,.4); }
+html.light .dock-inner { box-shadow:0 10px 34px rgba(30,40,60,.1); }
+.dock-inner textarea { width:100%; border:none; background:none; resize:none; color:var(--text-1); font-size:15px; font-family:var(--font-ui); outline:none; height:24px; }
+.dock-inner textarea::placeholder { color:var(--text-3); }
+.dock-row { display:flex; align-items:center; gap:8px; margin-top:10px; }
+.ctx-btn { font-size:11.5px; color:var(--text-2); border:1px dashed var(--line-strong); background:none; border-radius:99px; padding:4px 12px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; }
+.ctx-btn:hover { color:var(--accent); border-color:var(--accent); }
+.mode { display:inline-flex; background:var(--bg-inset); border-radius:99px; padding:2px; margin-left:10px; }
+.mode span { font-size:11px; color:var(--text-3); padding:3px 12px; border-radius:99px; cursor:pointer; }
+.mode span.on { background:var(--bg-panel); color:var(--text-1); box-shadow:0 1px 3px rgba(0,0,0,.3); }
+.send-btn { margin-left:auto; padding:7px 22px; border-radius:9px; border:none; background:var(--accent); color:var(--accent-text); font-size:13px; font-weight:600; cursor:pointer; }
+.stop-btn { padding:7px 13px; border-radius:9px; border:1px solid color-mix(in srgb,var(--danger) 45%,transparent); background:none; color:var(--danger); cursor:pointer; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>修登录页手机端遮挡</h1>
+  <span class="work"><span class="dot"></span>已工作 32 分 15 秒</span>
+  <span class="sp"></span>
+  <button class="tbtn">diff</button>
+  <button class="tbtn">回滚快照</button>
+  <button class="tbtn" onclick="document.documentElement.classList.toggle('light')">亮/暗</button>
+</div>
+
+<div class="wrap">
+  <div class="day-sep">今天 16:20</div>
+
+  <div class="user-row"><div class="user-msg">看看 package.json，把构建流程总结一下，顺便跑一次构建验证<div class="imgs"><div class="ph">截图.png</div></div></div></div>
+
+  <!-- 轮次 1 -->
+  <div class="turn-head">
+    <div class="t-avatar">搭</div><div class="t-name">搭档</div><div class="t-model">deepseek-v4-flash</div>
+    <div class="t-meta"><span>3 步</span><span>8.4s</span></div>
+  </div>
+
+  <div class="acts">
+    <div class="act-line"><span class="tool-tag">read_file</span><span class="act-args">package.json</span><span class="act-res"><span class="pill dim">1.2KB</span></span></div>
+    <div class="act-line"><span class="tool-tag">exec</span><span class="act-args">npm run build</span><span class="act-res"><span class="pill">exit 0</span><span>11.2s</span></span></div>
+    <div class="act-line err"><span class="tool-tag">list_directory</span><span class="act-args">src/</span><span class="act-res"><span class="pill bad">已纠偏 → read_dir</span></span></div>
+  </div>
+
+  <details class="think" open>
+    <summary><span class="car">▶</span><span class="tt">思考 6.4s</span><span class="tv">构建脚本 4 个，无测试命令</span></summary>
+    <div class="think-body">先读 package.json 确认 scripts。dev:h5 与 build:h5 都走 uni CLI，说明是 uni-app 项目。跑一次 build:h5 验证产物……注意 list_directory 不是本系统工具，用 read_dir 代替。结论里应提醒用户没有 test 命令。</div>
+  </details>
+
+  <div class="ans">
+    <div class="md">
+      <p>这是个 <b>uni-app 项目</b>（H5 + Android），构建流程两条：</p>
+      <li><code>npm run dev:h5</code> — 开发服务（uni dev）</li>
+      <li><code>npm run build:h5</code> — 产物构建（uni build），刚跑过一次 <code>exit 0</code></li>
+      <p>改动明细：</p>
+      <table><tr><th>文件</th><th>改动</th><th>说明</th></tr><tr><td>pages/Login.vue</td><td>+9 −2</td><td>safe-area 兜底</td></tr><tr><td>styles/mobile.css</td><td>+3 −1</td><td>统一留白变量</td></tr></table>
+      <p>注意 <code>scripts</code> 里没有 test 命令，需要的话我可以补 vitest。</p>
+    </div>
+  </div>
+
+  <div class="changes">
+    <div class="sum open" onclick="this.classList.toggle('open')"><span class="car">▶</span><span class="n">2 个文件已更改</span><span class="add">+12</span><span class="del">−3</span></div>
+    <div class="file"><span>M pages/Login.vue</span><span class="add">+9 −2</span></div>
+    <div class="file"><span>M styles/mobile.css</span><span class="add">+3 −1</span></div>
+  </div>
+
+  <div class="ops">
+    <button>撤销</button>
+    <button onclick="this.textContent='已复制';setTimeout(()=>this.textContent='复制',1200)">复制</button>
+    <button onclick="this.classList.toggle('on')">👍 赞</button>
+    <button>👎 踩</button>
+    <button>分叉</button>
+    <span class="ts">9/19 16:24</span>
+  </div>
+
+  <div class="day-sep">16:31</div>
+
+  <div class="user-row"><div class="user-msg">好，把 vitest 补上然后推到远端</div></div>
+
+  <div class="turn-head">
+    <div class="t-avatar">搭</div><div class="t-name">搭档</div><div class="t-model">glm-4.7</div>
+    <div class="t-meta"><span>4 步</span><span>21.7s</span></div>
+  </div>
+
+  <div class="acts">
+    <div class="act-line"><span class="tool-tag">exec</span><span class="act-args">npm i -D vitest</span><span class="act-res"><span class="pill">exit 0</span><span>14.3s</span></span></div>
+    <div class="act-line"><span class="tool-tag">write_file</span><span class="act-args">vitest.config.ts</span><span class="act-res"><span class="pill dim">+12</span></span></div>
+    <div class="act-line"><span class="tool-tag">edit_file</span><span class="act-args">package.json</span><span class="act-res"><span class="pill dim">+2 −0</span></span></div>
+    <div class="act-line"><span class="tool-tag">exec</span><span class="act-args">npx vitest run</span><span class="act-res"><span class="pill">exit 0</span><span>2.1s</span></span></div>
+  </div>
+
+  <div class="inline danger">
+    <span>待审批</span><span class="cmd">git push origin main</span>
+    <span class="sp"></span>
+    <button>拒绝</button><button>总是允许</button><button class="p">批准一次</button>
+  </div>
+
+  <details class="think">
+    <summary><span class="car">▶</span><span class="tt">思考 3.1s</span></summary>
+    <div class="think-body">vitest 装好且空跑通过；push 属于白名单外命令，按策略 park 等用户拍板——等批准后再收尾。</div>
+  </details>
+
+  <div class="ans"><div class="md"><p>vitest 已就位（配置 + 首个冒烟用例通过）。<code>git push</code> 在等你批准——批准后我完成推送并汇报。</p></div></div>
+
+  <div class="changes">
+    <div class="sum" onclick="this.classList.toggle('open')"><span class="car">▶</span><span class="n">2 个文件已更改</span><span class="add">+14</span><span class="del">−0</span></div>
+    <div class="file"><span>A vitest.config.ts</span><span class="add">+12</span></div>
+    <div class="file"><span>M package.json</span><span class="add">+2 −0</span></div>
+  </div>
+
+  <div class="ops">
+    <button>撤销</button><button>复制</button><button>👍 赞</button><button>👎 踩</button><button>分叉</button>
+    <span class="ts">9/19 16:38</span>
+  </div>
+
+  <!-- 运行中轮次 -->
+  <div class="day-sep">运行中</div>
+  <div class="turn-head">
+    <div class="t-avatar">搭</div><div class="t-name">搭档</div><div class="t-model">Qwen3.6</div>
+    <div class="t-meta"><span class="t-running"></span><span>2 步</span></div>
+  </div>
+  <div class="acts">
+    <div class="act-line"><span class="tool-tag">read_file</span><span class="act-args">src/main.ts</span><span class="act-res"><span class="pill dim">116 行</span></span></div>
+    <div class="act-line live"><span class="tool-tag">read_file</span><span class="act-args">src/router.ts</span><span class="act-res">执行中</span></div>
+  </div>
+  <div class="live-think">
+    <div class="lab">思考</div>
+    <div class="bd" id="lt"></div>
+  </div>
+  <div class="ans"><div class="md" id="lo">路由集中在 <code>src/router.ts</code><span class="cursor"></span></div></div>
+
+  <div class="inline warn">
+    <span>降级</span><span>主模型 deepseek-v4-flash 连接超时，本轮已用 glm-4.7 继续</span>
+    <span class="sp"></span><button>改回主模型</button>
+  </div>
+</div>
+
+<!-- 输入区（ZCode 文案） -->
+<div class="dock">
+  <div class="dock-inner">
+    <textarea placeholder="提出后续修改要求…">看看路由是怎么组织的，然后</textarea>
+    <div class="dock-row">
+      <button class="ctx-btn">＋ 添加上下文</button>
+      <div class="mode"><span class="on">排队</span><span>打断</span></div>
+      <button class="stop-btn">■</button>
+      <button class="send-btn">发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const tk = 'main.ts 只挂载了 App 与 router；要判断「页面注册是否集中」，需要读 router.ts 的路由表结构……';
+const ot = '，包含 6 个页面：任务、群聊、协作、项目、成员、指标。';
+let a = 0, bb = 0;
+setInterval(() => { if (a < tk.length) { a += 2; document.getElementById('lt').textContent = tk.slice(0, a); } }, 55);
+setInterval(() => { if (bb < ot.length) { bb += 1; document.getElementById('lo').innerHTML = '路由集中在 <code>src/router.ts</code>' + ot.slice(0, bb) + '<span class="cursor"></span>'; } }, 85);
+</script>
+</body>
+</html>

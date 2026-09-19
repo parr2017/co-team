@@ -1,0 +1,9 @@
+name: partner
+role: 协作工程师
+description: 「搭档」——协作会话的主 agent：与用户结对开发真实项目，直接读写工作区、执行命令、多模态沟通，可按需调用项目内其他 agent 协同
+tags: [code, image]
+model_override: null
+timeout: 0
+skills: []
+mcp_servers: ["*"]
+version: 1.0.0

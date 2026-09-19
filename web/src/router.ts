@@ -18,6 +18,7 @@ const router = createRouter({
     { path: '/tasks', name: 'tasks', component: PassThrough },
     { path: '/project', name: 'project', component: PassThrough },
     { path: '/discuss', name: 'discuss', component: PassThrough },
+    { path: '/convo', name: 'convo', component: PassThrough },
     { path: '/approvals', name: 'approvals', component: () => import('./views/ApprovalInboxView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/workbench' },
   ],

@@ -135,6 +135,11 @@ async function main(): Promise<void> {
   memWatch.unref?.();
   
   const config = loadConfig(process.env.COTEAM_ROOT || PROJECT_ROOT);
+  // 旧配置可能缺 id（调度唯一键）——启动时归一化补齐，保证 GET /model-pool 与任务引用始终有 id；
+  // 缺省回退 name（旧池 name 本就全池唯一），新保存的条目由 UI 生成短 UUID
+  for (const m of config.model_pool) {
+    if (!m.id) m.id = m.name;
+  }
   logger.info('Configuration loaded', { 
     agentsDir: config.agents_dir,
     port: config.dashboard.port,
@@ -310,6 +315,11 @@ async function main(): Promise<void> {
 
   // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
   await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger, mcp });
+
+  // 协作会话（convo）：执行策略装配 + 孤儿会话恢复（"最后一条是用户消息"的会话重新驱动）
+  const { configureConvo, resumeOrphanedConvos } = await import('./convo');
+  configureConvo(config.convo);
+  await resumeOrphanedConvos({ orchestrator, pool: modelPool, logger, mcp });
 
   // improvement 5 (R5): periodic scan nudges tasks stuck in 'clarifying' (once per task)
   startClarifyTimeoutScanner({ timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });

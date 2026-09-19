@@ -343,6 +343,12 @@ export interface MetricsResponse {
   cost_total: number;
 }
 
+/** feature: 模型标签模板 —— 用户自定义命名标签组合（如「视觉+推理」） */
+export interface TagTemplate {
+  name: string;
+  tags: string[];
+}
+
 export interface ModelConfig {
   /** 模型唯一标识符（全池唯一键） */
   id: string;
@@ -512,6 +518,69 @@ export const PERMISSION_LEVEL_LABELS: Record<string, string> = {
   whitelist_auto: '白名单自动',
   full: '目录内完全控制',
 };
+
+/** 协作会话：单 agent 长对话直接操作项目工作区（服务端 convo.ts 的镜像） */
+export type ConvoStatus = 'idle' | 'running' | 'waiting_approval' | 'waiting_ask';
+export type ConvoMessageKind = 'text' | 'tool' | 'notice' | 'degrade' | 'approval' | 'ask' | 'file' | 'interrupt' | 'diff';
+
+export interface Convo {
+  id: string;
+  title: string;
+  project_id?: string;
+  workspace: string;
+  agent_id: string;
+  model_id?: string;
+  status: ConvoStatus;
+  policy_level?: string;
+  snapshot_id?: string;
+  /** 会话步骤清单（write_plan/update_plan 维护，胶囊/展开渲染） */
+  plan?: { steps: { text: string; status: 'pending' | 'in_progress' | 'done' | 'blocked'; ts: string }[]; updated_at: string };
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConvoMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  kind: ConvoMessageKind;
+  text: string;
+  ts: string;
+  model?: string;
+  meta?: Record<string, any>;
+}
+
+export interface ConvoApproval {
+  id: string;
+  command: string;
+  ts: string;
+  status: 'pending' | 'approved_once' | 'approved_always' | 'rejected';
+  resolved_by?: string;
+  resolved_at?: string;
+}
+
+export interface ConvoAsk {
+  id: string;
+  question: string;
+  ts: string;
+  status: 'pending' | 'answered' | 'timeout' | 'cancelled';
+  answer?: string;
+}
+
+export interface ConvoFileRef {
+  id: string;
+  name: string;
+  url: string;
+  wsPath?: string;
+  size: number;
+}
+
+export interface ConvoDetail extends Convo {
+  messages: ConvoMessage[];
+  pending_queue: number;
+  pending_approvals: ConvoApproval[];
+  pending_asks: ConvoAsk[];
+  busy?: boolean;
+}
 
 /** 群组沟通：多 agent + 用户的自主讨论 → 方案 → 转项目（服务端 discussion.ts 的镜像） */
 export type DiscussionMode = 'manual' | 'auto';
@@ -840,6 +909,10 @@ export const api = {
   getModelPool: () => request<{ model_pool: ModelConfig[] }>('/api/config/model-pool'),
   saveModelPool: (model_pool: ModelConfig[]) =>
     request('/api/config/model-pool', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_pool }) }),
+  // feature: 模型标签模板 —— 用户自定义命名标签组合
+  getTagTemplates: () => request<{ templates: TagTemplate[] }>('/api/config/model-tag-templates'),
+  saveTagTemplates: (templates: TagTemplate[]) =>
+    request('/api/config/model-tag-templates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates }) }),
   testModel: (model: ModelConfig) =>
     request<{ ok: boolean; latency_ms: number; response_preview?: string; error?: string }>(
       '/api/config/model-pool/test',
@@ -886,4 +959,45 @@ export const api = {
   status: () => request<StatusResponse>('/api/status'),
   metrics: () => request<MetricsResponse>('/api/metrics'),
   fsList: (path: string) => request<FsListing>(`/api/fs?path=${encodeURIComponent(path)}`),
+
+  // ---------- 协作会话（convo.ts 的镜像；mobile 端契约同源） ----------
+  convoList: (projectId?: string) =>
+    request<{ convos: Convo[] }>(`/api/convos${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
+  convoCreate: (payload: { project_id?: string; title?: string; model_id?: string; agent_id?: string; policy_level?: string }) =>
+    request<{ status: string; convo: Convo }>('/api/convos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  convoGet: (id: string) =>
+    request<ConvoDetail>(`/api/convos/${id}`),
+  convoUpdate: (id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null }) =>
+    request<{ status: string; convo: Convo }>(`/api/convos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
+  convoDelete: (id: string) => request(`/api/convos/${id}`, { method: 'DELETE' }),
+  convoSend: (id: string, payload: { text: string; images?: IncomingImage[]; mode?: 'queue' | 'interrupt'; model_id?: string }) =>
+    request<{ status: string; queued: boolean }>(`/api/convos/${id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  convoStop: (id: string) => request<{ status: string }>(`/api/convos/${id}/stop`, { method: 'POST' }),
+  convoApprove: (id: string, approvalId: string, action: 'once' | 'reject' | 'always') =>
+    request<{ status: string; approval: ConvoApproval }>(`/api/convos/${id}/approvals/${approvalId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }),
+  convoAnswerAsk: (id: string, askId: string, answer: string) =>
+    request<{ status: string }>(`/api/convos/${id}/asks/${askId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer }) }),
+  convoDiff: (id: string) =>
+    request<{ files: string[]; patch: string; git: boolean }>(`/api/convos/${id}/diff`),
+  convoRollback: (id: string) =>
+    request<{ status: string; ok: boolean; snapshot_id: string; git_action: string; details: string[] }>(`/api/convos/${id}/rollback`, { method: 'POST' }),
+  convoFile: (id: string, path: string) =>
+    request<{ name: string; size: number; kind: 'text' | 'image'; content?: string; dataUrl?: string }>(`/api/convos/${id}/file?path=${encodeURIComponent(path)}`),
+  convoFork: (id: string, payload?: { message_id?: string; title?: string }) =>
+    request<{ status: string; convo: Convo }>(`/api/convos/${id}/fork`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) }),
+  convoSearchFiles: (id: string, q: string, limit = 20) =>
+    request<{ files: string[]; total: number }>(`/api/convos/${id}/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  /** multipart 文件上传（request 封装不含 FormData，这里单独 fetch） */
+  convoUploadFiles: async (id: string, files: File[]): Promise<{ status: string; files: ConvoFileRef[] }> => {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    const token = localStorage.getItem('coteam-api-token') || '';
+    const res = await fetch(`/api/convos/${id}/files`, { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : undefined, body: fd });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json())?.detail || detail; } catch { /* ignore */ }
+      throw new Error(detail);
+    }
+    return res.json();
+  },
 };

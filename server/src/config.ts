@@ -71,6 +71,8 @@ export interface AppConfig {
     /** governance: entries not updated for this many days are stale candidates */
     stale_days?: number;
   };
+  /** feature: 模型标签模板 —— 用户自定义命名标签组合（设置界面管理），模型池「模板」按钮一键应用 */
+  model_tag_templates?: { name: string; tags: string[] }[];
   /** custom grading keywords (improvement 7 / R6), appended to built-in rules */
   grading?: { heavy?: string[]; light?: string[] };
   /** 项目治理：所有项目拥有独立目录 + 独立 git 仓库，任务操作被限制在项目目录内 */
@@ -89,6 +91,14 @@ export interface AppConfig {
     project_context_char_cap?: number;
     /** 并行发言并发上限（P2-4）：同一批发言者并发执行的信号量宽度，超模型池容量自然排队 */
     parallel_speakers?: number;
+  };
+  /** 协作会话（convo）：单 agent 长对话直接操作项目工作区的执行策略 */
+  convo?: {
+    /** 会话级权限缺省（继承全局 permissions，可被会话 policy_level 覆盖） */
+    permissions?: { level?: string; whitelist_commands?: string[]; max_time_sec?: number; allow_sensitive?: boolean };
+    exec_timeout_sec?: number;
+    max_tool_iter?: number;
+    ask_timeout_sec?: number;
   };
   /** 2026-09-09 超时语义重做：时长本身不判死——只有确定性死亡/静默超线/人工判定才是失败 */
   llm?: LlmTimeoutConfig;
@@ -187,6 +197,11 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
     agents_dir: path.isAbsolute(agentsDir) ? agentsDir : path.join(root, agentsDir),
     dashboard: { host: raw.dashboard?.host ?? '127.0.0.1', port: raw.dashboard?.port ?? 8855, token: raw.dashboard?.token },
     model_pool: raw.model_pool || [],
+    model_tag_templates: Array.isArray(raw.model_tag_templates)
+      ? raw.model_tag_templates
+          .filter((t: any) => t && typeof t.name === 'string' && t.name.trim())
+          .map((t: any) => ({ name: t.name.trim(), tags: Array.isArray(t.tags) ? t.tags.map(String) : [] }))
+      : [],
     orchestrator: {
       max_retries: raw.orchestrator?.max_retries ?? 3,
       model: raw.orchestrator?.model,
@@ -262,6 +277,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       max_rounds: raw.discussion?.max_rounds,
       project_context_char_cap: raw.discussion?.project_context_char_cap,
       parallel_speakers: raw.discussion?.parallel_speakers,
+    },
+    convo: {
+      permissions: raw.convo?.permissions || undefined,
+      exec_timeout_sec: raw.convo?.exec_timeout_sec,
+      max_tool_iter: raw.convo?.max_tool_iter,
+      ask_timeout_sec: raw.convo?.ask_timeout_sec,
     },
     llm: {
       // 2026-09-09 超时语义重做：秒数可带小数（便于测试调小阈值）；负数按缺省，0 为显式关闭

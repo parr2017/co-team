@@ -21,8 +21,11 @@
           </button>
           <button class="nav-tab" :class="{ active: page === 'project' }" @click="router.push('/project')">项目开发</button>
           <button class="nav-tab" :class="{ active: page === 'discuss' }" @click="router.push('/discuss')">
-            群组沟通
+            <span class="nav-label">群组沟通</span>
             <span v-if="discussAlertCount" class="nav-badge" :title="`${discussAlertCount} 个讨论有成员等你拍板`">{{ discussAlertCount }}</span>
+          </button>
+          <button class="nav-tab" :class="{ active: page === 'convo' }" @click="router.push('/convo')">
+            <span class="nav-label">协作会话</span>
           </button>
         </nav>
         <div class="header-right">
@@ -106,6 +109,12 @@
         </main>
       </div>
 
+      <div class="layout flush" v-else-if="page === 'convo'">
+        <main class="main">
+          <ConvoView />
+        </main>
+      </div>
+
       <div class="layout" v-else-if="page === 'approvals'">
         <main class="main">
           <div class="page-toolbar">
@@ -169,6 +178,7 @@ import RoadmapDialog from './components/RoadmapDialog.vue';
 import LogViewerDialog from './components/LogViewerDialog.vue';
 import ProjectView from './components/ProjectView.vue';
 import GroupDiscussionView from './components/GroupDiscussionView.vue';
+import ConvoView from './components/ConvoView.vue';
 import { useDiscussion } from './composables/useDiscussion';
 
 const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, reconnectWs, clearEvents } = useDashboard();

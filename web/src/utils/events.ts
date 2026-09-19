@@ -20,6 +20,8 @@ const CLIP = (s: unknown, n = 80): string => {
 };
 
 const NODE_NAME = (p: Record<string, any>): string => (p.name ? `「${p.name}」` : '');
+const CONVO_LABEL = (p: Record<string, any>): string => (p.title ? `「${p.title}」` : '');
+const CONVO_STATUS = (s: string): string => ({ idle: '空闲', running: '执行中', waiting_approval: '待审批', waiting_ask: '待回答' }[s] || s);
 
 export function describeEvent(type: string, p: Record<string, any> = {}): EventView {
   switch (type) {
@@ -235,6 +237,26 @@ export function describeEvent(type: string, p: Record<string, any> = {}): EventV
       return { text: `方案已转为项目开发 · 项目 ${p.project_id || ''} / 任务 ${p.task_id || ''}`, level: 'success', category: 'system', noisy: false };
     case 'discussion_experience':
       return { text: `${p.agent || '成员'}沉淀经验到知识库：${CLIP(p.title, 40)}`, level: 'success', category: 'system', noisy: false };
+
+    // ---- 协作会话（convo）----
+    case 'convo_status':
+      return { text: `协作会话 ${CONVO_LABEL(p) || ''}${p.status ? `：${CONVO_STATUS(p.status)}` : ''}`.trim(), level: 'info', category: 'system', noisy: true };
+    case 'convo_message':
+      return { text: `协作会话新消息`, level: 'info', category: 'system', noisy: true };
+    case 'convo_delta':
+      return { text: '协作会话生成中…', level: 'info', category: 'system', noisy: true };
+    case 'convo_tool':
+      return { text: `协作会话工具执行：${(p.calls || []).map((c: any) => c.tool).join('、').slice(0, 60) || '?'}`, level: 'info', category: 'system', noisy: true };
+    case 'convo_reason':
+      return { text: '协作会话思考中…', level: 'info', category: 'system', noisy: true };
+    case 'convo_plan':
+      return { text: '协作会话步骤清单更新', level: 'info', category: 'system', noisy: true };
+    case 'convo_queued':
+      return { text: `协作会话消息已排队（第 ${p.position ?? '?'} 位）`, level: 'info', category: 'system', noisy: true };
+    case 'convo_approval':
+      return { text: `协作会话命令等待审批：${CLIP(p.approval?.command || '', 50)}`, level: 'accent', category: 'system', noisy: false };
+    case 'convo_ask':
+      return { text: `协作会话需要你回答：${CLIP(p.ask?.question || '', 60)}`, level: 'accent', category: 'system', noisy: false };
 
     default: {
       // 未登记类型：尽量从 payload 拼出可读内容，而不是裸 type

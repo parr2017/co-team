@@ -518,7 +518,93 @@ export const api = {
     request<{ permissions: { level: string; whitelist_commands: string[]; max_time_sec?: number }; levels: string[] }>('/api/config/permissions'),
   savePermissions: (level: string, whitelist_commands: string[]) =>
     post<{ status: string; permissions: { level: string; whitelist_commands: string[] } }>('/api/config/permissions', { level, whitelist_commands }),
+
+  // ---------- 协作会话（convo.ts 的镜像；web 端契约同源） ----------
+  convoList: (projectId?: string) => {
+    const sp = new URLSearchParams();
+    if (projectId) sp.set('project_id', projectId);
+    return request<{ convos: ConvoSummary[] }>(`/api/convos${sp.toString() ? `?${sp}` : ''}`);
+  },
+  convoCreate: (payload: { project_id?: string; title?: string; model_id?: string; agent_id?: string; policy_level?: string }) =>
+    post<{ status: string; convo: ConvoSummary }>('/api/convos', payload),
+  convoGet: (id: string) =>
+    request<ConvoDetail>(`/api/convos/${id}`),
+  convoUpdate: (id: string, patch: { title?: string; model_id?: string | null }) =>
+    request<{ status: string; convo: ConvoSummary }>(`/api/convos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
+  convoDelete: (id: string) =>
+    request<{ status: string }>(`/api/convos/${id}`, { method: 'DELETE' }),
+  convoSend: (id: string, payload: { text: string; images?: { name: string; dataUrl: string }[]; mode?: 'queue' | 'interrupt'; model_id?: string }) =>
+    post<{ status: string; queued: boolean }>(`/api/convos/${id}/messages`, payload),
+  convoStop: (id: string) =>
+    post<{ status: string }>(`/api/convos/${id}/stop`),
+  convoApprove: (id: string, approvalId: string, action: 'once' | 'reject' | 'always') =>
+    post<{ status: string }>(`/api/convos/${id}/approvals/${approvalId}`, { action }),
+  convoAnswerAsk: (id: string, askId: string, answer: string) =>
+    post<{ status: string }>(`/api/convos/${id}/asks/${askId}`, { answer }),
+  convoDiff: (id: string) =>
+    request<{ files: string[]; patch: string; git: boolean }>(`/api/convos/${id}/diff`),
+  convoRollback: (id: string) =>
+    post<{ status: string }>(`/api/convos/${id}/rollback`),
+  convoFile: (id: string, path: string) =>
+    request<{ name: string; size: number; kind: 'text' | 'image'; content?: string; dataUrl?: string }>(`/api/convos/${id}/file?path=${encodeURIComponent(path)}`),
+  convoFork: (id: string, payload?: { message_id?: string; title?: string }) =>
+    post<{ status: string; convo: ConvoSummary }>(`/api/convos/${id}/fork`, payload || {}),
+  convoSearchFiles: (id: string, q: string, limit = 20) =>
+    request<{ files: string[]; total: number }>(`/api/convos/${id}/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  convoUploadFiles: async (id: string, files: File[]): Promise<{ status: string; files: ConvoFileRef[] }> => {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    const token = getApiToken();
+    const res = await fetch(`${BASE}/api/convos/${id}/files`, { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : undefined, body: fd });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((body as any).detail || `上传失败(${res.status})`);
+    return body as { status: string; files: ConvoFileRef[] };
+  },
 };
+
+/** 协作会话类型（服务端 convo.ts 的移动端子集镜像） */
+export type ConvoStatus = 'idle' | 'running' | 'waiting_approval' | 'waiting_ask';
+export type ConvoMessageKind = 'text' | 'tool' | 'notice' | 'degrade' | 'approval' | 'ask' | 'file' | 'interrupt' | 'diff';
+
+export interface ConvoSummary {
+  id: string;
+  title: string;
+  project_id?: string;
+  workspace: string;
+  agent_id: string;
+  model_id?: string;
+  status: ConvoStatus;
+  snapshot_id?: string;
+  plan?: { steps: { text: string; status: 'pending' | 'in_progress' | 'done' | 'blocked'; ts: string }[]; updated_at: string };
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConvoMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  kind: ConvoMessageKind;
+  text: string;
+  ts: string;
+  model?: string;
+  meta?: Record<string, any>;
+}
+
+export interface ConvoFileRef {
+  id: string;
+  name: string;
+  url: string;
+  wsPath?: string;
+  size: number;
+}
+
+export interface ConvoDetail extends ConvoSummary {
+  messages: ConvoMessage[];
+  pending_queue: number;
+  pending_approvals: { id: string; command: string; status: string }[];
+  pending_asks: { id: string; question: string; status: string }[];
+  busy?: boolean;
+}
 
 export function statusLabel(s: string): string {
   // 状态中文唯一来源：utils/events.ts 的 STATUS_TEXT（此前两套映射各说各话）

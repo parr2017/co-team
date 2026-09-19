@@ -61,8 +61,15 @@ model_pool:
   #   cost_per_1k: 0
   #   max_tokens: 8192
   #   context_length: 32768
-  #   tags:
-  #     - image
+#   tags:
+#     - image
+# feature: 模型标签模板（可选）——用户自定义命名标签组合，设置界面「管理模板」可视化维护，
+# 模型池模型行的「模板」下拉一键应用；此处仅作手改示例，推荐走 UI
+# model_tag_templates:
+#   - name: 视觉+推理
+#     tags: [image, reasoning]
+#   - name: 代码开发
+#     tags: [code, debug, review]
 orchestrator:
   max_retries: 3
   model: deepseek-v4-flash
@@ -213,3 +220,13 @@ redis:
 #       url: "http://127.0.0.1:8931/mcp"
 #       # headers: { Authorization: "Bearer ${COTEAM_MCP_GITHUB_TOKEN}" }
 #       # allow_tools: []             # 工具级白名单（小写），空=全部
+# 协作会话（convo）：单 agent 长对话直接操作项目工作区（/convo 页面）。
+# 全部可省——缺省权限继承全局 permissions，命令超时 180s，工具循环 ≤15 轮，提问等待 1h。
+# convo:
+#   permissions:                 # 会话级权限缺省（可被单个会话的 policy_level 覆盖）
+#     level: whitelist_auto
+#     whitelist_commands: [python, pip, git, npm, node, mkdir, cp, mv, rm, ls, cat, chmod]
+#     allow_sensitive: false     # true 时敏感命令（rm/git push 等）不再强制审批
+#   exec_timeout_sec: 180        # 同步命令超时（秒）
+#   max_tool_iter: 15            # 单轮 turn 工具迭代上限
+#   ask_timeout_sec: 3600        # ask_user/命令审批 的等待上限（秒，超时按假设继续/拒绝）
