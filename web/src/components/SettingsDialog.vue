@@ -108,6 +108,10 @@
             </div>
             <div class="pv-shared">
               <label class="field">
+                <span>供应商名称（必填，下拉展示 name · provider）</span>
+                <el-input v-model="g.provider_name" size="small" placeholder="如 智谱 / DeepSeek 官方 / 本地vLLM" />
+              </label>
+              <label class="field">
                 <span>Base URL（本服务下所有模型共用）</span>
                 <el-input v-model="g.base_url" size="small" placeholder="https://.../v1" />
               </label>
@@ -432,6 +436,8 @@ import { useDashboard } from '../composables/useDashboard';
 interface ProviderGroup {
   base_url: string;
   api_key: string;
+  /** 供应商名称（组级必填，组内所有模型共享——同名模型靠它区分） */
+  provider_name: string;
   models: ModelConfig[];
 }
 
@@ -834,10 +840,11 @@ function groupPool(pool: ModelConfig[]): ProviderGroup[] {
     const key = JSON.stringify([(m.base_url || '').trim(), (m.api_key || '').trim()]);
     let g = index.get(key);
     if (!g) {
-      g = { base_url: m.base_url || '', api_key: m.api_key || '', models: [] };
+      g = { base_url: m.base_url || '', api_key: m.api_key || '', provider_name: (m.provider || '').trim(), models: [] };
       index.set(key, g);
       groups.push(g);
     }
+    if (!g.provider_name && (m.provider || '').trim()) g.provider_name = (m.provider || '').trim();
     g.models.push({ ...m, id: m.id || crypto.randomUUID().slice(0, 12), tags: m.tags || [] });
   }
   return groups;
@@ -853,6 +860,7 @@ function flattenProviders(): ModelConfig[] {
       tags: (m.tags || []).map((t) => t.trim()).filter(Boolean),
       base_url: (g.base_url || '').trim(),
       api_key: (g.api_key || '').trim(),
+      provider: (g.provider_name || '').trim(),
     }))
   );
 }
@@ -998,7 +1006,7 @@ async function loadModels() {
   try {
     const d = await api.getModelPool();
     providers.value = groupPool(d.model_pool || []);
-    if (!providers.value.length) providers.value.push({ base_url: '', api_key: '', models: [] });
+    if (!providers.value.length) providers.value.push({ base_url: '', api_key: '', provider_name: '', models: [] });
   } catch (e: any) {
     ElMessage.error(e.message);
   }
@@ -1014,7 +1022,7 @@ async function loadAgents() {
 }
 
 function addProvider() {
-  providers.value.push({ base_url: '', api_key: '', models: [] });
+  providers.value.push({ base_url: '', api_key: '', provider_name: '', models: [] });
 }
 
 function addModelTo(g: ProviderGroup) {
@@ -1056,6 +1064,9 @@ async function pullUpstream(g: ProviderGroup, gi: number) {
       ElMessage.success('该服务下可用的模型均已在池中');
       return;
     }
+    if (!String(g.provider_name || '').trim()) {
+      try { g.provider_name = new URL((g.base_url || '').trim()).hostname; } catch { g.provider_name = ''; }
+    }
     importSelected.value = [];
     importTarget = g;
     importLabel.value = providerLabel(g);
@@ -1072,7 +1083,9 @@ function confirmImport() {
   let added = 0;
   for (const n of importSelected.value) {
     if (importTarget.models.some((m) => m.name === n)) continue;
-    importTarget.models.push({ ...newModel(n), base_url: importTarget.base_url, api_key: importTarget.api_key });
+    let host = '';
+    try { host = new URL(importTarget.base_url).hostname; } catch { host = ''; }
+    importTarget.models.push({ ...newModel(n), base_url: importTarget.base_url, api_key: importTarget.api_key, provider: host });
     added += 1;
   }
   ElMessage.success(`已导入 ${added} 个模型（保存后生效）`);
@@ -1119,6 +1132,12 @@ async function saveModels() {
   }
   savingModels.value = true;
   try {
+    // 供应商名称组级必填：同名模型靠它区分（下拉展示 name · provider）；flattenProviders 已同步进每条
+    const badGroup = providers.value.findIndex((g) => !String(g.provider_name || '').trim());
+    if (badGroup >= 0) {
+      ElMessage.error(`第 ${badGroup + 1} 个服务接入点缺少供应商名称（必填）`);
+      return;
+    }
     await api.saveModelPool(models);
     ElMessage.success('模型池已保存并热生效');
     emit('changed');
@@ -1221,7 +1240,7 @@ async function removeAgent(row: AgentDefinition) {
 .pv-empty { font-size: 12px; color: var(--text-3); padding: 6px 0 2px; }
 .model-row { border-top: 1px dashed var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 6px; }
 .mr-line { display: flex; align-items: center; gap: 8px; }
-.mr-name { width: 220px; flex: none; }
+.mr-name { width: 200px; flex: none; }
 .mr-tags { flex: 1; min-width: 200px; }
 .mr-nums { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
 .mr-nums :deep(.el-input-number) { width: 100%; }

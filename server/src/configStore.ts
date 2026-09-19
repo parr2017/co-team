@@ -17,7 +17,20 @@ function readRaw(root: string = PROJECT_ROOT): Record<string, any> {
 
 function writeRaw(raw: Record<string, any>, root: string = PROJECT_ROOT): void {
   fs.mkdirSync(path.dirname(configPath(root)), { recursive: true });
-  fs.writeFileSync(configPath(root), yaml.dump(raw, { lineWidth: 120 }), 'utf-8');
+  const target = configPath(root);
+  // 写前轮换备份：config.yaml 含密钥且不入 git，一次误写（如空 model_pool）无法从
+  // 版本历史恢复——上一次内容轮换进 .bak（.bak.2 保底），抢救窗口 = 再写一次之前
+  try {
+    if (fs.existsSync(target)) {
+      const bak = target + '.bak';
+      if (fs.existsSync(bak)) fs.copyFileSync(bak, bak + '.2');
+      fs.copyFileSync(target, bak);
+    }
+  } catch { /* 备份失败不阻塞正常写 */ }
+  // 原子写：先落临时文件再 rename，避免写一半崩溃留下 0 字节文件
+  const tmp = target + '.tmp';
+  fs.writeFileSync(tmp, yaml.dump(raw, { lineWidth: 120 }), 'utf-8');
+  fs.renameSync(tmp, target);
 }
 
 export function saveModelPool(models: ModelConfig[], root: string = PROJECT_ROOT): void {

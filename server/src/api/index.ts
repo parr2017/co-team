@@ -1466,6 +1466,13 @@ export function createApi(ctx: ApiContext): Hono {
     const body = await c.req.json<{ model_pool?: any[] }>();
     const pool = body.model_pool;
     if (!Array.isArray(pool)) throw new HttpError(400, 'model_pool must be an array');
+    // 供应商名称必填（同名模型靠它区分；下拉展示 name · provider）
+    pool.forEach((m, i) => {
+      if (!m || typeof m !== 'object') throw new HttpError(400, `第 ${i + 1} 个模型条目无效`);
+      const pv = String(m.provider ?? '').trim();
+      if (!pv) throw new HttpError(400, `第 ${i + 1} 个模型「${m.name || '未命名'}」缺少供应商名称（必填）`);
+      m.provider = pv;
+    });
     for (const m of pool) {
       if (!m.id || !m.name || !m.api_key || !m.base_url) throw new HttpError(400, 'each model needs id, name, api_key and base_url');
     }
