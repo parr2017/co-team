@@ -64,11 +64,12 @@ beforeEach(async () => {
   await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
   agentBehaviors.length = 0;
   const pool = new ModelPool([
-    { id: 'fake-a', name: 'fake-a', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
-    { id: 'fake-b', name: 'fake-b', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
+    // 权重差固定 primary 抽签（selectModel 对同权同级模型加权随机）——否则阶梯起点随机，断言漂移
+    { id: 'fake-a', name: 'fake-a', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'], professional_weight: 100 },
+    { id: 'fake-b', name: 'fake-b', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'], professional_weight: 0 },
   ]);
   orchestrator = new Orchestrator({
-    agentsDir: tmp, modelPool: pool, policy: { whitelistCommands: null, maxTimeSec: 10 },
+    agentsDir: tmp, modelPool: pool, policy: { level: 'full', whitelistCommands: null, maxTimeSec: 10 },
     maxRetries: 1, sandboxEnabled: true, gitEnabled: true, branchWorkflow: true,
   });
   await orchestrator.loadAgents();

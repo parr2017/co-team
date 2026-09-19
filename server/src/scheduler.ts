@@ -23,6 +23,8 @@ export interface UsageEntry {
 export function makeEntry(cfg: ModelConfig): ModelEntry {
   return {
     ...cfg,
+    // 兼容旧配置：无 id（调度唯一键）时回退 name——旧池 name 本就全池唯一，新保存的条目总带 id
+    id: cfg.id || cfg.name,
     concurrency: cfg.concurrency ?? 4,
     professional_weight: cfg.professional_weight ?? 50,
     priority: cfg.priority ?? 1,

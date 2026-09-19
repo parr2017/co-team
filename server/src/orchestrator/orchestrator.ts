@@ -2893,7 +2893,7 @@ export class Orchestrator {
           if (this.slowSuccessMs > 0 && attemptMs > this.slowSuccessMs) {
             // 慢不是失败：只降权（本地慢模型与远程快模型混池的正确记账）
             this.pool.markSlow(entry);
-            this.logger.warn('Model slow but usable', { taskId, nodeId: node.id, model: entry.name, attempt_sec: Math.round(attemptMs / 1000), slow_streak: (this.pool.getStatus()[entry.name] as Record<string, unknown> | undefined)?.slow_count });
+            this.logger.warn('Model slow but usable', { taskId, nodeId: node.id, model: entry.name, attempt_sec: Math.round(attemptMs / 1000), slow_streak: (this.pool.getStatus()[entry.id] as Record<string, unknown> | undefined)?.slow_count });
             // OBS-1：慢成功可见——作战室 + 事件流
             const slowSec = Math.round(attemptMs / 1000);
             await emitProgress('model_slow', { task_id: taskId, node_id: node.id, model: entry.name, elapsed_sec: slowSec });

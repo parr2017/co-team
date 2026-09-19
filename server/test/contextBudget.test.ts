@@ -141,7 +141,7 @@ function makeOrchestrator(pool: ModelPool, opts: Partial<ConstructorParameters<t
   return new Orchestrator({
     agentsDir: path.join(tmp, 'agents'),
     modelPool: pool,
-    policy: { whitelistCommands: null, maxTimeSec: 10 },
+    policy: { level: 'full', whitelistCommands: null, maxTimeSec: 10 },
     maxRetries: 1,
     sandboxEnabled: false,
     gitEnabled: false,

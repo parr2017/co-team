@@ -121,11 +121,24 @@
             </div>
             <div v-for="(m, mi) in g.models" :key="mi" class="model-row">
               <div class="mr-line">
-                <el-input v-model="m.id" size="small" placeholder="model-id (唯一标识)" class="mr-id" />
-                <el-input v-model="m.name" size="small" placeholder="model-name (显示名称)" class="mr-name" />
+                <el-input v-model="m.name" size="small" placeholder="model-name" class="mr-name" />
                 <el-select v-model="m.tags" multiple filterable allow-create default-first-option size="small" placeholder="擅长领域 / 标签" class="mr-tags">
                   <el-option v-for="t in CAPABILITY_TAGS" :key="t" :label="CAPABILITY_TAG_LABELS[t] || t" :value="t" />
                 </el-select>
+                <el-dropdown trigger="click" @command="(cmd: string) => onTplCommand(cmd, m)">
+                  <el-button size="small" plain>
+                    模板<el-icon style="margin-left:4px"><ArrowDown /></el-icon>
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-if="!tagTemplates.length" disabled>暂无模板，点「管理模板」创建</el-dropdown-item>
+                      <el-dropdown-item v-for="t in tagTemplates" :key="t.name" :command="t.name">
+                        {{ t.name }}<span class="tpl-cnt mono">{{ t.tags.map((x) => CAPABILITY_TAG_LABELS[x] || x).join('·') }}</span>
+                      </el-dropdown-item>
+                      <el-dropdown-item divided command="__manage">管理模板…</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
                 <el-button size="small" plain @click="testOne(g, m)" :loading="testingName === m.name">测试</el-button>
                 <el-button size="small" link type="danger" @click="g.models.splice(mi, 1)">删除</el-button>
               </div>
@@ -278,7 +291,7 @@
         </el-form-item>
         <el-form-item label="模型覆盖">
           <el-select v-model="editing.model_override" clearable filterable placeholder="留空使用模型池调度" style="width: 100%">
-            <el-option v-for="m in allModels" :key="m.name" :label="m.name || '(未命名模型)'" :value="m.name" />
+            <el-option v-for="m in allModels" :key="m.id" :label="m.name || '(未命名模型)'" :value="m.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="节点预算(秒)">
@@ -380,6 +393,24 @@
         <el-button size="small" type="primary" :disabled="!importSelected.length" @click="confirmImport">加入模型池（{{ importSelected.length }}）</el-button>
       </template>
     </el-dialog>
+
+    <!-- 标签模板管理弹窗：自定义命名标签组合，模型行「模板」下拉一键应用 -->
+    <el-dialog v-model="tagTplVisible" title="管理标签模板" width="560px" append-to-body>
+      <div class="import-note">给常用标签组合起个名字（如「视觉+推理」），在模型行的「模板」下拉里一键应用。</div>
+      <div v-if="!tagTplEditing.length" class="pv-empty">还没有模板——点下方「+ 添加模板」创建第一个。</div>
+      <div v-for="(t, ti) in tagTplEditing" :key="ti" class="tpl-row">
+        <el-input v-model="t.name" size="small" placeholder="模板名（如：视觉+推理）" class="tpl-name" />
+        <el-select v-model="t.tags" multiple filterable allow-create default-first-option size="small" placeholder="标签组合" class="tpl-tags">
+          <el-option v-for="x in CAPABILITY_TAGS" :key="x" :label="CAPABILITY_TAG_LABELS[x] || x" :value="x" />
+        </el-select>
+        <el-button size="small" link type="danger" @click="tagTplEditing.splice(ti, 1)">删除</el-button>
+      </div>
+      <el-button size="small" style="width: 100%; margin-top: 8px" @click="addTagTemplate">+ 添加模板</el-button>
+      <template #footer>
+        <el-button size="small" @click="tagTplVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="tagTplSaving" @click="saveTagTemplates">保存模板</el-button>
+      </template>
+    </el-dialog>
     <template #footer>
       <div class="sd-foot">
         <span class="sd-sum mono">{{ providers.reduce((n, g) => n + g.models.length, 0) }} 个模型 · {{ mcpServers.length }} 个 MCP 服务 · {{ agents.length }} 个 Agent</span>
@@ -392,11 +423,12 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, getApiToken, setApiToken, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type AgentDefinition, type ModelConfig, type SkillMeta, type McpServerConfig, type McpServerStatus } from '../api';
+import { ArrowDown } from '@element-plus/icons-vue';
+import { api, getApiToken, setApiToken, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type AgentDefinition, type ModelConfig, type SkillMeta, type McpServerConfig, type McpServerStatus, type TagTemplate } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 
 // 模型池按「服务接入点」分组编辑：同一 base_url + api_key 下可挂任意多个模型；
-// 存储/接口契约仍是扁平 model_pool（name 为调度唯一键），保存时展平。
+// 存储/接口契约仍是扁平 model_pool（id 为调度唯一键，自动生成、用户不可见），保存时展平。
 interface ProviderGroup {
   base_url: string;
   api_key: string;
@@ -415,6 +447,70 @@ const CAPABILITY_TAG_LABELS: Record<string, string> = {
   test: '测试',
   deploy: '部署',
 };
+
+// feature: 标签模板 —— 用户自定义命名标签组合（如「视觉+推理」），模型行下拉选择一键应用；
+// 存 config.yaml model_tag_templates，随服务持久化，设置界面「管理模板」增删改
+const tagTemplates = ref<TagTemplate[]>([]);
+const tagTplEditing = ref<TagTemplate[]>([]);
+const tagTplVisible = ref(false);
+const tagTplSaving = ref(false);
+
+function applyTagTemplate(m: ModelConfig, tpl: TagTemplate) {
+  m.tags = [...tpl.tags];
+}
+
+/** 模型行「模板」下拉命令：选模板填充标签，或打开模板管理 */
+function onTplCommand(cmd: string, m: ModelConfig) {
+  if (cmd === '__manage') {
+    openTagTplManager();
+    return;
+  }
+  const tpl = tagTemplates.value.find((t) => t.name === cmd);
+  if (tpl) applyTagTemplate(m, tpl);
+}
+
+async function loadTagTemplates() {
+  try {
+    const d = await api.getTagTemplates();
+    tagTemplates.value = d.templates || [];
+  } catch {
+    tagTemplates.value = [];
+  }
+}
+
+function openTagTplManager() {
+  tagTplEditing.value = tagTemplates.value.map((t) => ({ name: t.name, tags: [...t.tags] }));
+  tagTplVisible.value = true;
+}
+
+function addTagTemplate() {
+  tagTplEditing.value.push({ name: '', tags: [] });
+}
+
+async function saveTagTemplates() {
+  const cleaned = tagTplEditing.value
+    .map((t) => ({ name: (t.name || '').trim(), tags: (t.tags || []).map((x) => x.trim()).filter(Boolean) }))
+    .filter((t) => t.name);
+  const names = new Set<string>();
+  for (const t of cleaned) {
+    if (names.has(t.name)) {
+      ElMessage.error(`模板名称重复：${t.name}`);
+      return;
+    }
+    names.add(t.name);
+  }
+  tagTplSaving.value = true;
+  try {
+    const d = await api.saveTagTemplates(cleaned);
+    tagTemplates.value = d.templates || cleaned;
+    tagTplVisible.value = false;
+    ElMessage.success('标签模板已保存');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    tagTplSaving.value = false;
+  }
+}
 
 const props = defineProps<{ modelValue: boolean; notifyEnabled?: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'changed'): void; (e: 'notify-toggle', v: boolean): void }>();
@@ -714,6 +810,7 @@ const allModels = computed(() => providers.value.flatMap((g) => g.models));
 
 function newModel(name = ''): ModelConfig {
   return {
+    id: crypto.randomUUID().slice(0, 12),
     name,
     provider: '',
     api_key: '',
@@ -728,7 +825,8 @@ function newModel(name = ''): ModelConfig {
   };
 }
 
-/** 扁平 model_pool → 服务分组（按 base_url+api_key 相同归组，保持原顺序） */
+/** 扁平 model_pool → 服务分组（按 base_url+api_key 相同归组，保持原顺序）。
+ * 旧配置可能缺 id（id 是调度唯一键、用户不可见）——加载时即补齐，保证选择器等引用可用。 */
 function groupPool(pool: ModelConfig[]): ProviderGroup[] {
   const groups: ProviderGroup[] = [];
   const index = new Map<string, ProviderGroup>();
@@ -740,17 +838,18 @@ function groupPool(pool: ModelConfig[]): ProviderGroup[] {
       index.set(key, g);
       groups.push(g);
     }
-    g.models.push({ ...m, tags: m.tags || [] });
+    g.models.push({ ...m, id: m.id || crypto.randomUUID().slice(0, 12), tags: m.tags || [] });
   }
   return groups;
 }
 
-/** 服务分组 → 扁平 model_pool（公共字段从组头同步进每个模型） */
+/** 服务分组 → 扁平 model_pool（公共字段从组头同步进每个模型）。
+ * id 是调度唯一键，用户不可见不可编辑——已有则保留，缺失时自动生成短 UUID。 */
 function flattenProviders(): ModelConfig[] {
   return providers.value.flatMap((g) =>
     g.models.map((m) => ({
       ...m,
-      id: m.id || `${(g.base_url || '').trim()}/${m.name}`.replace(/[^a-zA-Z0-9/_-]/g, '-'),
+      id: m.id || crypto.randomUUID().slice(0, 12),
       tags: (m.tags || []).map((t) => t.trim()).filter(Boolean),
       base_url: (g.base_url || '').trim(),
       api_key: (g.api_key || '').trim(),
@@ -800,7 +899,7 @@ const editingOriginal = ref<string | null>(null);
 const editing = ref<Partial<AgentDefinition> & { tagsText?: string; skills?: string[] }>({});
 
 async function loadAll() {
-  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport(), loadPerm(), loadMcp(), loadPoolStatus()]);
+  await Promise.all([loadModels(), loadAgents(), loadSkills(), loadDailyReport(), loadPerm(), loadMcp(), loadPoolStatus(), loadTagTemplates()]);
 }
 
 async function loadDailyReport() {
@@ -1007,16 +1106,13 @@ async function saveModels() {
   const models = flattenProviders();
   const seen = new Set<string>();
   for (const m of models) {
-    if (!m.id) {
-      ElMessage.error('每个模型都需要填写 ID');
-      return;
-    }
     if (!m.name) {
       ElMessage.error('每个模型都需要填写名称');
       return;
     }
+    // id 是调度唯一键、用户不可见（缺失时 flattenProviders 已自动补 UUID），防御性校验碰撞
     if (seen.has(m.id)) {
-      ElMessage.error(`模型 ID 重复：${m.id}（ID 是全池唯一键）`);
+      ElMessage.error(`模型 ID 重复：${m.id}（请重试保存，ID 会重新生成）`);
       return;
     }
     seen.add(m.id);
@@ -1130,6 +1226,10 @@ async function removeAgent(row: AgentDefinition) {
 .mr-nums { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
 .mr-nums :deep(.el-input-number) { width: 100%; }
 .import-note { font-size: 12px; color: var(--text-3); margin-bottom: 10px; }
+.tpl-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px dashed var(--line); }
+.tpl-name { width: 200px; flex: none; }
+.tpl-tags { flex: 1; min-width: 180px; }
+.tpl-cnt { margin-left: 10px; font-size: 11px; color: var(--text-3); }
 .field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .field > span { font-size: 11px; color: var(--text-3); }
 .field-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }

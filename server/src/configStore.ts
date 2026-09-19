@@ -26,6 +26,16 @@ export function saveModelPool(models: ModelConfig[], root: string = PROJECT_ROOT
   writeRaw(raw, root);
 }
 
+/** feature: 模型标签模板 —— 模型池「模板」按钮的自定义命名标签组合；空列表=移除整个节 */
+export function saveTagTemplates(
+  templates: { name: string; tags: string[] }[],
+  root: string = PROJECT_ROOT
+): void {
+  const raw = readRaw(root);
+  raw.model_tag_templates = templates;
+  writeRaw(raw, root);
+}
+
 /** feature: 每日问题报告 — persist the UI toggle + report hour into config.yaml. */
 export function saveDailyReport(cfg: { enabled: boolean; hour: number }, root: string = PROJECT_ROOT): void {
   const raw = readRaw(root);

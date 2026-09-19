@@ -62,7 +62,7 @@ afterEach(() => {
 function makeOrchestrator(): Orchestrator {
   const pool = new ModelPool([{ id: 'fake-model', name: 'fake-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]);
   const orch = new Orchestrator({
-    agentsDir: tmp, modelPool: pool, policy: { whitelistCommands: null, maxTimeSec: 10 },
+    agentsDir: tmp, modelPool: pool, policy: { level: 'full', whitelistCommands: null, maxTimeSec: 10 },
     maxRetries: 1, sandboxEnabled: false, gitEnabled: false, branchWorkflow: false,
   });
   return orch;
@@ -140,7 +140,7 @@ describe('main-agent model pinning (improvement 11, orchestrator integration)', 
       { id: 'second-model', name: 'second-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] },
     ]);
     const orch2 = new Orchestrator({
-      agentsDir: tmp, modelPool: pool, policy: { whitelistCommands: null, maxTimeSec: 10 },
+      agentsDir: tmp, modelPool: pool, policy: { level: 'full', whitelistCommands: null, maxTimeSec: 10 },
       maxRetries: 1, sandboxEnabled: false, gitEnabled: false, branchWorkflow: false,
     });
     await orch2.loadAgents();
