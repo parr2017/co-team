@@ -297,7 +297,7 @@ export async function updateConvo(deps: ConvoDeps, id: string, patch: { title?: 
 export async function sendConvoMessage(
   deps: ConvoDeps,
   convoId: string,
-  input: { text: string; images?: IncomingImage[]; mode?: 'queue' | 'interrupt'; model_id?: string },
+  input: { text: string; images?: IncomingImage[]; model_id?: string },
   opts?: { trigger?: boolean },
 ): Promise<{ queued: boolean }> {
   const convo = await getConvo(convoId);
@@ -305,6 +305,9 @@ export async function sendConvoMessage(
   const text = (input.text || '').trim();
   if (!text && !input.images?.length) throw new ConvoError(400, 'message text is required');
   if (text.length > MAX_MESSAGE_LENGTH) throw new ConvoError(400, `message too long (>${MAX_MESSAGE_LENGTH})`);
+
+  // 会话状态决定入队：busy 自动排队（打断改为排队消息上的「立即插入」显式操作）
+  const busy = !!(await busGet(busyKey(convoId)));
 
   // 逐条消息模型覆盖（opencode 式）：合法则同步写回会话 pin
   if (input.model_id) {
@@ -327,13 +330,11 @@ export async function sendConvoMessage(
     role: 'user', kind: 'text', text,
     meta: {
       ...(storedImages.length ? { images: storedImages } : {}),
-      mode: input.mode || 'queue',
+      ...(busy ? { queued: true } : {}),
     },
   });
 
-  const busy = await busGet(busyKey(convoId));
   if (busy) {
-    if (input.mode === 'interrupt') await interruptConvo(deps, convoId);
     const q = (await busGet<number[]>(pendingKey(convoId))) || [];
     q.push(Date.now());
     await busSet(pendingKey(convoId), q.slice(-50));
@@ -343,6 +344,41 @@ export async function sendConvoMessage(
   if (opts?.trigger === false) return { queued: false };
   triggerConvoTurn(deps, convoId);
   return { queued: false };
+}
+
+/**
+ * 「立即插入」：打断当前 turn，排队消息立即成为下一轮输入（多条排队合并，无需 per-message 优先级）。
+ * 空闲但有排队残留 → 直接触发消费；完全空闲 → no-op。
+ */
+export async function promoteConvoMessage(deps: ConvoDeps, convoId: string): Promise<{ ok: boolean; promoted: boolean; interrupted: boolean }> {
+  const convo = await getConvo(convoId);
+  if (!convo) throw new ConvoError(404, `convo not found: ${convoId}`);
+  const busy = !!(await busGet(busyKey(convoId)));
+  if (busy) {
+    await interruptConvo(deps, convoId);
+    // turn 收尾 finally 会检测 hasPendingUserInput 重触发——排队消息自动被消费
+    return { ok: true, promoted: true, interrupted: true };
+  }
+  const pending = (await busGet<number[]>(pendingKey(convoId))) || [];
+  if (pending.length) {
+    await busSet(pendingKey(convoId), []);
+    triggerConvoTurn(deps, convoId);
+    return { ok: true, promoted: true, interrupted: false };
+  }
+  return { ok: true, promoted: false, interrupted: false };
+}
+
+/** turn 消费排队消息时清除 meta.queued 标记（否则历史回放一直显示"排队中"）。 */
+async function clearQueuedFlags(convoId: string): Promise<void> {
+  const msgs = await getConvoMessages(convoId);
+  let changed = false;
+  for (const m of msgs) {
+    if (m.role === 'user' && m.meta?.queued) { m.meta.queued = false; changed = true; }
+  }
+  if (changed) {
+    await busSet(msgsKey(convoId), msgs.slice(-MAX_MESSAGES));
+    await emitProgress('convo_status', { convo_id: convoId, status: (await getConvo(convoId))?.status || 'idle', queued_cleared: true });
+  }
 }
 
 /** 模型是否声明了图像输入能力（model_pool tags 含 image）——决定走原生 parts 还是描述富化 */
@@ -390,7 +426,15 @@ export async function runResponseLoop(deps: ConvoDeps, convoId: string): Promise
     for (;;) {
       const q = (await busGet<number[]>(pendingKey(convoId))) || [];
       if (q.length) await busSet(pendingKey(convoId), []);
+      // 排队消息 append 在上一轮回复之前，不能只靠 hasPendingUserInput 判定——
+      // 本轮 drain 到排队即必跑；无排队时再用 transcript 尾部 user 消息判定（恢复/重触发场景）
+      if (q.length) {
+        await clearQueuedFlags(convoId);
+        await runTurnCore(deps, convoId);
+        continue;
+      }
       if (!(await hasPendingUserInput(convoId))) break;
+      await clearQueuedFlags(convoId);
       await runTurnCore(deps, convoId);
     }
   } finally {

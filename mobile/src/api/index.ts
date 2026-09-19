@@ -163,7 +163,8 @@ export interface AgentLiveState {
   tokens?: number;
 }
 
-export interface ModelPoolItem { id: string; name: string; }
+export interface ModelPoolItem {
+  provider?: string; id: string; name: string; }
 
 export interface FsListing {
   path: string;
@@ -533,10 +534,12 @@ export const api = {
     request<{ status: string; convo: ConvoSummary }>(`/api/convos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   convoDelete: (id: string) =>
     request<{ status: string }>(`/api/convos/${id}`, { method: 'DELETE' }),
-  convoSend: (id: string, payload: { text: string; images?: { name: string; dataUrl: string }[]; mode?: 'queue' | 'interrupt'; model_id?: string }) =>
+  convoSend: (id: string, payload: { text: string; images?: { name: string; dataUrl: string }[]; model_id?: string }) =>
     post<{ status: string; queued: boolean }>(`/api/convos/${id}/messages`, payload),
   convoStop: (id: string) =>
     post<{ status: string }>(`/api/convos/${id}/stop`),
+  convoPromote: (id: string) =>
+    post<{ status: string; promoted: boolean; interrupted: boolean }>(`/api/convos/${id}/promote`),
   convoApprove: (id: string, approvalId: string, action: 'once' | 'reject' | 'always') =>
     post<{ status: string }>(`/api/convos/${id}/approvals/${approvalId}`, { action }),
   convoAnswerAsk: (id: string, askId: string, answer: string) =>

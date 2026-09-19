@@ -146,30 +146,54 @@ describe('convo 引擎', () => {
       return msgs.filter((m) => m.role === 'user' && m.kind === 'text').length >= 2
         && msgs[msgs.length - 1].role === 'assistant';
     });
-    const msgs = await convo.getConvoMessages(c.id);
+    let msgs = await convo.getConvoMessages(c.id);
     expect(msgs.filter((m) => m.role === 'user' && (m as any).text === '第二条插话').length).toBe(1);
+    // loop1 finally 重触发是异步的——轮询等消费完成（标记清除 = turn2 已开跑）
+    await waitFor(async () => {
+      const ms = await convo.getConvoMessages(c.id);
+      return ms.find((m) => (m as any).text === '第二条插话')?.meta?.queued === false;
+    });
+    msgs = await convo.getConvoMessages(c.id);
     expect(msgs[msgs.length - 1].kind).toBe('text'); // 第二轮的回复
     const live = await convo.getConvo(c.id);
     expect(live?.status).toBe('idle');
   }, 20000);
 
-  it('打断：abort LLM + interrupt 标记落屏 + 状态回 idle', async () => {
+  it('立即插入：busy 中发消息自动入队 → promote 打断 → 队列消息立即处理 + queued 标记清除', async () => {
     const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
-    behaviors.push(() => new Promise(() => { /* 挂起直到 abort */ }));
+    behaviors.push(() => new Promise(() => { /* 挂起直到 promote 打断 */ }));
     await convo.sendConvoMessage(deps, c.id, { text: '开始干活' }, { trigger: false });
     const loop = convo.runResponseLoop(deps, c.id).catch(() => {});
     await waitForStatus(c.id, 'running');
-    const r = await convo.sendConvoMessage(deps, c.id, { text: '别做了', mode: 'interrupt' });
+    // busy 中发消息：无 mode 参数，自动入队（meta.queued）
+    const r = await convo.sendConvoMessage(deps, c.id, { text: '别做了，先做别的' });
     expect(r.queued).toBe(true);
+    let msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.find((m) => m.text === '别做了，先做别的')?.meta?.queued).toBe(true);
+    // turn2 的应答提前入队（promote 打断后 loop1 内部就会自动消费排队消息）
+    behaviors.push(() => reply('收到，已切换到新指令。'));
+    // 排队气泡上的「立即插入」→ promote：打断当前 turn，队列消息立即处理
+    const pr = await convo.promoteConvoMessage(deps, c.id);
+    expect(pr.promoted).toBe(true);
+    expect(pr.interrupted).toBe(true);
     await loop;
-    const msgs = await convo.getConvoMessages(c.id);
-    expect(msgs.some((m) => m.kind === 'interrupt')).toBe(true);
-    // 队列兜底重触发会以「别做了」为新输入跑一轮
-    behaviors.push(() => reply('收到，已停止后续动作。'));
-    await convo.runResponseLoop(deps, c.id).catch(() => {});
-    const msgs2 = await convo.getConvoMessages(c.id);
-    expect(msgs2[msgs2.length - 1].kind).toBe('text');
+    // promote 后队列消息由重触发异步消费——轮询等回复落屏
+    await waitFor(async () => {
+      const ms = await convo.getConvoMessages(c.id);
+      return ms.some((m) => m.kind === 'interrupt')
+        && ms.filter((x) => x.role === 'assistant' && x.kind === 'text').some((x) => x.text.includes('切换到新指令'))
+        && ms.find((m) => m.text === '别做了，先做别的')?.meta?.queued === false;
+    }, 8000);
+    msgs = await convo.getConvoMessages(c.id);
+    expect(msgs[msgs.length - 1].kind).toBe('text');
     expect((await convo.getConvo(c.id))?.status).toBe('idle');
+  }, 20000);
+
+  it('promote 空闲 no-op：无队列残留不误触发', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    const r = await convo.promoteConvoMessage(deps, c.id);
+    expect(r.promoted).toBe(false);
+    expect(r.interrupted).toBe(false);
   }, 20000);
 
   it('approve_required：非白名单命令 park → 批准一次后执行', async () => {

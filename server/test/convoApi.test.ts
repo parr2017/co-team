@@ -117,15 +117,33 @@ describe('convo API（/api/convos）', () => {
     expect((await app.request('/api/convos')).status).toBe(200);
   }, 20000);
 
-  it('busy 时第二条消息按插话模式入队（queued:true）', async () => {
+  it('busy 时消息自动入队 + promote 立即插入', async () => {
     const cr = await json(await post('/api/convos', {}));
-    // 挂起的行为 + 直接占 busy（模拟运行中）——发消息应入队而不是拒绝
-    const { busSet } = await import('../src/bus');
-    await busSet(`convo:${cr.convo.id}:busy`, Date.now());
+    // 真实驱动：挂起行为让 turn 进入 running，第二条消息自动入队
+    behaviors.push(() => new Promise(() => {}));
+    await post(`/api/convos/${cr.convo.id}/messages`, { text: '第一条' });
+    const waitRunning = async () => {
+      for (let i = 0; i < 60; i++) {
+        const d = await json(await app.request(`/api/convos/${cr.convo.id}`));
+        if (d.status === 'running') return d;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error('never running');
+    };
+    await waitRunning();
     const sent = await json(await post(`/api/convos/${cr.convo.id}/messages`, { text: '插话' }));
     expect(sent.queued).toBe(true);
-    const detail = await json(await app.request(`/api/convos/${cr.convo.id}`));
-    expect(detail.pending_queue).toBe(1);
+    expect((await json(await app.request(`/api/convos/${cr.convo.id}`))).pending_queue).toBe(1);
+    // promote：打断 + 队列被异步消费
+    const pr = await json(await post(`/api/convos/${cr.convo.id}/promote`));
+    expect(pr.status).toBe('promoted');
+    for (let i = 0; i < 60; i++) {
+      const after = await json(await app.request(`/api/convos/${cr.convo.id}`));
+      if (after.pending_queue === 0 && after.status === 'idle') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const after = await json(await app.request(`/api/convos/${cr.convo.id}`));
+    expect(after.pending_queue).toBe(0);
   }, 20000);
 
   it('fork + @文件搜索端点', async () => {

@@ -970,8 +970,10 @@ export const api = {
   convoUpdate: (id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null }) =>
     request<{ status: string; convo: Convo }>(`/api/convos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   convoDelete: (id: string) => request(`/api/convos/${id}`, { method: 'DELETE' }),
-  convoSend: (id: string, payload: { text: string; images?: IncomingImage[]; mode?: 'queue' | 'interrupt'; model_id?: string }) =>
+  convoSend: (id: string, payload: { text: string; images?: IncomingImage[]; model_id?: string }) =>
     request<{ status: string; queued: boolean }>(`/api/convos/${id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  convoPromote: (id: string) =>
+    request<{ status: string; promoted: boolean; interrupted: boolean }>(`/api/convos/${id}/promote`, { method: 'POST' }),
   convoStop: (id: string) => request<{ status: string }>(`/api/convos/${id}/stop`, { method: 'POST' }),
   convoApprove: (id: string, approvalId: string, action: 'once' | 'reject' | 'always') =>
     request<{ status: string; approval: ConvoApproval }>(`/api/convos/${id}/approvals/${approvalId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }),

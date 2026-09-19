@@ -70,9 +70,16 @@ export function registerConvoRoutes(app: Hono, ctx: ApiContext): void {
 
   app.post('/api/convos/:id/messages', async (c) => {
     const id = String(c.req.param('id'));
-    const body = await readJsonAuto<{ text?: string; images?: IncomingImage[]; mode?: 'queue' | 'interrupt'; model_id?: string }>(c);
-    const r = await sendConvoMessage(deps(), id, { text: body.text || '', images: body.images, mode: body.mode, model_id: body.model_id });
+    const body = await readJsonAuto<{ text?: string; images?: IncomingImage[]; model_id?: string }>(c);
+    const r = await sendConvoMessage(deps(), id, { text: body.text || '', images: body.images, model_id: body.model_id });
     return c.json({ status: r.queued ? 'queued' : 'accepted', queued: r.queued });
+  });
+
+  // 「立即插入」：打断当前 turn，排队消息立即成为下一轮输入
+  app.post('/api/convos/:id/promote', async (c) => {
+    const { promoteConvoMessage } = await import('../convo');
+    const r = await promoteConvoMessage(deps(), c.req.param('id'));
+    return c.json({ status: r.promoted ? 'promoted' : 'noop', ...r });
   });
 
   app.post('/api/convos/:id/stop', async (c) => {
