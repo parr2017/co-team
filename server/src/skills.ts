@@ -202,6 +202,24 @@ export function findSkillForAgent(name: string, agent: string): SkillMeta | null
  * the load_skill tool when the skill is actually relevant; bodies arrive as
  * appended tool results, which keeps the system prefix byte-stable for KV caching.
  */
+/**
+ * 全量技能名录（协作会话用）：一行一条「name — 描述」，不含正文。
+ * 目的：让通用对话入口的 agent 知道技能库全貌（否则「你有什么技能」这类元问题无法回答、
+ * 冷门技能永远不被匹配）。体量：每条 ≈40 字符，17 条 ≈700 字符，固定税可忽略。
+ */
+export function formatSkillsCatalog(all: SkillMeta[]): string {
+  if (!all.length) return '';
+  const lines = all.map((s) => {
+    const desc = (s.description || '').replace(/\s+/g, ' ').slice(0, 60);
+    return `- ${s.name}${desc ? ` — ${desc}` : ''}`;
+  });
+  return [
+    '本系统全部可用技能（名录；正文一律按需 load_skill 拉取）：',
+    ...lines,
+    '用户问「你有什么技能/能做什么」时如实列出此名录；接到任务后仍按相关性优先，冷门但匹配的技能也要主动拉取。',
+  ].join('\n');
+}
+
 export function formatSkillsBlock(picks: SkillPick[]): string {
   if (!picks.length) return '';
   const lines = picks.map((p) => {

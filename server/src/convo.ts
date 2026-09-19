@@ -30,7 +30,7 @@ import type { AgentPlugin } from './agents';
 import { applyToolCalls } from './tools';
 import { extractReplyStreaming } from './discussion';
 import type { KnowledgeToolContext } from './tools';
-import { pickSkillsForNode, formatSkillsBlock } from './skills';
+import { pickSkillsForNode, formatSkillsBlock, formatSkillsCatalog } from './skills';
 import { getSkills } from './skills';
 import { classifyCommand } from './commandGuard';
 import { canExecute, policyFromConfig, executeCommandAsync, type PermissionPolicy } from './sandbox';
@@ -681,8 +681,12 @@ async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPl
     } catch { /* 无 package.json */ }
   }
 
-  const picks = pickSkillsForNode(getSkills(), (plugin ?? { skills: [], tags: [] }) as any, convo.title || '协作会话');
-  const skillsBlock = formatSkillsBlock(picks);
+  const allSkills = getSkills();
+  const picks = pickSkillsForNode(allSkills, (plugin ?? { skills: [], tags: [] }) as any, convo.title || '协作会话');
+  const skillsBlock = [
+    formatSkillsCatalog(allSkills),
+    picks.length ? `\n与本会话标题相关的技能（建议优先）：\n${formatSkillsBlock(picks)}` : '',
+  ].filter(Boolean).join('\n');
   const availableSkills = picks.map((p) => p.skill.name);
   (convo as any).__availableSkills = availableSkills;
 
