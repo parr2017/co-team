@@ -98,3 +98,8 @@ function dismissTokenGate() {
 .gate-save { background: var(--accent); color: var(--accent-text); border: none; }
 .gate-save:disabled { opacity: 0.5; }
 </style>
+
+<style>
+/* 防误触缩放（全局）：manipulation 禁双击缩放，保留滚动/捏合滚动手感；配合 index.html 手势阻断 */
+html, body, #app { touch-action: manipulation; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+</style>

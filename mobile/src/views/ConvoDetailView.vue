@@ -164,19 +164,22 @@
           <div v-if="!atResults.length" class="dim" style="padding: 6px 10px">无匹配文件</div>
         </div>
       </div>
-      <div class="island">
-        <textarea v-model="draft" rows="1" placeholder="提出后续修改要求…" @keydown.enter.prevent="send" />
-        <div class="row">
-          <div class="mode">
-            <span :class="{ on: mode === 'queue' }" @click="mode = 'queue'">排队</span>
-            <span :class="{ on: mode === 'interrupt' }" @click="mode = 'interrupt'">打断</span>
-          </div>
+      <div class="comp-meta">
+        <div class="mode">
+          <span :class="{ on: mode === 'queue' }" @click="mode = 'queue'">排队</span>
+          <span :class="{ on: mode === 'interrupt' }" @click="mode = 'interrupt'">打断</span>
+        </div>
+        <span class="hint">Enter 发送 · Shift+Enter 换行</span>
+        <span class="ic stop-ic" :class="{ disabled: !busy }" @click="stop"><van-icon name="stop-circle-o" /></span>
+      </div>
+      <div class="input-flat">
+        <div class="input-box">
+          <textarea v-model="draft" rows="1" placeholder="提出后续修改要求…" @keydown.enter.prevent="send" />
           <span class="ic" @click="imgInput?.click()"><van-icon name="photo-o" /></span>
           <span class="ic" @click="fileInput?.click()"><van-icon name="description" /></span>
           <span class="ic" @click="openAt"><van-icon name="link-o" /></span>
-          <span class="ic" :class="{ disabled: !busy }" @click="stop"><van-icon name="stop-circle-o" /></span>
-          <button class="send" :disabled="sending" @click="send">↑</button>
         </div>
+        <button class="send" :disabled="sending" @click="send">↑</button>
         <input ref="imgInput" type="file" accept="image/*" multiple hidden @change="onPickImages" />
         <input ref="fileInput" type="file" multiple hidden @change="onPickFiles" />
       </div>
@@ -659,7 +662,7 @@ onBeforeUnmount(() => off?.());
 </script>
 
 <style scoped>
-.page { min-height: 100vh; display: flex; flex-direction: column; }
+.page { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
 .nav-title { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
 .mono { font-family: var(--font-mono, monospace); }
 .model-pill { font-size: 11px; color: var(--accent); }
@@ -904,16 +907,22 @@ html.light .u-bub { background: var(--accent); }
 .appr .ask-lb { color: var(--accent); }
 .file-inline { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 10px; padding: 9px 12px; border-radius: 12px; background: var(--bg-raise, #14161b); border: 1px solid var(--line-soft, #1a1d24); }
 .file-inline .sp { flex: 1; }
-.composer { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 14px 12px; background: linear-gradient(to top, var(--bg-page) 72%, transparent); border-top: none; }
-.island { border-radius: 24px; background: var(--bg-raise, #14161b); border: 1px solid var(--line); padding: 10px 13px 8px; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
-.island textarea { width: 100%; border: none; background: none; resize: none; color: var(--text-1); font-size: 14.5px; font-family: var(--font-ui); outline: none; height: 38px; }
-.island .row { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
-.island .mode { display: inline-flex; background: var(--bg-inset); border-radius: 99px; padding: 2px; }
-.island .mode span { font-size: 10.5px; color: var(--t3, #5f6773); padding: 3px 11px; border-radius: 99px; cursor: pointer; }
-.island .mode span.on { background: var(--bg-page); color: var(--t1); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
-.island .ic { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--t3, #5f6773); font-size: 14px; }
-.island .ic.disabled { opacity: .4; }
-.island .send { margin-left: auto; width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--accent-text); display: flex; align-items: center; justify-content: center; font-size: 15px; border: none; font-weight: 700; }
-.stream { padding-bottom: 130px; }
+.composer { flex: none; position: sticky; bottom: 0; z-index: 5; background: var(--bg); border-top: 1px solid var(--line); padding: 8px 14px calc(10px + env(safe-area-inset-bottom)); }
+.comp-meta { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--t3, #5f6773); margin-bottom: 7px; }
+.comp-meta .mode { display: inline-flex; background: var(--bg-inset); border-radius: 99px; padding: 2px; }
+.comp-meta .mode span { font-size: 10px; color: var(--t3, #5f6773); padding: 2px 10px; border-radius: 99px; cursor: pointer; }
+.comp-meta .mode span.on { background: var(--bg-raise, #14161b); color: var(--text-1); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.comp-meta .hint { margin-left: 0; }
+.comp-meta .stop-ic { margin-left: auto; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.comp-meta .stop-ic.disabled { opacity: .35; }
+.input-flat { display: flex; align-items: flex-end; gap: 8px; }
+.input-box { flex: 1; min-width: 0; background: var(--bg-chip, #1b1e25); border-radius: 13px; padding: 8px 10px 8px 12px; display: flex; align-items: flex-end; gap: 7px; }
+html.light .input-box { background: var(--bg-inset); }
+.input-box textarea { flex: 1; min-width: 0; border: none; background: none; resize: none; color: var(--text-1); font-size: 16px; font-family: var(--font-ui); outline: none; height: 36px; line-height: 1.5; }
+.input-box textarea::placeholder { color: var(--t3, #5f6773); }
+.input-box .ic { width: 27px; height: 27px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--t3, #5f6773); font-size: 14px; flex: none; cursor: pointer; }
+.input-box .ic:active { color: var(--accent); }
+.send { width: 38px; height: 38px; border-radius: 11px; background: var(--accent); color: var(--accent-text); display: flex; align-items: center; justify-content: center; font-size: 16px; border: none; flex: none; cursor: pointer; font-weight: 700; }
+.send:disabled { opacity: .5; }
 
 </style>
