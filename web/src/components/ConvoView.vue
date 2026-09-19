@@ -214,8 +214,11 @@
               </div>
             </template>
 
-            <!-- 排队徽标 -->
-            <div v-if="queuedCount" class="queued"><el-icon><Clock /></el-icon>排队中 {{ queuedCount }} 条 · 本轮结束后处理</div>
+            <!-- 排队徽标（会话进行中自动入队；「立即插入」= 打断当前执行、队列消息马上处理） -->
+            <div v-if="queuedCount" class="queued">
+              <el-icon><Clock /></el-icon>排队中 {{ queuedCount }} 条 · 本轮结束后处理
+              <el-button size="small" class="promote-btn" :loading="promoting" @click="promoteNow">立即插入</el-button>
+            </div>
           </div>
         </div>
 
@@ -243,12 +246,7 @@
             </span>
           </div>
           <div class="comp-r1">
-            <span class="dim">插话</span>
-            <el-radio-group v-model="mode" size="small">
-              <el-radio-button value="queue"><el-icon><Clock /></el-icon> 排队</el-radio-button>
-              <el-radio-button value="interrupt"><el-icon><SwitchButton /></el-icon> 打断</el-radio-button>
-            </el-radio-group>
-            <span class="hint">{{ mode === 'queue' ? '本轮结束后自动继续 · 多条排队合并处理' : '立即中止当前执行（含运行中命令）· 消息马上生效' }}</span>
+            <span class="hint">{{ busy ? '会话进行中 · 发送将自动排队（排队气泡上可「立即插入」）' : 'Enter 发送 / Shift+Enter 换行' }}</span>
             <input ref="imgInput" type="file" accept="image/*" multiple hidden @change="onPickImages" />
             <input ref="fileInput" type="file" multiple hidden @change="onPickFiles" />
           </div>
@@ -292,7 +290,7 @@
         </el-form-item>
         <el-form-item label="主模型">
           <el-select v-model="form.model_id" filterable placeholder="自动选模" clearable>
-            <el-option v-for="m in modelOptions" :key="m.id" :label="m.name" :value="m.id" />
+            <el-option v-for="m in modelOptions" :key="m.id" :label="modelLabel(m)" :value="m.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="人设">
@@ -344,12 +342,11 @@ const STATUS_LABEL: Record<string, string> = { idle: '空闲', running: '运行�
 const convos = ref<Convo[]>([]);
 const projects = ref<{ id: string; name: string; workspace: string }[]>([]);
 const agents = ref<{ name: string; role?: string }[]>([]);
-const modelOptions = ref<{ id: string; name: string }[]>([]);
+const modelOptions = ref<{ id: string; name: string; provider?: string }[]>([]);
 const search = ref('');
 const activeId = ref('');
 const detail = ref<ConvoDetail | null>(null);
 const queuedCounts = reactive<Record<string, number>>({});
-const mode = ref<'queue' | 'interrupt'>('queue');
 const draft = ref('');
 const sending = ref(false);
 const streamEl = ref<HTMLElement>();
@@ -384,6 +381,7 @@ const atResults = ref<string[]>([]);
 const imgInput = ref<HTMLInputElement>();
 const fileInput = ref<HTMLInputElement>();
 const askDraft = ref('');
+const promoting = ref(false);
 
 // ---------- @ 引用 ----------
 async function openAt() {
@@ -472,6 +470,7 @@ async function refreshActive() {
   try {
     const wasNearEnd = isNearEnd();
     detail.value = await api.convoGet(activeId.value);
+    queuedCounts[activeId.value] = detail.value.pending_queue || 0;
     if (wasNearEnd) await nextTick(() => scrollEnd());
   } catch { /* 会话可能被删除 */ }
 }
@@ -577,6 +576,24 @@ const changesOpen = reactive(new Set<string>());
 const msgVote = reactive<Record<string, 'up' | 'down'>>({});
 const planDone = computed(() => detail.value?.plan?.steps.filter((x) => x.status === 'done').length || 0);
 const planCur = computed(() => detail.value?.plan?.steps.find((x) => x.status === 'in_progress'));
+function modelLabel(m: { name: string; provider?: string }): string {
+  return m.provider ? `${m.name} · ${m.provider}` : m.name;
+}
+
+async function promoteNow() {
+  if (!detail.value) return;
+  promoting.value = true;
+  try {
+    await api.convoPromote(detail.value.id);
+    ElMessage.success('已打断当前执行，排队消息立即处理');
+    await refreshActive();
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    promoting.value = false;
+  }
+}
+
 function toggleChanges(id: string) { if (changesOpen.has(id)) changesOpen.delete(id); else changesOpen.add(id); }
 function diffStat(patch?: string): { add: number; del: number } {
   if (!patch) return { add: 0, del: 0 };
@@ -647,7 +664,7 @@ async function loadMeta() {
   const [ag, mp] = await Promise.all([api.listAgents().catch(() => ({ agents: [] })), api.getModelPool().catch(() => ({ model_pool: [] }))]);
   agents.value = ag.agents.map((a) => ({ name: a.name, role: (a as any).role }));
   if (!agents.value.some((a) => a.name === 'partner')) agents.value.unshift({ name: 'partner', role: '协作工程师' });
-  modelOptions.value = mp.model_pool.map((m) => ({ id: m.id, name: m.name }));
+  modelOptions.value = mp.model_pool.map((m) => ({ id: m.id, name: m.name, provider: (m as any).provider || '' }));
 }
 
 async function create() {
@@ -767,7 +784,7 @@ async function send() {
       } as any);
       nextTick(() => { if (isNearEnd()) scrollEnd(); });
     }
-    await api.convoSend(detail.value.id, { text: text + refNote, images: images.length ? images : undefined, mode: busy.value ? mode.value : undefined });
+    await api.convoSend(detail.value.id, { text: text + refNote, images: images.length ? images : undefined });
     draft.value = '';
     if (!busy.value) delete queuedCounts[detail.value.id];
     await refreshActive();

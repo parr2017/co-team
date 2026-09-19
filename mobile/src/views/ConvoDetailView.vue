@@ -138,7 +138,10 @@
         </div>
       </template>
 
-      <div v-if="queuedCount" class="queued">排队中 {{ queuedCount }} 条</div>
+      <div v-if="queuedCount" class="queued">
+        <span>排队中 {{ queuedCount }} 条</span>
+        <button class="promote-btn" :disabled="promoting" @click="promoteNow">立即插入</button>
+      </div>
 
       <van-empty v-if="detail && !detail.messages.length" description="发第一条消息开始协作" />
     </div>
@@ -149,13 +152,9 @@
         <span v-for="(img, i) in pendingImages" :key="'i' + i" class="chip">图 {{ img.name }} <b @click="pendingImages.splice(i, 1)">×</b></span>
         <span v-for="(f, i) in pendingFiles" :key="'f' + i" class="chip">文 {{ f.name }} <b @click="pendingFiles.splice(i, 1)">×</b></span>
       </div>
-      <div class="comp-r1">
-        <span class="dim">插话</span>
-        <div class="mode-toggle">
-          <button :class="{ on: mode === 'queue' }" @click="mode = 'queue'">排队</button>
-          <button :class="{ on: mode === 'interrupt' }" @click="mode = 'interrupt'">打断</button>
-        </div>
-        <span class="dim sp">{{ mode === 'queue' ? '本轮结束后自动继续' : '立即中止当前执行' }}</span>
+      <div class="comp-meta">
+        <span class="hint">{{ busy ? '会话进行中 · 发送将自动排队' : 'Enter 发送' }}</span>
+        <span class="ic stop-ic" :class="{ disabled: !busy }" @click="stop"><van-icon name="stop-circle-o" /></span>
       </div>
       <div class="atpanel" v-if="atOpen">
         <input v-model="atQuery" placeholder="输入文件名过滤" @input="atFilter" />
@@ -163,14 +162,6 @@
           <div v-for="f in atResults" :key="f" class="mono" @click="pickAt(f)">{{ f }}</div>
           <div v-if="!atResults.length" class="dim" style="padding: 6px 10px">无匹配文件</div>
         </div>
-      </div>
-      <div class="comp-meta">
-        <div class="mode">
-          <span :class="{ on: mode === 'queue' }" @click="mode = 'queue'">排队</span>
-          <span :class="{ on: mode === 'interrupt' }" @click="mode = 'interrupt'">打断</span>
-        </div>
-        <span class="hint">Enter 发送 · Shift+Enter 换行</span>
-        <span class="ic stop-ic" :class="{ disabled: !busy }" @click="stop"><van-icon name="stop-circle-o" /></span>
       </div>
       <div class="input-flat">
         <div class="input-box">
@@ -258,7 +249,6 @@ const router = useRouter();
 const { onEvent } = useWs();
 
 const detail = ref<ConvoDetail | null>(null);
-const mode = ref<'queue' | 'interrupt'>('queue');
 const draft = ref('');
 const sending = ref(false);
 const queuedCount = ref(0);
@@ -334,10 +324,23 @@ async function forkMsg(m: ConvoMessage) {
 const streaming = ref(false);
 const streamingText = computed(() => Object.values(streamBuf.value).join(''));
 const askDraft = ref('');
+const promoting = ref(false);
+async function promoteNow() {
+  promoting.value = true;
+  try {
+    await api.convoPromote(convoId);
+    showToast('已打断当前执行，排队消息立即处理');
+    await load();
+  } catch (e: any) {
+    showFailToast(e.message);
+  } finally {
+    promoting.value = false;
+  }
+}
 const busy = computed(() => !!detail.value && ['running', 'waiting_approval', 'waiting_ask'].includes(detail.value.status));
 const shortModel = computed(() => (detail.value?.model_id || '自动').slice(0, 12));
 
-const models = ref<{ id: string; name: string }[]>([]);
+const models = ref<{ id: string; name: string; provider?: string }[]>([]);
 const modelSheet = ref(false);
 const moreSheet = ref(false);
 const renameDlg = ref(false);
@@ -421,7 +424,7 @@ async function load() {
 async function loadModels() {
   try {
     const mp = await api.getModelPool();
-    models.value = mp.model_pool.map((m) => ({ id: m.id, name: m.name }));
+    models.value = mp.model_pool.map((m) => ({ id: m.id, name: m.name, provider: (m as any).provider || '' }));
   } catch { /* 非关键 */ }
 }
 
@@ -484,7 +487,7 @@ async function send() {
       } as any);
       nextTick(scrollEnd);
     }
-    await api.convoSend(convoId, { text: text + refNote, images: images.length ? images : undefined, mode: busy.value ? mode.value : undefined });
+    await api.convoSend(convoId, { text: text + refNote, images: images.length ? images : undefined });
     draft.value = '';
     await load();
   } catch (e: any) {

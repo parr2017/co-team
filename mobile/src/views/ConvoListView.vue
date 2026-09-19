@@ -49,7 +49,7 @@
           <label>主模型</label>
           <select v-model="form.model_id">
             <option value="">自动选模</option>
-            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}{{ m.provider ? " · " + m.provider : "" }}</option>
           </select>
         </div>
         <div class="frow">
@@ -79,7 +79,7 @@ const STATUS_LABEL: Record<string, string> = { idle: '空闲', running: '运行�
 const convos = ref<ConvoSummary[]>([]);
 const projects = ref<{ id: string; name: string }[]>([]);
 const agents = ref<{ name: string; role?: string }[]>([]);
-const models = ref<{ id: string; name: string }[]>([]);
+const models = ref<{ id: string; name: string; provider?: string }[]>([]);
 const search = ref('');
 const refreshing = ref(false);
 const newDlg = ref(false);
