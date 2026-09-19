@@ -1,16 +1,17 @@
 # AGENTS.md — 编码代理工作守则
 
-本仓库采用**单一 `main` 分支开发**（2026-09-08 起，原公有/私有双分支模型已废除并合并，全部功能统一在 main 上开发与发布）。
+本仓库采用**单一 `dev` 分支开发**（2026-09-19 起，开发主线自 `main` 迁移至 `dev`——`main` 降级为发布/存档分支，不再日常开发）。
 
 ## 分支与推送
 
-- 唯一长期分支：`main`，直接推 `origin`。
+- 日常开发与提交都在 `dev`，直接 `git push origin dev`。
+- `main` 仅在需要发布或同步存档时从 `dev` 合并更新（`git checkout main && git merge dev && git push origin main`），**不在 main 上直接开发**。
 - 禁止 `git push --all`、`git push --mirror`（历史遗留的 `coteam/task-*`、`private` 等分支只作存档，不得推送）。
 - 本地可能存在 `coteam/task-*` 历史任务分支与 `private`/`private-backup` 旧分支——它们是历史存档，**不删除、不推送、不在其上继续开发**。
 
 ## 日常工作流
 
-- 直接在 `main` 上开发、提交、推送：`git add → commit → git push`。
+- 直接在 `dev` 上开发、提交、推送：`git add → commit → git push origin dev`。
 - 提交信息沿用中文 conventional commit 风格（`feat:` / `fix:` / `docs:`）。
 - 改动涉及 orchestrator/harness/deliverable/api 等核心文件时，提交前跑全量测试与三端构建。
 
