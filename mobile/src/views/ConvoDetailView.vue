@@ -180,7 +180,7 @@
     <van-popup v-model:show="modelSheet" position="bottom" round>
       <div class="sheet">
         <div class="sh">切换主模型</div>
-        <div v-for="m in models" :key="m.id" class="si mono" :class="{ cur: m.id === detail?.model_id }" @click="pickModel(m.id)">{{ m.name }}</div>
+        <div v-for="m in models" :key="m.id" class="si mono" :class="{ cur: m.id === detail?.model_id }" @click="pickModel(m.id)">{{ m.name }}{{ m.provider ? ' · ' + m.provider : '' }}</div>
       </div>
     </van-popup>
 

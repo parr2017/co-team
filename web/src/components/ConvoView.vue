@@ -51,7 +51,7 @@
               placeholder="自动选模"
               @change="(v: string) => changeModel(v)"
             >
-              <el-option v-for="m in modelOptions" :key="m.id" :label="m.name" :value="m.id" />
+              <el-option v-for="m in modelOptions" :key="m.id" :label="modelLabel(m)" :value="m.id" />
             </el-select>
             <el-select
               :model-value="detail.policy_level || ''"
