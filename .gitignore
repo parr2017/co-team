@@ -28,6 +28,9 @@ legacy-python/tests/__pycache__/
 
 # secrets: real config contains API keys; use config.example.yaml
 config/config.yaml
+config/config.yaml.bak
+config/config.yaml.bak.2
+config/config.yaml.emptied-by-accident.bak
 
 # editor
 .idea/
