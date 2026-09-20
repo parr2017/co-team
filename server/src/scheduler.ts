@@ -150,11 +150,14 @@ export class ModelPool {
    * 的弱闲聊模型并池时把它们送进 top 档，会话主模型被选成"只会聊天不动手"的模型。
    * 这里改为按 professional_weight 取强模型（同权重再按有效优先级排序），保证会话主模型
    * 偏向能干活的高质量模型；容量软避让与 slot 检查逻辑与 selectModel 同源。
+   * P0.6 池隔离（ignoreCooldown）：任务管线 markFailure 的冷却与健康分是任务侧启发式，
+   * 不该饿死协作会话——会话侧在常规选型返回 null 时以此兜底（宁撞一次也不哑火）。
    */
-  selectStrongModel(tags?: string[]): ModelEntry | null {
-    const healthy = this.filterByTags(this.models, tags).filter((m) => this.isHealthy(m));
+  selectStrongModel(tags?: string[], opts?: { ignoreCooldown?: boolean }): ModelEntry | null {
+    const healthOk = (m: ModelEntry) => opts?.ignoreCooldown || this.isHealthy(m);
+    const healthy = this.filterByTags(this.models, tags).filter((m) => healthOk(m));
     let available = healthy.filter((m) => this.availableSlots(m) > 0);
-    if (available.length === 0) available = this.models.filter((m) => this.isHealthy(m) && this.availableSlots(m) > 0);
+    if (available.length === 0) available = this.models.filter((m) => healthOk(m) && this.availableSlots(m) > 0);
     if (available.length === 0) return null;
     const open = available.filter((m) => !this.capacityBlocked(m));
     if (open.length > 0) available = open;

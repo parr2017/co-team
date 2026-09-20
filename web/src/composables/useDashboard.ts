@@ -229,6 +229,10 @@ function handleEvent(msg: EventEnvelope) {
 
 let everConnected = false;
 let wsOpenedAt = 0;
+// P0.4 WS 假死检测：服务端每 15s 发 ping；45s 没收到任何消息即判定半开连接，
+// 主动断开触发重连（TCP 半开时 onclose 可能几十分钟不触发——"发消息没反应"的主因）
+let lastServerMsgAt = Date.now();
+let pongWatchdog: ReturnType<typeof setInterval> | null = null;
 
 /** token 被拒的探活：WS 快速被断时用当前凭据打一次 /api/status 确认 */
 async function probeUnauthorized() {
@@ -245,6 +249,18 @@ function resyncAfterReconnect() {
   void loadTasks(taskPage.value, taskPageSize.value);
   // 会话消息不在增量事件补拉范围（ConvoView 监听后 refreshActive 全量拉取）
   window.dispatchEvent(new CustomEvent('coteam:convo-resync'));
+  // P0.4：讨论同样补拉（此前只有会话有 resync，讨论断线后群聊卡片永远陈旧）
+  window.dispatchEvent(new CustomEvent('coteam:discussion-resync'));
+}
+
+function ensurePongWatchdog() {
+  if (pongWatchdog) return;
+  pongWatchdog = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastServerMsgAt > 45_000) {
+      try { ws.close(); } catch { /* onclose 触发重连 */ }
+    }
+  }, 10_000);
 }
 
 function connectWs() {
@@ -255,6 +271,7 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws/events${t ? `?token=${encodeURIComponent(t)}` : ''}`);
   ws.onopen = () => {
     connected.value = true;
+    lastServerMsgAt = Date.now();
     const first = !everConnected;
     everConnected = true;
     wsOpenedAt = Date.now();
@@ -268,12 +285,24 @@ function connectWs() {
     setTimeout(connectWs, 3000);
   };
   ws.onmessage = (e) => {
+    lastServerMsgAt = Date.now();
     try {
       handleEvent(JSON.parse(e.data));
     } catch {
       /* ignore */
     }
   };
+  ensurePongWatchdog();
+  // P0.4：页面重新可见时若连接已死立即重连 + 补拉（后台标签页期间断线无 onclose）
+  if (typeof document !== 'undefined' && !(document as any).__coteamVisibilityHooked) {
+    (document as any).__coteamVisibilityHooked = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      lastServerMsgAt = Math.min(lastServerMsgAt, Date.now() - 40_000); // 触发下次 watchdog 检查
+      if (!ws || ws.readyState !== WebSocket.OPEN) connectWs();
+      else resyncAfterReconnect();
+    });
+  }
 }
 
 /** token 保存后热更新：立刻按新 token 重连 WS（此前旧连接一直用失效 token 到手动刷新页面） */

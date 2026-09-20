@@ -181,6 +181,8 @@
           <div v-if="thinking === 'router' && !anyStreaming && !anyLiveTools" class="router-hint">
             <span class="dot-t"></span><span class="dot-t"></span><span class="dot-t"></span> 正在看消息，决定谁来回复…
           </div>
+          <!-- P0.3 等待/重试可见化：换模与长等待不再静默 -->
+          <div v-if="waitNote && (busy || thinking)" class="router-hint wait-note">⏳ {{ waitNote }}</div>
 
           <!-- 并行活动状态行（统一工作流视图：多成员同时动手/输入一眼可见） -->
           <div v-else-if="activeMembers.length && !anyLiveTools" class="parallel-line">
@@ -376,7 +378,7 @@ async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
   }
 }
 
-const { current, busy, thinking, activity, streams, liveTools, memberActivity, send, react, round, stop, setMode, roles } = useDiscussion();
+const { current, busy, thinking, activity, waitNote, streams, liveTools, memberActivity, send, react, round, stop, setMode, roles } = useDiscussion();
 const mode = computed(() => (current.value?.mode as string) || 'manual');
 
 // ---------- 转任务确认卡（agent 发起 → 用户拍板） ----------

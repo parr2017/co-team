@@ -16,6 +16,11 @@ let backoffMs = 1000;
 let reconnectTimer: number | undefined;
 let started = false;
 let openedAt = 0;
+// P0.4 WS 假死检测：服务端每 15s ping；45s 无任何消息即主动断开重连
+// （TCP 半开时 onclose 不触发——手机切网/睡眠唤醒后"发消息没反应"的主因）
+let lastServerMsgAt = Date.now();
+let pongWatchdog: number | undefined;
+let everConnected = false;
 const listeners = new Set<(msg: EventEnvelope) => void>();
 const resyncFns = new Set<() => void>();
 
@@ -55,9 +60,19 @@ function connect() {
   ws.onopen = () => {
     connected.value = true;
     openedAt = Date.now();
+    lastServerMsgAt = Date.now();
     backoffMs = 1000;
+    ensurePongWatchdog();
+    // P0.4：断线重连成功即补拉（此前只挂 visibilitychange，WS 重连事件本身不触发）
+    if (everConnected) {
+      resyncFns.forEach((fn) => {
+        try { fn(); } catch { /* best effort */ }
+      });
+    }
+    everConnected = true;
   };
   ws.onmessage = (e) => {
+    lastServerMsgAt = Date.now();
     try {
       const msg = JSON.parse(e.data);
       if (msg && msg.type !== 'ping') {
@@ -78,6 +93,17 @@ function connect() {
     connected.value = false;
     try { ws?.close(); } catch { /* noop */ }
   };
+}
+
+/** P0.4：假死连接看门狗——45s 没有任何服务端消息即强制断开走重连 */
+function ensurePongWatchdog() {
+  if (pongWatchdog) return;
+  pongWatchdog = window.setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastServerMsgAt > 45_000) {
+      try { ws.close(); } catch { /* onclose 触发重连 */ }
+    }
+  }, 10_000);
 }
 
 function scheduleReconnect() {

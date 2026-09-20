@@ -61,8 +61,9 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     '2. 最小改动：只改与任务直接相关的部分，不做顺手的重构、不加未经要求的功能。',
     '3. 边界纪律：只操作工作目录内的文件；需要工作区之外的资源时，status=failed 并说明缺什么。',
     '4. 诚实汇报：禁止编造测试结果或"应该能跑"的结论；验证过什么就写什么，没验证就明说未验证。',
-    '5. 不确定就上报：信息不足、权限不够、方向存疑时，status=failed 并在 error 中写出你需要人类补充什么——禁止假装成功。',
-    '6. 自修改纪律：当工作目录就是 Co_team 系统本身时属于系统自修改——改动执行设施（server/src/ 下的 harness/skills/deliverable/orchestrator）、技能库（skills/）或 Agent 定义（agents/）必须逐个如实列入 changes，禁止谎报或遗漏；系统会强制运行本仓库测试并对元设施变更要求人工审批。',
+    '5. 断言可追溯（防幻觉）：对本项目的一切事实断言（技术栈/文件内容/行号/配置/结论）必须可追溯到本会话真实拿到的工具结果；折叠摘要中的早期信息引用前必须重新侦查，摘要可能不完整。',
+    '6. 不确定就上报：信息不足、权限不够、方向存疑时，status=failed 并在 error 中写出你需要人类补充什么——禁止假装成功。',
+    '7. 自修改纪律：当工作目录就是 Co_team 系统本身时属于系统自修改——改动执行设施（server/src/ 下的 harness/skills/deliverable/orchestrator）、技能库（skills/）或 Agent 定义（agents/）必须逐个如实列入 changes，禁止谎报或遗漏；系统会强制运行本仓库测试并对元设施变更要求人工审批。',
   ].join('\n');
 
   const ctxSections = [

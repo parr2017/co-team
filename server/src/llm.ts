@@ -165,27 +165,50 @@ export async function listUpstreamModels(apiKey: string, baseUrl: string): Promi
  * `onDelta` (7th arg) receives raw content deltas as they arrive (streaming mode only;
  * the non-streaming path cannot report progress). Consumers must treat it as best-effort.
  */
-export async function chat(entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown>; onReason?: (delta: string) => void; tools?: LlmToolSpec[]; onToolCallStart?: (toolName: string) => void }): Promise<LlmResponse> {
+export async function chat(entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown>; onReason?: (delta: string) => void; tools?: LlmToolSpec[]; onToolCallStart?: (toolName: string) => void; waitGiveUpMs?: number; onWaitNotice?: (info: LlmWaitNotice) => void }): Promise<LlmResponse> {
   const client = getClient(entry);
   // 输出上限是模型属性（model_pool 的 max_tokens），调用方不传即取模型配置
   const cap = maxTokens ?? entry.max_tokens ?? 128000;
-  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody, opts?.onReason, opts?.tools, opts?.onToolCallStart);
+  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody, opts?.onReason, opts?.tools, opts?.onToolCallStart, opts?.waitGiveUpMs, opts?.onWaitNotice);
   return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs, opts?.extraBody, opts?.tools);
 }
+
+/** 客户端真实等待硬上限的错误特征（llm_wait_giveup）：调用方必须直接判死，不进任何重试循环。 */
+export const LLM_WAIT_GIVEUP_RE = /llm_wait_giveup/;
+
+/** 等待心跳信息：kind=first_token（首 chunk 前干等）/ stream_idle（流中段断流）。 */
+export interface LlmWaitNotice { waitedSec: number; kind: 'first_token' | 'stream_idle'; }
 
 /** Abort the controller after `reason` fires; poll faster than coarse limits. */
 function startWatchdog(
   controller: AbortController,
-  opts: { startedAt: number; capMs: number; firstTokenIdleMs: number; streamIdleMs: number; state: { gotFirstChunk: boolean; lastActivity: number } },
+  opts: { startedAt: number; capMs: number; firstTokenIdleMs: number; streamIdleMs: number; state: { gotFirstChunk: boolean; lastActivity: number }; waitGiveUpMs?: number; onWaitNotice?: (info: LlmWaitNotice) => void },
   onFire: (reason: string) => void,
 ): NodeJS.Timeout {
-  const { startedAt, capMs, firstTokenIdleMs, streamIdleMs, state } = opts;
+  const { startedAt, capMs, firstTokenIdleMs, streamIdleMs, state, waitGiveUpMs, onWaitNotice } = opts;
   const limits = [capMs, firstTokenIdleMs, streamIdleMs].filter((x) => x > 0);
   const every = limits.length ? Math.max(25, Math.min(500, Math.floor(Math.min(...limits) / 4))) : 500;
+  // 等待心跳（治"分不清慢与卡死"）：静默 ≥120s 起每 30s 通知一次调用方，纯 informational
+  // 绝不中止——"慢但活着"的判定仍完全归 firstTokenIdle/streamIdle（2026-09-09 语义不变）。
+  let lastNoticeAt = startedAt;
   return setInterval(() => {
     const now = Date.now();
+    if (onWaitNotice) {
+      const silentFor = now - (state.gotFirstChunk ? state.lastActivity : startedAt);
+      if (silentFor >= 120_000 && now - lastNoticeAt >= 30_000) {
+        lastNoticeAt = now;
+        try { onWaitNotice({ waitedSec: Math.round(silentFor / 1000), kind: state.gotFirstChunk ? 'stream_idle' : 'first_token' }); } catch { /* consumers never break the stream */ }
+      }
+    }
     if (capMs > 0 && now - startedAt > capMs) {
       onFire(`wallclock_cap(${Math.round((now - startedAt) / 1000)}s 总时长保险丝)`);
+      controller.abort();
+      return;
+    }
+    // 首 chunk 前的客户端真实等待硬上限（专用错误码 llm_wait_giveup）：
+    // 只约束"零字节的盲等"，不碰"chunk 在流动"的慢生成（后者由 streamIdle 管）。
+    if (waitGiveUpMs && waitGiveUpMs > 0 && !state.gotFirstChunk && now - startedAt > waitGiveUpMs) {
+      onFire(`llm_wait_giveup(首块前无任何数据已等待 ${Math.round((now - startedAt) / 1000)}s，放弃本次尝试)`);
       controller.abort();
       return;
     }
@@ -197,14 +220,14 @@ function startWatchdog(
   }, every);
 }
 
-async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>, onReason?: (delta: string) => void, tools?: LlmToolSpec[], onToolCallStart?: (toolName: string) => void): Promise<LlmResponse> {
+async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>, onReason?: (delta: string) => void, tools?: LlmToolSpec[], onToolCallStart?: (toolName: string) => void, waitGiveUpMs?: number, onWaitNotice?: (info: LlmWaitNotice) => void): Promise<LlmResponse> {
   const startedAt = Date.now();
   const controller = new AbortController();
   const effectiveSignal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
   const capMs = wallclockCapMsOverride !== undefined && wallclockCapMsOverride > 0 ? wallclockCapMsOverride : policy.wallclockCapMs;
   const state = { gotFirstChunk: false, lastActivity: startedAt };
   let abortReason = '';
-  const watchdog = startWatchdog(controller, { startedAt, capMs, firstTokenIdleMs: policy.firstTokenIdleMs, streamIdleMs: policy.streamIdleMs, state }, (r) => { abortReason = r; });
+  const watchdog = startWatchdog(controller, { startedAt, capMs, firstTokenIdleMs: policy.firstTokenIdleMs, streamIdleMs: policy.streamIdleMs, state, waitGiveUpMs, onWaitNotice }, (r) => { abortReason = r; });
 
   let content = '';
   let finishReason: string | null = null;

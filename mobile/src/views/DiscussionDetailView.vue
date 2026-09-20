@@ -16,7 +16,7 @@ defineOptions({ name: 'DiscussionDetailView' });
 
 const route = useRoute();
 const router = useRouter();
-const { current, experiences, roles, busy, thinking, activity, streams, memberActivity, open, send, react, round, stop, generateScheme, saveScheme, setMode, convert } = useDiscussion();
+const { current, experiences, roles, busy, thinking, activity, waitNote, streams, memberActivity, open, send, react, round, stop, generateScheme, saveScheme, setMode, convert } = useDiscussion();
 
 const discId = computed(() => String(route.params.id));
 const draft = ref('');
@@ -673,6 +673,8 @@ const showExp = ref(false);
       <div v-if="thinking === 'router' && !anyStreaming && !activeMembers.length" class="router-hint">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span> 正在看消息，决定谁来回复…
       </div>
+      <!-- P0.3 等待/重试可见化（双端一致） -->
+      <div v-if="waitNote && (busy || thinking)" class="router-hint">⏳ {{ waitNote }}</div>
       <!-- P2-4 并行活动行（双端一致）：多成员同时动手/输入/排队一眼可见 -->
       <div v-else-if="activeMembers.length" class="parallel-line">
         <span v-for="(a, i) in activeMembers" :key="a" class="pl-chip">

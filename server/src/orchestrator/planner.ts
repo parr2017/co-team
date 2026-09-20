@@ -4,7 +4,7 @@ import type { ModelPool } from '../scheduler';
 import type { Router } from '../router';
 import type { Complexity, TaskLevel } from '../types';
 import type { ChecklistItem } from '../types';
-import { relevantKnowledge } from '../knowledge';
+import { relevantKnowledge, isSafeForInjection } from '../knowledge';
 import { LEVEL_PROFILES } from '../grader';
 
 const EVIDENCE_TYPES = ['unit', 'build', 'e2e', 'command', 'manual'];
@@ -228,7 +228,9 @@ async function loadPlannerContext(request: string, projectId?: string): Promise<
   }
   let knowledge: string[] = [];
   try {
-    knowledge = (await relevantKnowledge(request, { project_id: projectId, limit: 4 })).map((k) => `${k.title}：${k.content.slice(0, 160)}`);
+    knowledge = (await relevantKnowledge(request, { project_id: projectId, limit: 4 }))
+      .filter((k) => isSafeForInjection(`${k.title}\n${k.content}`))
+      .map((k) => `${k.title}：${k.content.slice(0, 160)}`);
   } catch (e) {
     warnPlannerDegradation('Planner knowledge load failed, degrading to empty', { error: String(e).slice(0, 200) });
   }

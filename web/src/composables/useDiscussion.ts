@@ -24,6 +24,8 @@ async function loadRoles() {
 const busy = ref(false);
 /** agent currently being invoked ('' = idle; 'router' = deciding who replies) */
 const thinking = ref('');
+/** P0.3/P0.7 等待/重试可见化：当前群聊的瞬时等待说明（"已等待 Xs / 第 N 次重试"） */
+const waitNote = ref('');
 /** what the current speaker is doing: thinking | tool_followup */
 const activity = ref('');
 /** streaming bubbles: stream_id -> {agent, round, text} */
@@ -110,6 +112,17 @@ function subscribe() {
     } else if (msg.type === 'discussion_reacted') {
       const target = current.value.messages.find((x) => x.id === p.message_id);
       if (target) target.reactions = (p.reactions as Record<string, string[]>) || target.reactions;
+    } else if (msg.type === 'discussion_reason') {
+      // P0.7：推理流到达即证明"活着"——续期看门狗（不再 5 分钟熄灯），不打扰正文
+      reArm();
+    } else if (msg.type === 'discussion_retry') {
+      // P0.3：换模/重试过程可见（此前 20s/40s 退避期完全静默）
+      waitNote.value = `${String(p.agent || '')}：模型 ${String(p.model || '')} 调用失败${p.next ? `，切换 ${String(p.next)}` : `，第 ${Number(p.attempt || 1)} 次重试`}`;
+      reArm();
+    } else if (msg.type === 'discussion_waiting') {
+      // P0.3：首包等待心跳（≥120s 每 30s 一条）
+      waitNote.value = `${String(p.agent || '')} 已等待 ${Number(p.waited_sec || 0)}s（模型 ${String(p.model || '')} 响应中）`;
+      reArm();
     } else if (msg.type === 'discussion_round') {
       if (p.phase === 'router') {
         thinking.value = 'router';
@@ -126,6 +139,7 @@ function subscribe() {
         busy.value = false;
         thinking.value = '';
         activity.value = '';
+        waitNote.value = '';
         for (const sid of Object.keys(streams)) delete streams[sid];
         for (const k of Object.keys(memberActivity)) delete memberActivity[k];
         for (const k of Object.keys(liveTools)) delete liveTools[k];
@@ -191,6 +205,7 @@ async function open(id: string, keepScroll = false) {
     if (!keepScroll) {
       thinking.value = '';
       activity.value = '';
+      waitNote.value = '';
       for (const sid of Object.keys(streams)) delete streams[sid];
       for (const k of Object.keys(memberActivity)) delete memberActivity[k];
       for (const k of Object.keys(liveTools)) delete liveTools[k];
@@ -307,7 +322,18 @@ async function convert(payload: ConvertDiscussionPayload) {
   return res;
 }
 
+/** P0.4：WS 重连补拉（useDashboard 广播 coteam:discussion-resync）——此前讨论断线后卡片永远陈旧 */
+function hookResync() {
+  if (typeof window === 'undefined' || (window as any).__coteamDiscResyncHooked) return;
+  (window as any).__coteamDiscResyncHooked = true;
+  window.addEventListener('coteam:discussion-resync', () => {
+    if (current.value) void open(current.value.id, true);
+    void loadList();
+  });
+}
+
 export function useDiscussion() {
   subscribe();
-  return { list, current, experiences, busy, thinking, activity, streams, liveTools, memberActivity, roles, error, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
+  hookResync();
+  return { list, current, experiences, busy, thinking, activity, waitNote, streams, liveTools, memberActivity, roles, error, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
 }

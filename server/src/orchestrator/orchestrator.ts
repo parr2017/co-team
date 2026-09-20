@@ -48,11 +48,12 @@ import { getLogger } from '../logger';
 import { assessRequirement, isConfirmation, MAX_CLARIFY_ROUNDS, generateNodeBrief, type ClarificationAssessment, type ClarifyAnswer, type NodeBrief } from '../clarify';
 import { gradeTask, normalizeLevel, LEVEL_PROFILES } from '../grader';
 import { computeProgress, shouldBroadcast, clearProgressThrottle } from '../progress';
-import { writeKnowledge, relevantKnowledge, recordKnowledgeHits } from '../knowledge';
+import { writeKnowledge, relevantKnowledge, recordKnowledgeHits, isSafeForInjection, KNOWLEDGE_DATA_TAG_OPEN, KNOWLEDGE_DATA_TAG_CLOSE } from '../knowledge';
 import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract, docsSection, getDocRegistry } from '../ssot';
 import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, detectStackMismatch, MAX_FIX_ROUNDS, type ParsedTestOutput } from '../testloop';
 import { createSnapshot } from '../snapshot';
 import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
+import { TurnProgressGuard, EvidenceLedger, emptyObservation, readSignature, READ_ONLY_PROGRESS_TOOLS, type ProgressObservation } from '../progressGuard';
 import { buildOrchTools, nativeToolsOn } from '../toolSchema';
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
@@ -3161,8 +3162,10 @@ export class Orchestrator {
     const knowledgeHits = await relevantKnowledge(`${node.name} ${context} ${roleKeywords[plugin.name] || ''}`, { project_id: projectId, limit: 3 });
     // OBS-1 经验闭环度量：命中即计数（hits/last_hit_at 落盘知识条目）
     if (knowledgeHits.length) { try { recordKnowledgeHits(knowledgeHits.map((k) => k.id)); } catch { /* best effort */ } }
-    const knowledgeBlock = knowledgeHits.length
-      ? '\n\n## 相关知识库条目\n' + knowledgeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')
+    // PH.7 防注入：指令词黑名单过滤 + 数据标签包裹——条目是模型/用户可控内容，不可当指令
+    const safeHits = knowledgeHits.filter((k) => isSafeForInjection(k.title) && isSafeForInjection(k.content));
+    const knowledgeBlock = safeHits.length
+      ? `\n\n## 相关知识库条目\n${KNOWLEDGE_DATA_TAG_OPEN}\n${safeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')}${KNOWLEDGE_DATA_TAG_CLOSE}`
       : '';
 
     // harness (执行骨架): layered system prompt replacing the flat block concatenation —
@@ -3372,10 +3375,26 @@ export class Orchestrator {
       // 幻觉阻塞证据门（2026-09-17）：本尝试实际执行过工具的轮数——"缺工具/权限"申诉
       // 只有在零工具轮时才可能是真阻塞；有工具轮说明工具链可用，申诉是幻觉
       let toolRounds = 0;
+      // PH.3 确定性进展熔断：进展只认 mutation/证据哈希变化/新读取签名，绝不读模型说了什么
+      const progressGuard = new TurnProgressGuard();
+      const evidence = new EvidenceLedger();
+      let lastObs: ProgressObservation | null = null;
       for (let round = 0; round < maxRounds; round++) {
         // Check for cancellation before each LLM call
         if (await isCancelled(taskId)) {
           return { status: 'failed', error: 'task cancelled', tokens: record.tokens };
+        }
+        // PH.3：先观察上一轮的确定性进展，再决定是否发下一次 LLM 请求——
+        // 连续 6 轮零进展（无写盘、无新结果、无新读取）即熔断，不再陪跑空转
+        if (round > 0) {
+          progressGuard.observe(lastObs ?? emptyObservation());
+          if (progressGuard.shouldAbort()) {
+            const err = `无进展熔断：连续 ${progressGuard.stalled} 轮没有任何真实进展（无文件写入、无新工具结果、无新读取）——判定为确定性空转，停止本节点避免继续烧预算`;
+            record.error = err;
+            await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'error', text: err, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
+            await emitProgress('agent_final', { task_id: taskId, node_id: node.id, agent: plugin.name, model: entry.name, ok: false, summary: err });
+            return { status: 'failed', error: err, tokens: record.tokens, tool_rounds: toolRounds };
+          }
         }
         // 节点级总时长预算（轮间检查；超线转人工，不记模型失败、不换模型——时间问题换谁都一样）
         if (nodeBudgetMs > 0 && Date.now() - startedAt > nodeBudgetMs) {
@@ -3626,6 +3645,7 @@ export class Orchestrator {
         const fresh: typeof toolCalls = [];
         const freshIdx: number[] = [];
         const positioned: unknown[] = new Array(toolCalls.length);
+        const dedupKeyByIdx = new Map<number, string>(); // PH.3：证据表落账索引
         for (let ti = 0; ti < toolCalls.length; ti++) {
           const t = toolCalls[ti] as Record<string, any>;
           const tName = String(t.tool || '').toLowerCase();
@@ -3633,19 +3653,47 @@ export class Orchestrator {
           // 且消耗 vision 配额）——"同参结果从略"的契约对它们不成立，豁免去重。
           // mcp__ 外部工具同理豁免：参数在独立 arguments 字段，现有 dedupKey 覆盖不到，
           // 且外部工具可能带副作用（写远程/改外部数据），重放语义必须由工具自己决定。
-          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file' || tName.startsWith('mcp__');
-          const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}`;
+          // git_diff 也豁免（P0.6）：轮内 write_file/edit_file 后 diff 已变——把"写完再看 diff"
+          // 的第二次调用指针化会喂给模型过期结果。
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file' || tName.startsWith('mcp__') || tName === 'git_diff';
+          // P0.6 修复：dedupKey 补 line_start/line_end——同文件不同行段的续读（grep 定位后
+          // 分段读正是系统教给模型的标准工作流）此前被误判"重复调用"喂回空指针。
+          const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}|${t.line_start ?? ''}|${t.line_end ?? ''}|${t.line_start2 ?? ''}|${t.line_end2 ?? ''}`;
           if (!sideEffect && seenToolCalls.has(dedupKey)) {
             positioned[ti] = { tool: t.tool, ok: true, dedup: `与第 ${seenToolCalls.get(dedupKey)} 轮完全相同的调用，结果从略（可信任上轮结果）` };
             continue;
           }
           seenToolCalls.set(dedupKey, round + 1);
+          dedupKeyByIdx.set(ti, dedupKey);
           fresh.push(toolCalls[ti]);
           freshIdx.push(ti);
         }
+        const mutBefore = midRunWritten.length; // PH.3：本轮写盘增量基线
         const freshResults = await applyToolCalls(workspace, fresh, knowledgeCtx, policy);
-        freshIdx.forEach((orig, i) => { positioned[orig] = freshResults[i]; });
+        freshIdx.forEach((orig, i) => {
+          positioned[orig] = freshResults[i];
+          // PH.3：fresh 结果按调用签名落进累计证据表（重复调用保留旧值，哈希只反映真实新增量）
+          const k = dedupKeyByIdx.get(orig);
+          if (k) evidence.record(k, freshResults[i]);
+        });
         const results = positioned;
+        // PH.3：本轮确定性观察——mutation + 证据哈希 + 有界读取签名
+        {
+          let mutationCommitted = midRunWritten.length > mutBefore;
+          for (const r of results as Record<string, any>[]) {
+            if (r && r.ok && ['write_doc', 'send_message', 'ask_user', 'ask_agent', 'answer', 'exec', 'exec_background'].includes(String(r.tool || ''))) { mutationCommitted = true; break; }
+          }
+          const readSigs: string[] = [];
+          for (let ti = 0; ti < toolCalls.length; ti++) {
+            const t = toolCalls[ti] as Record<string, any>;
+            const tName = String(t.tool || '').toLowerCase();
+            if (!READ_ONLY_PROGRESS_TOOLS.has(tName)) continue;
+            const r = positioned[ti] as Record<string, any> | undefined;
+            if (r && r.ok === false) continue;
+            readSigs.push(readSignature(tName, t));
+          }
+          lastObs = { mutationCommitted, evidenceSha256: evidence.hash(), readSignatures: readSigs };
+        }
         // 证据门计数：只计实际执行过工具的轮（末轮"强制终稿"的工具请求不执行，不计）
         toolRounds += 1;
         // improvement 3: agent-driven knowledge deposits are audited in the war room;

@@ -317,7 +317,7 @@ describe('convo 引擎', () => {
     // 主 agent：spawn dev 子 agent → 子 agent 写文件 → 主 agent 收到摘要后收尾
     behaviors.push(() => toolCalls([{ tool: 'spawn_agent', agent: 'dev', task: '把 notes 写进 TODO.md' }]));
     behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'TODO.md', content: 'todo\n' }]));
-    behaviors.push(() => ({ content: JSON.stringify({ reply: '子任务完成：TODO.md 已写入' }) }));
+    behaviors.push(() => ({ content: JSON.stringify({ reply: '子任务完成：TODO.md 已写入（共 1 行 todo）。验证方式：write_file 返回 ok 且写后立验重读一致；关键发现：无障碍，未完成部分：无。' }) }));
     behaviors.push(() => reply('子智能体已完成，摘要见上。'));
     const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
     await convo.sendConvoMessage(deps, c.id, { text: '派个子智能体写 TODO' }, { trigger: false });
@@ -344,17 +344,17 @@ describe('convo 引擎', () => {
     expect(String(toolMsg?.text)).toContain('失败');
   }, 20000);
 
-  it('自动切换关（默认）：主模型失败自动重试 10 次全败 → 断连卡（不降级）', async () => {
+  it('自动切换关（默认）：主模型失败自动重试 3 次全败 → 断连卡（不降级；P0.3 由 10 收紧为 3）', async () => {
     const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
     let calls = 0;
     for (let i = 0; i < 10; i++) behaviors.push(async () => { calls++; throw new Error('429 rate limit'); });
     await convo.sendConvoMessage(deps, c.id, { text: '说话' }, { trigger: false });
     await convo.runResponseLoop(deps, c.id);
-    expect(calls).toBe(10); // 自动重试 10 次（退避 20ms 注入）
+    expect(calls).toBe(3); // 自动重试 3 次（P0.3：10 次盲重试 × 900s 黑箱曾拖 2.5 小时）
     const msgs = await convo.getConvoMessages(c.id);
     const broken = msgs.find((m) => m.kind === 'degrade' && (m.meta as any)?.broken);
     expect(broken).toBeTruthy();
-    expect(String(broken?.text)).toContain('10 次');
+    expect(String(broken?.text)).toContain('3 次');
     expect(msgs.some((m) => m.kind === 'degrade' && (m.meta as any)?.actual)).toBe(false); // 未降级
   }, 20000);
 
@@ -743,5 +743,53 @@ describe('convo FC 原生工具通道（opencode/ZCode 同款）', () => {
     expect(fs.readFileSync(path.join(ws, 'fc-narr.txt'), 'utf-8')).toBe('ok\n');
     process.env.COTEAM_LLM_NATIVE_TOOLS = '0';
     configureNativeTools(false);
+  }, 20000);
+});
+
+describe('P0+PH：终态事件与断言门', () => {
+  it('turn 结束恰好发一个 convo_turn_end 终态帧（completed，含 convo_id）', async () => {
+    const events: any[] = [];
+    const off = getBus().subscribe('coteam:dashboard', (m: any) => { if (m?.type === 'convo_turn_end') events.push(m.payload); });
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => reply('完成'));
+    await convo.sendConvoMessage(deps, c.id, { text: 'hi' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    await sleep(50);
+    const mine = events.filter((e) => e.convo_id === c.id);
+    expect(mine).toHaveLength(1); // 恰好一个终态帧
+    expect(mine[0].status).toBe('completed');
+    off();
+  }, 20000);
+
+  it('PH.2 断言门：零工具轮"已修复/测试已通过"声称 → 纠正重试 → 仍犯落诚实 notice', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => reply('已经修复了这个 bug，测试已通过。')); // 零工具完成声称 → 断言门纠正
+    behaviors.push(() => reply('已经修复了，放心。'));               // 有界纠正后仍声称 → 采纳 + 诚实 notice
+    await convo.sendConvoMessage(deps, c.id, { text: '修一下登录页报错' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    const notices = msgs.filter((m) => m.kind === 'notice').map((m) => m.text);
+    expect(notices.some((t) => t.includes('未调用任何工具') || t.includes('未执行任何工具'))).toBe(true); // 纠正 notice
+    expect(notices.some((t) => t.includes('不可当作完成依据'))).toBe(true); // 诚实 notice（用户不必信以为真）
+    expect(chatCalls).toBe(2); // 纠正重试恰好一次
+  }, 20000);
+
+  it('PH.6 回滚纠正账本：回滚后下一 turn system prompt 注入纠正块，turn 结束清除标记', async () => {
+    await simpleGit({ baseDir: ws }).init();
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'hello.txt', content: 'v2\n' }]));
+    behaviors.push(() => reply('写好了'));
+    await convo.sendConvoMessage(deps, c.id, { text: '改文件' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect((await convo.getConvo(c.id))?.snapshot_id).toBeTruthy();
+    await convo.rollbackConvo(deps, c.id);
+    expect((await convo.getConvo(c.id))?.rollback_at).toBeTruthy();
+    behaviors.push(() => reply('好的，我先重新读取磁盘'));
+    await convo.sendConvoMessage(deps, c.id, { text: '继续' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const sys = lastChatMessages.find((m) => m.role === 'system');
+    expect(String((sys as any)?.content || '')).toContain('回滚纠正');
+    expect(String((sys as any)?.content || '')).toContain('已全部失效');
+    expect((await convo.getConvo(c.id))?.rollback_at).toBeUndefined(); // 注入一次即清除
   }, 20000);
 });

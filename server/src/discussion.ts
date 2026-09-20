@@ -24,7 +24,7 @@
 import { busGet, busSet, busDel, busKeys } from './bus';
 import { emitProgress, addProjectMemory, addAgentMemory, getAgentMemory, getProjectMemory, saveProject, getProject, getTaskGraph, listTaskGraphs } from './store';
 import type { ProjectRecord } from './store';
-import { chat, extractJson, stripCodeFence, salvageToolCalls, normalizeToolCalls } from './llm';
+import { chat, extractJson, stripCodeFence, salvageToolCalls, normalizeToolCalls, LLM_WAIT_GIVEUP_RE } from './llm';
 import type { LlmResponse } from './llm';
 import type { LlmToolSpec } from './llm';
 import { nativeToolsOn, buildDiscussionTools } from './toolSchema';
@@ -33,7 +33,7 @@ import type { Orchestrator } from './orchestrator/orchestrator';
 import type { McpManager } from './mcp/manager';
 import type { TaskQueueManager } from './taskQueue';
 import type { Logger } from './logger';
-import { writeKnowledge, relevantKnowledge, listKnowledge } from './knowledge';
+import { writeKnowledge, relevantKnowledge, listKnowledge, isSafeForInjection, KNOWLEDGE_DATA_TAG_OPEN, KNOWLEDGE_DATA_TAG_CLOSE } from './knowledge';
 import { scaffoldProject, initGitOnly } from './scaffold';
 import { applyToolCalls, checkPage } from './tools';
 import { analyzeImages } from './vision';
@@ -167,6 +167,8 @@ const PLAN_WAIT_INTERVAL_MS = 2000;
  *  （launcher 曾被 300s 砍在半路）。失败判定只认 stream_stalled（llm 层
  *  900s 静默 watchdog）与用户「打断并停止」。 */
 const SPEAKER_WALLCLOCK_CAP_MS = 0;
+/** 发言首包等待硬上限（P0.3）：600s 零字节即判"上游无响应"终止本发言（不换模不重试）。 */
+const SPEAKER_WAIT_GIVEUP_MS = 10 * 60 * 1000;
 /** 幕后辅助调用（路由/主持收敛判定）的墙钟：这类调用没有人在等的正当性 */
 const ROUTER_WALLCLOCK_CAP_MS = 60_000;
 const MODERATOR_WALLCLOCK_CAP_MS = 90_000;
@@ -186,6 +188,8 @@ const DELTA_MIN_CHARS = 6;
 const DELTA_MIN_MS = 150;
 /** 承诺式收尾检测（p65y6inq 教训："正式启动 UI 开发任务"后 0 工具调用掉球） */
 const COMMITMENT_RE = /(?:正式启动|立即启动|马上开始|即刻下发|现在开始|接下来我将|下一步我|我将采取|分[二三四五]步|我将分|马上执行|立即执行)/;
+/** PH.2 断言门（群聊侧）：零工具却宣称完成/验证——与承诺跟进同机制强制追问一轮 */
+const COMPLETION_CLAIM_DISC_RE = /(已经?|已)(修复|修好|解决|完成|搞定|验证|测试过|跑通)|(测试|构建|编译|检查)已?通过|验证通过/;
 
 // ---------- discussion-level configuration (config.yaml `discussion:`) ----------
 
@@ -417,17 +421,31 @@ async function chatOnModelChain(
         try {
           await emitProgress('discussion_round', { discussion_id: disc.id, round, phase: 'speaker', agent, activity: iter === 0 ? 'thinking' : 'tool_followup' });
           // 每一轮 LLM 调用都流式：工具轮会以 discarded 事件清掉误显示的片段
-          const res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta, opts?.tools?.length ? { tools: opts.tools } : undefined);
+          const res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta, {
+            ...(opts?.tools?.length ? { tools: opts.tools } : {}),
+            // P0.7：推理流可见（前端"正在输入"指示按事件续期，不再 5 分钟熄灯）
+            onReason: (d) => { void emitProgress('discussion_reason', { discussion_id: disc.id, agent, round, text: d }); },
+            // P0.3：首包等待硬上限 + 等待心跳帧（长思考不再无反馈）
+            waitGiveUpMs: SPEAKER_WAIT_GIVEUP_MS,
+            onWaitNotice: (info) => { void emitProgress('discussion_waiting', { discussion_id: disc.id, agent, waited_sec: info.waitedSec, kind: info.kind, model: entry.name }); },
+          });
           return { res, entry };
         } catch (e) {
           const reason = String((e as Error)?.message || e);
           void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: sid, discarded: true });
           lastReason = reason;
+          // P0.3：首包硬上限是确定性"上游无响应"——不再换模/重试（重试只会同样黑箱），直接判死
+          if (LLM_WAIT_GIVEUP_RE.test(reason)) {
+            await notice(`⚠️ ${agent} 的模型 ${entry.name} 首包等待超时（${reason.replace(/^.*llm_wait_giveup\(/, '').replace(/\).*$/, '')}）——上游无响应，本轮发言终止`);
+            return { entry, failed: reason };
+          }
           const capacity = CAPACITY_RE.test(reason);
           if (capacity) {
             deps.pool.noteCapacityHit(entry);
             sawCapacity = true;
           }
+          // P0.3：换模/重试过程事件化（前端可显示"第 N 次重试/切换 X"）
+          void emitProgress('discussion_retry', { discussion_id: disc.id, agent, round, model: entry.name, attempt: attempt + 1, reason: reason.slice(0, 120), next: chain[mi + 1]?.name });
           const next = chain[mi + 1];
           if (next) {
             // 还有健康模型：立即换乘，不让用户干等限流配额回血
@@ -504,9 +522,10 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
       } catch { /* not a git repo — fine */ }
     }
     const pm = await getProjectMemory(disc.project_id, 500);
-    const kn = listKnowledge({ category: 'project', project_id: disc.project_id });
+    // PH.7 防注入：记忆与知识条目是模型/用户可控内容——指令词黑名单过滤 + 数据标签包裹
+    const kn = listKnowledge({ category: 'project', project_id: disc.project_id }).filter((k) => isSafeForInjection(`${k.title}\n${k.content}`));
     const all = [
-      ...pm.map((m) => ({ src: '记忆', title: '', text: m.text })),
+      ...pm.filter((m) => isSafeForInjection(m.text)).map((m) => ({ src: '记忆', title: '', text: m.text })),
       ...kn.map((k) => ({ src: '知识库', title: k.title, text: k.content.replace(/\s+/g, ' ').slice(0, 300) })),
     ];
     if (all.length) {
@@ -520,7 +539,7 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
         lines.unshift(line);
       }
       const head = dropped ? `（按预算省略最旧 ${dropped} 条，可用 grep/read_file 检索项目文件与知识库）\n` : '';
-      parts.push(`# 项目全部经验与记忆（共 ${all.length} 条，最新在后）\n${head}${lines.join('\n')}`);
+      parts.push(`# 项目全部经验与记忆（共 ${all.length} 条，最新在后）\n${KNOWLEDGE_DATA_TAG_OPEN}\n${head}${lines.join('\n')}${KNOWLEDGE_DATA_TAG_CLOSE}`);
     }
     // M5.2 ①：运行中任务速览——群聊成员据此真实回答"进度怎么样"，而不是 grep 猜
     try {
@@ -530,8 +549,8 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
   } else {
     const query = `${disc.title} ${disc.topic || ''} ${messages.filter((m) => m.from === 'user').slice(-1)[0]?.text || ''}`.trim();
     try {
-      const kn = await relevantKnowledge(query, { limit: 3 });
-      if (kn.length) parts.push(`## 相关知识库条目\n${kn.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')}`);
+      const kn = (await relevantKnowledge(query, { limit: 3 })).filter((k) => isSafeForInjection(`${k.title}\n${k.content}`));
+      if (kn.length) parts.push(`## 相关知识库条目\n${KNOWLEDGE_DATA_TAG_OPEN}\n${kn.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')}${KNOWLEDGE_DATA_TAG_CLOSE}`);
     } catch { /* best-effort */ }
     parts.push('# 项目背景\n本讨论尚未绑定项目目录：无法读写文件或执行命令，成员只能讨论。需要动手请先在讨论设置里挂接项目。');
   }
@@ -557,7 +576,8 @@ function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
 
 ## 真实性纪律（最高优先）
 - 任何"已完成/已执行/已修改/已启动"的表述，必须由本轮 tool_calls 的真实结果支撑。没有执行过的事，绝不宣称执行过。
-- 项目路径、配置、运行状态一律以注入的「项目背景」与工具结果为准，禁止臆测。
+- 项目路径、配置、运行状态一律以注入的「项目背景」与工具结果为准，禁止臆测。对项目事实的断言（技术栈/文件内容/行号/配置）必须基于你真实读过的工具结果或注入的项目背景；没查证过就明说「未核实」，禁止编造路径、行号或结论。
+- 引用「项目全部经验与记忆」中的条目作答时注明依据（哪条记忆/知识）；相关记录缺失且超出一般常识时，明说"项目经验里没有，以下是一般做法，建议核实"。
 - 超出你能力或预算的事（架构级改动、批量新建文件、需要多轮回归的开发）直说"这需要转项目开发任务"，不要在嘴上模拟执行。
 
 ${fc ? `## 工具面（原生工具通道：直接发起工具调用，参数按工具声明传入；均限定在项目目录内；未绑定项目时全部不可用）
@@ -1298,8 +1318,9 @@ async function runRoundCore(deps: DiscussionDeps, discId: string, opts?: { force
       if (out.text) spokenReplies.push({ agent, text: out.text });
     }
     if (out.asked) asked.push(agent);
-    // 承诺式收尾检测：说了"正式启动/接下来我将…"却没调用任何工具 → 记名，由响应循环追问一轮
-    if (out.spoke && !out.toolUsed && out.text && COMMITMENT_RE.test(out.text)) commitments.push(agent);
+    // 承诺式收尾检测：说了"正式启动/接下来我将…"却没调用任何工具 → 记名，由响应循环追问一轮；
+    // PH.2 断言门：零工具却宣称"已完成/已验证"同样记名追问（出示证据或改口）
+    if (out.spoke && !out.toolUsed && out.text && (COMMITMENT_RE.test(out.text) || COMPLETION_CLAIM_DISC_RE.test(out.text))) commitments.push(agent);
   }
 
   // P2-5 分歧上报：同批 ≥2 成员发言后判定结论冲突，冲突则系统卡请用户拍板（真协作不各说各话收场）
@@ -1388,9 +1409,14 @@ async function detectDivergence(deps: DiscussionDeps, disc: Discussion, round: n
   return false;
 }
 
-async function moderatorCheck(deps: DiscussionDeps, disc: Discussion, lastResult: RoundResult): Promise<boolean> {
+/**
+ * 主持人收敛判定（P0.2 改造）：返回 { continue_round, reason }。
+ * fail-open 语义：判定模型不可用/解析失败 → 默认继续（continue_round=true），
+ * 绝不再静默终止讨论——此前 catch→false 是"聊一半突然结束"的第二主因。
+ */
+export async function moderatorCheck(deps: DiscussionDeps, disc: Discussion, lastResult: RoundResult): Promise<{ continue_round: boolean; reason: string }> {
   const entry = cheapModel(deps);
-  if (!entry) return false;
+  if (!entry) return { continue_round: true, reason: '无可用判定模型，默认继续' };
   const messages = await getMessages(disc.id);
   try {
     const res = await chat(entry, [
@@ -1401,9 +1427,12 @@ async function moderatorCheck(deps: DiscussionDeps, disc: Discussion, lastResult
       { role: 'user', content: `话题：${disc.title}\n最近消息：\n${renderTranscript(messages)}\n\n刚结束第 ${lastResult.round} 轮。` },
     ], undefined, 0, undefined, MODERATOR_WALLCLOCK_CAP_MS);
     const parsed = extractJson(res.content);
-    return parsed?.continue === true;
-  } catch {
-    return false;
+    if (parsed?.continue !== true && parsed?.continue !== false) throw new Error('moderator output unparseable');
+    return { continue_round: parsed.continue === true, reason: String(parsed?.reason || (parsed.continue === true ? '仍有新信息' : '观点已收敛')) };
+  } catch (e) {
+    const reason = String((e as Error)?.message || e);
+    if (CAPACITY_RE.test(reason)) deps.pool.noteCapacityHit(entry);
+    return { continue_round: true, reason: `判定失败（${reason.slice(0, 60)}），默认继续` };
   }
 }
 
@@ -1419,12 +1448,19 @@ export async function runResponseLoop(deps: DiscussionDeps, discId: string, opts
   await acquireBusy(discId);
   await busDel(stopKey(discId));
   let lastSeenUsers = countUsers(await getMessages(discId));
+  // P0.5 busy 心跳：长讨论（多轮 × 长思考）期间每 60s 续期 busy 锁 TTL，防止合法长循环
+  // 被并发触发误判"锁过期"造成双循环（进程崩溃则心跳自然过期，惰性清扫接手）
+  const stampTimer = setInterval(() => { void stampBusy(discId).catch(() => undefined); }, 60_000);
   try {
     let forced = opts.forced;
     let interruptNote = '';
+    // P0.2 收场显性化：循环若跑满 max_rounds 静默退出（没有任何 break 分支收场），
+    // 必须落一条"为什么停"的系统消息——"聊着聊着突然结束"的三处静默 break 之一。
+    let exhausted = true;
     for (let i = 0; i < discCfg.max_rounds; i++) {
       if (await busGet(stopKey(discId))) {
         await busDel(stopKey(discId));
+        exhausted = false;
         break;
       }
       const startCount = countUsers(await getMessages(discId));
@@ -1434,6 +1470,7 @@ export async function runResponseLoop(deps: DiscussionDeps, discId: string, opts
       if (hasPendingUserQuestion(msgs)) {
         await appendSystemMessage(discId, '自动讨论已暂停，等待你的回答后继续', res.round);
         await emitProgress('discussion_status', { discussion_id: discId, waiting_user: true });
+        exhausted = false;
         break;
       }
       {
@@ -1446,36 +1483,56 @@ export async function runResponseLoop(deps: DiscussionDeps, discId: string, opts
           if (cardIdx > lastUserIdx) {
             await appendSystemMessage(discId, '转任务确认已提交，等待你在群里确认后继续（卡片上可确认或取消）', res.round);
             await emitProgress('discussion_status', { discussion_id: discId, waiting_user: true });
+            exhausted = false;
             break;
           }
         }
       }
       {
         const liveNow = await getDiscussion(discId);
-        if (!liveNow || liveNow.status === 'converted') break; // 转任务成功，讨论封存
+        if (!liveNow || liveNow.status === 'converted') { exhausted = false; break; } // 转任务成功，讨论封存
       }
       if (res.interrupted_by_user) {
         // 用户中途补充了新指示：立即以最新指示重新路由下一轮
         forced = res.latest_user_mentions?.length ? res.latest_user_mentions : undefined;
         interruptNote = '# 注意\n用户在上一轮中途补充了新指示（见讨论记录最后一条用户消息），本轮必须优先回应它。\n\n';
+        exhausted = false;
         continue;
       }
       if (res.commitments?.length) {
         // 承诺跟进：只点名承诺者，本轮必须兑现动作或如实说明做不到——不许再空口承诺
         forced = res.commitments;
         interruptNote = '# 追问\n你上一轮承诺了行动（见讨论记录你的最后一条发言）却没有调用任何工具，等于什么都没发生。本轮必须：能做的直接用形态 A 执行（大改动且用户已同意转任务就调 convert_to_project）；做不到的如实说明原因并给出用户可操作的下一步。禁止再次只口头承诺。\n\n';
+        exhausted = false;
         continue;
       }
       if (res.all_silent) {
         await appendSystemMessage(discId, '成员们暂无新进展——可补充信息继续，或生成方案', res.round);
+        exhausted = false;
         break;
       }
-      if (!opts.auto) break;
+      if (!opts.auto) {
+        // P0.2：手动模式一轮即止是设计行为，但必须告知（此前静默 break 用户只看到"突然结束"）
+        await appendSystemMessage(discId, `本轮响应到此（手动模式：每条消息触发一轮）——继续发言即可开启下一轮，或点"生成方案"收敛讨论`, res.round, 'notice');
+        exhausted = false;
+        break;
+      }
       const live = await getDiscussion(discId);
-      if (!live) break;
-      if (!(await moderatorCheck(deps, live, res))) break;
+      if (!live) { exhausted = false; break; }
+      // P0.2：moderator fail-open——判定模型不可用/解析失败时默认继续下一轮（受 max_rounds
+      // 约束不会死循环），绝不再静默终止讨论（此前 catch→false 是"突然结束"第二主因）
+      const verdict = await moderatorCheck(deps, live, res);
+      if (!verdict.continue_round) {
+        await appendSystemMessage(discId, `主持人判定讨论已收敛（${verdict.reason}）——本轮到此。可继续发言开启新话题，或生成方案`, res.round, 'notice');
+        exhausted = false;
+        break;
+      }
+    }
+    if (exhausted) {
+      await appendSystemMessage(discId, `已连续推进 ${discCfg.max_rounds} 轮自动讨论，本轮到此——继续发言即可开启新一轮，或生成方案`, undefined, 'notice');
     }
   } finally {
+    clearInterval(stampTimer);
     await busDel(busyKey(discId));
   }
   // post-release drain: a user message that slipped in right before release

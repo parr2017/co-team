@@ -677,7 +677,20 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
       } else {
         const written = writeFiles(workspace, [{ path: rel, content: String(call.content ?? '') }]);
         if (written.length) {
-          results.push({ tool: 'write_file', ok: true, path: written[0], bytes: Buffer.byteLength(String(call.content ?? ''), 'utf-8') });
+          // PH.5 写后立验（星瑶 verify-after-mutation 轻量版）：立即重读落盘文件核对字节数——
+          // 防"返回 ok 但实际没写进去"（并发覆盖/磁盘异常）。不一致 → 工具报失败，失败进上下文，
+          // 模型必须面对而不是拿着 ok 声称"已修复"。
+          const expectBytes = Buffer.byteLength(String(call.content ?? ''), 'utf-8');
+          let verified = false;
+          let vError = '';
+          try {
+            const st = fs.statSync(path.resolve(workspace, written[0]));
+            verified = st.isFile() && st.size === expectBytes;
+            if (!verified) vError = `重读校验不一致（期望 ${expectBytes} 字节，实际 ${st.size}）`;
+          } catch (e: any) {
+            vError = String(e?.message || e).slice(0, 160);
+          }
+          results.push({ tool: 'write_file', ok: verified, path: written[0], bytes: expectBytes, ...(verified ? {} : { error: `写后立验失败：${vError}——文件可能未真正落盘，请重读确认后重试，不要声称已完成` }) });
         } else {
           results.push({ tool: 'write_file', ok: false, path: rel, error: '路径被拒绝（越界或为空）' });
         }
@@ -689,7 +702,18 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
       } else {
         const { edited, failures } = applyEdits(workspace, [{ path: rel, find: call.find, replace: call.replace }]);
         if (edited.length) {
-          results.push({ tool: 'edit_file', ok: true, path: edited[0] });
+          // PH.5 写后立验：重读文件确认替换内容真的在场——防"edit 返回 ok 但内容没变"
+          let verified = false;
+          let vError = '';
+          try {
+            const cur = fs.readFileSync(path.resolve(workspace, edited[0]), 'utf-8');
+            const rep = String(call.replace ?? '');
+            verified = rep === '' ? true : cur.includes(rep);
+            if (!verified) vError = '重读文件未找到替换后的内容——编辑可能未生效';
+          } catch (e: any) {
+            vError = String(e?.message || e).slice(0, 160);
+          }
+          results.push({ tool: 'edit_file', ok: verified, path: edited[0], ...(verified ? {} : { error: `写后立验失败：${vError}，请重读文件后重试，不要声称已完成` }) });
         } else {
           results.push({ tool: 'edit_file', ok: false, path: rel, error: failures[0] || 'edit failed' });
         }

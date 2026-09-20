@@ -242,6 +242,8 @@
                     <div class="md"><MdView :source="streamingText" /><span class="cursor" /></div>
                   </div>
                   <div v-if="!reasoningText && !streamingText && !toolLive.length" class="notice think-placeholder">正在思考…</div>
+                  <!-- P0.3 等待/重试可见化：卡住时告诉用户"慢"还是"在重试" -->
+                  <div v-if="waitNote" class="notice think-placeholder wait-note">⏳ {{ waitNote }}</div>
                 </template>
               </div>
             </template>
@@ -250,6 +252,10 @@
             <div v-if="queuedCount" class="queued">
               <el-icon><Clock /></el-icon>排队中 {{ queuedCount }} 条 · 本轮结束后处理
               <el-button size="small" class="promote-btn" :loading="promoting" @click="promoteNow">立即插入</el-button>
+            </div>
+            <!-- P0.7：waiting_ask/审批挂起顶显——"没反应"往往是 agent 在等一张没被注意到的卡 -->
+            <div v-if="detail && (detail.status === 'waiting_ask' || detail.status === 'waiting_approval')" class="queued">
+              <el-icon><Clock /></el-icon>{{ detail.status === 'waiting_ask' ? '智能体提出了问题正在等你回答（见上方提问卡）' : '有命令等待你审批（见上方审批卡）' }}
             </div>
           </div>
         </div>
@@ -668,6 +674,8 @@ async function forkMsg(m: ConvoMessage) {
 
 // 思考流（convo_reason）：流式期间累积展示，最终消息到达后清空（回放走 meta.reasoning）
 const reasonBuf = ref('');
+/** P0.3：等待/重试瞬时说明（convo_waiting / convo_retry 事件驱动，消息到达即清） */
+const waitNote = ref('');
 const reasoningText = computed(() => reasonBuf.value);
 
 // 工具执行中步骤（convo_tool_start → convo_tool）：实时展示"正在执行 grep…"，批次完成清空
@@ -974,7 +982,7 @@ onMounted(async () => {
       if (c) c.status = p.status;
       if (p.convo_id === activeId.value && detail.value) {
         detail.value.status = p.status;
-        if (p.status !== 'running') { reasonBuf.value = ''; clearToolLive(); streaming.value = false; }
+        if (p.status !== 'running') { reasonBuf.value = ''; waitNote.value = ''; clearToolLive(); streaming.value = false; }
       }
     } else if (t === 'convo_message') {
       const m = p.message;
@@ -984,6 +992,7 @@ onMounted(async () => {
           // 最终回复替换流式气泡
           for (const k of Object.keys(streamBuf)) delete streamBuf[k];
           reasonBuf.value = '';
+          waitNote.value = '';
           clearToolLive();
           streaming.value = false;
         }
@@ -1023,6 +1032,24 @@ onMounted(async () => {
     } else if (t === 'convo_tool') {
       if (p.convo_id === activeId.value) refreshActive();
       if (p.convo_id === activeId.value) clearToolLive();
+    } else if (t === 'convo_retry') {
+      // P0.3 重试可见化：模型重试/换模不再黑箱
+      if (p.convo_id === activeId.value) {
+        waitNote.value = p.fatal
+          ? `模型 ${String(p.model || '')} 无响应（首包超时），已放弃本次尝试`
+          : `模型 ${String(p.model || '')} 调用失败，第 ${Number(p.attempt || 1)}${p.max ? `/${Number(p.max)}` : ''} 次重试`;
+      }
+    } else if (t === 'convo_waiting') {
+      // P0.3 等待心跳：≥120s 每 30s 一次
+      if (p.convo_id === activeId.value) {
+        waitNote.value = `已等待 ${Number(p.waited_sec || 0)}s（模型 ${String(p.model || '')} 响应中）`;
+      }
+    } else if (t === 'convo_turn_end') {
+      // P0.1 终态帧：无论界面状态如何都清等待说明；失败原因短暂提示
+      if (p.convo_id === activeId.value) waitNote.value = '';
+      if (p.convo_id === activeId.value && p.status === 'failed' && p.reason) {
+        ElMessage.warning(`本轮未完成：${String(p.reason).slice(0, 120)}`);
+      }
     }
   });
 });

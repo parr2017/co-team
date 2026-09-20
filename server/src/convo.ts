@@ -19,7 +19,7 @@
  */
 import { busGet, busSet, busDel, busKeys } from './bus';
 import { emitProgress, getProject, getProjectMemory } from './store';
-import { chat, extractJson, salvageToolCalls, normalizeToolCalls } from './llm';
+import { chat, extractJson, salvageToolCalls, normalizeToolCalls, LLM_WAIT_GIVEUP_RE } from './llm';
 import type { LlmResponse } from './llm';
 import type { LlmToolSpec } from './llm';
 import { nativeToolsOn, buildConvoTools } from './toolSchema';
@@ -34,6 +34,7 @@ import { extractReplyStreaming } from './discussion';
 import type { KnowledgeToolContext } from './tools';
 import { pickSkillsForNode, formatSkillsBlock, formatSkillsCatalog } from './skills';
 import { getSkills } from './skills';
+import { relevantKnowledge } from './knowledge';
 import { classifyCommand } from './commandGuard';
 import { canExecute, policyFromConfig, executeCommandAsync, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
@@ -67,8 +68,10 @@ export interface Convo {
   compaction?: { summary: string; upto_id: string; at: string };
   /** 会话步骤清单（LLM 自主维护：write_plan 规划 / update_plan 打勾；UI 胶囊/展开渲染） */
   plan?: { steps: { text: string; status: 'pending' | 'in_progress' | 'done' | 'blocked'; ts: string }[]; updated_at: string };
-  /** 模型自动切换（默认关）：关=主模型失败自动重试 10 次后报断连；开=沿降级链自动换模（ZCode 式） */
+  /** 模型自动切换（默认关）：关=主模型失败自动重试 3 次后报断连；开=沿降级链自动换模（ZCode 式） */
   auto_switch?: boolean;
+  /** 工作区被回滚到快照的时间（PH.6 纠正账本）：下一个 turn 注入「旧结果已失效」纠正块后清除 */
+  rollback_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -144,10 +147,14 @@ const DELTA_MIN_CHARS = 6;
 const DELTA_MIN_MS = 150;
 const MAX_SPEAKER_MODEL_CHAIN = 3;
 const QUICK_RETRY_DELAY_MS = 3000;
-/** 自动重试：次数与间隔（指数退避 base×2^i 封顶 10×base）。ZCode 式默认 10 次；测试可注入小值 */
-const AUTO_RETRY_COUNT = 10;
+/** 自动重试：次数与间隔（指数退避 base×2^i 封顶 10×base）。默认 3 次——10 次盲重试 × 900s 首
+ * token 空闲曾把"正在思考"拖成 2.5 小时黑箱（P0.3），配合等待心跳帧与 llm_wait_giveup 收紧。 */
+const AUTO_RETRY_COUNT = 3;
 const AUTO_RETRY_BASE_MS = 1000;
 const AUTO_RETRY_CAP_MS = 10 * AUTO_RETRY_BASE_MS;
+/** convo 单次尝试的首包等待硬上限：600s 内零字节即放弃本次尝试（不进重试——上游无响应，
+ * 重试只会同样黑箱）。chunk 流动中的慢生成不受影响（超时不判死纪律只认"无任何数据"）。 */
+const CONVO_WAIT_GIVEUP_MS = 10 * 60 * 1000;
 /** 404（模型在该供应商不存在）是确定性配置错误：冷却 24h，期间跳过且不重试 */
 const MODEL_404_COOLDOWN_MS = 24 * 3600 * 1000;
 /** 降级提示静默期：同会话降级到同一模型，10 分钟内不重复落卡 */
@@ -172,6 +179,16 @@ function is404(reason: string): boolean {
 const ACTION_CLAIM_RE = /(正在(执行|动手|写入|读取|修改|实施|分析|侦查|整理)|这就动手|立刻动手|马上动手|开始执行|第一批[^\n]{0,12}(发出|执行)|已发出|开工)/;
 const CORRECTIVE_JSON_MSG = '纠正：你上一条输出是纯文本，违反输出契约（最终输出必须是纯 JSON，禁止 markdown 代码栅栏和散文）。要动手就发 {"tool_calls":[...]}，要收尾就发 {"reply":"..."}。现在重新输出纯 JSON。';
 const CORRECTIVE_ACT_MSG = '纠正：你上一条只是口头承诺要动手，但没有发出任何 tool_calls——口头承诺不算执行，用户什么都没看到。现在立刻发 {"tool_calls":[...]}，把你要做的第一批动作直接发出来。如果你其实是在等待用户决策，就用 {"reply":"..."} 明确说明你在等什么，不要声称正在执行。';
+
+/**
+ * 完成式声称（PH.2 断言门）：零工具轮的回复里宣称「已修复/已完成/已验证/测试通过」——
+ * 本轮没有任何 exec/check_page/read 证据支撑，属可拦截的幻觉声称（星瑶 system_prompt.md:34
+ * "未经工具结果证实的成功/修复/通过结论"禁令的引擎化）。窄匹配完成/验证类动词，防误伤
+ * "建议测试一下/还没完成"类表述。
+ */
+const COMPLETION_CLAIM_RE = /(已经?|已)(修复|修好|解决|完成|搞定|验证|测试过|跑通)|(?<![如若倘假万期希待果还等再没])(测试|构建|编译|lint|检查|验证)已?通过|已经?通过验证|问题(已经?)?不存在了/;
+export { COMPLETION_CLAIM_RE };
+const CORRECTIVE_COMPLETE_MSG = '纠正：你上一条声称「已修复/已完成/已验证」，但本轮没有调用任何工具——没有证据的完成声称不可信。要么现在就实际执行（修改文件、跑测试、check_page 渲染验证）用真实结果支撑结论；要么如实说明「尚未执行/未验证」，并给出准备怎么做。';
 
 /**
  * FC 模式意图叙述句（2026-09-20 实测"想改一下ui"会话）：模型执行完工具轮后用正文说
@@ -488,7 +505,12 @@ function resolvePrimary(deps: ConvoDeps, convo: Convo): { entry: ModelEntry | nu
   const viaOverride = !pinned && plugin?.modelOverride ? deps.pool.getModel(plugin.modelOverride) : null;
   // 2026-09-20 修复：未 pin 时按 professional_weight 选强模型（normal 加权随机会把并池的
   // priority=1 弱闲聊模型选成主模型，表现为"光回复不干活"）。tags 无匹配时回退全池强模型。
-  const entry = pinned || viaOverride || deps.pool.selectStrongModel(plugin?.tags) || deps.pool.selectStrongModel();
+  // P0.6 池隔离：任务管线冷却全灭时忽略冷却兜底选型——对话宁撞一次也不集体哑火。
+  const entry = pinned || viaOverride
+    || deps.pool.selectStrongModel(plugin?.tags)
+    || deps.pool.selectStrongModel()
+    || deps.pool.selectStrongModel(plugin?.tags, { ignoreCooldown: true })
+    || deps.pool.selectStrongModel(undefined, { ignoreCooldown: true });
   return { entry, plugin };
 }
 
@@ -669,9 +691,13 @@ export async function clearStaleConvoLocks(logger?: { info(msg: string, meta?: u
 async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
   const convo = await getConvo(convoId);
   if (!convo) return;
+  // P0.1 终态事件：每个 turn 恰好发一个 convo_turn_end（completed|failed|cancelled + error_code）。
+  // 异常回合绝不发 completed——前端以收到终态帧为唯一解锁条件，不靠 WS 断开/超时猜。
+  let turnEnd: { status: 'completed' | 'failed' | 'cancelled'; error_code?: string; reason?: string } | null = null;
   const { entry: primary, plugin } = resolvePrimary(deps, convo);
   if (!primary) {
     await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '模型池无可用模型，本轮未执行——请检查模型池配置或稍后重试。', meta: { turn_complete: true } });
+    await emitProgress('convo_turn_end', { convo_id: convoId, status: 'failed', error_code: 'no_model', reason: '模型池无可用模型' });
     return;
   }
   const policy: PermissionPolicy = convo.policy_level ? policyFromConfig({ level: convo.policy_level, whitelist_commands: convoCfg.policy.whitelistCommands ?? undefined, max_time_sec: convoCfg.policy.maxTimeSec, allow_sensitive: convoCfg.policy.allow_sensitive }) : convoCfg.policy;
@@ -679,6 +705,9 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
   turnAborts.set(convoId, abort);
   turnBgPids.set(convoId, new Set());
   const turn = { writes: 0, aborted: false };
+  // P0.5 busy 心跳：turn 期间每 60s 刷新 busy 锁时间戳（此前只依赖 finally 删锁 +
+  // 10min TTL——合法长 turn 会被并发触发误判"锁过期"造成双 turn；进程崩溃则心跳自然过期）
+  const busyStamp = setInterval(() => { void busSet(busyKey(convoId), Date.now()).catch(() => undefined); }, 60_000);
 
   const setStatus = async (s: ConvoStatus) => {
     // 局部写：重读最新再合并，不用 turn 开始时的旧对象整体覆盖（并发修改保护）
@@ -700,10 +729,16 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     }
 
     const system = await buildSystemPrompt(deps, convo, plugin);
+    // PH.6 回滚纠正账本：注入后立即清除标记（纠正块只注入回滚后的第一个 turn）
+    if (convo.rollback_at) {
+      const live = await getConvo(convoId);
+      if (live) { delete live.rollback_at; await saveConvo(live); }
+    }
     await maybeCompact(deps, convo);
     const history = await buildLlmHistory(convo.id, convo, { nativeImages: modelSupportsImages(primary) });
     const convo_msgs: { role: string; content: string | unknown[] }[] = [{ role: 'system', content: system }, ...history];
     if (!convo_msgs.some((m) => m.role === 'user')) {
+      turnEnd = { status: 'completed', reason: 'no_pending_input' };
       await setStatus('idle');
       return; // 没有待处理的用户输入（不应发生，防御）
     }
@@ -760,12 +795,13 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       } catch (e: any) {
         if (abort.signal.aborted) { turn.aborted = true; break; }
         const msg = String(e?.message || e);
-        // 断连/失败终局卡：引擎已自动重试（关=10 次同模型；开=每模型 3 次×链），到此仍未成功
+        // 断连/失败终局卡：引擎已自动重试（关=3 次同模型；开=每模型 3 次×链），到此仍未成功
+        turnEnd = { status: 'failed', error_code: 'model_chain_failed', reason: msg.slice(0, 160) };
         await appendConvoMessage(convoId, {
           role: 'system', kind: 'degrade',
           text: convo.auto_switch
             ? `模型链全部不可用（${msg.slice(0, 120)}）——本轮未完成。可切换模型、稍后重试，或检查各供应商状态。`
-            : `主模型 ${chosen.name} 调用失败（${msg.slice(0, 120)}）——已自动重试 ${convoCfg.autoRetryCount ?? 10} 次仍未成功。可在会话开启「自动切换模型」，或手动更换模型后重试。`,
+            : `主模型 ${chosen.name} 调用失败（${msg.slice(0, 120)}）——已自动重试 ${convoCfg.autoRetryCount ?? 3} 次仍未成功。可在会话开启「自动切换模型」，或手动更换模型后重试。`,
           meta: { broken: true, model: chosen.name },
         });
         break;
@@ -847,17 +883,24 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
           finalParsed = { reply: plain.slice(0, MAX_MESSAGE_LENGTH) };
         }
       }
-      // 引擎级自纠错：形态 B 嘴炮——零工具 + "正在动手"式声称 或 "已创建 X"假完成（工作区核验）→ 纠正重试一次
+      // 引擎级自纠错：形态 B 嘴炮——零工具 + "正在动手"式声称 / "已创建 X"假完成（工作区核验）
+      // / "已修复·已验证·测试通过"完成声称（PH.2 断言门）→ 纠正重试一次
       if (!calls.length && finalParsed && !toolRan && !lazyRetried && !last && iter < convoCfg.maxToolIter - 1) {
         const replyText = String(finalParsed.reply || '');
         const falseClaims = findFalseFileClaims(replyText, convo.workspace);
-        if (replyText && (ACTION_CLAIM_RE.test(replyText) || falseClaims.length > 0)) {
+        const completeClaim = COMPLETION_CLAIM_RE.test(replyText);
+        if (replyText && (ACTION_CLAIM_RE.test(replyText) || falseClaims.length > 0 || completeClaim)) {
           lazyRetried = true;
           await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: falseClaims.length
             ? `模型口头声称完成但工作区不存在 ${falseClaims.join('、')}——引擎已自动纠正重试。`
-            : '模型口头承诺动手但未调用任何工具——引擎已自动纠正重试。', meta: { retry: 'lazy' } });
+            : completeClaim
+              ? '模型声称「已完成/已验证」但本轮未执行任何工具——引擎已自动纠正重试。'
+              : '模型口头承诺动手但未调用任何工具——引擎已自动纠正重试。', meta: { retry: 'lazy' } });
           convo_msgs.push({ role: 'assistant', content: res.content });
-          convo_msgs.push({ role: 'user', content: CORRECTIVE_ACT_MSG + (falseClaims.length ? ` 另外你声称已创建/写入的 ${falseClaims.join('、')} 在工作区中并不存在——不要虚构完成状态，实际执行后以工具结果为准。` : '') });
+          const corrective = falseClaims.length
+            ? CORRECTIVE_ACT_MSG + ` 另外你声称已创建/写入的 ${falseClaims.join('、')} 在工作区中并不存在——不要虚构完成状态，实际执行后以工具结果为准。`
+            : completeClaim ? CORRECTIVE_COMPLETE_MSG : CORRECTIVE_ACT_MSG;
+          convo_msgs.push({ role: 'user', content: corrective });
           finalParsed = null; // 本条口头承诺作废，重驱动
           continue;
         }
@@ -889,10 +932,12 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     }
 
     if (turn.aborted) {
+      turnEnd = { status: 'cancelled', error_code: 'interrupted', reason: '用户打断' };
       await appendConvoMessage(convoId, { role: 'system', kind: 'interrupt', text: '用户打断了本轮执行；已完成的工作保留在工作区（见 diff），输入新指令继续。' });
     } else if (finalParsed) {
       const reply = String(finalParsed.reply || '').trim().slice(0, MAX_MESSAGE_LENGTH);
       if (reply) {
+        turnEnd = { status: 'completed' };
         const shares = Array.isArray(finalParsed.share_files) ? finalParsed.share_files.map(String).slice(0, 5) : [];
         await appendConvoMessage(convoId, {
           role: 'assistant', kind: 'text', text: reply, model: chosen.name,
@@ -908,10 +953,11 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         if (plainFallback && !toolRan) {
           await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `本轮模型未按输出契约返回 JSON（已自动纠正重试${proseRetried ? ' 1 次' : ''}仍未恢复），仅返回了纯文本。以上内容仅为其原话，本轮未执行任何实际改动；如需动手请重发，或更换模型。` });
         }
-        // 嘴炮纠正后最终回复仍零工具：落诚实 notice，用户不必信以为真（2026-09-20 实测"已创建"假完成）
+        // 嘴炮/断言纠正后最终回复仍零工具：落诚实 notice，用户不必信以为真（2026-09-20 实测"已创建"假完成）
         if (lazyRetried && !toolRan) {
           const falseClaims = findFalseFileClaims(reply, convo.workspace);
-          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `提醒：本轮模型${falseClaims.length ? `声称已完成的 ${falseClaims.join('、')} 在工作区中不存在` : '声称的工作未经任何工具执行'}——以上回复不可当作完成依据，请以工具记录与 diff 卡为准，或重发指令/更换模型。` });
+          const stillClaiming = COMPLETION_CLAIM_RE.test(reply);
+          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `提醒：本轮模型${falseClaims.length ? `声称已完成的 ${falseClaims.join('、')} 在工作区中不存在` : stillClaiming ? '声称「已完成/已验证」但未执行任何验证工具' : '声称的工作未经任何工具执行'}——以上回复不可当作完成依据，请以工具记录与 diff 卡为准，或重发指令/更换模型。` });
         }
         for (const p of shares) {
           const rel = p.replace(/\\/g, '/');
@@ -923,11 +969,13 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
           });
         }
       } else {
+        turnEnd = { status: 'failed', error_code: 'empty_output', reason: '本轮输出为空或无法解析' };
         await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '本轮输出为空或无法解析——请换个说法重试，或更换模型。', meta: { turn_complete: true } });
       }
     } else {
       // finalParsed 为 null 且未打断（纯空输出，连散文都没有）：必须落终态标记，
       // 否则 hasPendingUserInput 会认为仍有待处理输入，对同一条消息无限重驱动（2026-09-20 修复）
+      turnEnd = { status: 'failed', error_code: 'empty_output', reason: '本轮模型无任何输出' };
       await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '本轮模型无任何输出——请换个说法重试，或更换模型。', meta: { turn_complete: true } });
     }
 
@@ -942,8 +990,12 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       } catch { /* 非 git 仓库无 diff */ }
     }
   } finally {
+    clearInterval(busyStamp);
     turnAborts.delete(convoId);
     turnBgPids.delete(convoId);
+    // P0.1：终态帧恰好一个——异常路径（未显式设置 turnEnd）按 completed 收口前先兜底判 failed
+    if (!turnEnd) turnEnd = { status: 'failed', error_code: 'turn_abnormal_exit', reason: 'turn 未显式收口' };
+    await emitProgress('convo_turn_end', { convo_id: convoId, status: turnEnd.status, ...(turnEnd.error_code ? { error_code: turnEnd.error_code } : {}), ...(turnEnd.reason ? { reason: turnEnd.reason } : {}) });
     await setStatus('idle');
   }
 }
@@ -1019,7 +1071,13 @@ async function chatOnModelChain(
           }
         };
         lastSid = `${convo.id}#m${mi}a${attempt}`;
-        const res = await chat(entry, msgs, undefined, 0.3, signal, WALLCLOCK_CAP_MS, onAttempt(lastSid), { onReason, ...(opts?.tools?.length ? { tools: opts.tools } : {}) });
+        const res = await chat(entry, msgs, undefined, 0.3, signal, WALLCLOCK_CAP_MS, onAttempt(lastSid), {
+          onReason,
+          ...(opts?.tools?.length ? { tools: opts.tools } : {}),
+          // P0.3：首包等待硬上限（600s 零字节放弃）+ 等待心跳帧（≥120s 每 30s 一次）
+          waitGiveUpMs: CONVO_WAIT_GIVEUP_MS,
+          onWaitNotice: (info) => { void emitProgress('convo_waiting', { convo_id: convo.id, waited_sec: info.waitedSec, kind: info.kind, model: entry.name }); },
+        });
         // 成功：从非主模型应答 → 落降级卡（静默期去重）；主模型重试成功 → 落恢复卡
         if (mi > 0) await maybeDegradeCard(primary.name, entry.name, lastReason);
         else if (attempt > 0 && degradedTo === entry.name) {
@@ -1031,6 +1089,12 @@ async function chatOnModelChain(
         const reason = String(e?.message || e);
         lastReason = reason;
         dropStream(lastSid); // 清掉本次 attempt 流出的半截内容
+        if (LLM_WAIT_GIVEUP_RE.test(reason)) {
+          // P0.3：首包等待硬上限是确定性"上游无响应"——不进重试也不换模（重试只会同样黑箱），
+          // 立即把明确原因抛给终局卡。
+          void emitProgress('convo_retry', { convo_id: convo.id, attempt: attempt + 1, model: entry.name, reason: reason.slice(0, 120), fatal: true });
+          throw new Error(`${entry.name} 首包等待超时（${reason.replace(/^.*llm_wait_giveup\(/, '').replace(/\).*$/, '')}）——上游无任何响应，已放弃本次尝试。请检查该供应商状态或更换模型。`);
+        }
         if (is404(reason)) {
           model404Cooldown.set(entry.id || entry.name, Date.now() + MODEL_404_COOLDOWN_MS);
           if (autoSwitch) {
@@ -1041,6 +1105,8 @@ async function chatOnModelChain(
         }
         const capacity = CAPACITY_RE.test(reason);
         if (capacity) deps.pool.noteCapacityHit(entry);
+        // P0.3：重试/换模全程可见（此前 900s×10 次零反馈是"正在思考"黑箱的主因）
+        void emitProgress('convo_retry', { convo_id: convo.id, attempt: attempt + 1, max: perModelRetries, model: entry.name, reason: reason.slice(0, 120) });
         // 重试退避（最后一次不再等）
         if (attempt < perModelRetries - 1) {
           await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
@@ -1088,13 +1154,19 @@ async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPl
 
   const mcpBlock = deps.mcp ? deps.mcp.toolsIndex(convo.agent_id) : '';
 
+  // PH.6 回滚纠正账本（星瑶 turn_undo/prompt_context.py 同款语义）：历史消息不改字节，
+  // 用纠正块向前宣告"旧结果已失效"——回滚后注入一次，turn 结束即清除。
+  const rollbackBlock = convo.rollback_at
+    ? `\n## ⚠️ 回滚纠正（必须遵守）\n本会话工作区已于 ${convo.rollback_at} 回滚到首轮快照。此前历史消息中对文件状态的描述**已全部失效**——继续任何工作前必须用 read_file 重新读取磁盘文件，不要盲信历史 diff、旧结论或旧行号。\n`
+    : '';
+
   return `${identity}
 # 角色边界
 你运行在「协作会话」中：用户在与你结对开发真实项目。你的所有改动**直接落在项目工作区**（没有沙箱合并步骤），因此：
 - 改前先看（read_file/list_files），改完必验证（构建/测试/渲染检查）；
 - 每轮结束系统会自动落 git diff 卡片给用户审阅；会话首轮已自动创建快照，用户可一键回滚——但你不能依赖回滚，危险操作（删库、重置、覆盖大量文件）必须先与用户确认；
 - 该工作区可能同时有其他任务/会话在并行改动，对文件内容做"读-改-写"时要基于刚读到的最新内容。
-
+${rollbackBlock}
 ${wsBlock}
 ${scripts.length ? `\n## 项目脚本\n${scripts.join('\n')}` : ''}
 ${memories.length ? `\n## 本项目经验与规范\n${memories.map((m) => `- ${m.text}`).join('\n')}` : ''}
@@ -1133,6 +1205,13 @@ A 需要动手：{"tool_calls":[ {"tool":"..."}, ... ]}
 B 回复用户：{"reply":"给用户的完整回复（markdown）","share_files":["可选：反馈给用户的文件相对路径"]}
 工具结果以 user 消息回喂；信息足够就用 B 收尾，需要继续就发 A。用户随时可能插话（排队/打断），被打断后如实汇报已完成部分。
 🚫 最严重违约：用 B 说"即将动手/正在执行/第一步是…"却一个 tool_calls 都不发——口头承诺不算执行，用户只会看到空话。要么此刻就发 A，要么用 B 明确说明你在等待什么、缺什么。`}
+
+## 证据纪律（最高优先，防幻觉）
+1. 对本项目的一切事实断言（技术栈、依赖、文件内容、函数位置、行号、配置、历史结论），必须来自你本轮或可见上下文中真实读过的工具结果；没读过 → 先用只读工具核实，或明确说「这一点我未核实」。
+2. 未经工具结果证实的「已修复/已完成/已验证/测试通过」类结论，禁止写进给用户的回复——要么先验证再宣布，要么如实说明未验证。
+3. 不知道就直说「我不确定/需要查一下」，禁止编造路径、行号、API 或项目约定。
+4. 引用早期被折叠的会话历史（压缩摘要之前的内容）前，必须重新侦查确认——摘要可能不完整。
+5. 与项目经验/规范相关的问题，优先对照上方「本项目经验与规范」与知识检索结果作答；命中时注明依据，未命中且超出一般常识时明说「项目知识库没有相关记录，以下基于一般经验，建议核实」。
 
 ## 行动优先
 - 侦查是手段不是目的：需要动手时第一批工具就把关键侦查+主动作发出，不要用"接下来我将…"的口头承诺收尾；
@@ -1759,7 +1838,10 @@ export async function rollbackConvo(deps: ConvoDeps, convoId: string): Promise<S
   const snap = await getSnapshot(convo.snapshot_id);
   if (!snap) throw new ConvoError(404, `snapshot not found: ${convo.snapshot_id}`);
   const r = await rollbackSnapshot(convo.snapshot_id, { confirmed: true });
-  await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `已回滚到会话首轮快照（${snap.created_at}）——工作区改动已还原。` });
+  // PH.6：标记回滚时间——下一个 turn 的 system prompt 注入纠正账本（runTurnCore 注入后清除）
+  const live = await getConvo(convoId);
+  if (live) { live.rollback_at = new Date().toISOString(); await saveConvo(live); }
+  await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `已回滚到会话首轮快照（${snap.created_at}）——工作区改动已还原。历史消息中的文件结果已失效，下轮对话我会先重新读取磁盘再动手。` });
   return { ok: r.ok, snapshot_id: r.snapshot_id, git_action: r.git_action, details: r.details };
 }
 
@@ -1819,10 +1901,27 @@ async function runSubAgent(
   if (!primary) return { tool: 'spawn_agent', ok: false, error: '模型池无可用模型' };
   const chain = deps.pool.fallbackChain(primary, plugin.tags).slice(0, MAX_SPEAKER_MODEL_CHAIN);
 
+  // PH.4 事实包：子 agent 此前零项目上下文——断言全靠编。注入最小事实集（项目记忆 top3
+  // + 与子任务相关的知识条目 top2）+ 证据纪律，让子 agent "有据可依、无据明说"。
+  const factLines: string[] = [];
+  try {
+    if (convo.project_id) {
+      const facts = await getProjectMemory(convo.project_id, 3);
+      for (const f of facts) factLines.push(`- 【项目记忆】${f.text.slice(0, 160)}`);
+    }
+    const kn = await relevantKnowledge(`${agentName} ${task}`, { limit: 2, project_id: convo.project_id }).catch(() => []);
+    for (const k of kn) factLines.push(`- 【知识库《${k.title}》】${k.content.replace(/\s+/g, ' ').slice(0, 160)}`);
+  } catch { /* best-effort：事实包失败不阻塞子任务 */ }
+
   const sys = `${plugin.prompt?.trim() || `你是「${agentName}」agent。`}
 # 角色
 你是被主 agent（搭档）通过 spawn_agent 调度的子智能体，在项目工作区执行一个明确的子任务。完成后用 reply 给出简洁的中文摘要（做了什么、结果如何、关键发现），不要向用户提问——有障碍就如实写进摘要。
 
+# 证据纪律（防幻觉）
+- 摘要里的每个结论必须基于你真实调用过的工具结果；没查到的就说「未核实」，禁止编造路径/行号/结论。
+- 下方"相关事实"仅供参考（可能过时），动手前以实际侦查为准。
+
+${factLines.length ? `# 相关事实（主 agent 项目记忆与知识库，可能过时）\n${factLines.join('\n')}\n` : ''}
 # 工作区
 ${convo.workspace || '（无绑定工作区）'}
 ${plugin.skills?.length ? `\n# 绑定技能（正文用 load_skill 拉取）\n${plugin.skills.join('、')}` : ''}
@@ -1848,6 +1947,8 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
 
   let summary = '';
   const stepLines: string[] = [];
+  const subFailures: string[] = []; // PH.4：子任务期间任何工具失败都记录——"嘴上成功但工具有失败"不允许以 ok 回传
+  let summaryNudged = false;       // PH.4：结果过短时补写一次（有界）
   try {
     for (let iter = 0; iter < SUB_MAX_ITER; iter++) {
       if (signal.aborted) { turn.aborted = true; break; }
@@ -1878,16 +1979,31 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
       if (calls.length && !last) {
         const sub = await runSubToolCalls(deps, convo, plugin, policy, calls, turn, signal);
         stepLines.push(...sub.lines);
+        for (const rec of sub.records) {
+          if (rec && typeof rec === 'object' && (rec as any).ok === false) {
+            subFailures.push(`${String((rec as any).tool || '工具')}: ${String((rec as any).error || (rec as any).output_gist || '失败').slice(0, 100)}`);
+          }
+        }
         await appendConvoMessage(convo.id, { role: 'assistant', kind: 'tool', text: sub.line, model: used.name, meta: { subagent: agentName, calls: sub.records } });
         msgs.push({ role: 'assistant', content: res.content });
         msgs.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(sub.results).slice(0, 12000)}\n\n信息足够就 reply 收尾；需要继续再发 tool_calls。` });
         continue;
       }
       summary = String(parsed?.reply || res.content || '').trim().slice(0, 4000) || '（子任务无输出）';
+      // PH.4：结果过短（敷衍摘要）→ 补写一轮（有界一次），别让主 agent 拿到空话当结论。
+      // 阈值 60 字：一句话事实性摘要放行，纯"完成了"式空话才触发补写
+      if (!last && !summaryNudged && summary.length < 60 && !signal.aborted) {
+        summaryNudged = true;
+        msgs.push({ role: 'assistant', content: res.content });
+        msgs.push({ role: 'user', content: '你的摘要太简短，主 agent 无法据此判断子任务成果。请补充：具体做了什么改动/查到什么结论、验证方式与结果、关键发现或障碍。重新用 reply 给出完整摘要（如实说明未完成部分）。' });
+        continue;
+      }
       break;
     }
   } finally {
     if (!summary) summary = signal.aborted ? '子任务被用户打断，已完成部分保留在工作区。' : '子任务达到迭代上限未给出摘要。';
+    // PH.4：失败明细并入最终摘要（done 卡与主循环工具结果共用同一 summary）
+    if (subFailures.length) summary = `${summary}\n\n⚠️ 子任务期间有 ${subFailures.length} 次工具执行失败：${subFailures.slice(0, 3).join('；')}`;
     await appendConvoMessage(convo.id, {
       role: 'assistant', kind: 'tool',
       text: `子智能体 ${agentName} 完成（${Math.round((Date.now() - startTs) / 1000)}s · ${stepLines.length} 步）：${summary.slice(0, 80)}`,
@@ -1895,7 +2011,15 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
       meta: { subagent: agentName, phase: 'done', summary, steps: stepLines.slice(-20) },
     });
   }
-  return { tool: 'spawn_agent', ok: !signal.aborted, agent: agentName, summary, steps: stepLines.length };
+  return {
+    tool: 'spawn_agent',
+    // PH.4：工具失败污染完成态——有失败记录就不许以 ok 回传（星瑶 tools.py:3239-3243 同语义）
+    ok: !signal.aborted && subFailures.length === 0,
+    agent: agentName,
+    summary,
+    steps: stepLines.length,
+    ...(subFailures.length ? { tool_failures: subFailures } : {}),
+  };
 }
 
 /** 子 agent 的工具执行面：只读 + exec/写文件 + load_skill + write_knowledge + mcp（按子 agent 白名单）。 */

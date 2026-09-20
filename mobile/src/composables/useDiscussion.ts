@@ -18,6 +18,8 @@ const busy = ref(false);
 const thinking = ref('');
 /** thinking 成员当前动作：thinking | tool_followup | tool */
 const activity = ref('');
+/** P0.3/P0.7 等待/重试可见化（与 web 同构）：当前群聊的瞬时等待说明 */
+const waitNote = ref('');
 /** 流式气泡：stream_id -> {agent, round, text} */
 const streams = reactive<Record<string, { agent: string; round: number; text: string }>>({});
 /** 成员活动（P2-4 并行呈现）：agent → thinking | tool | tool_followup | queued */
@@ -64,6 +66,7 @@ function clearBusy() {
   busy.value = false;
   thinking.value = '';
   activity.value = '';
+  waitNote.value = '';
   for (const sid of Object.keys(streams)) delete streams[sid];
   if (busyWatchdog) {
     clearTimeout(busyWatchdog);
@@ -108,6 +111,17 @@ function subscribe() {
     } else if (t === 'discussion_reacted') {
       const target = current.value.messages.find((x) => x.id === p.message_id);
       if (target) target.reactions = (p.reactions as Record<string, string[]>) || target.reactions;
+    } else if (t === 'discussion_reason') {
+      // P0.7：推理流到达即续期看门狗（不再 5 分钟熄灯）
+      reArm();
+    } else if (t === 'discussion_retry') {
+      // P0.3：换模/重试过程可见
+      waitNote.value = `${String(p.agent || '')}：模型 ${String(p.model || '')} 调用失败${p.next ? `，切换 ${String(p.next)}` : `，第 ${Number(p.attempt || 1)} 次重试`}`;
+      reArm();
+    } else if (t === 'discussion_waiting') {
+      // P0.3：首包等待心跳
+      waitNote.value = `${String(p.agent || '')} 已等待 ${Number(p.waited_sec || 0)}s（模型 ${String(p.model || '')} 响应中）`;
+      reArm();
     } else if (t === 'discussion_round') {
       if (p.phase === 'router') {
         thinking.value = 'router';
@@ -123,6 +137,7 @@ function subscribe() {
         armBusy(false);
       } else if (p.phase === 'end') {
         for (const k of Object.keys(memberActivity)) delete memberActivity[k];
+        waitNote.value = '';
         clearBusy();
       }
     } else if (t === 'discussion_convert_resolved') {
@@ -257,5 +272,5 @@ async function convert(payload: ConvertDiscussionPayload) {
 
 export function useDiscussion() {
   subscribe();
-  return { list, current, experiences, busy, thinking, activity, streams, memberActivity, roles, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
+  return { list, current, experiences, busy, thinking, activity, waitNote, streams, memberActivity, roles, loadList, open, create, send, react, round, stop, generateScheme, saveScheme, setMode, remove, convert };
 }
