@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Co-Team · 设置（预览稿）</title>
+<style>
+/* ============================================================
+   Co-Team 设计 token（与 web/src/styles/tokens.css 同源）
+   ============================================================ */
+:root {
+  --bg-page: #f5f6f8; --bg-panel: #ffffff; --bg-raised: #ffffff; --bg-overlay: #ffffff; --bg-inset: #f2f4f7;
+  --line: #e4e7ec; --line-strong: #cdd3db;
+  --text-1: #171a20; --text-2: #5b6472; --text-3: #8f98a5;
+  --accent: #2f6fed; --accent-text: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
+  --ok: #1a7f37; --warn: #9a6700; --danger: #cf222e;
+  --fs-meta: 11px; --fs-aux: 12px; --fs-body: 14px; --fs-sub: 15px; --fs-title: 16px; --fs-h2: 18px;
+  --r-ctl: 6px; --r-panel: 10px; --r-float: 12px;
+  --shadow-float: 0 12px 32px rgba(20, 28, 40, 0.14), 0 2px 8px rgba(20, 28, 40, 0.08);
+  --font-ui: -apple-system, 'Segoe UI', 'Microsoft YaHei', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+html.dark {
+  --bg-page: #0c0d10; --bg-panel: #121419; --bg-raised: #181b21; --bg-overlay: #1d2129; --bg-inset: #0f1115;
+  --line: #23272f; --line-strong: #31363f;
+  --text-1: #e9ebee; --text-2: #98a0ab; --text-3: #626a76;
+  --accent: #ff9349; --accent-text: #0c0d10;
+  --ok: #3fb96f; --warn: #d29922; --danger: #e5534b;
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; overflow: hidden; }
+body { background: var(--bg-page); color: var(--text-1); font: var(--fs-body)/1.6 var(--font-ui); -webkit-font-smoothing: antialiased; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+.mono { font-family: var(--font-mono); }
+
+/* ============================================================
+   顶栏（与 App.vue 同构，新增「设置」tab 与工作台同级）
+   ============================================================ */
+.app-shell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.app-header { flex-shrink: 0; z-index: 50; height: 46px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 20px; background: var(--bg-panel); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 9px; min-width: 200px; }
+.brand-mark { width: 22px; height: 22px; border-radius: var(--r-ctl); flex: none; background: var(--accent); color: var(--accent-text); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.brand-text { display: flex; align-items: baseline; gap: 8px; }
+.brand-name { font-size: var(--fs-body); font-weight: 700; color: var(--text-1); }
+.brand-sub { font-size: var(--fs-meta); color: var(--text-3); }
+.nav { display: flex; gap: 2px; height: 100%; }
+.nav-tab { position: relative; display: flex; align-items: center; gap: 7px; padding: 0 14px; font-size: 13.5px; color: var(--text-2); background: transparent; border: none; cursor: pointer; transition: color .15s; font-family: var(--font-ui); }
+.nav-tab.active { color: var(--text-1); }
+.nav-tab.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
+.nav-tab:hover { color: var(--text-1); }
+.nav-badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--accent-text); font-family: var(--font-mono); font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.header-metrics { display: flex; gap: 14px; }
+.metric-pill { display: flex; align-items: baseline; gap: 6px; color: var(--text-3); font-size: var(--fs-meta); }
+.metric-pill b { color: var(--text-2); font-family: var(--font-mono); font-weight: 600; font-size: var(--fs-aux); }
+.conn { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-meta); color: var(--ok); }
+.conn i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.theme-toggle { width: 26px; height: 26px; display: grid; place-items: center; color: var(--text-3); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); font-size: 13px; cursor: pointer; }
+.theme-toggle:hover { color: var(--text-1); background: var(--bg-raised); border-color: var(--line); }
+
+/* ============================================================
+   设置全页布局：左锚点导航 + 右内容
+   ============================================================ */
+.settings-layout { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.settings-nav { width: 196px; flex: none; overflow-y: auto; padding: 20px 12px; border-right: 1px solid var(--line); background: var(--bg-panel); }
+.settings-nav .nav-cap { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; margin: 0 8px 10px; }
+.sn-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; margin-bottom: 2px; border: none; border-radius: var(--r-ctl); background: transparent; color: var(--text-2); font-size: 13px; text-align: left; cursor: pointer; font-family: var(--font-ui); }
+.sn-item .idx { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); width: 18px; }
+.sn-item:hover { background: var(--bg-raised); color: var(--text-1); }
+.sn-item.active { background: var(--accent-soft); color: var(--text-1); font-weight: 600; }
+.sn-item.active .idx { color: var(--accent); }
+.sn-sep { height: 1px; background: var(--line); margin: 10px 8px; }
+.settings-main { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 28px 60px; }
+.settings-inner { max-width: 1060px; margin: 0 auto; }
+.page-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
+.page-title { font-size: var(--fs-h2); font-weight: 700; color: var(--text-1); }
+.page-sub { font-size: var(--fs-meta); color: var(--text-3); }
+.pv-flag { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--accent); border: 1px dashed var(--accent-line); border-radius: 4px; padding: 1px 7px; }
+.sec { margin-bottom: 34px; scroll-margin-top: 12px; }
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.sec-head h2 { margin: 0; font-size: var(--fs-title); font-weight: 700; color: var(--text-1); }
+.sec-head .hint { font-size: var(--fs-meta); color: var(--text-3); }
+.sec-desc { font-size: var(--fs-aux); color: var(--text-2); margin: 0 0 14px; }
+
+/* ---- 通用控件 ---- */
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px; font-size: var(--fs-aux); font-family: var(--font-ui); color: var(--text-2); background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: var(--r-ctl); cursor: pointer; transition: color .15s, border-color .15s, background .15s; white-space: nowrap; }
+.btn:hover { color: var(--text-1); border-color: var(--accent-line); }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.danger-link { border-color: transparent; background: transparent; color: var(--danger); padding: 4px 6px; }
+.btn.link { border-color: transparent; background: transparent; color: var(--accent); padding: 4px 6px; }
+.btn.sm { padding: 2px 8px; font-size: var(--fs-meta); }
+.input, .select { padding: 4px 9px; font-size: var(--fs-aux); color: var(--text-1); background: var(--bg-page); border: 1px solid var(--line-strong); border-radius: var(--r-ctl); font-family: var(--font-ui); outline: none; }
+.input:focus { border-color: var(--accent-line); }
+.input.mono { font-family: var(--font-mono); }
+.switch { width: 34px; height: 19px; border-radius: 10px; background: var(--line-strong); border: none; cursor: pointer; position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: var(--bg-panel); transition: left .15s; }
+.switch.on { background: var(--accent); }
+.switch.on::after { left: 17px; }
+.tag { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-2); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; height: 18px; display: inline-flex; align-items: center; }
+.tag.accent { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; display: inline-block; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.danger { background: var(--danger); }
+
+/* ---- 通用 / 权限 行卡 ---- */
+.row-card { display: flex; align-items: flex-start; gap: 16px; padding: 13px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-panel); margin-bottom: 10px; }
+.row-card .rc-info { flex: 1; min-width: 0; }
+.row-card .rc-title { font-size: 13px; font-weight: 600; color: var(--text-1); }
+.row-card .rc-desc { font-size: var(--fs-aux); color: var(--text-3); margin-top: 3px; line-height: 1.55; }
+.row-card .rc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.perm-tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border: 1px dashed var(--line-strong); border-radius: 8px; margin-bottom: 10px; }
+
+/* ============================================================
+   模型池
+   ============================================================ */
+.sub-cap { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; margin: 18px 0 10px; }
+.sub-cap::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* 健康快照 */
+.poolrow { display: flex; align-items: center; gap: 12px; padding: 7px 10px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--bg-raised); }
+.poolrow .nm { font-family: var(--font-mono); font-size: 12.5px; width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+.poolrow .mt { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); width: 150px; flex: none; }
+.poolrow .tags { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; min-width: 0; }
+.poolrow .rt { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); flex: none; }
+
+/* ---- 调度优先级 · 降级路线图（模拟） ---- */
+.roadmap-box { border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--bg-panel); padding: 14px 16px; }
+.rm-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.rm-toolbar .cap { font-size: var(--fs-aux); color: var(--text-2); font-weight: 600; margin-right: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-ctl); overflow: hidden; }
+.seg button { padding: 3px 10px; font-size: var(--fs-meta); font-family: var(--font-mono); color: var(--text-2); background: var(--bg-page); border: none; cursor: pointer; border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: none; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.rm-legend { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: var(--fs-meta); color: var(--text-3); }
+.rm-legend span { display: inline-flex; align-items: center; gap: 4px; }
+/* 链路 */
+.rm-chain { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 4px 2px 10px; }
+.rm-node { flex: none; width: 208px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg-raised); padding: 9px 11px; position: relative; cursor: grab; }
+.rm-node.first { border-color: var(--accent-line); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.rm-node.dead { opacity: .78; }
+.rm-node.glass { border-style: dashed; }
+.rm-order { position: absolute; top: -9px; left: -9px; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-family: var(--font-mono); font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+.rm-node.dead .rm-order { background: var(--text-3); }
+.rm-arrow { flex: none; align-self: center; width: 26px; text-align: center; color: var(--text-3); font-family: var(--font-mono); font-size: 13px; }
+.rm-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rm-prov { font-size: var(--fs-meta); color: var(--text-3); margin-top: 1px; }
+.rm-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 7px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); }
+.rm-meta b { color: var(--text-2); font-weight: 600; }
+.rm-state { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: var(--fs-meta); margin-top: 7px; }
+.rm-state.ok { color: var(--ok); } .rm-state.warn { color: var(--warn); } .rm-state.bad { color: var(--danger); }
+.rm-tail { flex: none; width: 150px; border: 1px dashed var(--line-strong); border-radius: 8px; padding: 9px 11px; color: var(--text-2); background: var(--bg-page); }
+.rm-tail .rm-name { color: var(--text-2); }
+.rm-node.dragging { opacity: .45; }
+.rm-node.drop-before { box-shadow: -3px 0 0 var(--accent); }
+.rm-first { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--accent); border: 1px solid var(--accent-line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+.rm-node .pin { display: flex; align-items: center; gap: 4px; margin-top: 7px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); }
+.rm-node .pin input { width: 48px; padding: 1px 5px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-1); background: var(--bg-page); border: 1px solid var(--line-strong); border-radius: 4px; outline: none; }
+.rm-node .pin input:focus { border-color: var(--accent-line); }
+/* 规则条 */
+.rm-rules { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+.rm-rule { border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--bg-page); padding: 8px 10px; font-size: var(--fs-meta); color: var(--text-2); line-height: 1.5; }
+.rm-rule b { display: block; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--accent); margin-bottom: 2px; }
+.rm-note { font-size: var(--fs-meta); color: var(--text-3); margin-top: 10px; }
+
+/* ---- 服务接入点编辑区 ---- */
+.provider-card { background: var(--bg-page); border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; margin-bottom: 12px; }
+.pv-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.pv-title { font-size: var(--fs-aux); font-weight: 600; color: var(--text-1); }
+.pv-host { font-size: var(--fs-meta); color: var(--text-3); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-head .spacer { flex: 1; }
+.pv-shared { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+.field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.field > span { font-size: var(--fs-meta); color: var(--text-3); }
+.field .input { width: 100%; }
+.model-row { border-top: 1px dashed var(--line); padding: 10px 0 8px; display: flex; flex-direction: column; gap: 7px; }
+.mr-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mr-name { width: 210px; flex: none; }
+.mr-nums { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.mr-nums .input, .mr-nums .num-wrap .input { width: 100%; }
+.num-wrap { display: flex; flex-direction: column; gap: 4px; }
+/* 长度模板按钮行（本次新增交互） */
+.tpl-btns { display: flex; flex-wrap: wrap; gap: 3px; }
+.tpl-btn { padding: 1px 6px; font-family: var(--font-mono); font-size: var(--fs-meta); line-height: 1.5; color: var(--text-2); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; transition: all .12s; }
+.tpl-btn:hover { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.tpl-btn.custom { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.tpl-btn.custom:hover { filter: brightness(1.08); }
+.tpl-manage { padding: 1px 6px; font-size: var(--fs-meta); color: var(--text-3); background: transparent; border: 1px dashed var(--line-strong); border-radius: 4px; cursor: pointer; }
+.tpl-manage:hover { color: var(--accent); border-color: var(--accent-line); }
+.pv-empty { font-size: var(--fs-aux); color: var(--text-3); padding: 6px 0 2px; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+.toolbar .spacer { flex: 1; }
+.toolbar .note { flex: 1; font-size: var(--fs-meta); color: var(--text-3); }
+
+/* ---- 表格（Agent/技能/MCP 复用） ---- */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.tbl th { font-family: var(--font-mono); font-size: var(--fs-meta); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); background: var(--bg-raised); text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); }
+.tbl td { padding: 7px 12px; border-bottom: 1px solid var(--line); color: var(--text-1); }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tbody tr:hover td { background: color-mix(in srgb, var(--bg-raised) 70%, transparent); }
+.tbl .mut { color: var(--text-3); font-size: var(--fs-aux); }
+
+/* ============================================================
+   弹窗 + toast
+   ============================================================ */
+.overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg-page) 72%, transparent); backdrop-filter: blur(2px); display: none; align-items: flex-start; justify-content: center; padding: 9vh 16px 16px; z-index: 100; }
+.overlay.show { display: flex; }
+.dialog { width: 560px; max-width: 96vw; background: var(--bg-panel); border: 1px solid var(--line-strong); border-radius: var(--r-float); box-shadow: var(--shadow-float); max-height: 82vh; display: flex; flex-direction: column; }
+.dialog.wide { width: 680px; }
+.dlg-head { display: flex; align-items: baseline; gap: 10px; padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
+.dlg-title { font-size: var(--fs-title); font-weight: 700; }
+.dlg-sub { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); }
+.dlg-body { padding: 14px 18px; overflow-y: auto; }
+.dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px 14px; border-top: 1px solid var(--line); }
+.dlg-note { font-size: var(--fs-aux); color: var(--text-3); margin-bottom: 12px; line-height: 1.55; }
+.ba-field { margin-bottom: 14px; }
+.ba-label { font-size: var(--fs-aux); font-weight: 600; color: var(--text-1); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.ba-preview { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); font-weight: 400; }
+.tpl-row-manage { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px dashed var(--line); }
+.tpl-row-manage:first-of-type { border-top: none; }
+.tpl-row-manage .input { flex: 1; }
+.tpl-kind { font-size: var(--fs-meta); font-family: var(--font-mono); width: 34px; flex: none; }
+.tpl-kind.builtin { color: var(--text-3); }
+.tpl-kind.custom { color: var(--accent); }
+#toast { position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%); background: var(--bg-overlay); border: 1px solid var(--line-strong); color: var(--text-1); border-radius: var(--r-ctl); padding: 7px 16px; font-size: var(--fs-aux); box-shadow: var(--shadow-float); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 200; }
+#toast.show { opacity: 1; }
+
+/* ============================================================
+   窄屏自适应（移动端思路：导航收顶、栅格降列）
+   ============================================================ */
+@media (max-width: 900px) {
+  .settings-nav { width: 52px; padding: 16px 6px; }
+  .settings-nav .nav-cap, .sn-item .txt { display: none; }
+  .sn-item { justify-content: center; padding: 8px 0; }
+  .pv-shared { grid-template-columns: 1fr; }
+  .mr-nums { grid-template-columns: repeat(3, 1fr); }
+  .rm-rules { grid-template-columns: 1fr 1fr; }
+  .header-metrics { display: none; }
+  .nav-tab { padding: 0 8px; font-size: 12.5px; }
+}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <!-- ===== 顶栏：新增「设置」tab，与工作台同级 ===== -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark mono">CT</div>
+      <div class="brand-text">
+        <span class="brand-name">Co-Team</span>
+        <span class="brand-sub mono">multi-agent orchestrator</span>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-tab">工作台</button>
+      <button class="nav-tab">任务中心 <span class="nav-badge">2</span></button>
+      <button class="nav-tab">审批 <span class="nav-badge">2</span></button>
+      <button class="nav-tab">项目开发</button>
+      <button class="nav-tab">群组沟通</button>
+      <button class="nav-tab">协作会话</button>
+      <button class="nav-tab active">设置</button>
+    </nav>
+    <div class="header-right">
+      <div class="header-metrics">
+        <span class="metric-pill">成本 <b>$0.4821</b></span>
+        <span class="metric-pill">Token <b>1,284,552</b></span>
+      </div>
+      <span class="conn"><i></i>已连接</span>
+      <button class="theme-toggle" id="themeBtn" title="切到亮色">☾</button>
+    </div>
+  </header>
+
+  <div class="settings-layout">
+    <!-- ===== 左侧锚点导航 ===== -->
+    <aside class="settings-nav">
+      <div class="nav-cap">Settings</div>
+      <button class="sn-item active" data-sec="general"><span class="idx">01</span><span class="txt">通用</span></button>
+      <button class="sn-item" data-sec="permissions"><span class="idx">02</span><span class="txt">命令权限</span></button>
+      <button class="sn-item" data-sec="models"><span class="idx">03</span><span class="txt">模型池</span></button>
+      <button class="sn-item" data-sec="agents"><span class="idx">04</span><span class="txt">Agent 管理</span></button>
+      <button class="sn-item" data-sec="skills"><span class="idx">05</span><span class="txt">技能库</span></button>
+      <button class="sn-item" data-sec="mcp"><span class="idx">06</span><span class="txt">MCP 服务</span></button>
+      <div class="sn-sep"></div>
+      <div class="nav-cap" style="margin-bottom:6px">config.yaml</div>
+      <div style="padding:0 8px;font-size:11px;color:var(--text-3);line-height:1.6">保存即热生效<br>密钥不入库</div>
+    </aside>
+
+    <!-- ===== 内容区 ===== -->
+    <main class="settings-main">
+      <div class="settings-inner">
+        <div class="page-head">
+          <span class="page-title">设置</span>
+          <span class="page-sub mono">config/config.yaml · 保存即热生效</span>
+          <span class="pv-flag">PREVIEW 预览稿</span>
+        </div>
+
+        <!-- ========== 01 通用 ========== -->
+        <section class="sec" id="sec-general">
+          <div class="sec-head"><h2>通用</h2><span class="hint">通知与凭据</span></div>
+          <p class="sec-desc">浏览器侧偏好与访问凭据。</p>
+          <div class="row-card">
+            <div class="rc-info">
+              <div class="rc-title">桌面通知</div>
+              <div class="rc-desc">任务完成、失败、等待审批、需要澄清时弹出系统通知（需浏览器授权）</div>
+            </div>
+            <button class="switch on" onclick="this.classList.toggle('on')"></button>
+          </div>
+          <div class="row-card">
+            <div class="rc-info">
+              <div class="rc-title">每日问题报告</div>
+              <div class="rc-desc">开启后，每天在指定时刻汇总运行中的报错与功能性问题，由你决定是否转为修复任务（关闭则完全不触发）</div>
+              <div class="rc-ctrl">
+                <button class="switch on" onclick="this.classList.toggle('on')"></button>
+                <span style="font-size:11px;color:var(--text-3)">报告时刻</span>
+                <input class="input" style="width:64px" value="9" />
+                <span style="font-size:11px;color:var(--text-3)">点（本地时间）</span>
+              </div>
+            </div>
+          </div>
+          <div class="row-card">
+            <div class="rc-info">
+              <div class="rc-title">API Token</div>
+              <div class="rc-desc">服务端 config.yaml 配置了 dashboard.token 时必填——本浏览器访问 API 的门禁凭据（存本地，不落服务端）</div>
+              <div class="rc-ctrl">
+                <input class="input mono" style="width:260px" type="password" placeholder="粘贴服务端 dashboard.token" />
+                <button class="btn sm">保存</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 02 命令权限 ========== -->
+        <section class="sec" id="sec-permissions">
+          <div class="sec-head"><h2>命令权限</h2><span class="hint">级别 + 白名单</span></div>
+          <p class="sec-desc">所有新任务的缺省命令执行策略；高危命令任何级别都强制人工审批，越界路径一律拒绝。</p>
+          <div class="row-card">
+            <div class="rc-info">
+              <div class="rc-title">默认权限级别</div>
+              <div class="rc-desc">单个任务可在创建时或任务详情里覆盖。</div>
+            </div>
+            <select class="select" style="width:180px">
+              <option>白名单自动</option>
+              <option selected>改动需审批</option>
+              <option>全部人工审批</option>
+            </select>
+          </div>
+          <div class="row-card" style="display:block">
+            <div class="rc-title" style="margin-bottom:4px">白名单命令</div>
+            <div class="rc-desc">「白名单自动」级别下免审批直接执行的命令首词；「改动需审批」级别下白名单内免审批、其余待你批准。</div>
+            <div class="perm-tags" style="margin-top:10px;margin-bottom:0">
+              <span class="tag mono">ls ✕</span><span class="tag mono">cat ✕</span><span class="tag mono">rg ✕</span><span class="tag mono">node ✕</span><span class="tag mono">pytest ✕</span>
+              <input class="input" style="width:170px" placeholder="输入命令回车添加" />
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button class="btn primary sm">保存权限配置</button>
+              <button class="btn sm">放弃修改</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 03 模型池 ========== -->
+        <section class="sec" id="sec-models">
+          <div class="sec-head"><h2>模型池</h2><span class="hint">供应商分组编辑 · 数字越小越优先</span></div>
+          <p class="sec-desc">simple 任务自动选成本最低模型；权重用于同优先级内随机加权。</p>
+
+          <!-- 3a. 健康快照（原「模型池健康」行区） -->
+          <div class="sub-cap">模型池健康 · 5 个模型（实时快照）</div>
+          <div id="poolHealth"></div>
+
+          <!-- 3b. 调度优先级 · 降级路线图（模拟）★ 新增 -->
+          <div class="sub-cap">调度优先级 · 降级路线图（真实数据 · 可拖拽调序）★ 新增</div>
+          <div class="roadmap-box">
+            <div class="rm-toolbar">
+              <span class="cap">标签过滤</span>
+              <div class="seg" id="rmTags">
+                <button data-tag="" class="on">全部</button>
+                <button data-tag="推理">推理</button>
+                <button data-tag="代码">代码</button>
+                <button data-tag="视觉">视觉</button>
+              </div>
+              <span class="cap" style="margin-left:6px">复杂度</span>
+              <div class="seg" id="rmCx">
+                <button data-cx="normal" class="on">正常</button>
+                <button data-cx="simple">简单</button>
+                <button data-cx="complex">复杂</button>
+              </div>
+              <div class="rm-legend">
+                <span><i class="dot ok"></i>健康</span>
+                <span><i class="dot warn"></i>慢（降序）</span>
+                <span><i class="dot danger"></i>冷却</span>
+                <span class="mono">P=有效优先级</span>
+              </div>
+            </div>
+            <div class="rm-chain" id="rmChain"></div>
+            <div class="rm-rules">
+              <div class="rm-rule"><b>① 重试</b>失败后先对同一模型原样重试 1 次（带失败反馈），不立刻换模。</div>
+              <div class="rm-rule"><b>② 沿链换模</b>按本路线图顺序换下一个健康模型立即重试；429 端点组沉底避让。</div>
+              <div class="rm-rule"><b>③ 413 超窗重排</b>上下文超限时，剩余链按上下文长度降序重排——大窗口优先。</div>
+              <div class="rm-rule"><b>④ 兜底</b>链耗尽 → 主 Agent 模型硬闯（破冷却玻璃），再败则节点停靠人工。</div>
+            </div>
+            <div class="rm-note">※ 实现绑定真实数据：配置态 <span class="mono">/api/config/model-pool</span> + 运行态 <span class="mono">/api/status</span>（8s 轮询——冷却倒计时/慢计数/失败惩罚实时可见）。拖拽调序或改 P/W = 修改模型池编辑态，统一「保存并热生效」落盘，保存前不影响运行中任务。<br>提示：正常档在候选前 50% 内按权重随机——拖成严格 1,2,3… 即完全确定顺序；把若干模型优先级设为相同、用权重分配概率。</div>
+          </div>
+
+          <!-- 3c. 服务接入点编辑区 -->
+          <div class="sub-cap">服务接入点（编辑区）</div>
+          <div id="providerList"></div>
+          <button class="btn" style="width:100%">+ 添加服务（一个 Base URL + API Key 下可挂多个模型）</button>
+          <div class="toolbar">
+            <span class="note">模板按钮点击即填入左侧数字框；「批量应用长度」可把同一模板一次性套用到该服务下全部模型。</span>
+            <button class="btn">放弃修改</button>
+            <button class="btn">测试全部</button>
+            <button class="btn primary">保存并热生效</button>
+          </div>
+        </section>
+
+        <!-- ========== 04 Agent 管理 ========== -->
+        <section class="sec" id="sec-agents">
+          <div class="sec-head"><h2>Agent 管理</h2><span class="hint">6 个 Agent</span></div>
+          <table class="tbl">
+            <thead><tr><th>名称</th><th>角色</th><th>描述</th><th>标签</th><th>预算(秒)</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="mono">launcher</td><td>启动</td><td class="mut">把需求拆成任务并派发</td><td class="mono">plan</td><td>3600</td><td><button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+              <tr><td class="mono">dev</td><td>开发</td><td class="mut">写代码、改代码、跑构建</td><td class="mono">code,deploy</td><td>7200</td><td><button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+              <tr><td class="mono">tester</td><td>测试</td><td class="mut">设计与执行验证</td><td class="mono">test</td><td>3600</td><td><button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+              <tr><td class="mono">reviewer</td><td>审查</td><td class="mut">代码审查与验收把关</td><td class="mono">review</td><td>3600</td><td><button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+            </tbody>
+          </table>
+          <div class="toolbar"><button class="btn">+ 新增 Agent</button><div class="spacer"></div><button class="btn">刷新</button></div>
+        </section>
+
+        <!-- ========== 05 技能库 ========== -->
+        <section class="sec" id="sec-skills">
+          <div class="sec-head"><h2>技能库</h2><span class="hint">SKILL.md 注入</span></div>
+          <table class="tbl">
+            <thead><tr><th>技能名</th><th>描述</th><th>适用标签</th><th>来源</th><th>绑定 Agent</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="mono">git-workflow</td><td class="mut">分支/提交/回滚规范</td><td class="mono">deploy</td><td><span class="tag">全局库</span></td><td class="mono">dev</td><td><button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+              <tr><td class="mono">playwright-e2e</td><td class="mut">端到端验证步骤</td><td class="mono">test</td><td><span class="tag">全局库</span></td><td class="mono">自动匹配</td><td><button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+            </tbody>
+          </table>
+          <div class="toolbar"><button class="btn">+ 注入技能</button><div class="spacer"></div><button class="btn">重扫磁盘</button></div>
+        </section>
+
+        <!-- ========== 06 MCP 服务 ========== -->
+        <section class="sec" id="sec-mcp">
+          <div class="sec-head"><h2>MCP 服务</h2><span class="hint">外部工具接入</span></div>
+          <table class="tbl">
+            <thead><tr><th>名称</th><th>类型</th><th>目标</th><th>状态</th><th>工具数</th><th>启用</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="mono">filesystem</td><td><span class="tag">stdio</span></td><td class="mono">npx @modelcontextprotocol/server-filesystem</td><td><span class="tag accent">已连接</span></td><td>11</td><td><button class="switch on" onclick="this.classList.toggle('on')"></button></td><td><button class="btn link sm">测试</button> <button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+              <tr><td class="mono">feishu</td><td><span class="tag">http</span></td><td class="mono">http://10.0.0.3:3210/mcp</td><td><span class="tag" style="color:var(--danger);border-color:var(--danger)">未连接</span></td><td>-</td><td><button class="switch" onclick="this.classList.toggle('on')"></button></td><td><button class="btn link sm">测试</button> <button class="btn link sm">编辑</button> <button class="btn danger-link sm">删除</button></td></tr>
+            </tbody>
+          </table>
+          <div class="toolbar"><button class="btn">+ 新增 MCP 服务</button><div class="spacer"></div><button class="btn primary">保存并热生效</button></div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ===== 批量应用长度弹窗（供应商组级） ===== -->
+<div class="overlay" id="baOverlay">
+  <div class="dialog">
+    <div class="dlg-head"><span class="dlg-title">批量应用长度</span><span class="dlg-sub" id="baProv"></span></div>
+    <div class="dlg-body">
+      <div class="dlg-note">选择的模板会覆盖该服务下 <b id="baCount">N</b> 个模型的对应字段；留空表示不改。保存后需点「保存并热生效」落盘。</div>
+      <div class="ba-field">
+        <div class="ba-label">上下文长度 <span class="ba-preview mono" id="baCtxPrev">未选择</span></div>
+        <div class="tpl-btns" id="baCtxBtns"></div>
+      </div>
+      <div class="ba-field">
+        <div class="ba-label">输出上限 <span class="ba-preview mono" id="baOutPrev">未选择</span></div>
+        <div class="tpl-btns" id="baOutBtns"></div>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button class="btn" onclick="closeOverlay('baOverlay')">取消</button>
+      <button class="btn primary" onclick="applyBatch()">应用到 N 个模型</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 管理长度模板弹窗 ===== -->
+<div class="overlay" id="tplOverlay">
+  <div class="dialog">
+    <div class="dlg-head"><span class="dlg-title">管理长度模板</span><span class="dlg-sub mono">model_length_templates</span></div>
+    <div class="dlg-body">
+      <div class="dlg-note">给常用长度起名（如 <span class="mono">256K=262144</span>），保存后即为模型行与批量应用里的<b>按钮</b>。内置预设只读。</div>
+      <div id="tplManageList"></div>
+      <button class="btn sm" style="width:100%;margin-top:8px" onclick="addTplRow()">+ 添加模板</button>
+    </div>
+    <div class="dlg-foot">
+      <button class="btn" onclick="closeOverlay('tplOverlay')">取消</button>
+      <button class="btn primary" onclick="saveTpl()">保存模板</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ============================================================
+   模拟数据（正式实现中来自 /api/config/model-pool 与 /api/status）
+   ============================================================ */
+const BUILTIN_TPL = [
+  { name: '1M', value: 1000000 }, { name: '512K', value: 524288 }, { name: '256K', value: 262144 },
+  { name: '128K', value: 131072 }, { name: '64K', value: 65536 }, { name: '32K', value: 32768 },
+];
+let customTpl = [{ name: '200K', value: 200000 }];
+
+const providers = [
+  {
+    provider_name: '智谱', base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    models: [
+      { name: 'glm-4.7', tags: ['推理','代码'], concurrency: 4, priority: 1, weight: 80, cost: 0.014, max_tokens: 128000, ctx: 1000000, state: 'ok', slow: 0, fail: 0 },
+      { name: 'glm-4.7-air', tags: ['代码'], concurrency: 6, priority: 2, weight: 60, cost: 0.002, max_tokens: 96000, ctx: 131072, state: 'ok', slow: 0, fail: 0 },
+      { name: 'glm-4.6', tags: ['推理','文档'], concurrency: 4, priority: 4, weight: 50, cost: 0.006, max_tokens: 65536, ctx: 200000, state: 'ok', slow: 0, fail: 0 },
+    ],
+  },
+  {
+    provider_name: 'DeepSeek 官方', base_url: 'https://api.deepseek.com/v1',
+    models: [
+      { name: 'deepseek-chat', tags: ['代码','推理'], concurrency: 8, priority: 2, weight: 70, cost: 0.001, max_tokens: 65536, ctx: 131072, state: 'cooldown', cd: 45, slow: 0, fail: 3 },
+      { name: 'deepseek-reasoner', tags: ['推理'], concurrency: 4, priority: 3, weight: 65, cost: 0.004, max_tokens: 65536, ctx: 131072, state: 'slow', slow: 2, fail: 0 },
+    ],
+  },
+  {
+    provider_name: '本地 vLLM', base_url: 'http://127.0.0.1:8000/v1',
+    models: [
+      { name: 'qwen3-32b', tags: ['代码'], concurrency: 2, priority: 5, weight: 40, cost: 0, max_tokens: 32768, ctx: 131072, state: 'slow', slow: 1, fail: 0 },
+    ],
+  },
+];
+
+/* 有效优先级 = 配置优先级 + 慢计数 + 失败惩罚（简化演示；服务端为 30min 线性回血） */
+const effOf = (m) => m.priority + (m.slow || 0) + (m.fail || 0) * 2;
+
+const STATE_META = {
+  ok: { cls: 'ok', txt: '健康' },
+  slow: { cls: 'warn', txt: '慢' },
+  cooldown: { cls: 'bad', txt: '冷却' },
+};
+
+/* ============================================================
+   渲染
+   ============================================================ */
+const allTpl = () => [...BUILTIN_TPL, ...customTpl];
+const fmt = (n) => Number(n).toLocaleString('en-US');
+
+function el(html) { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstChild; }
+
+/* ---- 健康快照 ---- */
+function renderHealth() {
+  const wrap = document.getElementById('poolHealth');
+  wrap.innerHTML = '';
+  for (const g of providers) for (const m of g.models) {
+    const st = STATE_META[m.state];
+    wrap.appendChild(el(`<div class="poolrow">
+      <span class="dot ${st.cls}"></span>
+      <span class="nm">${m.name}</span>
+      <span class="mt">优先 ${m.priority} · 并发 ${m.concurrency}</span>
+      <div class="tags">${m.tags.map((t) => `<span class="tag">${t}</span>`).join('')}</div>
+      <span class="rt">${st.txt}${m.cd ? ` · ${m.cd}s` : ''}${m.slow ? ` ×${m.slow}` : ''} · P_eff ${effOf(m)}</span>
+    </div>`));
+  }
+}
+
+/* ---- 降级路线图（真实数据布局 · 可拖拽调序） ---- */
+let rmTag = '';
+let rmCx = 'normal';
+let chainRefs = [];
+const chainBox = document.getElementById('rmChain');
+const CX_LABEL = { normal: '正常档：P_eff 升序 → 权重', simple: '简单档：P_eff 升序 → 成本', complex: '复杂档：权重降序 → P_eff' };
+const CX_SORT = {
+  normal: (a, b) => effOf(a.m) - effOf(b.m) || b.m.weight - a.m.weight,
+  simple: (a, b) => effOf(a.m) - effOf(b.m) || a.m.cost - b.m.cost,
+  complex: (a, b) => b.m.weight - a.m.weight || effOf(a.m) - effOf(b.m),
+};
+const shortLen = (n) => (n >= 1000000 ? String(n / 1000000).replace(/\.0$/, '') + 'M' : Math.round(n / 1024) + 'K');
+
+function renderChain() {
+  chainBox.innerHTML = '';
+  chainRefs = providers.flatMap((g) => g.models.map((m, mi) => ({ m, gi: providers.indexOf(g), mi, prov: g.provider_name })));
+  if (rmTag) chainRefs = chainRefs.filter((r) => r.m.tags.includes(rmTag));
+  if (!chainRefs.length) { chainBox.innerHTML = '<div class="pv-empty">该标签下没有模型——调度会回退全池（tag 过滤仅在池内有匹配时生效）。</div>'; return; }
+  chainRefs.sort(CX_SORT[rmCx]);
+  chainRefs.forEach((r, i) => {
+    const m = r.m; const st = STATE_META[m.state];
+    if (i > 0) chainBox.appendChild(el(`<div class="rm-arrow">→</div>`));
+    const node = el(`<div class="rm-node ${i === 0 ? 'first' : ''} ${m.state !== 'ok' ? 'dead' : ''}" title="拖拽调序（改优先级）">
+      <span class="rm-order">${i + 1}</span>
+      <div class="rm-name">${m.name}${i === 0 ? '<span class="rm-first">首选</span>' : ''}</div>
+      <div class="rm-prov">${r.prov} · $${m.cost}/1k</div>
+      <div class="rm-meta"><span>ctx <b>${shortLen(m.ctx)}</b></span><span>P_eff <b>${effOf(m)}</b></span></div>
+      <div class="rm-state ${st.cls}"><i class="dot ${st.cls}"></i>${st.txt}${m.cd ? ` ${m.cd}s` : ''}${m.slow ? ` ×${m.slow}` : ''}${m.fail ? ` · 败${m.fail}` : ''}</div>
+      <div class="pin">P <input type="number" min="1" max="99" value="${m.priority}" data-k="priority" /> W <input type="number" min="1" max="100" value="${m.weight}" data-k="weight" /></div>
+    </div>`);
+    wireNode(node, i);
+    chainBox.appendChild(node);
+  });
+  chainBox.appendChild(el(`<div class="rm-arrow">→</div>`));
+  chainBox.appendChild(el(`<div class="rm-tail"><div class="rm-name">主 Agent 兜底</div><div class="rm-prov">链耗尽 · 破冷却玻璃</div><div class="rm-meta"><span>再败 → 停靠人工</span></div></div>`));
+}
+
+/* 节点交互：拖拽调序（输入框内不触发）+ P/W 内联编辑 */
+let dragIdx = -1;
+function clearMarks() { chainBox.querySelectorAll('.drop-before').forEach((x) => x.classList.remove('drop-before')); }
+function wireNode(node, idx) {
+  node.addEventListener('mousedown', (e) => { node.draggable = e.target.tagName !== 'INPUT'; });
+  node.addEventListener('dragstart', (e) => { dragIdx = idx; node.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
+  node.addEventListener('dragend', () => { dragIdx = -1; node.classList.remove('dragging'); clearMarks(); });
+  node.addEventListener('dragover', (e) => { e.preventDefault(); clearMarks(); if (idx !== dragIdx) node.classList.add('drop-before'); });
+  node.querySelectorAll('.pin input').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const m = chainRefs[idx].m;
+      const v = Math.max(Number(inp.min), Math.min(Number(inp.max), parseInt(inp.value, 10) || 1));
+      inp.value = v; m[inp.dataset.k] = v;
+      renderChain(); renderHealth();
+      toast(`已改 ${m.name} ${inp.dataset.k === 'priority' ? '优先级' : '权重'} → ${v}（示例，落盘需保存）`);
+    });
+  });
+}
+chainBox.addEventListener('dragover', (e) => e.preventDefault());
+chainBox.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const nodes = [...chainBox.querySelectorAll('.rm-node')];
+  const markIdx = nodes.findIndex((n) => n.classList.contains('drop-before'));
+  clearMarks();
+  if (dragIdx < 0 || markIdx < 0 || markIdx === dragIdx) return;
+  const [moved] = chainRefs.splice(dragIdx, 1);
+  chainRefs.splice(markIdx > dragIdx ? markIdx - 1 : markIdx, 0, moved);
+  renumberByChain();
+  renderChain(); renderHealth();
+  toast(`顺序已重排（优先级 1..${chainRefs.length}）——落盘需「保存并热生效」`);
+});
+
+/* 拖拽落点 = 链上顺序：可见模型优先级重排 1..n；过滤外模型按 P_eff 顺延 */
+function renumberByChain() {
+  chainRefs.forEach((r, i) => { r.m.priority = i + 1; });
+  const outside = providers.flatMap((g) => g.models)
+    .filter((m) => !chainRefs.some((r) => r.m === m))
+    .sort((a, b) => effOf(a) - effOf(b));
+  outside.forEach((m, i) => { m.priority = chainRefs.length + i + 1; });
+}
+
+document.getElementById('rmTags').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  rmTag = b.dataset.tag;
+  document.querySelectorAll('#rmTags button').forEach((x) => x.classList.toggle('on', x === b));
+  renderChain();
+});
+document.getElementById('rmCx').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  rmCx = b.dataset.cx;
+  document.querySelectorAll('#rmCx button').forEach((x) => x.classList.toggle('on', x === b));
+  renderChain();
+  toast(CX_LABEL[rmCx]);
+});
+
+/* ---- 模型行（含长度模板按钮行） ---- */
+function tplButtonsHtml(target) {
+  const btns = allTpl().map((t) => `<button class="tpl-btn ${customTpl.some((c) => c.name === t.name) ? 'custom' : ''}" onclick="fillTpl(this,'${target}',${t.value})" title="${t.name} = ${fmt(t.value)}">${t.name}</button>`).join('');
+  return `<div class="tpl-btns">${btns}<button class="tpl-manage" onclick="openTplManager()">管理</button></div>`;
+}
+
+function renderProviders() {
+  const wrap = document.getElementById('providerList');
+  wrap.innerHTML = '';
+  providers.forEach((g, gi) => {
+    const card = el(`<div class="provider-card" data-gi="${gi}">
+      <div class="pv-head">
+        <span class="pv-title">服务接入点</span>
+        <span class="pv-host mono">${hostOf(g.base_url)}</span>
+        <span class="tag">${g.models.length} 个模型</span>
+        <div class="spacer"></div>
+        <button class="btn sm" onclick="openBatch(${gi})">批量应用长度</button>
+        <button class="btn sm">拉取模型</button>
+        <button class="btn sm" onclick="addModel(${gi})">+ 添加模型</button>
+        <button class="btn danger-link sm">删除服务</button>
+      </div>
+      <div class="pv-shared">
+        <label class="field"><span>供应商名称（必填）</span><input class="input" value="${g.provider_name}"/></label>
+        <label class="field"><span>Base URL（组内模型共用）</span><input class="input mono" value="${g.base_url}"/></label>
+        <label class="field"><span>API Key（组内模型共用）</span><input class="input mono" type="password" value="sk-demo"/></label>
+      </div>
+      <div class="pv-models"></div>
+    </div>`);
+    const mwrap = card.querySelector('.pv-models');
+    g.models.forEach((m) => {
+      mwrap.appendChild(el(`<div class="model-row">
+        <div class="mr-line">
+          <input class="input mr-name mono" placeholder="model-name" value="${m.name}" />
+          ${m.tags.map((t) => `<span class="tag">${t}</span>`).join('')}
+          <div class="spacer" style="flex:1"></div>
+          <button class="btn sm">模板 ▾</button>
+          <button class="btn sm">测试</button>
+          <button class="btn danger-link sm">删除</button>
+        </div>
+        <div class="mr-nums">
+          <label class="field"><span>并发</span><input class="input" value="${m.concurrency}" /></label>
+          <label class="field"><span>优先级</span><input class="input" value="${m.priority}" /></label>
+          <label class="field"><span>权重</span><input class="input" value="${m.weight}" /></label>
+          <label class="field"><span>成本/1k($)</span><input class="input" value="${m.cost}" /></label>
+          <label class="field"><span>输出上限</span>
+            <div class="num-wrap">
+              <input class="input mono num-out" value="${m.max_tokens}" data-gi="${gi}" data-mi="${providers[gi].models.indexOf(m)}" />
+              ${tplButtonsHtml('out')}
+            </div>
+          </label>
+          <label class="field"><span>上下文</span>
+            <div class="num-wrap">
+              <input class="input mono num-ctx" value="${m.ctx}" data-gi="${gi}" data-mi="${providers[gi].models.indexOf(m)}" />
+              ${tplButtonsHtml('ctx')}
+            </div>
+          </label>
+        </div>
+      </div>`));
+    });
+    wrap.appendChild(card);
+  });
+}
+function hostOf(u) { try { return new URL(u).host; } catch { return u || '未填写地址'; } }
+
+/* 模板按钮 → 填数字框 */
+function fillTpl(btn, target, value) {
+  const input = btn.closest('.num-wrap').querySelector(target === 'out' ? '.num-out' : '.num-ctx');
+  input.value = value;
+  toast(`已填入 ${fmt(value)}（示例）`);
+}
+function addModel(gi) { providers[gi].models.push({ name: '', tags: [], concurrency: 4, priority: 1, weight: 50, cost: 0, max_tokens: 128000, ctx: 131072, state: 'ok', slow: 0, fail: 0 }); renderProviders(); }
+
+/* ============================================================
+   批量应用长度（供应商组级）
+   ============================================================ */
+let baGi = -1; const baSel = { ctx: null, out: null };
+function openBatch(gi) {
+  baGi = gi; baSel.ctx = null; baSel.out = null;
+  const g = providers[gi];
+  document.getElementById('baProv').textContent = g.provider_name + ' · ' + hostOf(g.base_url);
+  document.getElementById('baCount').textContent = g.models.length;
+  document.querySelector('#baOverlay .btn.primary').textContent = `应用到 ${g.models.length} 个模型`;
+  renderBaBtns('baCtxBtns', 'ctx'); renderBaBtns('baOutBtns', 'out');
+  openOverlay('baOverlay');
+}
+function renderBaBtns(containerId, field) {
+  const box = document.getElementById(containerId);
+  box.innerHTML = '';
+  for (const t of allTpl()) {
+    const b = el(`<button class="tpl-btn ${customTpl.some((c) => c.name === t.name) ? 'custom' : ''}" title="${t.name} = ${fmt(t.value)}">${t.name}</button>`);
+    b.onclick = () => {
+      baSel[field] = (baSel[field] === t.value) ? null : t.value;
+      box.querySelectorAll('.tpl-btn').forEach((x) => x.style.outline = '');
+      if (baSel[field] !== null) b.style.outline = '2px solid var(--accent)';
+      document.getElementById(field === 'ctx' ? 'baCtxPrev' : 'baOutPrev').textContent = baSel[field] === null ? '未选择' : fmt(baSel[field]);
+    };
+    box.appendChild(b);
+  }
+  const manual = el(`<input class="input mono" style="width:110px;margin-left:4px" placeholder="手填数值…" />`);
+  manual.oninput = () => { const v = parseInt(manual.value, 10); baSel[field] = isNaN(v) ? null : v; document.getElementById(field === 'ctx' ? 'baCtxPrev' : 'baOutPrev').textContent = baSel[field] === null ? '未选择' : fmt(baSel[field]); };
+  box.appendChild(manual);
+}
+function applyBatch() {
+  if (baGi < 0) return;
+  const g = providers[baGi]; let n = 0;
+  for (const m of g.models) {
+    if (baSel.ctx !== null) { m.ctx = baSel.ctx; n++; }
+    if (baSel.out !== null) { m.max_tokens = baSel.out; n++; }
+  }
+  closeOverlay('baOverlay'); renderProviders();
+  toast(baSel.ctx === null && baSel.out === null ? '未选择任何模板' : `已应用（示例）：${g.models.length} 个模型已更新`);
+}
+
+/* ============================================================
+   管理长度模板
+   ============================================================ */
+function openTplManager() { renderTplManage(); openOverlay('tplOverlay'); }
+function renderTplManage() {
+  const box = document.getElementById('tplManageList'); box.innerHTML = '';
+  for (const t of BUILTIN_TPL) box.appendChild(el(`<div class="tpl-row-manage"><span class="tpl-kind builtin">内置</span><input class="input mono" value="${t.name}" disabled style="flex:none;width:90px" /><input class="input mono" value="${fmt(t.value)}" disabled /></div>`));
+  customTpl.forEach((t, i) => {
+    const row = el(`<div class="tpl-row-manage"><span class="tpl-kind custom">自定义</span><input class="input mono tname" value="${t.name}" placeholder="名称 如 200K" style="flex:none;width:90px" /><input class="input mono tval" value="${t.value}" placeholder="数值" /><button class="btn danger-link sm">删除</button></div>`);
+    row.querySelector('.danger-link').onclick = () => { customTpl.splice(i, 1); renderTplManage(); };
+    box.appendChild(row);
+  });
+}
+function addTplRow() { customTpl.push({ name: '', value: '' }); renderTplManage(); }
+function saveTpl() {
+  customTpl = customTpl.map((t) => ({ name: t.name.trim(), value: parseInt(t.value, 10) })).filter((t) => t.name && !isNaN(t.value));
+  const names = customTpl.map((t) => t.name);
+  if (new Set(names).size !== names.length) { toast('模板名称重复'); return; }
+  closeOverlay('tplOverlay'); renderProviders();
+  toast('长度模板已保存（正式实现落 config.yaml）');
+}
+
+/* ============================================================
+   杂项：overlay / toast / 主题 / 锚点导航
+   ============================================================ */
+function openOverlay(id) { document.getElementById(id).classList.add('show'); }
+function closeOverlay(id) { document.getElementById(id).classList.remove('show'); }
+document.querySelectorAll('.overlay').forEach((o) => o.addEventListener('mousedown', (e) => { if (e.target === o) o.classList.remove('show'); }));
+let toastTimer;
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1800); }
+
+document.getElementById('themeBtn').onclick = function () {
+  const dark = document.documentElement.classList.toggle('dark');
+  this.textContent = dark ? '☾' : '☀'; this.title = dark ? '切到亮色' : '切到暗色';
+};
+
+const navItems = document.querySelectorAll('.sn-item');
+navItems.forEach((b) => b.onclick = () => document.getElementById('sec-' + b.dataset.sec).scrollIntoView({ behavior: 'smooth', block: 'start' }));
+const secObs = new IntersectionObserver((entries) => {
+  for (const en of entries) if (en.isIntersecting) {
+    const id = en.target.id.replace('sec-', '');
+    navItems.forEach((b) => b.classList.toggle('active', b.dataset.sec === id));
+  }
+}, { root: document.querySelector('.settings-main'), threshold: 0.15 });
+document.querySelectorAll('.sec').forEach((s) => secObs.observe(s));
+
+renderHealth(); renderChain(); renderProviders();
+</script>
+</body>
+</html>

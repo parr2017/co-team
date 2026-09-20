@@ -1514,6 +1514,34 @@ export function createApi(ctx: ApiContext): Hono {
     return c.json({ status: 'saved', templates: cleaned });
   });
 
+  // feature: 模型长度模板 —— 用户自定义命名长度值（如 256K=262144），上下文/输出上限一键应用
+  app.get('/api/config/model-length-templates', (c) => {
+    return c.json({ templates: ctx.config.model_length_templates ?? [] });
+  });
+
+  app.put('/api/config/model-length-templates', async (c) => {
+    const { saveLengthTemplates } = await import('../configStore');
+    const body = await c.req.json<{ templates?: any[] }>();
+    const templates = body.templates;
+    if (!Array.isArray(templates)) throw new HttpError(400, 'templates must be an array');
+    const cleaned = templates.map((t) => ({
+      name: String(t?.name ?? '').trim(),
+      value: Math.max(0, Math.floor(Number(t?.value))),
+    }));
+    for (const t of cleaned) {
+      if (!t.name) throw new HttpError(400, 'each template needs a name');
+      if (!Number.isFinite(t.value) || t.value <= 0) throw new HttpError(400, `template ${t.name} needs a positive numeric value`);
+    }
+    const names = new Set<string>();
+    for (const t of cleaned) {
+      if (names.has(t.name)) throw new HttpError(400, `duplicate template name: ${t.name}`);
+      names.add(t.name);
+    }
+    saveLengthTemplates(cleaned);
+    ctx.config.model_length_templates = cleaned;
+    return c.json({ status: 'saved', templates: cleaned });
+  });
+
   app.post('/api/config/model-pool/test', async (c) => {
     const { chat } = await import('../llm');
     const { makeEntry } = await import('../scheduler');

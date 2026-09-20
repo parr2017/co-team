@@ -73,6 +73,8 @@ export interface AppConfig {
   };
   /** feature: 模型标签模板 —— 用户自定义命名标签组合（设置界面管理），模型池「模板」按钮一键应用 */
   model_tag_templates?: { name: string; tags: string[] }[];
+  /** feature: 模型长度模板 —— 用户自定义命名长度值（如 256K=262144），上下文/输出上限一键应用 */
+  model_length_templates?: { name: string; value: number }[];
   /** custom grading keywords (improvement 7 / R6), appended to built-in rules */
   grading?: { heavy?: string[]; light?: string[] };
   /** 项目治理：所有项目拥有独立目录 + 独立 git 仓库，任务操作被限制在项目目录内 */
@@ -201,6 +203,11 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       ? raw.model_tag_templates
           .filter((t: any) => t && typeof t.name === 'string' && t.name.trim())
           .map((t: any) => ({ name: t.name.trim(), tags: Array.isArray(t.tags) ? t.tags.map(String) : [] }))
+      : [],
+    model_length_templates: Array.isArray(raw.model_length_templates)
+      ? raw.model_length_templates
+          .filter((t: any) => t && typeof t.name === 'string' && t.name.trim() && Number.isFinite(Number(t.value)))
+          .map((t: any) => ({ name: t.name.trim(), value: Math.max(0, Math.floor(Number(t.value))) }))
       : [],
     orchestrator: {
       max_retries: raw.orchestrator?.max_retries ?? 3,

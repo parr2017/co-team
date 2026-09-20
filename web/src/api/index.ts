@@ -349,6 +349,12 @@ export interface TagTemplate {
   tags: string[];
 }
 
+/** feature: 模型长度模板 —— 用户自定义命名长度值（如 256K=262144），上下文/输出上限一键应用 */
+export interface LengthTemplate {
+  name: string;
+  value: number;
+}
+
 export interface ModelConfig {
   /** 模型唯一标识符（全池唯一键） */
   id: string;
@@ -912,7 +918,11 @@ export const api = {
   // feature: 模型标签模板 —— 用户自定义命名标签组合
   getTagTemplates: () => request<{ templates: TagTemplate[] }>('/api/config/model-tag-templates'),
   saveTagTemplates: (templates: TagTemplate[]) =>
-    request('/api/config/model-tag-templates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates }) }),
+    request<{ status: string; templates: TagTemplate[] }>('/api/config/model-tag-templates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates }) }),
+  // feature: 模型长度模板 —— 上下文/输出上限一键应用的命名长度值
+  getLengthTemplates: () => request<{ templates: LengthTemplate[] }>('/api/config/model-length-templates'),
+  saveLengthTemplates: (templates: LengthTemplate[]) =>
+    request<{ status: string; templates: LengthTemplate[] }>('/api/config/model-length-templates', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templates }) }),
   testModel: (model: ModelConfig) =>
     request<{ ok: boolean; latency_ms: number; response_preview?: string; error?: string }>(
       '/api/config/model-pool/test',

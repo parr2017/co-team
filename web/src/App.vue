@@ -27,6 +27,7 @@
           <button class="nav-tab" :class="{ active: page === 'convo' }" @click="router.push('/convo')">
             <span class="nav-label">协作会话</span>
           </button>
+          <button class="nav-tab" :class="{ active: page === 'settings' }" @click="router.push('/settings')">设置</button>
         </nav>
         <div class="header-right">
           <div class="header-metrics" v-if="status">
@@ -51,7 +52,7 @@
                 问题报告
                 <span v-if="pendingGateCount" class="btn-badge">{{ pendingGateCount }}</span>
               </el-button>
-              <el-button size="small" @click="settingsVisible = true">设置</el-button>
+              <el-button size="small" @click="router.push('/settings')">设置</el-button>
               <el-button size="small" @click="refreshStatus(); metricsRef?.refresh()">刷新状态</el-button>
               <el-button size="small" @click="onReloadAgents">重载 Agent</el-button>
             </div>
@@ -115,6 +116,13 @@
         </main>
       </div>
 
+      <!-- 设置：独立全页选项卡（左锚点导航 + 右内容，2026-09-20 自 SettingsDialog 弹窗迁移） -->
+      <div class="layout flush" v-else-if="page === 'settings'">
+        <main class="main">
+          <SettingsView />
+        </main>
+      </div>
+
       <div class="layout" v-else-if="page === 'approvals'">
         <main class="main">
           <div class="page-toolbar">
@@ -127,7 +135,6 @@
       <AgentDetail :model-value="detailAgent !== null" :agent="detailAgent" @close="detailAgent = null" @open-detail="(tid: string) => { detailAgent = null; detailTaskId = tid; }" />
       <ChatReplay v-model="chatVisible" :task-id="chatTaskId" :node-id="chatNodeId" :task="chatTask" />
       <TaskDagDialog :model-value="dagTaskId !== null" :task="dagTaskId ? tasks[dagTaskId] : null" @close="dagTaskId = null" />
-      <SettingsDialog v-model="settingsVisible" :notify-enabled="notifyEnabled" @notify-toggle="onNotifyToggle" @changed="refreshStatus" />
       <PlanReviewDialog :model-value="reviewTaskId !== null" :task-id="reviewTaskId || ''" @close="reviewTaskId = null" @started="onPlanStarted" @cancelled="loadTasks" @changed="loadTasks" />
       <ClarifyDialog :model-value="clarifyTaskId !== null" :task-id="clarifyTaskId || ''" @close="clarifyTaskId = null" @planned="onClarifyPlanned" @cancelled="loadTasks" @changed="loadTasks" />
       <KnowledgeDialog v-model="knowledgeVisible" />
@@ -157,7 +164,6 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, setApiToken, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
 import { useTheme } from './composables/useTheme';
-import { useNotifier } from './composables/useNotifier';
 import TaskForm from './components/TaskForm.vue';
 import AgentCards from './components/AgentCards.vue';
 import TaskCenterView from './components/TaskCenterView.vue';
@@ -168,7 +174,6 @@ import MetricsPanel from './components/MetricsPanel.vue';
 import AgentDetail from './components/AgentDetail.vue';
 import ChatReplay from './components/ChatReplay.vue';
 import TaskDagDialog from './components/TaskDagDialog.vue';
-import SettingsDialog from './components/SettingsDialog.vue';
 import PlanReviewDialog from './components/PlanReviewDialog.vue';
 import ClarifyDialog from './components/ClarifyDialog.vue';
 import KnowledgeDialog from './components/KnowledgeDialog.vue';
@@ -179,6 +184,7 @@ import LogViewerDialog from './components/LogViewerDialog.vue';
 import ProjectView from './components/ProjectView.vue';
 import GroupDiscussionView from './components/GroupDiscussionView.vue';
 import ConvoView from './components/ConvoView.vue';
+import SettingsView from './views/SettingsView.vue';
 import { useDiscussion } from './composables/useDiscussion';
 
 const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, reconnectWs, clearEvents } = useDashboard();
@@ -192,10 +198,8 @@ const onOpenTaskEvent = (e: Event) => {
 window.addEventListener('coteam:open-task', onOpenTaskEvent);
 onUnmounted(() => window.removeEventListener('coteam:open-task', onOpenTaskEvent));
 const { theme, toggle } = useTheme();
-const { enabled: notifyEnabled, setEnabled: setNotifyEnabled } = useNotifier();
 const status = ref<StatusResponse | null>(null);
 const metricsRef = ref<{ refresh: () => void } | null>(null);
-const settingsVisible = ref(false);
 // 步骤2：工作台/任务中心右栏可折叠（宽屏满宽自适应）
 const sideCollapsed = ref(false);
 // B3（2026-09-17）：路由是页面切换的唯一事实源——URL 直达、刷新不丢、前进后退可用
@@ -311,11 +315,6 @@ async function onReloadAgents() {
   } catch (e: any) {
     showApiError(e);
   }
-}
-
-async function onNotifyToggle(v: boolean) {
-  const ok = await setNotifyEnabled(v);
-  if (ok) ElMessage.success(v ? '桌面通知已开启' : '桌面通知已关闭');
 }
 
 let timer: number | undefined;
@@ -512,9 +511,7 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
 .el-table--small { font-size: 13px; }
 .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell { background: color-mix(in srgb, var(--bg-raised) 70%, transparent); }
 .el-tag { border-radius: 4px !important; font-family: var(--font-mono); }
-/* ==== 预览稿：设置 overlay 形态 + EP 全局微调 ==== */
-.settings-dialog { max-width: 92vw; border-radius: var(--r-float) !important; }
-.el-overlay:has(.settings-dialog) { backdrop-filter: blur(2px); background: color-mix(in srgb, var(--bg-page) 72%, transparent); }
+/* ==== 预览稿：EP 全局微调 ==== */
 .el-tabs__item.is-active { font-weight: 600; }
 .el-switch { --el-switch-on-color: var(--accent); }
 .el-switch .el-switch__core { min-width: 34px; height: 19px; border-radius: 10px; }

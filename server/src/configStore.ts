@@ -49,6 +49,16 @@ export function saveTagTemplates(
   writeRaw(raw, root);
 }
 
+/** feature: 模型长度模板 —— 上下文/输出上限「模板按钮」的自定义命名长度值；空列表=移除整个节 */
+export function saveLengthTemplates(
+  templates: { name: string; value: number }[],
+  root: string = PROJECT_ROOT
+): void {
+  const raw = readRaw(root);
+  raw.model_length_templates = templates;
+  writeRaw(raw, root);
+}
+
 /** feature: 每日问题报告 — persist the UI toggle + report hour into config.yaml. */
 export function saveDailyReport(cfg: { enabled: boolean; hour: number }, root: string = PROJECT_ROOT): void {
   const raw = readRaw(root);
