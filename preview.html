@@ -137,6 +137,26 @@ body {
   max-height: 120px; overflow: hidden;
 }
 
+/* plan（write_plan）：折叠胶囊 ↔ 展开清单，无卡片壳、左缩进对齐工具行 */
+.planfold > summary {
+  list-style: none; display: flex; align-items: center; gap: 8px;
+  font-size: 11.5px; color: var(--text-2); padding: 1px 6px; min-height: 22px;
+  cursor: pointer; border-radius: 4px;
+}
+.planfold > summary:hover { background: var(--bg-raise); }
+.planfold > summary .car { font-size: 9px; color: var(--text-3); transition: transform .12s; }
+.planfold[open] > summary .car { transform: rotate(90deg); }
+.planfold > summary .p-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; animation: livepulse 1.3s infinite; }
+.planfold > summary .p-cur { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.planfold .p-steps { padding: 2px 0 4px 14px; display: flex; flex-direction: column; gap: 0; border-left: 2px solid var(--line); margin: 0 0 2px 10px; }
+.p-step { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 2px 0; color: var(--text-2); }
+.p-step .mark { width: 16px; text-align: center; flex: none; font-size: 11px; }
+.p-step.done .mark { color: var(--ok); }
+.p-step.done .txt { text-decoration: line-through; color: var(--text-3); }
+.p-step.in_progress { color: var(--text-1); }
+.p-step.in_progress .mark { color: var(--accent); animation: livepulse 1.2s infinite; }
+@keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
 /* assistant 回复：不要气泡，全宽 markdown 直排；代码块/表格可用满宽度 */
 .msg.assistant { padding: 0 2px; }
 .msg.assistant .md { max-width: none; }
@@ -263,6 +283,24 @@ body {
     <!-- turn 2 -->
     <div class="turn">
       <div class="msg user">改登录页，按你说的方案来</div>
+
+      <!-- 方案计划（write_plan）：折叠胶囊 ↔ 展开清单（仅最新轮显示） -->
+      <details class="planfold" open>
+        <summary>
+          <span class="car">▶</span>
+          <span class="p-dot"></span>
+          <span>任务计划 2/5</span>
+          <span class="p-cur">改 login.vue：渐变背景遮罩 + 表单间距</span>
+          <span class="ms" style="margin-left:auto;color:var(--text-3)">进行中</span>
+        </summary>
+        <div class="p-steps">
+          <div class="p-step done"><span class="mark">✓</span><span class="txt">读 login.vue / register.vue 现状（已完成侦查）</span></div>
+          <div class="p-step done"><span class="mark">✓</span><span class="txt">给出 UI 修改建议并确认方案</span></div>
+          <div class="p-step in_progress"><span class="mark">◐</span><span class="txt">改 login.vue：渐变背景遮罩 + 表单间距</span></div>
+          <div class="p-step"><span class="mark">◌</span><span class="txt">起 dev:h5 服务 + check_page 渲染验证</span></div>
+          <div class="p-step"><span class="mark">◌</span><span class="txt">汇报改动与 diff（可回滚）</span></div>
+        </div>
+      </details>
 
       <details class="toolfold" open>
         <summary><span class="car">▶</span>⚙ 执行中 · 正在 write_file<span class="last">src/pages/login.vue</span></summary>
