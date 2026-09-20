@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>对话 UI 重设计预览 — flat transcript 密排风格</title>
+<style>
+:root {
+  --bg: #0d0f12;
+  --bg-raise: #14161b;
+  --bg-inset: #1a1d24;
+  --line: #23272f;
+  --text-1: #e6e8eb;
+  --text-2: #9aa0a8;
+  --text-3: #5c626b;
+  --accent: #4b8bff;
+  --accent-soft: rgba(75, 139, 255, .12);
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+  --user-bubble: #1f2937;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-raise: #f6f7f9;
+  --bg-inset: #eceef1;
+  --line: #e2e5e9;
+  --text-1: #1a1d21;
+  --text-2: #57606a;
+  --text-3: #8b949e;
+  --user-bubble: #e8f0fe;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text-1);
+  font: 13px/1.6 -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  display: flex;
+  justify-content: center;
+}
+.page { width: 100%; max-width: 780px; display: flex; flex-direction: column; height: 100vh; }
+
+/* ---------- 顶栏（40px，替代现在的 header） ---------- */
+.topbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.topbar .title { font-weight: 600; font-size: 13px; }
+.topbar .status { font-size: 11px; color: var(--ok); display: flex; align-items: center; gap: 4px; }
+.topbar .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.topbar .spacer { flex: 1; }
+.topbar button {
+  background: none; border: 1px solid var(--line); color: var(--text-2);
+  border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+}
+
+/* ---------- 消息流：间距 4px（原 12px+卡片壳，留白砍掉 2/3） ---------- */
+.stream { flex: 1; overflow-y: auto; padding: 10px 16px 12px; }
+.turn { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.turn + .turn { border-top: 1px solid var(--line); padding-top: 8px; }
+
+/* 用户消息：唯一保留的气泡，右对齐 */
+.msg.user {
+  align-self: flex-end; max-width: 78%;
+  background: var(--user-bubble); border-radius: 10px 10px 3px 10px;
+  padding: 5px 12px; font-size: 13px;
+  margin-bottom: 2px;
+}
+
+/* 工具行：单行等宽，无卡片壳（原大卡片 padding 12-16px → 一行 20px） */
+.toolrow {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-2);
+  padding: 1px 0; min-height: 20px; cursor: pointer; border-radius: 4px;
+}
+.toolrow:hover { background: var(--bg-raise); }
+.toolrow .st { color: var(--ok); }
+.toolrow .st.err { color: var(--err); }
+.toolrow .name { color: var(--accent); }
+.toolrow .args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
+.toolrow .ms { margin-left: auto; color: var(--text-3); font-size: 10px; }
+
+/* 多步工具：折叠成一细行（默认），点击展开为紧凑列表 */
+.toolfold { font-family: var(--font-mono); font-size: 11px; }
+.toolfold > summary {
+  list-style: none; display: flex; align-items: center; gap: 8px;
+  color: var(--text-2); padding: 1px 6px; min-height: 20px; cursor: pointer; border-radius: 4px;
+}
+.toolfold > summary:hover { background: var(--bg-raise); }
+.toolfold > summary .car { font-size: 9px; color: var(--text-3); transition: transform .12s; }
+.toolfold[open] > summary .car { transform: rotate(90deg); }
+.toolfold > summary .last { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolfold .items { padding: 1px 0 2px 18px; display: flex; flex-direction: column; gap: 0; }
+.toolfold .items .toolrow { padding: 0 6px; }
+
+/* 思考：一行灰色小字，可展开内联 */
+.thinkline > summary {
+  list-style: none; display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--text-3); cursor: pointer; padding: 1px 6px; border-radius: 4px; min-height: 20px;
+}
+.thinkline > summary:hover { background: var(--bg-raise); }
+.thinkline > summary .car { font-size: 9px; }
+.thinkline[open] > summary .car { transform: rotate(90deg); }
+.thinkline .body {
+  font-size: 11.5px; color: var(--text-3); padding: 2px 6px 4px 18px;
+  border-left: 2px solid var(--line); margin: 0 0 2px 12px;
+  max-height: 120px; overflow: hidden;
+}
+
+/* assistant 回复：不要气泡，全宽 markdown 直排（省下的全是内容空间） */
+.msg.assistant { padding: 0 2px; }
+.msg.assistant .md h1 { font-size: 15px; margin: 6px 0 4px; }
+.msg.assistant .md h2 { font-size: 13.5px; margin: 8px 0 3px; color: var(--accent); }
+.msg.assistant .md h3 { font-size: 12.5px; margin: 6px 0 2px; }
+.msg.assistant .md p { margin: 2px 0; }
+.msg.assistant .md li { margin: 1px 0 1px 16px; }
+.msg.assistant .md code {
+  font-family: var(--font-mono); font-size: 11px; background: var(--bg-inset);
+  padding: 1px 4px; border-radius: 3px;
+}
+.msg.assistant .md pre {
+  background: var(--bg-raise); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 10px; font-size: 11px; overflow-x: auto; margin: 4px 0;
+  font-family: var(--font-mono);
+}
+.msg.assistant .meta { font-size: 10px; color: var(--text-3); margin-top: 2px; }
+
+/* notice / 打断：左侧 2px 色条 + 小字（无整块卡片） */
+.line-note {
+  border-left: 2px solid var(--warn); padding: 1px 8px; margin: 1px 0;
+  font-size: 11px; color: var(--text-2);
+}
+.line-note.blue { border-left-color: var(--accent); }
+
+/* diff chip：单行，点击展开 */
+.diffline > summary {
+  list-style: none; font-family: var(--font-mono); font-size: 11px; color: var(--text-2);
+  display: flex; gap: 8px; padding: 1px 6px; cursor: pointer; border-radius: 4px; min-height: 20px; align-items: center;
+}
+.diffline > summary:hover { background: var(--bg-raise); }
+.diffline .add { color: var(--ok); }
+.diffline .del { color: var(--err); }
+
+/* 输入框：贴底悬浮 */
+.composer {
+  flex-shrink: 0; padding: 8px 16px 12px; border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.composer .box {
+  display: flex; align-items: flex-end; gap: 8px;
+  background: var(--bg-raise); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px;
+}
+.composer textarea {
+  flex: 1; background: none; border: none; outline: none; resize: none;
+  color: var(--text-1); font: 13px/1.5 inherit; max-height: 120px;
+}
+.composer .send {
+  background: var(--accent); border: none; color: #fff; border-radius: 7px;
+  padding: 5px 14px; font-size: 12px; cursor: pointer;
+}
+.hint { font-size: 10px; color: var(--text-3); margin-top: 4px; text-align: center; }
+
+.stream::-webkit-scrollbar { width: 8px; }
+.stream::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="topbar">
+    <span class="title">想改一下ui，你有什么建议吗</span>
+    <span class="status"><span class="dot"></span>空闲</span>
+    <span class="spacer"></span>
+    <button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'light' ? '' : 'light'">深/浅切换</button>
+    <button>回滚</button>
+  </div>
+
+  <div class="stream">
+    <!-- turn 1 -->
+    <div class="turn">
+      <div class="msg user">想改一下ui，你有什么建议吗</div>
+
+      <details class="toolfold">
+        <summary><span class="car">▶</span>⚙ 9 步侦查 · 最近 read_file<span class="last">src/pages/login.vue</span><span class="ms" style="margin-left:auto;color:var(--text-3)">38s</span></summary>
+        <div class="items">
+          <div class="toolrow"><span class="st">✓</span><span class="name">list_files</span><span class="args">.</span><span class="ms">120ms</span></div>
+          <div class="toolrow"><span class="st">✓</span><span class="name">read_file</span><span class="args">src/pages/login.vue</span><span class="ms">85ms</span></div>
+          <div class="toolrow"><span class="st">✓</span><span class="name">read_file</span><span class="args">src/pages/register.vue</span><span class="ms">62ms</span></div>
+          <div class="toolrow"><span class="st">✓</span><span class="name">read_file</span><span class="args">src/pages/index/index.vue</span><span class="ms">71ms</span></div>
+          <div class="toolrow"><span class="st">✗</span><span class="name">load_skill</span><span class="args">vant-ui（未绑定）</span><span class="ms">3ms</span></div>
+        </div>
+      </details>
+
+      <details class="thinkline">
+        <summary><span class="car">▶</span>思考 · 已读取 4 个页面，先给建议（咨询类不启动服务）</summary>
+        <div class="body">用户要的是建议不是改动——读相关页面文件后直接给结论，不启动 dev 服务、不跑构建探活。</div>
+      </details>
+
+      <div class="msg assistant">
+        <div class="md">
+          <p>这是一个 UniApp 账号管理应用，四个主要页面：登录、注册、首页、个人中心。修改建议如下：</p>
+          <h2>1. 登录/注册页</h2>
+          <li>背景图上加 <code>linear-gradient</code> 遮罩，保证表单可读性</li>
+          <li>表单间距 <code>padding: 0 32rpx</code> → <code>0 40rpx</code>，输入框高度统一 <code>88rpx</code></li>
+          <h2>2. 首页</h2>
+          <li>功能菜单改 2×4 网格，图标 64rpx 统一</li>
+          <h2>3. 个人中心</h2>
+          <li>资料编辑页加分组卡片，<code>border-radius: 16rpx</code></li>
+          <p>要我直接改哪一项？说"改登录页"我就动手。</p>
+        </div>
+        <div class="meta">glm-5.3-flash · 2 轮工具 · 8s</div>
+      </div>
+    </div>
+
+    <!-- turn 2 -->
+    <div class="turn">
+      <div class="msg user">改登录页，按你说的方案来</div>
+
+      <details class="toolfold" open>
+        <summary><span class="car">▶</span>⚙ 执行中 · 正在 write_file<span class="last">src/pages/login.vue</span></summary>
+        <div class="items">
+          <div class="toolrow"><span class="st">✓</span><span class="name">write_file</span><span class="args">src/pages/login.vue</span><span class="ms">34ms</span></div>
+          <div class="toolrow"><span class="st err">…</span><span class="name">exec</span><span class="args">npm run dev:h5: uni</span><span class="ms">运行中</span></div>
+        </div>
+      </details>
+
+      <div class="line-note blue">首轮已自动创建快照 <code>convo-start</code>，diff 卡将随轮结束落出（可一键回滚）</div>
+    </div>
+
+    <!-- turn 3：历史轮（折叠形态） -->
+    <div class="turn">
+      <div class="msg user">这个项目目前有什么缺陷吗？</div>
+      <details class="toolfold">
+        <summary><span class="car">▶</span>⚙ 14 步 · 最近 grep<span class="last">TODO|FIXME</span><span class="ms">2m</span></summary>
+        <div class="items">
+          <div class="toolrow"><span class="st">✓</span><span class="name">grep</span><span class="args">TODO|FIXME</span><span class="ms">45ms</span></div>
+          <div class="toolrow"><span class="st">✓</span><span class="name">read_file</span><span class="args">server/src/convo.ts</span><span class="ms">88ms</span></div>
+        </div>
+      </details>
+      <div class="msg assistant">
+        <div class="md"><p>发现 3 类缺陷：① 会话 busyKey 无启动清扫（已修）；② …</p></div>
+        <div class="meta">glm-5.2 · 14 轮工具 · 3m</div>
+      </div>
+      <details class="diffline">
+        <summary><span class="car">▶</span>⚙ diff · 2 文件<span class="add">+38</span><span class="del">-5</span></summary>
+        <div class="items" style="padding:1px 0 2px 18px">
+          <div class="toolrow"><span class="st">M</span><span class="name">server/src/convo.ts</span><span class="ms"><span class="add">+31</span> <span class="del">-4</span></span></div>
+          <div class="toolrow"><span class="st">M</span><span class="name">server/test/convo.test.ts</span><span class="ms"><span class="add">+7</span> <span class="del">-1</span></span></div>
+        </div>
+      </details>
+      <div class="line-note">模型口头声称完成但工作区不存在 <code>x.txt</code>——引擎已自动纠正重试。</div>
+    </div>
+  </div>
+
+  <div class="composer">
+    <div class="box">
+      <textarea rows="1" placeholder="提出后续修改要求…"></textarea>
+      <button class="send">发送</button>
+    </div>
+    <div class="hint">Enter 发送 / Shift+Enter 换行 · 消息间距 4px · assistant 无气泡全宽直排</div>
+  </div>
+</div>
+</body>
+</html>
