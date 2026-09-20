@@ -40,7 +40,34 @@ body {
   display: flex;
   justify-content: center;
 }
-.page { width: 100%; max-width: 780px; display: flex; flex-direction: column; height: 100vh; }
+.page { width: 100%; max-width: 1280px; display: flex; flex-direction: row; height: 100vh; }
+
+/* ---------- 左侧会话栏（宽屏双栏） ---------- */
+.sidebar {
+  width: 232px; flex-shrink: 0; border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; background: var(--bg-raise);
+}
+.sidebar .brand { font-weight: 700; font-size: 13px; padding: 12px 14px 8px; }
+.sidebar .search { margin: 0 10px 8px; }
+.sidebar .search input {
+  width: 100%; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 7px;
+  color: var(--text-1); font-size: 12px; padding: 5px 9px; outline: none;
+}
+.sidebar .list { flex: 1; overflow-y: auto; padding: 0 6px; display: flex; flex-direction: column; gap: 1px; }
+.sidebar .item {
+  padding: 6px 10px; border-radius: 7px; cursor: pointer; display: flex; flex-direction: column; gap: 1px;
+}
+.sidebar .item:hover { background: var(--bg-inset); }
+.sidebar .item.active { background: var(--accent-soft); }
+.sidebar .item .t { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar .item .s { font-size: 10px; color: var(--text-3); }
+.sidebar .new {
+  margin: 8px 10px 10px; background: var(--accent); color: #fff; border: none;
+  border-radius: 7px; padding: 6px 0; font-size: 12px; cursor: pointer;
+}
+
+/* 右侧主列 */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 /* ---------- 顶栏（40px，替代现在的 header） ---------- */
 .topbar {
@@ -57,14 +84,14 @@ body {
   border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer;
 }
 
-/* ---------- 消息流：间距 4px（原 12px+卡片壳，留白砍掉 2/3） ---------- */
-.stream { flex: 1; overflow-y: auto; padding: 10px 16px 12px; }
+/* ---------- 消息流：宽屏全宽直排（正文列不再限 760px） ---------- */
+.stream { flex: 1; overflow-y: auto; padding: 10px 28px 12px; }
 .turn { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
 .turn + .turn { border-top: 1px solid var(--line); padding-top: 8px; }
 
 /* 用户消息：唯一保留的气泡，右对齐 */
 .msg.user {
-  align-self: flex-end; max-width: 78%;
+  align-self: flex-end; max-width: 70%;
   background: var(--user-bubble); border-radius: 10px 10px 3px 10px;
   padding: 5px 12px; font-size: 13px;
   margin-bottom: 2px;
@@ -110,8 +137,10 @@ body {
   max-height: 120px; overflow: hidden;
 }
 
-/* assistant 回复：不要气泡，全宽 markdown 直排（省下的全是内容空间） */
+/* assistant 回复：不要气泡，全宽 markdown 直排；代码块/表格可用满宽度 */
 .msg.assistant { padding: 0 2px; }
+.msg.assistant .md { max-width: none; }
+.msg.assistant .md.cols { column-gap: 28px; }
 .msg.assistant .md h1 { font-size: 15px; margin: 6px 0 4px; }
 .msg.assistant .md h2 { font-size: 13.5px; margin: 8px 0 3px; color: var(--accent); }
 .msg.assistant .md h3 { font-size: 12.5px; margin: 6px 0 2px; }
@@ -169,6 +198,20 @@ body {
 </head>
 <body>
 <div class="page">
+  <!-- 左侧会话栏（宽屏双栏） -->
+  <div class="sidebar">
+    <div class="brand">Co-Team</div>
+    <div class="search"><input placeholder="搜索会话"></div>
+    <div class="list">
+      <div class="item active"><span class="t">想改一下ui，你有什么建议吗</span><span class="s">空闲 · 2 轮前</span></div>
+      <div class="item"><span class="t">这个项目目前有什么缺陷吗？</span><span class="s">空闲 · 昨日</span></div>
+      <div class="item"><span class="t">请看下 此项目是否存在什么问题</span><span class="s">空闲 · 昨日</span></div>
+      <div class="item"><span class="t">e2e 复现测试</span><span class="s">空闲 · 昨日</span></div>
+    </div>
+    <button class="new">＋ 新建会话</button>
+  </div>
+
+  <div class="main">
   <div class="topbar">
     <span class="title">想改一下ui，你有什么建议吗</span>
     <span class="status"><span class="dot"></span>空闲</span>
@@ -216,6 +259,9 @@ body {
 
     <!-- turn 2 -->
     <div class="turn">
+
+    <!-- turn 2 -->
+    <div class="turn">
       <div class="msg user">改登录页，按你说的方案来</div>
 
       <details class="toolfold" open>
@@ -259,8 +305,9 @@ body {
       <textarea rows="1" placeholder="提出后续修改要求…"></textarea>
       <button class="send">发送</button>
     </div>
-    <div class="hint">Enter 发送 / Shift+Enter 换行 · 消息间距 4px · assistant 无气泡全宽直排</div>
+    <div class="hint">Enter 发送 / Shift+Enter 换行 · 宽屏双栏 · assistant 无气泡全宽直排</div>
   </div>
+  </div><!-- /main -->
 </div>
 </body>
 </html>
