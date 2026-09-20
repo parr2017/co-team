@@ -1,8 +1,22 @@
 import OpenAI from 'openai';
 import type { ModelEntry } from './scheduler';
 
+/** OpenAI 原生 function calling 的工具声明（opencode/ZCode 同款工具通道）。 */
+export interface LlmToolSpec {
+  type: 'function';
+  function: { name: string; description?: string; parameters?: Record<string, unknown> };
+}
+
+/** 归一化后的原生工具调用（与 JSON 契约路径的 {tool, ...args} 同构）。 */
+export interface LlmToolCall {
+  tool: string;
+  [k: string]: unknown;
+}
+
 export interface LlmResponse {
   content: string;
+  /** 原生 function calling 路径：供应商 tool_calls（JSON 文本契约路径无此字段） */
+  toolCalls?: LlmToolCall[];
   promptTokens: number;
   completionTokens: number;
   /** finish_reason of the final chunk ('stop' | 'length' | ...) — E5: distinguishes
@@ -151,12 +165,12 @@ export async function listUpstreamModels(apiKey: string, baseUrl: string): Promi
  * `onDelta` (7th arg) receives raw content deltas as they arrive (streaming mode only;
  * the non-streaming path cannot report progress). Consumers must treat it as best-effort.
  */
-export async function chat(entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown>; onReason?: (delta: string) => void }): Promise<LlmResponse> {
+export async function chat(entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown>; onReason?: (delta: string) => void; tools?: LlmToolSpec[]; onToolCallStart?: (toolName: string) => void }): Promise<LlmResponse> {
   const client = getClient(entry);
   // 输出上限是模型属性（model_pool 的 max_tokens），调用方不传即取模型配置
   const cap = maxTokens ?? entry.max_tokens ?? 128000;
-  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody, opts?.onReason);
-  return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs, opts?.extraBody);
+  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody, opts?.onReason, opts?.tools, opts?.onToolCallStart);
+  return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs, opts?.extraBody, opts?.tools);
 }
 
 /** Abort the controller after `reason` fires; poll faster than coarse limits. */
@@ -183,7 +197,7 @@ function startWatchdog(
   }, every);
 }
 
-async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>, onReason?: (delta: string) => void): Promise<LlmResponse> {
+async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>, onReason?: (delta: string) => void, tools?: LlmToolSpec[], onToolCallStart?: (toolName: string) => void): Promise<LlmResponse> {
   const startedAt = Date.now();
   const controller = new AbortController();
   const effectiveSignal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
@@ -200,6 +214,9 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
   let sawContent = false;
   let cachedTokens: number | undefined;
   let firstTokenMs: number | undefined;
+  // 流式 tool_calls 聚合（按 index 分桶；name/arguments 分片到达后拼接）
+  const toolPending = new Map<number, { name: string; args: string }>();
+  const toolStartFired = new Set<number>();
   try {
     (globalThis as any).__coteamProbes = { ...(globalThis as any).__coteamProbes, chatStart: { model: entry.name, max_tokens: maxTokens, at: Date.now() } };
     const stream = await client.chat.completions.create(
@@ -210,6 +227,9 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
         temperature,
         stream: true,
         stream_options: { include_usage: true },
+        // 原生 function calling（opencode/ZCode 同款工具通道）：工具调用走供应商
+        // tool_calls 字段而非正文 JSON——正文即回复，不存在"格式坏→烧纠正重试"
+        ...(tools?.length ? { tools, tool_choice: 'auto' as const } : {}),
         // vLLM 扩展透传（如 enable_thinking:false 关闭 Qwen3 思考，E17）
         ...(entry.chat_template_kwargs ? { chat_template_kwargs: entry.chat_template_kwargs } : {}),
         // per-call 覆盖（o3xmkraj 复盘：E5 软重试降思考强度 reasoning_effort:low 等），
@@ -255,6 +275,21 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
           throw new Error(`LLM 调用失败：stream_flooded(流式响应超过 ${Math.round(streamFloodChars(maxTokens) / 1e6)}M 字符仍在增长——上游流故障，不是慢生成)`);
         }
       }
+      const tcs = (choice?.delta as { tool_calls?: { index?: number; function?: { name?: string; arguments?: string } }[] } | undefined)?.tool_calls;
+      if (tcs?.length) {
+        for (const tc of tcs) {
+          const idx = typeof tc.index === 'number' ? tc.index : 0;
+          const p = toolPending.get(idx) || { name: '', args: '' };
+          if (tc.function?.name) p.name += tc.function.name;
+          if (tc.function?.arguments) p.args += tc.function.arguments;
+          toolPending.set(idx, p);
+          // 首个工具名片段到达即回调（live 区"正在调用 xxx"实时进度用）
+          if (onToolCallStart && p.name && !toolStartFired.has(idx)) {
+            toolStartFired.add(idx);
+            try { onToolCallStart(p.name); } catch { /* consumers never break the stream */ }
+          }
+        }
+      }
       if (choice?.finish_reason) finishReason = choice.finish_reason;
       if (chunk.usage) {
         promptTokens = chunk.usage.prompt_tokens ?? 0;
@@ -278,14 +313,27 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
   if (!promptTokens && !completionTokens) {
     completionTokens = Math.max(1, Math.floor(content.length / 4));
   }
-  // 确定性死亡：流正常收尾却既无 finish_reason 也无内容（上游半途断流的常见形态）
-  if (!finishReason && !content.trim()) {
+  // 确定性死亡：流正常收尾却既无 finish_reason 也无内容（上游半途断流的常见形态）。
+  // tool_calls-only 响应（FC 路径正文为空）不算空回答——finish_reason 会是 'tool_calls'。
+  const aggregatedToolCalls = parseRawToolCalls(
+    [...toolPending.entries()].sort((a, b) => a[0] - b[0]).map(([i, p]) => ({ function: { name: p.name, arguments: p.args } })),
+  );
+  if (!finishReason && !content.trim() && !aggregatedToolCalls.length) {
     throw new Error(`LLM 调用失败：connection_died(流未产出 finish_reason 即结束，且无内容)`);
   }
-  return { content, promptTokens, completionTokens, finishReason, cachedTokens, firstTokenMs, elapsedMs: Date.now() - startedAt };
+  return {
+    content,
+    ...(aggregatedToolCalls.length ? { toolCalls: aggregatedToolCalls } : {}),
+    promptTokens,
+    completionTokens,
+    finishReason,
+    cachedTokens,
+    firstTokenMs,
+    elapsedMs: Date.now() - startedAt,
+  };
 }
 
-async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, extraBody?: Record<string, unknown>): Promise<LlmResponse> {
+async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, extraBody?: Record<string, unknown>, tools?: LlmToolSpec[]): Promise<LlmResponse> {
   const startedAt = Date.now();
   // 非流式没有进度信号可用——只能以总时长兜底（COTEAM_LLM_STREAM=0 的部署自担此限）
   const capMs = wallclockCapMsOverride !== undefined && wallclockCapMsOverride > 0 ? wallclockCapMsOverride : Math.max(policy.wallclockCapMs, 0) || policy.nonStreamTimeoutMs;
@@ -301,6 +349,7 @@ async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: str
         messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         max_tokens: maxTokens,
         temperature,
+        ...(tools?.length ? { tools, tool_choice: 'auto' as const } : {}),
         ...(entry.chat_template_kwargs ? { chat_template_kwargs: entry.chat_template_kwargs } : {}),
         ...(extraBody ?? {}),
       } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
@@ -313,6 +362,8 @@ async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: str
     throw e;
   }
   const content = completion.choices[0]?.message?.content || '';
+  const rawToolCalls = (completion.choices[0]?.message as { tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[] } | undefined)?.tool_calls;
+  const toolCalls = parseRawToolCalls(rawToolCalls);
   const usage = completion.usage;
   let promptTokens = usage?.prompt_tokens ?? 0;
   let completionTokens = usage?.completion_tokens ?? 0;
@@ -322,12 +373,32 @@ async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: str
   const cached = (usage as any)?.prompt_tokens_details?.cached_tokens;
   return {
     content,
+    ...(toolCalls.length ? { toolCalls } : {}),
     promptTokens,
     completionTokens,
     finishReason: completion.choices[0]?.finish_reason ?? null,
     cachedTokens: typeof cached === 'number' ? cached : undefined,
     elapsedMs: Date.now() - startedAt,
   };
+}
+
+/** 供应商原生 tool_calls（非流式完整形态 / 流式聚合后形态）→ 内部 {tool, ...args}。 */
+function parseRawToolCalls(raw: { id?: string; function?: { name?: string; arguments?: string } }[] | undefined): LlmToolCall[] {
+  if (!raw?.length) return [];
+  const calls: LlmToolCall[] = [];
+  for (const tc of raw) {
+    const name = tc.function?.name?.trim();
+    if (!name) continue;
+    let args: Record<string, unknown> = {};
+    const rawArgs = tc.function?.arguments;
+    if (typeof rawArgs === 'string' && rawArgs.trim()) {
+      try { args = JSON.parse(rawArgs); } catch { args = { _raw: rawArgs }; }
+    } else if (rawArgs && typeof rawArgs === 'object') {
+      args = rawArgs as Record<string, unknown>;
+    }
+    calls.push({ tool: name, ...args });
+  }
+  return calls;
 }
 
 /**

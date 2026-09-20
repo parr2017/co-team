@@ -26,6 +26,8 @@ import { emitProgress, addProjectMemory, addAgentMemory, getAgentMemory, getProj
 import type { ProjectRecord } from './store';
 import { chat, extractJson, stripCodeFence, salvageToolCalls, normalizeToolCalls } from './llm';
 import type { LlmResponse } from './llm';
+import type { LlmToolSpec } from './llm';
+import { nativeToolsOn, buildDiscussionTools } from './toolSchema';
 import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
 import type { McpManager } from './mcp/manager';
@@ -395,6 +397,7 @@ async function chatOnModelChain(
   convo: { role: string; content: string }[],
   chain: ModelEntry[],
   onAttempt: (sid: string) => (d: string) => void,
+  opts?: { tools?: LlmToolSpec[] },
 ): Promise<{ res: LlmResponse; entry: ModelEntry; failed?: undefined } | { res?: undefined; entry: ModelEntry; failed: string }> {
   const notice = (text: string) =>
     appendMessage(disc.id, { id: newId(), from: 'system', round, kind: 'notice', text, ts: new Date().toISOString() });
@@ -414,7 +417,7 @@ async function chatOnModelChain(
         try {
           await emitProgress('discussion_round', { discussion_id: disc.id, round, phase: 'speaker', agent, activity: iter === 0 ? 'thinking' : 'tool_followup' });
           // 每一轮 LLM 调用都流式：工具轮会以 discarded 事件清掉误显示的片段
-          const res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta);
+          const res = await chat(entry, convo, undefined, 0.3, undefined, SPEAKER_WALLCLOCK_CAP_MS, onDelta, opts?.tools?.length ? { tools: opts.tools } : undefined);
           return { res, entry };
         } catch (e) {
           const reason = String((e as Error)?.message || e);
@@ -539,6 +542,7 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
 
 /** 所有成员共享的 system 前缀：群规 + 真实性纪律 + 工具面 + 输出契约 */
 function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
+  const fc = nativeToolsOn();
   return `# 场景：项目规划群组讨论
 你在一个项目规划群聊里，与用户（决策方）和其他专业 agent 共同讨论并动手解决问题。你不是轮流朗诵的嘉宾——像真实的工程同事那样：没新东西就不说话，能动手就直接动手，说完话要兑现。
 
@@ -556,7 +560,16 @@ function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
 - 项目路径、配置、运行状态一律以注入的「项目背景」与工具结果为准，禁止臆测。
 - 超出你能力或预算的事（架构级改动、批量新建文件、需要多轮回归的开发）直说"这需要转项目开发任务"，不要在嘴上模拟执行。
 
-## 工具面（可用动作，均限定在项目目录内；未绑定项目时全部不可用）
+${fc ? `## 工具面（原生工具通道：直接发起工具调用，参数按工具声明传入；均限定在项目目录内；未绑定项目时全部不可用）
+只读侦查：list_files | read_file(path) | read_dir(path) | grep(pattern[,path]) | git_log | git_diff
+执行命令：exec(command)（同步等待 ≤${EXEC_TIMEOUT_SEC}s：装依赖、build、查端口、健康检查）
+渲染级验证：check_page(url, expect)（前端页面验收必须用它——curl 200 看不见 JS 崩溃；expect 全部命中才算通过）
+视觉辅助：screenshot(url[,question]) | look_image(path[,question])（辅助手段，截图分析不替代 Playwright E2E）
+长驻服务：exec_background(command)（后台启动，返回 pid 与日志路径） | kill_process(pid)
+小改直干：write_file(path, content) | edit_file(path, find, replace)——预算：单轮发言 ≤3 文件且合计 ≤80 行，写后自动落 diff 可一键回滚；超出预算或大改动一律 convert_to_project 转任务
+知识沉淀：write_knowledge(category, title, content)
+转项目开发：convert_to_project(auto_run)（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）
+${mcpBlock && !fc ? `外部 MCP 工具：\n${mcpBlock}\n` : ''}` : `## 工具面（可用动作，均限定在项目目录内；未绑定项目时全部不可用）
 只读侦查：
  {"tool":"list_files"} | {"tool":"read_file","path":"相对路径"} | {"tool":"read_dir","path":"目录/"} | {"tool":"grep","pattern":"正则","path":"可选子路径"} | {"tool":"git_log"} | {"tool":"git_diff"}
 执行命令（同步等待 ≤${EXEC_TIMEOUT_SEC}s：装依赖、build、查端口、健康检查）：
@@ -571,15 +584,19 @@ function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
 小改直干（工作台）：修 bug/调文案/小改动直接 {"tool":"write_file","path":"相对路径","content":"文件全文"} 或 {"tool":"edit_file","path":"相对路径","find":"原文片段","replace":"新片段"}——预算：单轮发言 ≤3 文件且合计 ≤80 行，写后自动落 diff 可一键回滚；超出预算或大改动一律 {"tool":"convert_to_project"} 转任务（预算内的小修别推给任务管线）
 知识沉淀： {"tool":"write_knowledge","category":"general-tech|project","title":"标题","content":"内容"}
 转项目开发（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）： {"tool":"convert_to_project","auto_run":true}
-${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments 字段）：\n${mcpBlock}\n` : ''}
-## 输出契约（最终消息必须是纯 JSON，禁止 markdown 代码栅栏）
+${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments 字段）：\n${mcpBlock}\n` : ''}`}
+${fc ? `## 输出方式
+- 需要动手时：直接发起工具调用（工具通道，不要把工具调用写进正文文字）；
+- 发言时：正文直接输出发言内容即可（≤300字），不要再包 JSON。
+- 工具结果会以用户消息回喂给你：信息够了就正文汇报真实结果（含命令输出要点/端口/报错原文），需要继续就再发起下一批工具调用。启动服务后必须先验证（查端口或读日志）再向用户汇报状态。
+- 给出结论时建议说明依据（你看了什么、凭什么得出这个结论）——用户在消息详情里能看到你的解决思路与工作过程。` : `## 输出契约（最终消息必须是纯 JSON，禁止 markdown 代码栅栏）
 两种形态二选一：
 A 需要动手时：{"tool_calls":[ {"tool":"..."}, ... ]}
 B 发言时：  {"speak": true|false, "reply": "发言内容（≤300字）", "evidence": "可选：结论依据（基于哪些代码/文档/命令输出，≤200字）", "experience": "可选一句话经验", "ask_user": "可选需用户判断的问题"}
 工具结果会以用户消息回喂给你：信息够了就用形态 B 汇报真实结果（含命令输出要点/端口/报错原文），需要继续就再发形态 A。启动服务后必须先验证（查端口或读日志）再向用户汇报状态。
-给出结论时建议带 evidence（你看了什么、凭什么得出这个结论）——用户在消息详情里能看到你的解决思路与工作过程（工具调用/文件/命令），写在那里比塞进正文更清楚。
+给出结论时建议带 evidence（你看了什么、凭什么得出这个结论）——用户在消息详情里能看到你的解决思路与工作过程（工具调用/文件/命令），写在那里比塞进正文更清楚。`}
 ## 行动优先（重要）
-- 侦查只是手段：如果你的回合里还有该动手的主动作（装依赖/启动/修改/重启），不要以"下一步我将…"的口头承诺收尾——直接用形态 A 把它做完再汇报。
+- 侦查只是手段：如果你的回合里还有该动手的主动作（装依赖/启动/修改/重启），不要以"下一步我将…"的口头承诺收尾——直接把它做完再汇报。
 - 迭代预算有限：第一批工具就把最关键的侦查+主动作一起发出（如 npm install + exec_background），减少往返。
 - 用户已拍板同意转任务的（如回复"是的/转吧/同意"），直接调用 convert_to_project 完成转换，**绝不允许只口头宣布"正式启动任务"而不调工具**——那等于什么都没发生。
 
@@ -970,11 +987,16 @@ async function runSpeakerTurn(
 
   for (let iter = 0; iter < MAX_TOOL_ITER; iter++) {
     const last = iter === MAX_TOOL_ITER - 1;
+    // 原生 function calling（2026-09-20）：工具走供应商 tool_calls；正文即回复
+    // （宽容双解析：正文是 JSON 契约时照常解析，纯散文时直接包装为发言）
+    const fc = nativeToolsOn();
+    const tools = fc ? buildDiscussionTools({ mcp: deps.mcp as McpManager | undefined, agent }) : undefined;
     // streaming deltas for the final (non-tool) reply；每次重试用新 stream sid，旧片段以 discarded 清掉
     let stream = { acc: '', emitted: 0, lastAt: 0, sid: `${disc.id}:${agent}:r${round}#${iter}#0` };
     const onDelta = (d: string) => {
       stream.acc += d;
-      const cur = extractReplyStreaming(stream.acc);
+      // FC 路径正文即回复，直接流式上屏；JSON 契约路径从 reply 键之后抽取
+      const cur = fc ? { value: stream.acc, done: false } : extractReplyStreaming(stream.acc);
       if (!cur) return;
       const tail = cur.value.slice(stream.emitted);
       if (!tail) return;
@@ -984,7 +1006,7 @@ async function runSpeakerTurn(
       void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, text: tail, done: cur.done });
     };
     if (last) {
-      convo.push({ role: 'user', content: '工具迭代次数已用完：不要再调用工具，立即用形态 B 基于已获得的信息给出你的发言（如实反映已执行与未执行的部分）。' });
+      convo.push({ role: 'user', content: '工具迭代次数已用完：不要再调用工具，立即基于已获得的信息给出你的发言（如实反映已执行与未执行的部分）。' });
     }
     let res;
     // M5.2 + 2026-09-14「群聊全员沉默」复盘：429 是容量信号不是能力失败——对齐任务管线，
@@ -994,17 +1016,33 @@ async function runSpeakerTurn(
     const outcome = await chatOnModelChain(deps, disc, agent, round, iter, convo, chain, sid => {
       stream = { acc: '', emitted: 0, lastAt: 0, sid };
       return onDelta;
-    });
+    }, tools ? { tools } : undefined);
     if (outcome.failed !== undefined) {
       return { spoke: false, asked: false, silent: true, failed: outcome.failed, toolUsed };
     }
     res = outcome.res;
     chosen = outcome.entry;
+    // FC 宽容双解析：优先供应商 tool_calls；模型仍把 tool_calls/reply JSON 写进正文时
+    // 照常解析（不白烧调用）；纯散文时直接包装为发言——不再触发"输出无法解析→烧纠正重试"
     parsed = extractJson(res.content);
-    // 2026-09-20 修复：tool_calls 形状归一化（{"name":...}/OpenAI 函数风格不再被静默丢弃）
-    let calls = normalizeToolCalls(parsed?.tool_calls);
-    if (!calls.length && !parsed && res.content.includes('"tool"')) {
-      calls = salvageToolCalls(res.content);
+    let calls = fc ? (normalizeToolCalls(res.toolCalls) as Record<string, any>[]) : [];
+    if (fc) {
+      if (!calls.length && Array.isArray(parsed?.tool_calls) && parsed.tool_calls.length) {
+        calls = normalizeToolCalls(parsed.tool_calls);
+        parsed = null; // 本条是形态 A（正文 tool_calls），进入工具轮
+      }
+      if (!calls.length && !parsed && res.content.includes('"tool"')) {
+        calls = salvageToolCalls(res.content);
+      }
+      if (!calls.length && !parsed && res.content.trim()) {
+        parsed = { speak: true, reply: res.content.trim().slice(0, MAX_MESSAGE_LENGTH) };
+      }
+    } else {
+      // 2026-09-20 修复：tool_calls 形状归一化（{"name":...}/OpenAI 函数风格不再被静默丢弃）
+      calls = normalizeToolCalls(parsed?.tool_calls);
+      if (!calls.length && !parsed && res.content.includes('"tool"')) {
+        calls = salvageToolCalls(res.content);
+      }
     }
     if (calls.length && !last) {
       void emitProgress('discussion_message_delta', { discussion_id: disc.id, agent, round, stream_id: stream.sid, discarded: true });
@@ -1026,7 +1064,7 @@ async function runSpeakerTurn(
         });
       }
       convo.push({ role: 'assistant', content: res.content });
-      convo.push({ role: 'user', content: `## 工具执行结果（第 ${iter + 1} 批）\n${JSON.stringify(results).slice(0, 12000)}\n\n信息足够就用形态 B 发言汇报真实结果；需要继续动手再发形态 A。` });
+      convo.push({ role: 'user', content: `## 工具执行结果（第 ${iter + 1} 批）\n${JSON.stringify(results).slice(0, 12000)}\n\n信息足够就用${fc ? '正文直接输出发言' : '形态 B 发言'}汇报真实结果；需要继续动手再${fc ? '发起下一批工具调用' : '发形态 A'}。` });
       continue;
     }
     if (calls.length && last) {

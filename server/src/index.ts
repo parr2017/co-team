@@ -16,6 +16,7 @@ import { startClarifyTimeoutScanner } from './clarifyTimeout';
 import { startDailyReportScanner } from './dailyReport';
 import { configureGrader } from './grader';
 import { configureLlmTimeouts } from './llm';
+import { configureNativeTools } from './toolSchema';
 import { initLogger, getLogger } from './logger';
 
 const MIME: Record<string, string> = {
@@ -154,10 +155,13 @@ async function main(): Promise<void> {
       wallclock_cap_sec: config.llm.wallclock_cap_sec,
       non_stream_timeout_sec: config.llm.non_stream_timeout_sec,
     });
+    // 原生 function calling 总开关（opencode/ZCode 同款工具通道）
+    configureNativeTools(config.llm.native_tools);
     logger.info('LLM timeout policy loaded', {
       first_token_idle_sec: config.llm.first_token_idle_sec,
       stream_idle_sec: config.llm.stream_idle_sec,
       wallclock_cap_sec: config.llm.wallclock_cap_sec,
+      native_tools: config.llm.native_tools,
     });
   }
 

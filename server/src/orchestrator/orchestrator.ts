@@ -53,6 +53,7 @@ import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract
 import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, detectStackMismatch, MAX_FIX_ROUNDS, type ParsedTestOutput } from '../testloop';
 import { createSnapshot } from '../snapshot';
 import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
+import { buildOrchTools, nativeToolsOn } from '../toolSchema';
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
 import { PROJECT_ROOT, DEFAULT_META_PATHS, type SelfModGateConfig, type ContextConfig } from '../config';
@@ -3174,6 +3175,10 @@ export class Orchestrator {
     }
     // 外部 MCP 工具清单：按 agent 白名单确定性渲染（字节稳定，前缀缓存友好）；无绑定返回空
     const mcpBlock = this.mcp ? this.mcp.toolsIndex(plugin.name) : '';
+    // 原生 function calling（opencode/ZCode 同款工具通道，2026-09-20）：工具轮走供应商
+    // tool_calls 字段而非正文 JSON；llm.native_tools=false 时整体回退 JSON 文本契约
+    const nativeTools = nativeToolsOn();
+    const orchTools = nativeTools ? buildOrchTools({ mcp: this.mcp ?? undefined, agent: plugin.name }) : undefined;
     const systemMsg = buildAgentHarness({
       name: plugin.name,
       role: plugin.role,
@@ -3185,11 +3190,12 @@ export class Orchestrator {
       knowledgeBlock: knowledgeBlock ? knowledgeBlock.replace(/^\n\n## 相关知识库条目\n/, '') : '',
       memories,
       skillsBlock,
-      mcpBlock: mcpBlock || undefined,
+      mcpBlock: mcpBlock && !nativeTools ? mcpBlock : undefined,
       round: 0,
       maxRounds,
       escalate,
       lastError,
+      nativeTools,
     });
 
     // improvement 6 (R1) + 群聊化：pending 用户消息在 userMsg 构建前消费，
@@ -3388,7 +3394,7 @@ export class Orchestrator {
           task_id: taskId, node_id: node.id, agent: plugin.name,
           text: `第 ${round + 1} 轮对话中…`, model: entry.name,
         });
-        const resp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta);
+        const resp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta, orchTools ? { tools: orchTools } : undefined);
         this.pool!.recordUsage(entry.id, resp.promptTokens, resp.completionTokens);
         this.taskTokens.set(taskId, (this.taskTokens.get(taskId) || 0) + resp.promptTokens + resp.completionTokens);
         record.tokens += resp.promptTokens + resp.completionTokens;
@@ -3407,8 +3413,9 @@ export class Orchestrator {
         });
         content = stripCodeFence(resp.content);
         // 空正文快速失败：非 length 的空正文（秒回 completion=0 类）连发 2 轮 → 模型
-        // 确定性故障直接换模，不烧修正循环
-        if (!content.trim() && resp.finishReason !== 'length') {
+        // 确定性故障直接换模，不烧修正循环。FC 工具轮正文为空是正常形态（工具调用
+        // 在供应商 tool_calls 字段），不算空正文。
+        if (!content.trim() && resp.finishReason !== 'length' && !resp.toolCalls?.length) {
           emptyRounds += 1;
           if (emptyRounds >= 2) {
             record.error = `空正文连续 ${emptyRounds} 轮返回（finish_reason=${resp.finishReason ?? 'none'}）——模型确定性故障，换模`;
@@ -3573,7 +3580,8 @@ export class Orchestrator {
             forced_final: true,
           };
           content = stripCodeFence(finalResp.content);
-          parsed = extractJson(content);
+        // 原生 function calling：工具轮来自供应商 tool_calls；正文为最终 JSON（extractJson）
+        parsed = resp.toolCalls?.length ? { tool_calls: resp.toolCalls } : extractJson(content);
           if (parsed && !parsed.tool_calls) {
             // last-resort output still goes through the schema gate; with no repair
             // rounds left, violations become a precise failure instead of a fake success

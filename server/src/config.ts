@@ -139,6 +139,8 @@ export interface LlmTimeoutConfig {
   non_stream_timeout_sec: number;
   /** 单轮 LLM 调用超过该秒数但成功 → 记 slow（降权），不记失败 */
   slow_success_sec: number;
+  /** 原生 function calling 总开关（缺省开；关闭即回退 JSON 文本契约路径） */
+  native_tools: boolean;
   /** 按节点复杂度的输出预算分档；置空对象 {} 可整体关闭（回退模型 max_tokens）。
    *  推理模型光思考就可能吃掉 2 万 token——预算过小会造成"思考耗尽正文为空"的
    *  假性失败（xfzrhwkc 实测 16000 对 Qwen3.6 不足），故 normal/complex 档放宽 */
@@ -160,6 +162,7 @@ export const DEFAULT_LLM_TIMEOUT: LlmTimeoutConfig = {
   wallclock_cap_sec: 0,
   non_stream_timeout_sec: 900,
   slow_success_sec: 300,
+  native_tools: true,
   output_tiers: { simple: 8000, normal: 32000, complex: 64000 },
 };
 
@@ -304,6 +307,9 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       wallclock_cap_sec: pickSec(raw.llm?.wallclock_cap_sec, DEFAULT_LLM_TIMEOUT.wallclock_cap_sec),
       non_stream_timeout_sec: pickSec(raw.llm?.non_stream_timeout_sec, DEFAULT_LLM_TIMEOUT.non_stream_timeout_sec),
       slow_success_sec: pickSec(raw.llm?.slow_success_sec, DEFAULT_LLM_TIMEOUT.slow_success_sec),
+      // 原生 function calling 总开关（opencode/ZCode 同款工具通道）：缺省开——工具调用走
+      // 供应商 tool_calls 字段而非正文 JSON；关闭即整体回退 JSON 文本契约路径
+      native_tools: raw.llm?.native_tools === undefined ? true : raw.llm?.native_tools === true,
       output_tiers: raw.llm?.output_tiers === undefined
         ? { ...DEFAULT_LLM_TIMEOUT.output_tiers }
         : {

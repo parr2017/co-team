@@ -8,16 +8,34 @@ type Behavior = ((entryName: string) => Promise<{ content: string }> | { content
 const behaviors: Behavior[] = [];
 let chatCalls = 0;
 let lastChatMessages: { role: string; content: unknown }[] = [];
+let lastChatTools: unknown[] | undefined;
 vi.mock('../src/llm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm')>();
   return {
     ...actual,
-    chat: async (entry: any, messages: unknown, _mt?: number, _temp?: number, signal?: AbortSignal) => {
+    chat: async (entry: any, messages: unknown, _mt?: number, _temp?: number, signal?: AbortSignal, _cap?: number, _onDelta?: unknown, opts?: { tools?: unknown[] }) => {
       chatCalls++;
       lastChatMessages = (messages as { role: string; content: unknown }[]) || [];
+      lastChatTools = opts?.tools;
       if (signal?.aborted) throw new Error('LLM 调用被外部取消');
       const b = behaviors.shift();
-      const run = () => (b ? b(String(entry?.name || '')) : Promise.resolve({ content: JSON.stringify({ reply: '（无行为）' }) }));
+      const run = () => {
+        const shape = Promise.resolve(b ? b(String(entry?.name || '')) : { content: JSON.stringify({ reply: '（无行为）' }) }) as Promise<{ content: string }>;
+        return shape.then((s) => {
+          // 原生 function calling 模式（convo 传了 tools）：JSON 契约形态的行为转换
+          // 为供应商原生形态——tool_calls 走 res.toolCalls、reply 走正文
+          if (opts?.tools?.length) {
+            try {
+              const parsed = JSON.parse(s.content);
+              if (Array.isArray(parsed.tool_calls)) {
+                return { content: '', toolCalls: parsed.tool_calls.map((tc: Record<string, unknown>) => ({ tool: tc.tool, ...tc })) };
+              }
+              if (parsed.reply !== undefined) return { content: String(parsed.reply) };
+            } catch { /* 非 JSON 行为按原样返回 */ }
+          }
+          return s;
+        });
+      };
       if (!signal) return run();
       // 挂起的行为也要能被 abort 打断（与真实 chatStreamed 的外部取消语义一致）
       return Promise.race([
@@ -34,6 +52,7 @@ import { Orchestrator } from '../src/orchestrator/orchestrator';
 import type { Logger } from '../src/logger';
 import * as convo from '../src/convo';
 import type { ConvoDeps } from '../src/convo';
+import { configureNativeTools } from '../src/toolSchema';
 import { saveProject } from '../src/store';
 import { simpleGit } from 'simple-git';
 
@@ -75,6 +94,9 @@ beforeEach(async () => {
   behaviors.length = 0;
   chatCalls = 0;
   lastChatMessages = [];
+  lastChatTools = undefined;
+  // JSON 文本契约路径（fallback）作为既有用例的基线；FC 路径在独立 describe 覆盖
+  configureNativeTools(false);
   convo.configureConvo({ permissions: { level: 'full' }, ask_timeout_sec: 2, auto_retry_base_ms: 20 });
   getBus().subscribe('coteam:dashboard', () => {});
 });
@@ -615,5 +637,51 @@ describe('convo 引擎', () => {
     expect(chatCalls).toBe(3); // 第一轮 2 次（工具+收尾）+ 第二轮 1 次（直接采纳，无纠正调用）
     const msgs = await convo.getConvoMessages(c.id);
     expect(msgs.filter((m) => m.kind === 'notice' && m.text.includes('不可当作完成依据')).length).toBe(0);
+  }, 20000);
+});
+
+describe('convo FC 原生工具通道（opencode/ZCode 同款）', () => {
+  beforeEach(() => {
+    configureNativeTools(true);
+  });
+
+  it('FC 路径：工具调用走 res.toolCalls，正文即回复（无 JSON 解析/纠正重试）', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // mock 把 JSON 契约形态转换为原生形态：tool_calls → res.toolCalls、reply → 正文
+    behaviors.push(() => toolCalls([{ tool: 'list_files' }]));
+    behaviors.push(() => reply('目录里有 hello.txt，项目是测试脚手架。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '看下目录' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'tool' && String(m.text).includes('list_files'))).toBe(true); // 工具执行
+    expect(msgs.some((m) => m.kind === 'text' && String(m.text).includes('hello.txt'))).toBe(true); // 正文即回复
+    expect(chatCalls).toBe(2);
+    expect(lastChatTools?.length).toBeGreaterThan(0); // tools 参数已传给 chat
+    // FC 路径不落"未按 JSON 契约"类 notice
+    expect(msgs.some((m) => m.kind === 'notice' && (m.text.includes('未按 JSON 契约') || m.text.includes('未按输出契约')))).toBe(false);
+  }, 20000);
+
+  it('FC 路径：模型直接输出纯文本 → 直接采纳为回复（无纠正调用）', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => ({ content: '这个项目是测试脚手架，src 目录目前是空的。' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '项目是做什么的' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'text' && String(m.text).includes('测试脚手架'))).toBe(true);
+    expect(chatCalls).toBe(1); // 正文即回复，无第二次纠正调用
+    expect((await convo.getConvo(c.id))?.status).toBe('idle');
+  }, 20000);
+
+  it('FC 路径嘴炮防线保留：零工具 + "正在动手"声称 → 纠正重试一次', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => ({ content: '好的，马上动手，第一步先创建文件。' }));
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'fc.txt', content: 'ok\n' }]));
+    behaviors.push(() => ({ content: '文件已创建完成。' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '建个文件' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(fs.readFileSync(path.join(ws, 'fc.txt'), 'utf-8')).toBe('ok\n');
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(lastChatMessages.some((m) => m.role === 'user' && String(m.content).includes('口头承诺'))).toBe(true); // 纠正消息进上下文
+    expect(msgs.filter((m) => m.kind === 'notice' && m.text.includes('未按输出契约返回 JSON')).length).toBe(0); // FC 不落 JSON 契约 notice
   }, 20000);
 });

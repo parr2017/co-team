@@ -36,6 +36,8 @@ export interface HarnessBlocks {
   maxRounds?: number;
   escalate?: boolean;
   lastError?: string;
+  /** 原生 function calling：工具走供应商 tool_calls 通道，L5 改为纯描述（不带 JSON 示例） */
+  nativeTools?: boolean;
 }
 
 /** Build the full layered system prompt. Pure function. */
@@ -86,35 +88,47 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
 
   const L5 = [
     '# 工具策略',
-    '只读侦查工具（返回 JSON 时附带 tool_calls 字段），单轮可合并多个调用，全部放进同一个 tool_calls 数组:',
-    ' {"tool_calls":[{"tool":"list_files"}]}',
-    ' {"tool_calls":[{"tool":"read_file","path":"src/main.py"}]}',
-    ' {"tool_calls":[{"tool":"read_file","path":"src/big.py","line_start":120,"line_end":320}]}  // 大文件按行范围续读（先 grep 定位行号）',
-    ' {"tool_calls":[{"tool":"grep","pattern":"正则表达式","path":"src/"}]}',
-    ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
-    ' {"tool_calls":[{"tool":"git_log"}]}',
-    ' {"tool_calls":[{"tool":"git_diff"}]}',
-    '渐进落盘（写文件优先用这两个，单轮可合并多个调用；多文件任务边想边写，别把全部文件憋在最终 JSON）:',
-    ' {"tool_calls":[{"tool":"write_file","path":"src/main.py","content":"完整文件内容"}]}  // 新建/整体重写文件',
-    ' {"tool_calls":[{"tool":"edit_file","path":"src/main.py","find":"要替换的原文（精确唯一）","replace":"替换后的文本"}]}  // 对已有文件的小改动',
-    '渲染级验证（前端/页面/Web 服务的交付验收必须用它，curl 看不见 JS 运行时崩溃）:',
-    ' {"tool_calls":[{"tool":"check_page","url":"http://localhost:<端口>/","expect":["页面渲染后应出现的文本1","文本2"]}]}',
-    '（headless 浏览器渲染 URL，expect 全部命中才 ok；仅允许 localhost 地址，需先起服务）',
-    '视觉辅助（辅助手段——回归测试仍以 Playwright E2E 断言为主，截图分析不替代 E2E；用于断言覆盖不了的视觉问题：布局溢出/组件错位/样式异常/配色）:',
-    ' {"tool_calls":[{"tool":"screenshot","url":"http://localhost:<端口>/","question":"要确认的视觉问题（可选）","window_size":"375,812（可选，模拟手机视口）"}]}  // 截图并交视觉模型分析，返回截图路径与文字结论',
-    ' {"tool_calls":[{"tool":"look_image","path":"相对路径","question":"要确认的问题（可选）"}]}  // 分析工作目录内任意图片（png/jpg/webp，含 Playwright page.screenshot() 产物）',
-    '（视觉模型不可用时两个工具返回软错误——改用 check_page 文本验证并在 verification 注明"需人工复核"，不要反复重试）',
-    '技能正文按需拉取：下方"已装载技能"只有索引，与任务相关的技能必须先拉正文再动工（可与侦查合并同一轮）:',
-    ' {"tool_calls":[{"tool":"load_skill","name":"技能名"}]}',
-    '经验沉淀（推荐）：遇到通用经验/项目踩坑时主动调用知识写入工具:',
-    ' {"tool_calls":[{"tool":"write_knowledge","category":"general-tech|project","title":"条目标题","tags":["标签"],"content":"经验内容（Markdown）"}]}',
-    '协同文档（文档驱动协同）：实现涉及 API/接口的节点后，必须把实际接口写入 API_CONTRACT；需要修正任务规格/状态时写对应文档:',
-    ' {"tool_calls":[{"tool":"write_doc","type":"TASK_SPEC|API_CONTRACT|STATUS_REPORT","content":"完整 Markdown 文档内容"}]}',
-    'Agent 间留言（必要时）：需要提醒/询问其他 Agent、主 Agent 或用户时发送留言，收件方在它下次执行时会收到:',
-    ' {"tool_calls":[{"tool":"send_message","to":"agent名|orchestrator|user","text":"留言内容（≤2000字）"}]}',
-    '工具纪律：write_doc/send_message 的产出不计入 changes；实现了接口就必须同步 write_doc 更新 API_CONTRACT，下游节点以文档为准。',
-    '目录边界（强制）：一切文件与命令只允许作用于项目工作目录内——命令中出现工作目录之外的绝对路径或 `..` 逃逸会被系统直接拒绝执行；产物与日志一律写项目目录内的相对路径。',
-    `轮次预算：当前第 ${round + 1}/${maxRounds} 轮，剩余 ${roundsLeft} 轮工具调用机会。${roundsLeft <= 1 ? '这是最后的侦查机会——本轮结束必须给出最终 JSON 结果。' : '合理规划：先侦查后执行，避免无目的的重复读取。'}`,
+    ...(ctx.nativeTools ? [
+      '只读侦查工具（list_files/read_file/read_dir/grep/git_log/git_diff/load_skill）——单轮可并发多个调用，需要侦查就一批发齐。',
+      'read_file 大文件按行范围续读（line_start/line_end，先 grep 定位行号）。',
+      '渐进落盘：想清楚一个文件就立即 write_file 写入（多文件任务分批落盘，禁止把全部文件憋到最终 JSON），小改动用 edit_file。',
+      '渲染级验证：check_page（headless 浏览器渲染 URL，expect 全部命中才 ok；仅 localhost，需先起服务）——curl 看不见 JS 运行时崩溃。',
+      '视觉辅助：screenshot（截图交视觉模型分析）/ look_image（分析工作目录内图片）——辅助手段，回归仍以 E2E 断言为主；不可用时软错误，改用 check_page 并注明"需人工复核"。',
+      '经验沉淀 write_knowledge；协同文档 write_doc（实现 API 后必须更新 API_CONTRACT；产出不计入 changes）；Agent 间留言 send_message。',
+      '目录边界（强制）：一切文件与命令只允许作用于项目工作目录内——越界绝对路径或 `..` 逃逸会被系统直接拒绝。',
+      '工具调用通过供应商工具通道直接发起（不要把工具调用写进正文文字）；工具结果以 user 消息回喂。',
+      `轮次预算：当前第 ${round + 1}/${maxRounds} 轮，剩余 ${roundsLeft} 轮工具调用机会。${roundsLeft <= 1 ? '这是最后的侦查机会——本轮结束必须给出最终 JSON 结果。' : '合理规划：先侦查后执行，避免无目的的重复读取。'}`,
+    ] : [
+      '只读侦查工具（返回 JSON 时附带 tool_calls 字段），单轮可合并多个调用，全部放进同一个 tool_calls 数组:',
+      ' {"tool_calls":[{"tool":"list_files"}]}',
+      ' {"tool_calls":[{"tool":"read_file","path":"src/main.py"}]}',
+      ' {"tool_calls":[{"tool":"read_file","path":"src/big.py","line_start":120,"line_end":320}]}  // 大文件按行范围续读（先 grep 定位行号）',
+      ' {"tool_calls":[{"tool":"grep","pattern":"正则表达式","path":"src/"}]}',
+      ' {"tool_calls":[{"tool":"read_dir","path":"src/components/"}]}',
+      ' {"tool_calls":[{"tool":"git_log"}]}',
+      ' {"tool_calls":[{"tool":"git_diff"}]}',
+      '渐进落盘（写文件优先用这两个，单轮可合并多个调用；多文件任务边想边写，别把全部文件憋在最终 JSON）:',
+      ' {"tool_calls":[{"tool":"write_file","path":"src/main.py","content":"完整文件内容"}]}  // 新建/整体重写文件',
+      ' {"tool_calls":[{"tool":"edit_file","path":"src/main.py","find":"要替换的原文（精确唯一）","replace":"替换后的文本"}]}  // 对已有文件的小改动',
+      '渲染级验证（前端/页面/Web 服务的交付验收必须用它，curl 看不见 JS 运行时崩溃）:',
+      ' {"tool_calls":[{"tool":"check_page","url":"http://localhost:<端口>/","expect":["页面渲染后应出现的文本1","文本2"]}]}',
+      '（headless 浏览器渲染 URL，expect 全部命中才 ok；仅允许 localhost 地址，需先起服务）',
+      '视觉辅助（辅助手段——回归测试仍以 Playwright E2E 断言为主，截图分析不替代 E2E；用于断言覆盖不了的视觉问题：布局溢出/组件错位/样式异常/配色）:',
+      ' {"tool_calls":[{"tool":"screenshot","url":"http://localhost:<端口>/","question":"要确认的视觉问题（可选）","window_size":"375,812（可选，模拟手机视口）"}]}  // 截图并交视觉模型分析，返回截图路径与文字结论',
+      ' {"tool_calls":[{"tool":"look_image","path":"相对路径","question":"要确认的问题（可选）"}]}  // 分析工作目录内任意图片（png/jpg/webp，含 Playwright page.screenshot() 产物）',
+      '（视觉模型不可用时两个工具返回软错误——改用 check_page 文本验证并在 verification 注明"需人工复核"，不要反复重试）',
+      '技能正文按需拉取：下方"已装载技能"只有索引，与任务相关的技能必须先拉正文再动工（可与侦查合并同一轮）:',
+      ' {"tool_calls":[{"tool":"load_skill","name":"技能名"}]}',
+      '经验沉淀（推荐）：遇到通用经验/项目踩坑时主动调用知识写入工具:',
+      ' {"tool_calls":[{"tool":"write_knowledge","category":"general-tech|project","title":"条目标题","tags":["标签"],"content":"经验内容（Markdown）"}]}',
+      '协同文档（文档驱动协同）：实现涉及 API/接口的节点后，必须把实际接口写入 API_CONTRACT；需要修正任务规格/状态时写对应文档:',
+      ' {"tool_calls":[{"tool":"write_doc","type":"TASK_SPEC|API_CONTRACT|STATUS_REPORT","content":"完整 Markdown 文档内容"}]}',
+      'Agent 间留言（必要时）：需要提醒/询问其他 Agent、主 Agent 或用户时发送留言，收件方在它下次执行时会收到:',
+      ' {"tool_calls":[{"tool":"send_message","to":"agent名|orchestrator|user","text":"留言内容（≤2000字）"}]}',
+      '工具纪律：write_doc/send_message 的产出不计入 changes；实现了接口就必须同步 write_doc 更新 API_CONTRACT，下游节点以文档为准。',
+      '目录边界（强制）：一切文件与命令只允许作用于项目工作目录内——命令中出现工作目录之外的绝对路径或 `..` 逃逸会被系统直接拒绝执行；产物与日志一律写项目目录内的相对路径。',
+      `轮次预算：当前第 ${round + 1}/${maxRounds} 轮，剩余 ${roundsLeft} 轮工具调用机会。${roundsLeft <= 1 ? '这是最后的侦查机会——本轮结束必须给出最终 JSON 结果。' : '合理规划：先侦查后执行，避免无目的的重复读取。'}`,
+    ]),
   ].join('\n');
 
   const L6 = [

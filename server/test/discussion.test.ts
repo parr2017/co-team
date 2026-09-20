@@ -437,7 +437,9 @@ describe('round engine: speak-or-silent with real tools', () => {
     const d = await mkDiscussion(['dev']);
     h.speaker = () => '这里不是 JSON';
     const res = await runDiscussionRound(deps, d.id, { forced: ['dev'] });
-    expect((await getMessages(d.id)).some((m) => m.from === 'dev' && m.text.includes('无法解析'))).toBe(true);
+    // FC 原生工具通道（2026-09-20）：纯文本即回复——被点名者的散文直接成为发言，
+    // 不再判为"无法解析"。诚实 notice 语义保留给真正的空输出/解析失败形态。
+    expect((await getMessages(d.id)).some((m) => m.from === 'dev' && m.text.includes('这里不是 JSON'))).toBe(true);
     expect(res.asked_user).toEqual([]);
   });
 });

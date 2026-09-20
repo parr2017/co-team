@@ -21,6 +21,8 @@ import { busGet, busSet, busDel, busKeys } from './bus';
 import { emitProgress, getProject, getProjectMemory } from './store';
 import { chat, extractJson, salvageToolCalls, normalizeToolCalls } from './llm';
 import type { LlmResponse } from './llm';
+import type { LlmToolSpec } from './llm';
+import { nativeToolsOn, buildConvoTools } from './toolSchema';
 import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
 import { CAPACITY_RE } from './orchestrator/orchestrator';
@@ -680,6 +682,11 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     let finalParsed: Record<string, any> | null = null;
     let chosen = primary;
     let turnReasoning = '';
+    // 原生 function calling（opencode/ZCode 同款工具通道，2026-09-20）：工具调用走供应商
+    // tool_calls 结构化字段，正文即回复——不存在"模型没按 JSON 输出→解析失败→烧纠正重试"。
+    // llm.native_tools=false 时整体回退 JSON 文本契约路径。
+    const fc = nativeToolsOn();
+    const fcTools = fc ? buildConvoTools({ mcp: deps.mcp, agentId: plugin?.name || convo.agent_id, execTimeoutSec: convoCfg.execTimeoutSec ?? 180 }) : undefined;
     // 输出契约兜底检测（2026-09-20 修复）：模型未按 JSON 契约输出工具调用/回复而是直接
     // 写了散文——保留其文字（不丢用户要的答案），但必须如实告知本轮"只回复、没干活"，
     // 否则会被静默包装成成功回复，掩盖"光回复不干活"的行为。
@@ -694,7 +701,8 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       let stream = { acc: '', emitted: 0, lastAt: 0, sid: `${convoId}:t#${iter}` };
       const onDelta = (d: string) => {
         stream.acc += d;
-        const cur = extractReplyStreaming(stream.acc);
+        // FC 路径正文即回复，直接流式上屏；JSON 契约路径从 reply 键之后抽取
+        const cur = fc ? { value: stream.acc, done: false } : extractReplyStreaming(stream.acc);
         if (!cur) return;
         const tail = cur.value.slice(stream.emitted);
         if (!tail) return;
@@ -704,7 +712,9 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         void emitProgress('convo_delta', { convo_id: convoId, stream_id: stream.sid, text: tail, done: cur.done });
       };
       if (last) {
-        convo_msgs.push({ role: 'user', content: '工具迭代次数已用完：不要再调用工具，立即基于已获得的信息用 reply 给出最终回复（如实说明已完成与未完成的部分）。' });
+        convo_msgs.push({ role: 'user', content: fc
+          ? '工具迭代次数已用完：不要再调用工具，立即基于已获得的信息给出最终回复（如实说明已完成与未完成的部分）。'
+          : '工具迭代次数已用完：不要再调用工具，立即基于已获得的信息用 reply 给出最终回复（如实说明已完成与未完成的部分）。' });
       }
 
       let res: LlmResponse;
@@ -712,7 +722,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         const out = await chatOnModelChain(deps, convo, primary, convo_msgs, abort.signal, onDelta, (sid) => {
           stream = { acc: '', emitted: 0, lastAt: 0, sid };
           return onDelta;
-        });
+        }, fcTools ? { tools: fcTools } : undefined);
         res = out.res;
         chosen = out.entry;
         turnReasoning = out.reasoning;
@@ -729,14 +739,39 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         });
         break;
       }
-      finalParsed = extractJson(res.content);
-      // 2026-09-20 修复：tool_calls 形状归一化——模型漂移出 {"name":...} / OpenAI 函数风格
-      // {"function":{"name":..,"arguments":..}} 时旧 filter 会静默全丢弃，模型以为已调用
-      // 工具、用户只看到口头回复（「光回复不干活」根因之一）。
-      let calls = normalizeToolCalls(finalParsed?.tool_calls);
-      if (!calls.length && !finalParsed && res.content.includes('"tool"')) calls = salvageToolCalls(res.content);
-      if (!calls.length && finalParsed?.tool_calls !== undefined) {
-        deps.logger.warn('convo tool_calls 全部无法归一化（原始输出前 600 字）', { convoId, content: res.content.slice(0, 600) });
+      let calls: Record<string, any>[];
+      if (fc) {
+        // FC 路径：工具调用优先来自供应商 tool_calls；正文即回复，不做纠正重试。
+        // 兜底：模型仍把 tool_calls/reply JSON 写进正文时照常解析（不白烧调用）。
+        calls = normalizeToolCalls(res.toolCalls) as Record<string, any>[];
+        if (!calls.length) {
+          const parsedContent = extractJson(res.content);
+          if (Array.isArray(parsedContent?.tool_calls) && parsedContent.tool_calls.length) {
+            calls = normalizeToolCalls(parsedContent.tool_calls);
+            finalParsed = null;
+          } else if (typeof parsedContent?.reply === 'string' && parsedContent.reply.trim()) {
+            finalParsed = { reply: parsedContent.reply, ...(Array.isArray(parsedContent.share_files) ? { share_files: parsedContent.share_files } : {}) };
+          }
+          if (!calls.length && !finalParsed && res.content.includes('"tool"')) {
+            calls = salvageToolCalls(res.content);
+            finalParsed = null;
+          }
+        }
+        if (!calls.length && !finalParsed) {
+          const plain = res.content.trim();
+          if (plain) finalParsed = { reply: plain.slice(0, MAX_MESSAGE_LENGTH) };
+          else finalParsed = null;
+        }
+      } else {
+        finalParsed = extractJson(res.content);
+        // 2026-09-20 修复：tool_calls 形状归一化——模型漂移出 {"name":...} / OpenAI 函数风格
+        // {"function":{"name":..,"arguments":..}} 时旧 filter 会静默全丢弃，模型以为已调用
+        // 工具、用户只看到口头回复（「光回复不干活」根因之一）。
+        calls = normalizeToolCalls(finalParsed?.tool_calls);
+        if (!calls.length && !finalParsed && res.content.includes('"tool"')) calls = salvageToolCalls(res.content);
+        if (!calls.length && finalParsed?.tool_calls !== undefined) {
+          deps.logger.warn('convo tool_calls 全部无法归一化（原始输出前 600 字）', { convoId, content: res.content.slice(0, 600) });
+        }
       }
 
       if (calls.length && !last) {
@@ -750,7 +785,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         await appendConvoMessage(convoId, { role: 'assistant', kind: 'tool', text: activityLine(calls, results.results), model: chosen.name, meta: { calls: records } });
         await emitProgress('convo_tool', { convo_id: convoId, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results: results.results });
         convo_msgs.push({ role: 'assistant', content: res.content });
-        convo_msgs.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results.results).slice(0, 16000)}\n\n信息足够就用 reply 给用户最终回复；需要继续动手再发 tool_calls。` });
+        convo_msgs.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results.results).slice(0, 16000)}\n\n${fc ? '信息足够就给出给用户的最终回复（正文直接输出，不要再包 JSON）；需要继续动手再调用工具。' : '信息足够就用 reply 给用户最终回复；需要继续动手再发 tool_calls。'}` });
         continue;
       }
       if (calls.length && last) {
@@ -863,6 +898,7 @@ async function chatOnModelChain(
   signal: AbortSignal,
   onDelta: (d: string) => void,
   onAttempt: (sid: string) => (d: string) => void,
+  opts?: { tools?: LlmToolSpec[] },
 ): Promise<{ res: LlmResponse; entry: ModelEntry; reasoning: string }> {
   const autoSwitch = convo.auto_switch === true;
   const perModelRetries = autoSwitch ? 3 : convoCfg.autoRetryCount;
@@ -923,7 +959,7 @@ async function chatOnModelChain(
           }
         };
         lastSid = `${convo.id}#m${mi}a${attempt}`;
-        const res = await chat(entry, msgs, undefined, 0.3, signal, WALLCLOCK_CAP_MS, onAttempt(lastSid), { onReason });
+        const res = await chat(entry, msgs, undefined, 0.3, signal, WALLCLOCK_CAP_MS, onAttempt(lastSid), { onReason, ...(opts?.tools?.length ? { tools: opts.tools } : {}) });
         // 成功：从非主模型应答 → 落降级卡（静默期去重）；主模型重试成功 → 落恢复卡
         if (mi > 0) await maybeDegradeCard(primary.name, entry.name, lastReason);
         else if (attempt > 0 && degradedTo === entry.name) {
@@ -966,6 +1002,7 @@ async function chatOnModelChain(
 // ---------- system prompt（静态前缀：单 turn 内字节稳定） ----------
 
 async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPlugin): Promise<string> {
+  const fc = nativeToolsOn();
   const identity = plugin?.prompt?.trim()
     || '你是「搭档」，与用户结对协作的工程 agent：直接读写项目工作区、执行命令、交付改动。';
   const proj = convo.project_id ? await getProject(convo.project_id) : null;
@@ -1002,9 +1039,16 @@ ${wsBlock}
 ${scripts.length ? `\n## 项目脚本\n${scripts.join('\n')}` : ''}
 ${memories.length ? `\n## 本项目经验与规范\n${memories.map((m) => `- ${m.text}`).join('\n')}` : ''}
 ${skillsBlock ? `\n## 技能索引（正文按需 load_skill 拉取）\n${skillsBlock}` : ''}
-${mcpBlock ? `\n## 外部 MCP 工具（参数放独立 arguments 字段）\n${mcpBlock}` : ''}
+${mcpBlock && !fc ? `\n## 外部 MCP 工具（参数放独立 arguments 字段）\n${mcpBlock}` : ''}
 
-## 工具指南（全部相对路径基于工作区）
+${fc ? `## 工具（原生工具通道：直接发起工具调用，参数按工具声明传入；全部相对路径基于工作区）
+只读侦查：list_files | read_file(path[,line_start,line_end]) | read_dir(path) | grep(pattern[,path]) | git_log | git_diff | load_skill(name)
+执行命令：exec(command)（同步等待 ≤${convoCfg.execTimeoutSec}s） | exec_background(command)（长驻，返回 pid 与日志路径） | kill_process(pid)
+修改文件：write_file(path, content)（改前先读） | edit_file(path, find, replace)
+视觉辅助：screenshot(url[,question]) | look_image(path[,question]) | 渲染验证 check_page(url, expect)
+阻塞提问 ask_user(question)（需要用户拍板才能继续时） | 知识沉淀 write_knowledge(category, title, content)
+反馈文件 share_file(path) | 调度子智能体 spawn_agent(agent, task)（并行 ≤3）
+步骤清单：write_plan(steps) | update_plan(index, status)` : `## 工具指南（全部相对路径基于工作区）
 只读侦查： {"tool":"list_files"} | {"tool":"read_file","path":"...","line_start":N,"line_end":M} | {"tool":"read_dir","path":"..."} | {"tool":"grep","pattern":"正则","path":"可选子路径"} | {"tool":"git_log"} | {"tool":"git_diff"} | {"tool":"load_skill","name":"技能名"}
 执行命令（同步等待 ≤${convoCfg.execTimeoutSec}s：装依赖、构建、测试、查端口）：
  {"tool":"exec","command":"npm test"}
@@ -1017,14 +1061,18 @@ ${mcpBlock ? `\n## 外部 MCP 工具（参数放独立 arguments 字段）\n${mc
 调度子智能体（并行 ≤3，各自独立工具循环；适合并行侦查/评审/测试等分工）： {"tool":"spawn_agent","agent":"dev|review|docs|test|...","task":"明确的子任务描述"}
 任务步骤清单（多文件/多验证环节的活先规划再动手，逐步打勾；简单问答不要用）：
  {"tool":"write_plan","steps":["步骤1","步骤2","..."]}   {"tool":"update_plan","index":N,"status":"done|in_progress|blocked"}
-${mcpBlock ? '外部 MCP 工具： {"tool":"mcp__<服务>__<工具>","arguments":{...}}' : ''}
+${mcpBlock ? '外部 MCP 工具： {"tool":"mcp__<服务>__<工具>","arguments":{...}}' : ''}`}
 
-## 输出契约（最终输出必须是纯 JSON，禁止 markdown 代码栅栏）
+${fc ? `## 输出方式
+- 需要动手：直接发起工具调用（工具通道，不要把工具调用写进正文文字）；
+- 回复用户：正文直接输出 markdown 回复即可，不要再包 JSON。
+- 工具结果以 user 消息回喂；信息足够就收尾回复，需要继续就发起下一批工具调用。用户随时可能插话（排队/打断），被打断后如实汇报已完成部分。
+- 🚫 最严重违约：正文说"即将动手/正在执行/第一步是…"却一个工具调用都不发——口头承诺不算执行，用户只会看到空话。要么此刻就发起工具调用，要么明确说明你在等待什么、缺什么。` : `## 输出契约（最终输出必须是纯 JSON，禁止 markdown 代码栅栏）
 A 需要动手：{"tool_calls":[ {"tool":"..."}, ... ]}
    ⚠️ 数组每一项必须以 "tool" 字段开头（如 {"tool":"read_file","path":"a.ts"}）；禁止用 name/function 包裹参数。
 B 回复用户：{"reply":"给用户的完整回复（markdown）","share_files":["可选：反馈给用户的文件相对路径"]}
 工具结果以 user 消息回喂；信息足够就用 B 收尾，需要继续就发 A。用户随时可能插话（排队/打断），被打断后如实汇报已完成部分。
-🚫 最严重违约：用 B 说"即将动手/正在执行/第一步是…"却一个 tool_calls 都不发——口头承诺不算执行，用户只会看到空话。要么此刻就发 A，要么用 B 明确说明你在等待什么、缺什么。
+🚫 最严重违约：用 B 说"即将动手/正在执行/第一步是…"却一个 tool_calls 都不发——口头承诺不算执行，用户只会看到空话。要么此刻就发 A，要么用 B 明确说明你在等待什么、缺什么。`}
 
 ## 行动优先
 - 侦查是手段不是目的：需要动手时第一批工具就把关键侦查+主动作发出，不要用"接下来我将…"的口头承诺收尾；
