@@ -181,6 +181,13 @@ const CORRECTIVE_ACT_MSG = '纠正：你上一条只是口头承诺要动手，�
 const INTENT_NARRATION_RE = /(让我(先|再)?(检查|看看|看下|查一下|查看|确认|测试|启动|运行|读取|分析|验证|确认一下)|我先(看看|看下|检查|查一下|确认|分析|验证|读取)|接下来我(会|将|要|再)|(先|再)(看看|看下|查一下|检查一下)|我(来看|去看|来查|去查)看?|稍等[，,]\s*我(先|再)?)/;
 const CORRECTIVE_INTENT_MSG = '纠正：你上一条只是用正文叙述了下一步打算（"让我检查…"），但没有发起任何工具调用——叙述不算执行。要继续检查/查看/验证就立刻发起工具调用（read_file / exec / check_page 等）；如果信息已经足够，就给出完整的最终结论（包含你已确认的结果），不要停在"即将做"的半截状态。';
 
+/**
+ * FC 模式工具活动行回显（2026-09-20 实测）：模型把 "✓ exec「…」exit 0" 这类工具活动行
+ * 当作正文回复输出——既不是真实工具调用也不是面向用户的结论。窄匹配行首 ✓/✗ + 「 格式。
+ */
+const FC_ECHO_RE = /^\s*[✓✗]\s*\S+?[「(]/;
+const CORRECTIVE_ECHO_MSG = '纠正：你上一条输出的是工具执行记录的回显（"✓ exec「…」"样式），不是面向用户的回复，也没有真正发起工具调用。要么此刻发起真实的工具调用（工具通道），要么给出面向用户的完整结论（说明结果、建议与依据）。不要伪造工具输出。';
+
 const FILE_LIKE_RE = /[\w\-\\/.]+\.(?:txt|md|json|js|mjs|cjs|ts|tsx|jsx|py|vue|css|scss|html|yaml|yml|toml|go|rs|java|sh|sql)/i;
 
 /**
@@ -704,6 +711,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     let proseRetried = false; // 纯散文（extractJson 失败）已纠正重试
     let lazyRetried = false;  // 形态 B 口头承诺动手但零工具已纠正重试
     let intentRetried = false; // FC 意图叙述句（"让我检查…"）已纠正重试
+    let echoRetried = false;   // FC 工具活动行回显（"✓ exec「…」"）已纠正重试
 
     for (let iter = 0; iter < convoCfg.maxToolIter; iter++) {
       const last = iter === convoCfg.maxToolIter - 1;
@@ -837,15 +845,24 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       // FC 模式意图叙述门（2026-09-20 实测"想改一下ui"会话）：模型执行完工具轮后用正文
       // 说"让我检查日志…"——只叙述下一步而不发起工具调用，引擎此前当作最终回复收尾，
       // turn 断在半路。纠正重试一次（有界），让模型要么发起工具、要么给完整结论。
-      if (fc && !calls.length && finalParsed && !intentRetried && !last) {
+      // 工具活动行回显（"✓ exec「…」"）同门处理——既非工具调用也非有效结论。
+      if (fc && !calls.length && finalParsed && !last) {
         const replyText = String(finalParsed.reply || '');
-        if (replyText && INTENT_NARRATION_RE.test(replyText)) {
-          intentRetried = true;
-          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '模型只叙述了下一步打算但未发起工具调用——引擎已自动纠正重试。', meta: { retry: 'intent', original: replyText.slice(0, 200) } });
+        const isEcho = FC_ECHO_RE.test(replyText);
+        const bounded = isEcho ? echoRetried : intentRetried;
+        if (replyText && (isEcho || INTENT_NARRATION_RE.test(replyText)) && !bounded) {
+          if (isEcho) echoRetried = true; else intentRetried = true;
+          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: isEcho
+            ? '模型输出了工具记录回显而非有效回复——引擎已自动纠正重试。'
+            : '模型只叙述了下一步打算但未发起工具调用——引擎已自动纠正重试。', meta: { retry: isEcho ? 'echo' : 'intent', original: replyText.slice(0, 200) } });
           convo_msgs.push({ role: 'assistant', content: res.content });
-          convo_msgs.push({ role: 'user', content: CORRECTIVE_INTENT_MSG });
+          convo_msgs.push({ role: 'user', content: isEcho ? CORRECTIVE_ECHO_MSG : CORRECTIVE_INTENT_MSG });
           finalParsed = null;
           continue;
+        }
+        // 有界纠正仍回显/叙述：采纳但落醒目 warn notice，用户不必当真
+        if (replyText && (isEcho || INTENT_NARRATION_RE.test(replyText))) {
+          plainFallback = true;
         }
       }
       break;
