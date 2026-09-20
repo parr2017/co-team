@@ -101,6 +101,10 @@ export interface AppConfig {
     exec_timeout_sec?: number;
     max_tool_iter?: number;
     ask_timeout_sec?: number;
+    /** 模型自动重试次数（协作会话关自动切换时同模型重试次数，默认 10） */
+    auto_retry_count?: number;
+    /** 重试退避基数毫秒（指数 2^i 封顶 10×base，默认 1000） */
+    auto_retry_base_ms?: number;
   };
   /** 2026-09-09 超时语义重做：时长本身不判死——只有确定性死亡/静默超线/人工判定才是失败 */
   llm?: LlmTimeoutConfig;
@@ -290,6 +294,8 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       exec_timeout_sec: raw.convo?.exec_timeout_sec,
       max_tool_iter: raw.convo?.max_tool_iter,
       ask_timeout_sec: raw.convo?.ask_timeout_sec,
+      auto_retry_count: raw.convo?.auto_retry_count,
+      auto_retry_base_ms: raw.convo?.auto_retry_base_ms,
     },
     llm: {
       // 2026-09-09 超时语义重做：秒数可带小数（便于测试调小阈值）；负数按缺省，0 为显式关闭

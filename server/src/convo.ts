@@ -19,7 +19,7 @@
  */
 import { busGet, busSet, busDel, busKeys } from './bus';
 import { emitProgress, getProject, getProjectMemory } from './store';
-import { chat, extractJson, salvageToolCalls } from './llm';
+import { chat, extractJson, salvageToolCalls, normalizeToolCalls } from './llm';
 import type { LlmResponse } from './llm';
 import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
@@ -65,6 +65,8 @@ export interface Convo {
   compaction?: { summary: string; upto_id: string; at: string };
   /** 会话步骤清单（LLM 自主维护：write_plan 规划 / update_plan 打勾；UI 胶囊/展开渲染） */
   plan?: { steps: { text: string; status: 'pending' | 'in_progress' | 'done' | 'blocked'; ts: string }[]; updated_at: string };
+  /** 模型自动切换（默认关）：关=主模型失败自动重试 10 次后报断连；开=沿降级链自动换模（ZCode 式） */
+  auto_switch?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -121,6 +123,10 @@ export interface ConvoConfig {
   exec_timeout_sec?: number;
   max_tool_iter?: number;
   ask_timeout_sec?: number;
+  /** 模型自动重试次数（关自动切换时同模型重试次数，默认 10） */
+  auto_retry_count?: number;
+  /** 重试退避基数毫秒（指数 2^i 封顶 10×base，默认 1000） */
+  auto_retry_base_ms?: number;
 }
 
 const EXEC_TIMEOUT_SEC = 180;
@@ -136,12 +142,65 @@ const DELTA_MIN_CHARS = 6;
 const DELTA_MIN_MS = 150;
 const MAX_SPEAKER_MODEL_CHAIN = 3;
 const QUICK_RETRY_DELAY_MS = 3000;
+/** 自动重试：次数与间隔（指数退避 base×2^i 封顶 10×base）。ZCode 式默认 10 次；测试可注入小值 */
+const AUTO_RETRY_COUNT = 10;
+const AUTO_RETRY_BASE_MS = 1000;
+const AUTO_RETRY_CAP_MS = 10 * AUTO_RETRY_BASE_MS;
+/** 404（模型在该供应商不存在）是确定性配置错误：冷却 24h，期间跳过且不重试 */
+const MODEL_404_COOLDOWN_MS = 24 * 3600 * 1000;
+/** 降级提示静默期：同会话降级到同一模型，10 分钟内不重复落卡 */
+const DEGRADE_SILENCE_MS = 10 * 60 * 1000;
+/** 404 冷却表（进程级；重启即清，用户改配置后也自然失效） */
+const model404Cooldown = new Map<string, number>();
+/** 降级静默表：convoId:targetModel -> 上次落卡时间 */
+const degradeSilence = new Map<string, number>();
+function retryDelayMs(attempt: number): number {
+  const cfg = (convoCfg as any).autoRetryBaseMs as number | undefined;
+  const base = typeof cfg === 'number' && cfg > 0 ? cfg : AUTO_RETRY_BASE_MS;
+  return Math.min(base * 2 ** attempt, base * 10);
+}
+function is404(reason: string): boolean {
+  return /404|model is not found|not found.*model|does not exist/i.test(reason);
+}
 
-let convoCfg: { policy: PermissionPolicy; execTimeoutSec: number; maxToolIter: number; askTimeoutMs: number } = {
+// ---------- 引擎级自纠错（2026-09-20 二轮修复：嘴炮不死循环） ----------
+// 实证：模型上下文被历史嘴炮污染后会持续输出"第一批工具调用已发出"式散文/口头承诺，
+// 逼用户手动催"开始了吗"×3。引擎不能等用户当监工——嘴炮输出先自动纠正重试（有界），再采纳。
+/** 形态 B 回复中的「正在动手」现在进行时声称（零工具时即为违约信号；窄匹配防误伤"建议先讨论"类回复） */
+const ACTION_CLAIM_RE = /(正在(执行|动手|写入|读取|修改|实施|分析|侦查|整理)|这就动手|立刻动手|马上动手|开始执行|第一批[^\n]{0,12}(发出|执行)|已发出|开工)/;
+const CORRECTIVE_JSON_MSG = '纠正：你上一条输出是纯文本，违反输出契约（最终输出必须是纯 JSON，禁止 markdown 代码栅栏和散文）。要动手就发 {"tool_calls":[...]}，要收尾就发 {"reply":"..."}。现在重新输出纯 JSON。';
+const CORRECTIVE_ACT_MSG = '纠正：你上一条只是口头承诺要动手，但没有发出任何 tool_calls——口头承诺不算执行，用户什么都没看到。现在立刻发 {"tool_calls":[...]}，把你要做的第一批动作直接发出来。如果你其实是在等待用户决策，就用 {"reply":"..."} 明确说明你在等什么，不要声称正在执行。';
+
+const FILE_LIKE_RE = /[\w\-\\/.]+\.(?:txt|md|json|js|mjs|cjs|ts|tsx|jsx|py|vue|css|scss|html|yaml|yml|toml|go|rs|java|sh|sql)/i;
+
+/**
+ * 核验回复中的「已创建/已写入 X」声称（2026-09-20 实证：模型会用过去式谎言——"已创建
+ * selfcheck.txt"，实际零工具）。声称的文件在工作区不存在 = 可验证的假完成。
+ * 引用之前轮次真实落盘的文件不会误伤（文件确实存在）。
+ */
+function findFalseFileClaims(reply: string, workspace: string | null): string[] {
+  if (!workspace || !reply) return [];
+  const claims: string[] = [];
+  for (const sent of reply.split(/[\n。；;！!？]/)) {
+    if (!/已(经)?(创建|写入|新建|生成|落盘|完成)/.test(sent)) continue;
+    const m = sent.match(FILE_LIKE_RE);
+    if (!m) continue;
+    const rel = m[0].replace(/[`'"]/g, '').replace(/\\/g, '/').replace(/^\.\//, '');
+    try {
+      const abs = path.resolve(workspace, rel);
+      if (!abs.startsWith(path.resolve(workspace)) || !fs.existsSync(abs)) claims.push(rel);
+    } catch { /* 相对路径解析失败则忽略 */ }
+  }
+  return [...new Set(claims)].slice(0, 3);
+}
+
+let convoCfg: { policy: PermissionPolicy; execTimeoutSec: number; maxToolIter: number; askTimeoutMs: number; autoRetryCount: number; autoRetryBaseMs: number } = {
   policy: policyFromConfig(undefined),
   execTimeoutSec: EXEC_TIMEOUT_SEC,
   maxToolIter: MAX_TOOL_ITER,
   askTimeoutMs: ASK_TIMEOUT_MS,
+  autoRetryCount: AUTO_RETRY_COUNT,
+  autoRetryBaseMs: AUTO_RETRY_BASE_MS,
 };
 
 export function configureConvo(cfg?: ConvoConfig): void {
@@ -150,6 +209,8 @@ export function configureConvo(cfg?: ConvoConfig): void {
   if (typeof cfg.exec_timeout_sec === 'number' && cfg.exec_timeout_sec > 0) convoCfg.execTimeoutSec = Math.min(1800, Math.floor(cfg.exec_timeout_sec));
   if (typeof cfg.max_tool_iter === 'number' && cfg.max_tool_iter > 0) convoCfg.maxToolIter = Math.min(60, Math.floor(cfg.max_tool_iter));
   if (typeof cfg.ask_timeout_sec === 'number' && cfg.ask_timeout_sec > 0) convoCfg.askTimeoutMs = cfg.ask_timeout_sec * 1000;
+  if (typeof cfg.auto_retry_count === 'number' && cfg.auto_retry_count > 0) convoCfg.autoRetryCount = Math.min(30, Math.floor(cfg.auto_retry_count));
+  if (typeof cfg.auto_retry_base_ms === 'number' && cfg.auto_retry_base_ms > 0) convoCfg.autoRetryBaseMs = Math.min(10_000, Math.floor(cfg.auto_retry_base_ms));
 }
 
 export function __getConvoConfig(): typeof convoCfg {
@@ -272,7 +333,7 @@ function isPermissionLevel(v: unknown): v is string {
   return ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'].includes(String(v));
 }
 
-export async function updateConvo(deps: ConvoDeps, id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null }): Promise<Convo> {
+export async function updateConvo(deps: ConvoDeps, id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null; auto_switch?: boolean }): Promise<Convo> {
   const convo = await getConvo(id);
   if (!convo) throw new ConvoError(404, `convo not found: ${id}`);
   if (patch.title !== undefined) convo.title = (patch.title || '').trim().slice(0, 120) || convo.title;
@@ -284,6 +345,7 @@ export async function updateConvo(deps: ConvoDeps, id: string, patch: { title?: 
     }
   }
   if (patch.policy_level !== undefined) convo.policy_level = patch.policy_level && isPermissionLevel(patch.policy_level) ? patch.policy_level : undefined;
+  if (patch.auto_switch !== undefined) convo.auto_switch = !!patch.auto_switch;
   await saveConvo(convo);
   await emitProgress('convo_status', { convo_id: id, status: convo.status, title: convo.title, model_id: convo.model_id });
   return convo;
@@ -390,7 +452,9 @@ function resolvePrimary(deps: ConvoDeps, convo: Convo): { entry: ModelEntry | nu
   const plugin = deps.orchestrator.plugins.get(convo.agent_id);
   const pinned = convo.model_id ? deps.pool.getModel(convo.model_id) : null;
   const viaOverride = !pinned && plugin?.modelOverride ? deps.pool.getModel(plugin.modelOverride) : null;
-  const entry = pinned || viaOverride || deps.pool.selectModel(plugin?.tags, 'normal') || deps.pool.selectModel(undefined, 'normal');
+  // 2026-09-20 修复：未 pin 时按 professional_weight 选强模型（normal 加权随机会把并池的
+  // priority=1 弱闲聊模型选成主模型，表现为"光回复不干活"）。tags 无匹配时回退全池强模型。
+  const entry = pinned || viaOverride || deps.pool.selectStrongModel(plugin?.tags) || deps.pool.selectStrongModel();
   return { entry, plugin };
 }
 
@@ -408,12 +472,21 @@ async function acquireBusy(convoId: string): Promise<boolean> {
   return true;
 }
 
-/** turn 驱动条件：最后一条 assistant 回复之后还存在 user 消息（排队合并/打断重跑天然覆盖）。 */
+/**
+ * turn 驱动条件：最后一条 assistant 回复之后还存在 user 消息。
+ * 以「turn 终点」为边界——assistant 任何卡（text/tool）、以及终局系统消息
+ * （interrupt / 断连 degrade / 空输出 notice）都算本轮已收场，不再自动重跑，
+ * 否则模型空输出/断连时会对同一条 user 消息无限重驱动烧轮（2026-09-20 修复）。
+ * 排队消息靠 pending 队列消费，不依赖这里的"重跑"。
+ */
 async function hasPendingUserInput(convoId: string): Promise<boolean> {
   const msgs = await getConvoMessages(convoId);
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (m.role === 'assistant' && m.kind === 'text') return false;
+    if (m.role === 'assistant' && (m.kind === 'text' || m.kind === 'tool')) return false;
+    if (m.role === 'system' && m.kind === 'interrupt') return false;
+    if (m.role === 'system' && m.kind === 'degrade' && (m.meta as any)?.broken) return false;
+    if (m.role === 'system' && m.kind === 'notice' && (m.meta as any)?.turn_complete) return false;
     if (m.role === 'user') return true;
   }
   return false;
@@ -507,7 +580,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
   if (!convo) return;
   const { entry: primary, plugin } = resolvePrimary(deps, convo);
   if (!primary) {
-    await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '模型池无可用模型，本轮未执行——请检查模型池配置或稍后重试。' });
+    await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '模型池无可用模型，本轮未执行——请检查模型池配置或稍后重试。', meta: { turn_complete: true } });
     return;
   }
   const policy: PermissionPolicy = convo.policy_level ? policyFromConfig({ level: convo.policy_level, whitelist_commands: convoCfg.policy.whitelistCommands ?? undefined, max_time_sec: convoCfg.policy.maxTimeSec, allow_sensitive: convoCfg.policy.allow_sensitive }) : convoCfg.policy;
@@ -548,6 +621,14 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     let finalParsed: Record<string, any> | null = null;
     let chosen = primary;
     let turnReasoning = '';
+    // 输出契约兜底检测（2026-09-20 修复）：模型未按 JSON 契约输出工具调用/回复而是直接
+    // 写了散文——保留其文字（不丢用户要的答案），但必须如实告知本轮"只回复、没干活"，
+    // 否则会被静默包装成成功回复，掩盖"光回复不干活"的行为。
+    let plainFallback = false;
+    let toolRan = false; // 本轮是否执行过工具（散文兜底 notice 只在零工具时才落，避免与事实矛盾）
+    // 引擎级自纠错（2026-09-20 二轮）：嘴炮先自动纠正重试一次再采纳，别逼用户手动催
+    let proseRetried = false; // 纯散文（extractJson 失败）已纠正重试
+    let lazyRetried = false;  // 形态 B 口头承诺动手但零工具已纠正重试
 
     for (let iter = 0; iter < convoCfg.maxToolIter; iter++) {
       const last = iter === convoCfg.maxToolIter - 1;
@@ -578,17 +659,32 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         turnReasoning = out.reasoning;
       } catch (e: any) {
         if (abort.signal.aborted) { turn.aborted = true; break; }
-        await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `模型调用失败（${String(e?.message || e).slice(0, 160)}），本轮未完成——请重试或更换模型。` });
+        const msg = String(e?.message || e);
+        // 断连/失败终局卡：引擎已自动重试（关=10 次同模型；开=每模型 3 次×链），到此仍未成功
+        await appendConvoMessage(convoId, {
+          role: 'system', kind: 'degrade',
+          text: convo.auto_switch
+            ? `模型链全部不可用（${msg.slice(0, 120)}）——本轮未完成。可切换模型、稍后重试，或检查各供应商状态。`
+            : `主模型 ${chosen.name} 调用失败（${msg.slice(0, 120)}）——已自动重试 ${convoCfg.autoRetryCount ?? 10} 次仍未成功。可在会话开启「自动切换模型」，或手动更换模型后重试。`,
+          meta: { broken: true, model: chosen.name },
+        });
         break;
       }
       finalParsed = extractJson(res.content);
-      let calls: Record<string, any>[] = Array.isArray(finalParsed?.tool_calls) ? finalParsed.tool_calls.filter((c: any) => c && typeof c.tool === 'string') : [];
+      // 2026-09-20 修复：tool_calls 形状归一化——模型漂移出 {"name":...} / OpenAI 函数风格
+      // {"function":{"name":..,"arguments":..}} 时旧 filter 会静默全丢弃，模型以为已调用
+      // 工具、用户只看到口头回复（「光回复不干活」根因之一）。
+      let calls = normalizeToolCalls(finalParsed?.tool_calls);
       if (!calls.length && !finalParsed && res.content.includes('"tool"')) calls = salvageToolCalls(res.content);
+      if (!calls.length && finalParsed?.tool_calls !== undefined) {
+        deps.logger.warn('convo tool_calls 全部无法归一化（原始输出前 600 字）', { convoId, content: res.content.slice(0, 600) });
+      }
 
       if (calls.length && !last) {
         void emitProgress('convo_delta', { convo_id: convoId, stream_id: stream.sid, discarded: true });
         const results = await runConvoToolCalls(deps, convo, policy, calls, turn, abort.signal, chosen.name);
         if (turn.aborted) break;
+        toolRan = true;
         const records = results.records;
         await appendConvoMessage(convoId, { role: 'assistant', kind: 'tool', text: activityLine(calls, results.results), model: chosen.name, meta: { calls: records } });
         await emitProgress('convo_tool', { convo_id: convoId, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results: results.results });
@@ -602,8 +698,31 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       if (!calls.length && !finalParsed) {
         // 输出契约兜底：模型偶尔不守 JSON 直接回纯文本——空判废会丢用户最想要的答案
         const plain = res.content.trim();
-        if (plain && !plain.startsWith('{') && !plain.startsWith('```')) {
+        const looksProse = !!plain && !plain.startsWith('{') && !plain.startsWith('```');
+        if (looksProse && !proseRetried && !last && !toolRan) {
+          // 引擎级自纠错：零工具的纯散文先纠正重试一次，不直接采纳（历史嘴炮污染时模型会
+          // 连续散文，直接采纳会把违约写进 transcript 毒化后续轮次）。
+          // 工具已执行过的散文收尾是轻微违约，直接采纳不重试（不白烧一次调用）。
+          proseRetried = true;
+          convo_msgs.push({ role: 'assistant', content: res.content });
+          convo_msgs.push({ role: 'user', content: CORRECTIVE_JSON_MSG });
+          continue;
+        }
+        if (looksProse) {
+          plainFallback = true;
           finalParsed = { reply: plain.slice(0, MAX_MESSAGE_LENGTH) };
+        }
+      }
+      // 引擎级自纠错：形态 B 嘴炮——零工具 + "正在动手"式声称 或 "已创建 X"假完成（工作区核验）→ 纠正重试一次
+      if (!calls.length && finalParsed && !toolRan && !lazyRetried && !last && iter < convoCfg.maxToolIter - 1) {
+        const replyText = String(finalParsed.reply || '');
+        const falseClaims = findFalseFileClaims(replyText, convo.workspace);
+        if (replyText && (ACTION_CLAIM_RE.test(replyText) || falseClaims.length > 0)) {
+          lazyRetried = true;
+          convo_msgs.push({ role: 'assistant', content: res.content });
+          convo_msgs.push({ role: 'user', content: CORRECTIVE_ACT_MSG + (falseClaims.length ? ` 另外你声称已创建/写入的 ${falseClaims.join('、')} 在工作区中并不存在——不要虚构完成状态，实际执行后以工具结果为准。` : '') });
+          finalParsed = null; // 本条口头承诺作废，重驱动
+          continue;
         }
       }
       break;
@@ -615,7 +734,25 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       const reply = String(finalParsed.reply || '').trim().slice(0, MAX_MESSAGE_LENGTH);
       if (reply) {
         const shares = Array.isArray(finalParsed.share_files) ? finalParsed.share_files.map(String).slice(0, 5) : [];
-        await appendConvoMessage(convoId, { role: 'assistant', kind: 'text', text: reply, model: chosen.name, meta: { share_files: shares, ...(turnReasoning ? { reasoning: turnReasoning.slice(-6000) } : {}) } });
+        await appendConvoMessage(convoId, {
+          role: 'assistant', kind: 'text', text: reply, model: chosen.name,
+          meta: {
+            share_files: shares,
+            ...(turnReasoning ? { reasoning: turnReasoning.slice(-6000) } : {}),
+            ...(plainFallback ? { contract_violation: true } : {}),
+          },
+        });
+        // 散文兜底（2026-09-20 修复）：模型没走 JSON 契约（无 tool_calls / reply 结构）时如实告知。
+        // 只在本轮零工具活动时落 notice——工具已真实执行过的轮次，散文收尾只是轻微违约，
+        // 落"未执行任何实际改动"会与事实矛盾（E2E 实测误报）。
+        if (plainFallback && !toolRan) {
+          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `本轮模型未按输出契约返回 JSON（已自动纠正重试${proseRetried ? ' 1 次' : ''}仍未恢复），仅返回了纯文本。以上内容仅为其原话，本轮未执行任何实际改动；如需动手请重发，或更换模型。` });
+        }
+        // 嘴炮纠正后最终回复仍零工具：落诚实 notice，用户不必信以为真（2026-09-20 实测"已创建"假完成）
+        if (lazyRetried && !toolRan) {
+          const falseClaims = findFalseFileClaims(reply, convo.workspace);
+          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `提醒：本轮模型${falseClaims.length ? `声称已完成的 ${falseClaims.join('、')} 在工作区中不存在` : '声称的工作未经任何工具执行'}——以上回复不可当作完成依据，请以工具记录与 diff 卡为准，或重发指令/更换模型。` });
+        }
         for (const p of shares) {
           const rel = p.replace(/\\/g, '/');
           const abs = path.resolve(convo.workspace, rel);
@@ -626,8 +763,12 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
           });
         }
       } else {
-        await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '本轮输出为空或无法解析——请换个说法重试，或更换模型。' });
+        await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '本轮输出为空或无法解析——请换个说法重试，或更换模型。', meta: { turn_complete: true } });
       }
+    } else {
+      // finalParsed 为 null 且未打断（纯空输出，连散文都没有）：必须落终态标记，
+      // 否则 hasPendingUserInput 会认为仍有待处理输入，对同一条消息无限重驱动（2026-09-20 修复）
+      await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '本轮模型无任何输出——请换个说法重试，或更换模型。', meta: { turn_complete: true } });
     }
 
     // 每轮 diff 卡片：有过文件写入才落（git 仓库才有）
@@ -658,50 +799,99 @@ async function chatOnModelChain(
   onDelta: (d: string) => void,
   onAttempt: (sid: string) => (d: string) => void,
 ): Promise<{ res: LlmResponse; entry: ModelEntry; reasoning: string }> {
-  // fallbackChain 首位即 primary；链长按会话换模预算截断
-  const chain = deps.pool.fallbackChain(primary, deps.orchestrator.plugins.get(convo.agent_id)?.tags).slice(0, MAX_SPEAKER_MODEL_CHAIN);
+  const autoSwitch = convo.auto_switch === true;
+  const perModelRetries = autoSwitch ? 3 : convoCfg.autoRetryCount;
+
+  // 候选链：404 冷却中的模型直接剔除（确定性配置错误，24h 内不再撞）
+  const now = Date.now();
+  for (const [mid, until] of [...model404Cooldown.entries()]) if (until < now) model404Cooldown.delete(mid);
+  let chain = deps.pool
+    .fallbackChain(primary, deps.orchestrator.plugins.get(convo.agent_id)?.tags)
+    .filter((m) => !model404Cooldown.has(m.id || ''))
+    .slice(0, autoSwitch ? MAX_SPEAKER_MODEL_CHAIN : 1);
+  // 自动切换关：只用 pin 的主模型（重试 AUTO_RETRY_COUNT 次），不降级
+  if (!autoSwitch) chain = [primary];
+  // 开：主模型处于 429 冷却（noteCapacityHit）且链上有健康备选 → 从备选起步，静默
+  if (autoSwitch && chain.length > 1) {
+    const st = deps.pool.getStatus()[primary.id || ''] as { fail_count?: number } | undefined;
+    if (st && Number(st.fail_count || 0) > 0 && chain[0].id === primary.id) chain = chain.slice(1);
+  }
+  if (!chain.length) chain = [primary];
+
   let lastReason = '';
+  let lastSid = '';
+  let degradedFrom = '';
+  let degradedTo = '';
+
+  const dropStream = (sid: string) => {
+    if (sid) void emitProgress('convo_delta', { convo_id: convo.id, stream_id: sid, discarded: true });
+  };
+  const maybeDegradeCard = async (from: string, to: string, cause: string) => {
+    // 2026-09-20 修复：degradeSilence 只增不减——顺手清理超过静默期数倍的老条目，防长期运行内存缓增
+    const now = Date.now();
+    for (const [k, ts] of [...degradeSilence.entries()]) {
+      if (now - ts > DEGRADE_SILENCE_MS * 24) degradeSilence.delete(k);
+    }
+    const key = `${convo.id}:${to}`;
+    const last = degradeSilence.get(key) || 0;
+    if (now - last < DEGRADE_SILENCE_MS) return; // 静默期：同目标不重复落卡
+    degradeSilence.set(key, now);
+    await appendConvoMessage(convo.id, {
+      role: 'system', kind: 'degrade',
+      text: `主模型 ${from} 不可用（${cause.slice(0, 90)}），已自动降级为 ${to} 继续。`,
+      meta: { primary: from, actual: to },
+    });
+  };
+
   for (let mi = 0; mi < chain.length; mi++) {
     const entry = chain[mi];
-    for (let attempt = 0; ; attempt++) {
+    for (let attempt = 0; attempt < perModelRetries; attempt++) {
+      if (signal.aborted) throw new Error('LLM 调用被外部取消');
       try {
         let reasonBuf = '';
         let reasonLastAt = 0;
         const onReason = (d: string) => {
           reasonBuf += d;
-          // 思考流节流上屏（1s / 24 字符），UI 渲染"思考中"折叠条
           if (d.length >= 24 || Date.now() - reasonLastAt > 1000) {
             reasonLastAt = Date.now();
             void emitProgress('convo_reason', { convo_id: convo.id, text: d });
           }
         };
-        const res = await chat(entry, msgs, undefined, 0.3, signal, WALLCLOCK_CAP_MS, onAttempt(`${convo.id}#m${mi}a${attempt}`), { onReason });
-        if (mi > 0 || (attempt > 0 && lastReason)) {
-          const cause = lastReason.slice(0, 100);
-          await appendConvoMessage(convo.id, {
-            role: 'system', kind: 'degrade',
-            text: `主模型 ${primary.name} ${attempt > 0 ? '重试' : '不可用'}${cause ? `（${cause}）` : ''}，本轮已${mi > 0 ? `降级为 ${entry.name}` : '重试成功'}继续。`,
-            meta: { primary: primary.name, actual: entry.name },
-          });
+        lastSid = `${convo.id}#m${mi}a${attempt}`;
+        const res = await chat(entry, msgs, undefined, 0.3, signal, WALLCLOCK_CAP_MS, onAttempt(lastSid), { onReason });
+        // 成功：从非主模型应答 → 落降级卡（静默期去重）；主模型重试成功 → 落恢复卡
+        if (mi > 0) await maybeDegradeCard(primary.name, entry.name, lastReason);
+        else if (attempt > 0 && degradedTo === entry.name) {
+          await appendConvoMessage(convo.id, { role: 'system', kind: 'degrade', text: `主模型 ${primary.name} 已恢复，本轮起切回继续。`, meta: { recovered: true } });
         }
         return { res, entry, reasoning: reasonBuf };
       } catch (e: any) {
         if (signal.aborted) throw e;
         const reason = String(e?.message || e);
         lastReason = reason;
+        dropStream(lastSid); // 清掉本次 attempt 流出的半截内容
+        if (is404(reason)) {
+          model404Cooldown.set(entry.id || entry.name, Date.now() + MODEL_404_COOLDOWN_MS);
+          if (autoSwitch) {
+            await appendConvoMessage(convo.id, { role: 'system', kind: 'notice', text: `模型 ${entry.name} 在该供应商不存在（404），已停用 24 小时——请检查模型名或在设置中修正。` });
+            break; // 换链上下一个（不重试）
+          }
+          throw new Error(`模型 ${entry.name} 在该供应商不存在（404）——请检查模型名或更换模型（不重试）`);
+        }
         const capacity = CAPACITY_RE.test(reason);
         if (capacity) deps.pool.noteCapacityHit(entry);
-        const next = chain[mi + 1];
-        if (next) {
-          await appendConvoMessage(convo.id, { role: 'system', kind: 'notice', text: `${entry.name} ${capacity ? '限流' : `调用出错（${reason.slice(0, 80)}）`}，切换 ${next.name} 重试。` });
-          break;
-        }
-        if (attempt === 0) {
-          await appendConvoMessage(convo.id, { role: 'system', kind: 'notice', text: `${entry.name} 调用出错（${reason.slice(0, 80)}），3s 后自动重试一次。` });
-          await new Promise((r) => setTimeout(r, QUICK_RETRY_DELAY_MS));
+        // 重试退避（最后一次不再等）
+        if (attempt < perModelRetries - 1) {
+          await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
           continue;
         }
-        throw e;
+        // 本模型重试耗尽
+        if (autoSwitch && mi < chain.length - 1) {
+          degradedFrom = degradedFrom || primary.name;
+          degradedTo = chain[mi + 1].name;
+          break; // 换下一个模型
+        }
+        throw new Error(`${entry.name} 连续 ${perModelRetries} 次调用失败（${reason.slice(0, 120)}）——模型可能已断开`);
       }
     }
   }
@@ -766,8 +956,10 @@ ${mcpBlock ? '外部 MCP 工具： {"tool":"mcp__<服务>__<工具>","arguments"
 
 ## 输出契约（最终输出必须是纯 JSON，禁止 markdown 代码栅栏）
 A 需要动手：{"tool_calls":[ {"tool":"..."}, ... ]}
+   ⚠️ 数组每一项必须以 "tool" 字段开头（如 {"tool":"read_file","path":"a.ts"}）；禁止用 name/function 包裹参数。
 B 回复用户：{"reply":"给用户的完整回复（markdown）","share_files":["可选：反馈给用户的文件相对路径"]}
 工具结果以 user 消息回喂；信息足够就用 B 收尾，需要继续就发 A。用户随时可能插话（排队/打断），被打断后如实汇报已完成部分。
+🚫 最严重违约：用 B 说"即将动手/正在执行/第一步是…"却一个 tool_calls 都不发——口头承诺不算执行，用户只会看到空话。要么此刻就发 A，要么用 B 明确说明你在等待什么、缺什么。
 
 ## 行动优先
 - 侦查是手段不是目的：需要动手时第一批工具就把关键侦查+主动作发出，不要用"接下来我将…"的口头承诺收尾；
@@ -806,7 +998,12 @@ async function buildLlmHistory(convoId: string, convo: Convo, opts?: { nativeIma
       chat.push({ role: 'user', content: text });
     } else if (m.role === 'user' && m.kind === 'file') {
       chat.push({ role: 'user', content: m.text });
-    } else if (m.role === 'assistant' && m.kind === 'text') {
+    } else if (m.role === 'assistant' && (m.kind === 'text' || m.kind === 'tool')) {
+      // 2026-09-20 修复：tool 活动卡（activityLine 摘要）也进 LLM 历史——此前只留 text，
+      // 跨轮后模型只能靠自己上轮的最终回复概括去回忆工具结果，弱模型概括不全就"失忆继续聊"。
+      // 契约违约的散文回复（contract_violation）不进历史——嘴炮留在上下文里会被模型
+      // 当作"我上轮就是这么答的"模式续写，历史越毒越嘴炮（2026-09-20 实证死亡螺旋）。
+      if (m.kind === 'text' && (m.meta as any)?.contract_violation) continue;
       chat.push({ role: 'assistant', content: m.text });
     }
   }
@@ -944,7 +1141,7 @@ async function runConvoToolCalls(
         continue;
       }
       if (name === 'write_file' || name === 'edit_file') {
-        const r = await convoWrite(deps, convo, call);
+        const r = await convoWrite(deps, convo, policy, call);
         if ((r as any)?.ok !== false) turn.writes++;
         results.push(r); records.push({ tool: name, args_summary: argsSummary(call), output_gist: gist(r), ok: (r as any)?.ok !== false });
         continue;
@@ -1194,19 +1391,20 @@ export async function answerConvoAsk(deps: ConvoDeps, convoId: string, askId: st
   return rec;
 }
 
-/** write_file/edit_file：监狱校验 + 写前取证（undo 记录）+ applyToolCalls 执行。 */
-async function convoWrite(deps: ConvoDeps, convo: Convo, call: Record<string, any>): Promise<Record<string, any>> {
+/** write_file/edit_file：监狱校验 + 写前取证（undo 记录）+ applyToolCalls 执行。
+ *  2026-09-20 修复：权限一律用会话级 policy（与 convoExec 同源），不再错用全局 convoCfg.policy。 */
+async function convoWrite(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy, call: Record<string, any>): Promise<Record<string, any>> {
   const name = String(call.tool || '').toLowerCase();
   if (!convo.workspace) return { tool: name, ok: false, error: '会话未绑定项目工作区，无法写文件' };
-  if (convoCfg.policy.level === 'plan_only' || convoCfg.policy.level === 'readonly') {
-    return { tool: name, ok: false, error: `会话权限为 ${convoCfg.policy.level}，不允许修改文件；请用户调整会话权限` };
+  if (policy.level === 'plan_only' || policy.level === 'readonly') {
+    return { tool: name, ok: false, error: `会话权限为 ${policy.level}，不允许修改文件；请用户调整会话权限` };
   }
   const rel = String(call.path || '').trim();
   const abs = path.resolve(convo.workspace, rel);
   if (!rel || !abs.startsWith(path.resolve(convo.workspace))) return { tool: name, ok: false, path: rel, error: '路径为空或越界（目录监狱）' };
   const prevExists = fs.existsSync(abs) && fs.statSync(abs).isFile();
   const prevContent = prevExists ? fs.readFileSync(abs, 'utf-8') : null;
-  const r = await applyToolCalls(convo.workspace, [call as any], { agent: convo.agent_id, project_id: convo.project_id }, convoCfg.policy);
+  const r = await applyToolCalls(convo.workspace, [call as any], { agent: convo.agent_id, project_id: convo.project_id }, policy);
   const rr: any = r[0] || {};
   if (rr.ok === false) return rr;
   let diff = '';
@@ -1435,8 +1633,8 @@ async function runSubAgent(
   if (!task.trim()) return { tool: 'spawn_agent', ok: false, error: 'task 不能为空' };
 
   const primary = (plugin.modelOverride ? deps.pool.getModel(plugin.modelOverride) : null)
-    || deps.pool.selectModel(plugin.tags, 'normal')
-    || deps.pool.selectModel(undefined, 'normal');
+    || deps.pool.selectStrongModel(plugin.tags)
+    || deps.pool.selectStrongModel();
   if (!primary) return { tool: 'spawn_agent', ok: false, error: '模型池无可用模型' };
   const chain = deps.pool.fallbackChain(primary, plugin.tags).slice(0, MAX_SPEAKER_MODEL_CHAIN);
 
@@ -1494,7 +1692,7 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
         }
       }
       const parsed = extractJson(res.content);
-      let calls: Record<string, any>[] = Array.isArray(parsed?.tool_calls) ? parsed.tool_calls.filter((c: any) => c && typeof c.tool === 'string') : [];
+      let calls = normalizeToolCalls(parsed?.tool_calls);
       if (!calls.length && !parsed && res.content.includes('"tool"')) calls = salvageToolCalls(res.content);
       if (calls.length && !last) {
         const sub = await runSubToolCalls(deps, convo, plugin, policy, calls, turn, signal);
@@ -1576,7 +1774,7 @@ async function runSubToolCalls(
         continue;
       }
       if (name === 'write_file' || name === 'edit_file') {
-        const r = await convoWrite(deps, convo, call);
+        const r = await convoWrite(deps, convo, policy, call);
         if ((r as any)?.ok !== false) turn.writes++;
         results.push(r);
         records.push({ tool: name, args_summary: String(call.path || '').slice(0, 120), output_gist: gist(r), ok: (r as any)?.ok !== false });

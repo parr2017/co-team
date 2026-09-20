@@ -530,7 +530,7 @@ export const api = {
     post<{ status: string; convo: ConvoSummary }>('/api/convos', payload),
   convoGet: (id: string) =>
     request<ConvoDetail>(`/api/convos/${id}`),
-  convoUpdate: (id: string, patch: { title?: string; model_id?: string | null }) =>
+  convoUpdate: (id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null; auto_switch?: boolean }) =>
     request<{ status: string; convo: ConvoSummary }>(`/api/convos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   convoDelete: (id: string) =>
     request<{ status: string }>(`/api/convos/${id}`, { method: 'DELETE' }),
@@ -577,6 +577,8 @@ export interface ConvoSummary {
   agent_id: string;
   model_id?: string;
   status: ConvoStatus;
+  policy_level?: string;
+  auto_switch?: boolean;
   snapshot_id?: string;
   plan?: { steps: { text: string; status: 'pending' | 'in_progress' | 'done' | 'blocked'; ts: string }[]; updated_at: string };
   created_at: string;

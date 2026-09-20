@@ -538,6 +538,7 @@ export interface Convo {
   model_id?: string;
   status: ConvoStatus;
   policy_level?: string;
+  auto_switch?: boolean;
   snapshot_id?: string;
   /** 会话步骤清单（write_plan/update_plan 维护，胶囊/展开渲染） */
   plan?: { steps: { text: string; status: 'pending' | 'in_progress' | 'done' | 'blocked'; ts: string }[]; updated_at: string };
@@ -977,7 +978,7 @@ export const api = {
     request<{ status: string; convo: Convo }>('/api/convos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   convoGet: (id: string) =>
     request<ConvoDetail>(`/api/convos/${id}`),
-  convoUpdate: (id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null }) =>
+  convoUpdate: (id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null; auto_switch?: boolean }) =>
     request<{ status: string; convo: Convo }>(`/api/convos/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }),
   convoDelete: (id: string) => request(`/api/convos/${id}`, { method: 'DELETE' }),
   convoSend: (id: string, payload: { text: string; images?: IncomingImage[]; model_id?: string }) =>

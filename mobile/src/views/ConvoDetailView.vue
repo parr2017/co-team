@@ -78,7 +78,9 @@
           <!-- 轮内非工具卡 -->
           <template v-for="m in turn.items" :key="m.id">
             <div v-if="m.kind === 'notice'" class="notice">{{ m.text }}</div>
-            <div v-else-if="m.kind === 'degrade'" class="inline warn">{{ m.text }}</div>
+            <div v-else-if="m.kind === 'degrade' && (m.meta as any)?.broken" class="inline danger">模型断连 · {{ m.text }}</div>
+        <div v-else-if="m.kind === 'degrade' && (m.meta as any)?.recovered" class="inline warn">已恢复 · {{ m.text }}</div>
+        <div v-else-if="m.kind === 'degrade'" class="inline warn">{{ m.text }}</div>
             <div v-else-if="m.kind === 'approval'" class="appr">
               <div class="l1">待审批 · 白名单外命令</div>
               <div class="cmd mono">{{ m.meta?.command || m.text }}</div>
@@ -187,6 +189,12 @@
     <!-- 更多操作 -->
     <van-popup v-model:show="moreSheet" position="bottom" round>
       <div class="sheet">
+        <div class="switch-row">
+          <span>自动切换模型<small>主模型失败时自动沿降级链换模</small></span>
+          <span class="sw" :class="{ on: detail?.auto_switch }" @click="toggleAutoSwitch">{{ detail?.auto_switch ? '开' : '关' }}</span>
+        </div>
+        <div class="si" @click="permSheet = true">权限级别（{{ permLabel }}）</div>
+        <div class="gap" />
         <div class="si" @click="doDiff">本轮 diff 汇总</div>
         <div class="si" @click="doRollback">回滚快照</div>
         <div class="si" @click="renameDlg = true">重命名</div>
@@ -218,8 +226,22 @@
     </van-popup>
 
     <!-- diff -->
+    <!-- 权限级别选项 -->
+    <van-popup v-model:show="permSheet" position="bottom" round :style="{ maxHeight: '50%' }">
+      <div class="sheet">
+        <div class="sh-h"><span>权限级别</span><span class="x" @click="permSheet = false">取消</span></div>
+        <div class="si" :class="{ cur: !detail?.policy_level }" @click="pickPerm('')">继承全局（whitelist_auto）</div>
+        <div class="si" :class="{ cur: detail?.policy_level === 'plan_only' }" @click="pickPerm('plan_only')">plan_only · 只出方案</div>
+        <div class="si" :class="{ cur: detail?.policy_level === 'readonly' }" @click="pickPerm('readonly')">readonly · 只读</div>
+        <div class="si" :class="{ cur: detail?.policy_level === 'approve_required' }" @click="pickPerm('approve_required')">approve_required · 改动需审批</div>
+        <div class="si" :class="{ cur: detail?.policy_level === 'whitelist_auto' }" @click="pickPerm('whitelist_auto')">whitelist_auto · 白名单自动</div>
+        <div class="si" :class="{ cur: detail?.policy_level === 'full' }" @click="pickPerm('full')">full · 目录内完全控制</div>
+      </div>
+    </van-popup>
+
     <van-popup v-model:show="diffDlg" position="bottom" :style="{ height: '80%' }" round>
       <div class="sheet diffsheet">
+        <div class="sh-h"><span>本轮 diff</span><span class="x" @click="diffDlg = false">取消</span></div>
         <div class="sh">{{ diffFiles.length }} 个文件 · 上下滑动查看</div>
         <pre class="diff-patch"><code><span v-for="(l, i) in diffLines" :key="i" :class="lineClass(l)">{{ l }}
 </span></code></pre>
@@ -325,6 +347,27 @@ const streaming = ref(false);
 const streamingText = computed(() => Object.values(streamBuf.value).join(''));
 const askDraft = ref('');
 const promoting = ref(false);
+const permSheet = ref(false);
+const PERM_LABELS: Record<string, string> = {
+  '': '继承全局', plan_only: '只出方案', readonly: '只读', approve_required: '改动需审批', whitelist_auto: '白名单自动', full: '完全控制',
+};
+const permLabel = computed(() => PERM_LABELS[detail.value?.policy_level || ''] || '继承全局');
+async function pickPerm(level: string) {
+  permSheet.value = false;
+  try {
+    await api.convoUpdate(convoId, { policy_level: level || null });
+    showToast(level ? `权限已切换为 ${PERM_LABELS[level]}` : '权限已切换为继承全局');
+    await load();
+  } catch (e: any) { showFailToast(e.message); }
+}
+async function toggleAutoSwitch() {
+  try {
+    const next = !(detail.value?.auto_switch);
+    await api.convoUpdate(convoId, { auto_switch: next });
+    showToast(next ? '已开启自动切换' : '已关闭自动切换');
+    await load();
+  } catch (e: any) { showFailToast(e.message); }
+}
 async function promoteNow() {
   promoting.value = true;
   try {
@@ -927,5 +970,20 @@ html.light .input-box { background: var(--bg-inset); }
 .input-box .ic:active { color: var(--accent); }
 .send { width: 38px; height: 38px; border-radius: 11px; background: var(--accent); color: var(--accent-text); display: flex; align-items: center; justify-content: center; font-size: 16px; border: none; flex: none; cursor: pointer; font-weight: 700; }
 .send:disabled { opacity: .5; }
+
+
+/* ===== v6：开关/权限面板/断连卡 ===== */
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.switch-row span:first-child { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.switch-row small { font-size: 10px; color: var(--t3, #5f6773); font-weight: 400; }
+.sw { font-size: 12px; padding: 4px 14px; border-radius: 99px; border: 1px solid var(--line-strong); color: var(--t3, #5f6773); }
+.sw.on { background: var(--ok); border-color: var(--ok); color: #fff; }
+.sh-h { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; font-size: 13px; font-weight: 600; color: var(--text-1); }
+.sh-h .x { font-size: 12px; color: var(--t3, #5f6773); font-weight: 400; padding: 4px 8px; }
+.inline.danger { border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel)); color: var(--danger); }
+.comp-meta { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--t3, #5f6773); margin-bottom: 5px; }
+.comp-meta .hint { flex: 1; }
+.comp-meta .stop-ic { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.comp-meta .stop-ic.disabled { opacity: .35; }
 
 </style>

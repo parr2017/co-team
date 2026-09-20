@@ -53,6 +53,9 @@
             >
               <el-option v-for="m in modelOptions" :key="m.id" :label="modelLabel(m)" :value="m.id" />
             </el-select>
+            <span class="auto-sw" title="开启后主模型失败将沿降级链自动换模；关闭则自动重试 10 次后报断连">
+              自动切换<el-switch :model-value="!!detail.auto_switch" size="small" @change="(v: any) => changeAutoSwitch(!!v)" />
+            </span>
             <el-select
               :model-value="detail.policy_level || ''"
               size="small"
@@ -141,6 +144,13 @@
                 <!-- 轮内非工具卡（审批/提问/文件/降级/打断/提示）按原顺序 -->
                 <template v-for="m in turn.items" :key="m.id">
                   <div v-if="m.kind === 'notice'" class="notice">{{ m.text }}</div>
+                  <div v-else-if="m.kind === 'degrade' && m.meta?.broken" class="inline danger">
+                    <span>模型断连</span><span style="flex:1;min-width:0">{{ m.text }}</span>
+                    <el-button size="small" class="fbtn" @click="openModelPop">切换模型</el-button>
+                  </div>
+                  <div v-else-if="m.kind === 'degrade' && m.meta?.recovered" class="inline warn">
+                    <span>已恢复</span><span>{{ m.text }}</span>
+                  </div>
                   <div v-else-if="m.kind === 'degrade'" class="inline warn">
                     <span>降级</span><span>{{ m.text.replace(/^主模型/, '').replace(/，本轮已自动?降级为/, ' → ') }}</span>
                     <el-button size="small" class="fbtn" v-if="detail?.model_id && m.meta?.actual !== detail?.model_id" @click="changeModel(detail!.model_id!)">改回主模型</el-button>
@@ -701,6 +711,29 @@ async function startRename() {
   } catch { /* 取消 */ }
 }
 
+async function openModelPop() {
+  if (!modelOptions.value.length || !detail.value) return;
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `当前主模型不可用。输入要切换到的模型 id（可选：${modelOptions.value.map((m) => m.id).join('、')}）`,
+      '切换模型',
+      { inputValue: detail.value.model_id || '' }
+    );
+    if (value?.trim()) await changeModel(value.trim());
+  } catch { /* 取消 */ }
+}
+
+async function changeAutoSwitch(on: boolean) {
+  if (!detail.value) return;
+  try {
+    await api.convoUpdate(detail.value.id, { auto_switch: on } as any);
+    detail.value.auto_switch = on;
+    ElMessage.success(on ? '已开启自动切换：主模型失败将自动降级' : '已关闭自动切换：主模型失败将自动重试 10 次后报断连');
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  }
+}
+
 async function changePolicy(level: string) {
   if (!detail.value) return;
   try {
@@ -966,6 +999,7 @@ onBeforeUnmount(() => {
 .head-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .model-select { width: 190px; font-family: var(--font-mono); }
 .perm-select { width: 190px; }
+.auto-sw { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-meta); color: var(--text-3); }
 
 .stream { flex: 1; overflow-y: auto; padding: 16px 20px 8px; min-height: 0; }
 .col { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 9px; }

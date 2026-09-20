@@ -230,3 +230,5 @@ redis:
 #   exec_timeout_sec: 180        # 同步命令超时（秒）
 #   max_tool_iter: 15            # 单轮 turn 工具迭代上限
 #   ask_timeout_sec: 3600        # ask_user/命令审批 的等待上限（秒，超时按假设继续/拒绝）
+#   auto_retry_count: 10         # 自动切换关时：主模型失败的同模型重试次数（默认 10）
+#   auto_retry_base_ms: 1000     # 重试退避基数毫秒（指数 2^i 封顶 10×base）

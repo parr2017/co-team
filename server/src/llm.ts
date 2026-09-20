@@ -426,3 +426,48 @@ export function salvageToolCalls(content: string): Record<string, any>[] {
   }
   return calls;
 }
+
+/**
+ * 工具调用形状归一化（2026-09-20「光回复不干活」复盘）：模型在 tool_calls 数组里漂移出
+ * 多种形状——{"tool":"exec",...}、{"name":"exec",...}、OpenAI 函数调用风格
+ * {"function":{"name":"exec","arguments":"{...}"}}。旧解析只认 tool 字段，其余形状被
+ * 静默过滤，模型以为已调用工具、用户只看到口头回复。这里统一归一成 {tool, ...args}。
+ */
+export function normalizeToolCall(raw: unknown): Record<string, any> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, any>;
+  let name = typeof r.tool === 'string' && r.tool.trim() ? r.tool.trim()
+    : typeof r.name === 'string' && r.name.trim() ? r.name.trim() : '';
+  const args: Record<string, any> = { ...r };
+  delete args.tool;
+  delete args.name;
+  delete args.id;
+  delete args.type;
+  // OpenAI 函数调用风格：参数在 function.arguments（JSON 字符串/对象）
+  const fn = r.function;
+  if (fn && typeof fn === 'object' && !Array.isArray(fn)) {
+    if (typeof fn.name === 'string' && fn.name.trim() && !name) name = fn.name.trim();
+    if (typeof fn.arguments === 'string' && fn.arguments.trim()) {
+      try { Object.assign(args, JSON.parse(fn.arguments)); } catch { /* arguments 非法时保留平铺字段 */ }
+    } else if (fn.arguments && typeof fn.arguments === 'object') {
+      Object.assign(args, fn.arguments);
+    }
+    delete args.function;
+  }
+  // 顶层 arguments：字符串 = 漂移形态（合并后删）；对象 = 可能是 mcp__ 工具的参数袋
+  // （discussion/convo 的 MCP 桥读 call.arguments），保留原键同时合并到顶层两不误。
+  if (typeof args.arguments === 'string' && args.arguments.trim()) {
+    try { Object.assign(args, JSON.parse(args.arguments)); } catch { /* 保留原样 */ }
+    delete args.arguments;
+  } else if (args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)) {
+    Object.assign(args, args.arguments);
+  }
+  if (!name) return null;
+  return { tool: name, ...args };
+}
+
+/** 归一化一批 tool_calls（非法项跳过）；非数组输入返回空。 */
+export function normalizeToolCalls(raw: unknown): Record<string, any>[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normalizeToolCall).filter((c): c is Record<string, any> => c !== null);
+}

@@ -7,12 +7,14 @@ import * as path from 'node:path';
 type Behavior = ((entryName: string) => Promise<{ content: string }> | { content: string }) | undefined;
 const behaviors: Behavior[] = [];
 let chatCalls = 0;
+let lastChatMessages: { role: string; content: unknown }[] = [];
 vi.mock('../src/llm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm')>();
   return {
     ...actual,
-    chat: async (entry: any, _messages: unknown, _mt?: number, _temp?: number, signal?: AbortSignal) => {
+    chat: async (entry: any, messages: unknown, _mt?: number, _temp?: number, signal?: AbortSignal) => {
       chatCalls++;
+      lastChatMessages = (messages as { role: string; content: unknown }[]) || [];
       if (signal?.aborted) throw new Error('LLM 调用被外部取消');
       const b = behaviors.shift();
       const run = () => (b ? b(String(entry?.name || '')) : Promise.resolve({ content: JSON.stringify({ reply: '（无行为）' }) }));
@@ -72,7 +74,8 @@ beforeEach(async () => {
   deps = { orchestrator, pool, logger: fakeLogger };
   behaviors.length = 0;
   chatCalls = 0;
-  convo.configureConvo({ permissions: { level: 'full' }, ask_timeout_sec: 2 });
+  lastChatMessages = [];
+  convo.configureConvo({ permissions: { level: 'full' }, ask_timeout_sec: 2, auto_retry_base_ms: 20 });
   getBus().subscribe('coteam:dashboard', () => {});
 });
 
@@ -252,12 +255,13 @@ describe('convo 引擎', () => {
     expect(askMsg?.meta?.status).toBe('answered');
   }, 20000);
 
-  it('模型失败自动降级：主模型 429 → 链上第二模型接管并落降级卡片（pin 不变）', async () => {
+  it('模型失败自动降级（auto_switch 开）：主模型 429 → 链上第二模型接管并落降级卡片（pin 不变）', async () => {
     const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
-    behaviors.push(async (entryName) => {
-      if (entryName === 'fake-model') throw new Error('429 rate limit');
-      return reply('备用模型回复');
-    });
+    await convo.updateConvo(deps, c.id, { auto_switch: true });
+    for (let i = 0; i < 3; i++) {
+      behaviors.push(async () => { throw new Error('429 rate limit'); });
+    }
+    behaviors.push(async () => reply('备用模型回复'));
     await convo.sendConvoMessage(deps, c.id, { text: '随便说点什么' }, { trigger: false });
     await convo.runResponseLoop(deps, c.id);
     const msgs = await convo.getConvoMessages(c.id);
@@ -318,6 +322,32 @@ describe('convo 引擎', () => {
     expect(String(toolMsg?.text)).toContain('失败');
   }, 20000);
 
+  it('自动切换关（默认）：主模型失败自动重试 10 次全败 → 断连卡（不降级）', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    let calls = 0;
+    for (let i = 0; i < 10; i++) behaviors.push(async () => { calls++; throw new Error('429 rate limit'); });
+    await convo.sendConvoMessage(deps, c.id, { text: '说话' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(calls).toBe(10); // 自动重试 10 次（退避 20ms 注入）
+    const msgs = await convo.getConvoMessages(c.id);
+    const broken = msgs.find((m) => m.kind === 'degrade' && (m.meta as any)?.broken);
+    expect(broken).toBeTruthy();
+    expect(String(broken?.text)).toContain('10 次');
+    expect(msgs.some((m) => m.kind === 'degrade' && (m.meta as any)?.actual)).toBe(false); // 未降级
+  }, 20000);
+
+  it('404 模型不存在：不重试直接报错（off）', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    let calls = 0;
+    behaviors.push(async () => { calls++; throw new Error('404 model is not found'); });
+    await convo.sendConvoMessage(deps, c.id, { text: '说话' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(calls).toBe(1); // 404 确定性错误不重试
+    const msgs = await convo.getConvoMessages(c.id);
+    const broken = msgs.find((m) => m.kind === 'degrade' && (m.meta as any)?.broken);
+    expect(String(broken?.text)).toContain('404');
+  }, 20000);
+
   it('plan 步骤清单：write_plan 规划 → update_plan 打勾 → 自动推进下一步', async () => {
     const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
     behaviors.push(() => toolCalls([
@@ -371,4 +401,219 @@ describe('convo 引擎', () => {
     const msgs = await convo.getConvoMessages(c.id);
     expect(msgs.some((m) => m.kind === 'notice' && m.text.includes('自动压缩'))).toBe(true);
   }, 30000);
+
+  it('空输出不会死循环：模型返回空 → 落 turn_complete 终态 notice，loop 正常收尾不再烧轮', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // 模型连续返回空内容（纯空串、无 JSON、无散文）
+    for (let i = 0; i < 5; i++) behaviors.push(() => ({ content: '' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '说点什么' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    // loop 应只消费一条行为（第一轮就落终态退出），且不会用尽后续行为重跑
+    expect(chatCalls).toBeLessThanOrEqual(1);
+    const msgs = await convo.getConvoMessages(c.id);
+    const terminal = msgs.filter((m) => m.kind === 'notice' && (m.meta as any)?.turn_complete);
+    expect(terminal.length).toBe(1); // 只落一次终态 notice，未重复追加
+    expect(msgs[msgs.length - 1].kind).toBe('notice');
+    expect((await convo.getConvo(c.id))?.status).toBe('idle'); // busy 锁已释放
+  }, 20000);
+
+  it('非 JSON 散文不静默冒充成功回复：纠正重试仍散文 → 落 contract_violation + 违约 notice', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // 模型连续散文（纠正重试后仍违约）→ 采纳但明确标注
+    behaviors.push(() => ({ content: '好的，我马上开始处理这个问题，先分析一下再动手。' }));
+    behaviors.push(() => ({ content: '好的，这就去处理。' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '帮我修个 bug' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    const replyMsg = msgs.find((m) => m.kind === 'text' && m.role === 'assistant');
+    expect(replyMsg).toBeTruthy();
+    expect((replyMsg?.meta as any)?.contract_violation).toBe(true); // 明确标注契约违约
+    expect(msgs.some((m) => m.kind === 'notice' && m.text.includes('未按输出契约返回 JSON'))).toBe(true);
+    expect((await convo.getConvo(c.id))?.status).toBe('idle');
+  }, 20000);
+
+  it('工具执行后的散文收尾：直接采纳（不重试白烧调用）且不落误报 notice', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // 第一批：真实工具调用；收尾：散文（轻微违约，但本轮已干活）
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'done.txt', content: 'ok\n' }]));
+    behaviors.push(() => ({ content: '三件事已全部完成，dir 确认文件都在。' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '干活' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(chatCalls).toBe(2); // 工具轮 + 散文收尾直接采纳，无纠正重试
+    expect(fs.readFileSync(path.join(ws, 'done.txt'), 'utf-8')).toBe('ok\n');
+    const msgs = await convo.getConvoMessages(c.id);
+    // 工具执行过的轮次，散文收尾不落违约 notice（E2E 实测误报修复）
+    expect(msgs.some((m) => m.kind === 'notice' && m.text.includes('未执行任何实际改动'))).toBe(false);
+    const finalMsg = msgs.filter((m) => m.kind === 'text' && m.role === 'assistant').pop();
+    expect(finalMsg?.text).toContain('三件事已全部完成');
+  }, 20000);
+
+  it('会话级权限对写文件生效：会话切 readonly 后 write_file 被拒（不再沿用全局策略）', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // 全局 convo 配置是 full；但会话级策略切为 readonly
+    await convo.updateConvo(deps, c.id, { policy_level: 'readonly' });
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'hello.txt', content: 'should not be written\n' }]));
+    behaviors.push(() => reply('收到。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '改文件' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(fs.readFileSync(path.join(ws, 'hello.txt'), 'utf-8')).toBe('hello\n'); // 未被写入
+    const msgs = await convo.getConvoMessages(c.id);
+    const toolMsg = msgs.find((m) => m.kind === 'tool');
+    expect(String(toolMsg?.text)).toContain('✗'); // 写文件被拒
+  }, 20000);
+
+  it('未 pin 时主模型按 professional_weight 选强模型（弱闲聊模型不再优先）', async () => {
+    // 构造池：priority 更优但 professional_weight 低的弱模型 + 强模型
+    const pool = new ModelPool([
+      { id: 'weak', name: 'weak', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'], priority: 1, professional_weight: 10 },
+      { id: 'strong', name: 'strong', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'], priority: 50, professional_weight: 95 },
+    ]);
+    const orchestrator = new Orchestrator({
+      agentsDir: path.join(tmp, 'agents'), modelPool: pool, policy: { level: 'full', whitelistCommands: null, maxTimeSec: 10 },
+      maxRetries: 1, sandboxEnabled: false, gitEnabled: false, branchWorkflow: false,
+    });
+    await orchestrator.loadAgents();
+    const deps2 = { orchestrator, pool, logger: fakeLogger };
+    const c = await convo.createConvo(deps2, { project_id: 'p1' }); // 不 pin 模型
+    behaviors.push(() => reply('强模型回复'));
+    await convo.sendConvoMessage(deps2, c.id, { text: '干活' }, { trigger: false });
+    await convo.runResponseLoop(deps2, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    const finalMsg = msgs.filter((m) => m.kind === 'text' && m.role === 'assistant').pop();
+    expect(finalMsg?.model).toBe('strong'); // 强模型被选中
+  }, 20000);
+
+  it('OpenAI 函数风格 tool_calls 不再被静默丢弃：模型附嘴炮 reply 时工具仍真实执行', async () => {
+    // 「光回复不干活」根因：模型发 {"reply":"正在写入...","tool_calls":[{"function":{"name":"write_file","arguments":"..."}}]}
+    // 旧解析 filter(c.tool) 全丢弃 → 只显示 reply、工具没跑、模型以为已执行。
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => ({
+      content: JSON.stringify({
+        reply: '正在写入实施计划并读取源码，读完立即改。',
+        tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'PLAN.md', content: '# 计划\n' }) } },
+          { id: 'call_2', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'hello.txt' }) } },
+        ],
+      }),
+    }));
+    behaviors.push(() => reply('完成。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '都改了' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    // 工具必须真实执行（这正是旧代码丢掉的）
+    expect(fs.readFileSync(path.join(ws, 'PLAN.md'), 'utf-8')).toBe('# 计划\n');
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'tool' && String(m.text).includes('写入 PLAN.md'))).toBe(true);
+    const finalMsg = msgs.filter((m) => m.kind === 'text' && m.role === 'assistant').pop();
+    expect(finalMsg?.text).toBe('完成。');
+  }, 20000);
+
+  it('{"name":...} 平铺风格 tool_calls 同样执行', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => ({
+      content: JSON.stringify({
+        tool_calls: [{ name: 'write_file', arguments: '{"path":"notes.md","content":"n\\n"}' }],
+      }),
+    }));
+    behaviors.push(() => reply('ok'));
+    await convo.sendConvoMessage(deps, c.id, { text: '记一笔' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(fs.readFileSync(path.join(ws, 'notes.md'), 'utf-8')).toBe('n\n');
+  }, 20000);
+
+  it('引擎级自纠错：纯散文先纠正重试——模型改发 tool_calls 则真实执行且不落违约 notice', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => ({ content: '开始。第一批工具调用现在就发出——写入文件并读取源码，读完立即改。' })); // 散文违约
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'nudged.txt', content: 'done\n' }])); // 纠正后动手
+    behaviors.push(() => reply('已完成。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '都改了' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(fs.readFileSync(path.join(ws, 'nudged.txt'), 'utf-8')).toBe('done\n'); // 纠正后真动手
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'notice' && m.text.includes('未按输出契约返回 JSON'))).toBe(false);
+    expect(msgs.some((m) => m.kind === 'text' && String(m.text).includes('第一批工具调用现在就发出'))).toBe(false); // 嘴炮未入 transcript
+  }, 20000);
+
+  it('引擎级自纠错：形态 B 口头承诺（零工具）先纠正——模型改发 tool_calls 则执行', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => reply('收到，立刻动手。正在写入实施计划并读取尚未审过的源码，读完立即改。')); // 合法 JSON 但纯嘴炮
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'lazy-fixed.txt', content: 'ok\n' }]));
+    behaviors.push(() => reply('已完成。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '开始了吗' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(fs.readFileSync(path.join(ws, 'lazy-fixed.txt'), 'utf-8')).toBe('ok\n');
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'text' && String(m.text).includes('正在写入实施计划'))).toBe(false); // 嘴炮回复被纠正作废
+    // 纠正消息里明确告知"口头承诺不算执行"
+    expect(lastChatMessages.some((m) => m.role === 'user' && String(m.content).includes('口头承诺不算执行'))).toBe(true);
+  }, 20000);
+
+  it('自纠错有界：散文纠正重试仍散文 → 采纳 + 违约 notice，不死循环', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => ({ content: '我马上开始，先分析一下。' }));
+    behaviors.push(() => ({ content: '好的，这就执行。' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '干活' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(chatCalls).toBe(2); // 首次 + 1 次纠正重试，有界
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.filter((m) => m.kind === 'notice' && m.text.includes('仍未恢复')).length).toBe(1);
+    expect((await convo.getConvo(c.id))?.status).toBe('idle');
+  }, 20000);
+
+  it('契约违约散文不进 LLM 历史（防上下文毒化）', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1' });
+    // 第一轮：散文×2 → 违约收场
+    behaviors.push(() => ({ content: '马上动手，第一批已发出。' }));
+    behaviors.push(() => ({ content: '这就执行。' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '干活1' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    // 第二轮：检查发给模型的历史里没有违约散文
+    behaviors.push(() => reply('正常回复。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '干活2' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const historyText = JSON.stringify(lastChatMessages);
+    expect(historyText).not.toContain('第一批已发出');
+    expect(historyText).not.toContain('这就执行');
+  }, 20000);
+
+  it('过去式假完成核验：声称"已创建 X"但工作区无 X → 纠正重试，模型真动手则通过', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // 模型谎称已创建（零工具）→ 引擎核验文件不存在 → 纠正 → 模型真发 tool_calls
+    behaviors.push(() => reply('已确认：`fake-file.txt` 已创建，内容已写入，文件已就绪。'));
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'fake-file.txt', content: 'real\n' }]));
+    behaviors.push(() => reply('这次真的完成了。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '建个文件' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(fs.readFileSync(path.join(ws, 'fake-file.txt'), 'utf-8')).toBe('real\n'); // 纠正后真落盘
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'text' && String(m.text).includes('文件已就绪'))).toBe(false); // 谎言回复被作废
+    expect(lastChatMessages.some((m) => m.role === 'user' && String(m.content).includes('并不存在'))).toBe(true); // 核验结果进纠正消息
+  }, 20000);
+
+  it('过去式假完成核验：纠正后仍撒谎 → 采纳但落"不可当作完成依据"提醒', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => reply('已确认：`missing.txt` 已创建，一切就绪。'));
+    behaviors.push(() => reply('已创建 missing.txt，完成。')); // 纠正后仍假完成
+    await convo.sendConvoMessage(deps, c.id, { text: '建个文件' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(fs.existsSync(path.join(ws, 'missing.txt'))).toBe(false);
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'notice' && m.text.includes('不可当作完成依据'))).toBe(true);
+    expect(msgs.some((m) => m.kind === 'notice' && m.text.includes('missing.txt'))).toBe(true);
+  }, 20000);
+
+  it('引用上一轮真实成果不误伤：文件真实存在时不触发纠正', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // 第一轮：真实写入
+    behaviors.push(() => toolCalls([{ tool: 'write_file', path: 'real.md', content: 'r\n' }]));
+    behaviors.push(() => reply('已创建 real.md。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '写文件' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    // 第二轮：零工具回复引用上轮成果（文件真实存在）→ 不纠正直接采纳
+    behaviors.push(() => reply('real.md 已创建在项目根目录，可以直接查看。'));
+    await convo.sendConvoMessage(deps, c.id, { text: '刚才那个文件呢' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    expect(chatCalls).toBe(3); // 第一轮 2 次（工具+收尾）+ 第二轮 1 次（直接采纳，无纠正调用）
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.filter((m) => m.kind === 'notice' && m.text.includes('不可当作完成依据')).length).toBe(0);
+  }, 20000);
 });

@@ -146,6 +146,24 @@ export class ModelPool {
   }
 
   /**
+   * 协作会话/子智能体的主模型选择（2026-09-20 修复）：normal 档加权随机会在多组 priority=1
+   * 的弱闲聊模型并池时把它们送进 top 档，会话主模型被选成"只会聊天不动手"的模型。
+   * 这里改为按 professional_weight 取强模型（同权重再按有效优先级排序），保证会话主模型
+   * 偏向能干活的高质量模型；容量软避让与 slot 检查逻辑与 selectModel 同源。
+   */
+  selectStrongModel(tags?: string[]): ModelEntry | null {
+    const healthy = this.filterByTags(this.models, tags).filter((m) => this.isHealthy(m));
+    let available = healthy.filter((m) => this.availableSlots(m) > 0);
+    if (available.length === 0) available = this.models.filter((m) => this.isHealthy(m) && this.availableSlots(m) > 0);
+    if (available.length === 0) return null;
+    const open = available.filter((m) => !this.capacityBlocked(m));
+    if (open.length > 0) available = open;
+    return [...available].sort(
+      (a, b) => b.professional_weight - a.professional_weight || this.effectivePriority(a) - this.effectivePriority(b)
+    )[0] || null;
+  }
+
+  /**
    * 严格 image 定点选型（多模态旁路 screenshot/look_image 专用）：只在带 image tag
    * 的健康模型中按 normal 档加权随机，绝不回退全池——纯文本模型收到图只会产出
    * 垃圾结论，宁缺毋滥。无候选（未配置/全忙/冷却）返回 null，由工具层给软错误与
@@ -167,7 +185,7 @@ export class ModelPool {
     return top[top.length - 1];
   }
 
-  /** Ordered degradation list: primary first, then remaining healthy models by priority (capacity-hit endpoint groups sink, 不剔除——全灭时仍可硬撞). */
+  /** 有序降级链：primary 之后按优先级排健康模型（容量命中端点组沉底，不剔除——全灭时仍可硬撞）。 */
   fallbackChain(primary: ModelEntry, tags?: string[]): ModelEntry[] {
     const rest = this.filterByTags(this.models, tags)
       .filter((m) => m !== primary && this.isHealthy(m))

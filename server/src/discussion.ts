@@ -24,7 +24,7 @@
 import { busGet, busSet, busDel, busKeys } from './bus';
 import { emitProgress, addProjectMemory, addAgentMemory, getAgentMemory, getProjectMemory, saveProject, getProject, getTaskGraph, listTaskGraphs } from './store';
 import type { ProjectRecord } from './store';
-import { chat, extractJson, stripCodeFence, salvageToolCalls } from './llm';
+import { chat, extractJson, stripCodeFence, salvageToolCalls, normalizeToolCalls } from './llm';
 import type { LlmResponse } from './llm';
 import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
@@ -1001,7 +1001,8 @@ async function runSpeakerTurn(
     res = outcome.res;
     chosen = outcome.entry;
     parsed = extractJson(res.content);
-    let calls: Record<string, any>[] = Array.isArray(parsed?.tool_calls) ? parsed.tool_calls.filter((c: any) => c && typeof c.tool === 'string') : [];
+    // 2026-09-20 修复：tool_calls 形状归一化（{"name":...}/OpenAI 函数风格不再被静默丢弃）
+    let calls = normalizeToolCalls(parsed?.tool_calls);
     if (!calls.length && !parsed && res.content.includes('"tool"')) {
       calls = salvageToolCalls(res.content);
     }
