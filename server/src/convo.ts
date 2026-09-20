@@ -173,6 +173,14 @@ const ACTION_CLAIM_RE = /(正在(执行|动手|写入|读取|修改|实施|分�
 const CORRECTIVE_JSON_MSG = '纠正：你上一条输出是纯文本，违反输出契约（最终输出必须是纯 JSON，禁止 markdown 代码栅栏和散文）。要动手就发 {"tool_calls":[...]}，要收尾就发 {"reply":"..."}。现在重新输出纯 JSON。';
 const CORRECTIVE_ACT_MSG = '纠正：你上一条只是口头承诺要动手，但没有发出任何 tool_calls——口头承诺不算执行，用户什么都没看到。现在立刻发 {"tool_calls":[...]}，把你要做的第一批动作直接发出来。如果你其实是在等待用户决策，就用 {"reply":"..."} 明确说明你在等什么，不要声称正在执行。';
 
+/**
+ * FC 模式意图叙述句（2026-09-20 实测"想改一下ui"会话）：模型执行完工具轮后用正文说
+ * "让我检查日志…"——只叙述下一步而不发起工具调用，引擎此前当作最终回复收尾，turn 就断在半路。
+ * 窄匹配"让我/我先/接下来我 + 动作动词"句式，防误伤"建议先讨论/我认为"类结论回复。
+ */
+const INTENT_NARRATION_RE = /(让我(先|再)?(检查|看看|看下|查一下|查看|确认|测试|启动|运行|读取|分析|验证|确认一下)|我先(看看|看下|检查|查一下|确认|分析|验证|读取)|接下来我(会|将|要|再)|(先|再)(看看|看下|查一下|检查一下)|我(来看|去看|来查|去查)看?|稍等[，,]\s*我(先|再)?)/;
+const CORRECTIVE_INTENT_MSG = '纠正：你上一条只是用正文叙述了下一步打算（"让我检查…"），但没有发起任何工具调用——叙述不算执行。要继续检查/查看/验证就立刻发起工具调用（read_file / exec / check_page 等）；如果信息已经足够，就给出完整的最终结论（包含你已确认的结果），不要停在"即将做"的半截状态。';
+
 const FILE_LIKE_RE = /[\w\-\\/.]+\.(?:txt|md|json|js|mjs|cjs|ts|tsx|jsx|py|vue|css|scss|html|yaml|yml|toml|go|rs|java|sh|sql)/i;
 
 /**
@@ -695,6 +703,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     // 引擎级自纠错（2026-09-20 二轮）：嘴炮先自动纠正重试一次再采纳，别逼用户手动催
     let proseRetried = false; // 纯散文（extractJson 失败）已纠正重试
     let lazyRetried = false;  // 形态 B 口头承诺动手但零工具已纠正重试
+    let intentRetried = false; // FC 意图叙述句（"让我检查…"）已纠正重试
 
     for (let iter = 0; iter < convoCfg.maxToolIter; iter++) {
       const last = iter === convoCfg.maxToolIter - 1;
@@ -822,6 +831,20 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
           convo_msgs.push({ role: 'assistant', content: res.content });
           convo_msgs.push({ role: 'user', content: CORRECTIVE_ACT_MSG + (falseClaims.length ? ` 另外你声称已创建/写入的 ${falseClaims.join('、')} 在工作区中并不存在——不要虚构完成状态，实际执行后以工具结果为准。` : '') });
           finalParsed = null; // 本条口头承诺作废，重驱动
+          continue;
+        }
+      }
+      // FC 模式意图叙述门（2026-09-20 实测"想改一下ui"会话）：模型执行完工具轮后用正文
+      // 说"让我检查日志…"——只叙述下一步而不发起工具调用，引擎此前当作最终回复收尾，
+      // turn 断在半路。纠正重试一次（有界），让模型要么发起工具、要么给完整结论。
+      if (fc && !calls.length && finalParsed && !intentRetried && !last) {
+        const replyText = String(finalParsed.reply || '');
+        if (replyText && INTENT_NARRATION_RE.test(replyText)) {
+          intentRetried = true;
+          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '模型只叙述了下一步打算但未发起工具调用——引擎已自动纠正重试。', meta: { retry: 'intent', original: replyText.slice(0, 200) } });
+          convo_msgs.push({ role: 'assistant', content: res.content });
+          convo_msgs.push({ role: 'user', content: CORRECTIVE_INTENT_MSG });
+          finalParsed = null;
           continue;
         }
       }

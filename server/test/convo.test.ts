@@ -684,4 +684,19 @@ describe('convo FC 原生工具通道（opencode/ZCode 同款）', () => {
     expect(lastChatMessages.some((m) => m.role === 'user' && String(m.content).includes('口头承诺'))).toBe(true); // 纠正消息进上下文
     expect(msgs.filter((m) => m.kind === 'notice' && m.text.includes('未按输出契约返回 JSON')).length).toBe(0); // FC 不落 JSON 契约 notice
   }, 20000);
+
+  it('FC 路径意图叙述门：工具轮后模型只说"让我检查…" → 纠正重试 → 真发工具 → 完整结论', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    behaviors.push(() => toolCalls([{ tool: 'list_files' }]));            // 工具轮
+    behaviors.push(() => ({ content: '让我检查日志看看服务是否启动成功。' })); // 意图叙述（工具已跑过）
+    behaviors.push(() => toolCalls([{ tool: 'read_file', path: 'hello.txt' }])); // 纠正后真发工具
+    behaviors.push(() => ({ content: 'hello.txt 内容是 hello，服务日志显示启动成功，UI 建议如下：…（完整结论）' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '看下服务' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(lastChatMessages.some((m) => m.role === 'user' && String(m.content).includes('叙述不算执行'))).toBe(true); // 纠正消息进上下文
+    expect(msgs.filter((m) => m.kind === 'tool').length).toBe(2); // 纠正后真发工具
+    const finalMsg = msgs.filter((m) => m.kind === 'text' && m.role === 'assistant').pop();
+    expect(String(finalMsg?.text || '')).toContain('完整结论'); // 最终是完整结论而非半截意图
+  }, 20000);
 });
