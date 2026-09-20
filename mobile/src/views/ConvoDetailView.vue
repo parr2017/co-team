@@ -11,13 +11,13 @@
     </van-nav-bar>
     <div class="projline">{{ detail?.workspace || '（未绑定项目）' }}</div>
 
-    <div ref="streamEl" class="stream">
+    <div ref="streamEl" class="stream" @scroll="onStreamScroll">
       <!-- v5 原生风轮次渲染 -->
       <template v-for="(turn, ti) in turns" :key="ti">
         <div class="day-sep" v-if="turn.user && ti > 0">{{ fmtTime(turn.user.ts) }}</div>
 
         <div v-if="turn.user && turn.user.kind === 'text'" class="u-row">
-          <div class="u-bub">
+          <div class="u-bub" @touchstart="lpStart(turn.user)" @touchend="lpCancel" @touchmove="lpCancel" @contextmenu.prevent="lpStart(turn.user)">
             <div class="plain">{{ turn.user.text }}</div>
             <div v-if="turn.user.meta?.images?.length" class="imgrow">
               <img v-for="(img, i) in turn.user.meta.images" :key="i" class="ph" :src="img.url" @click="previewImg(img.url)" />
@@ -156,6 +156,9 @@
       <van-empty v-if="detail && !detail.messages.length" description="发第一条消息开始协作" />
     </div>
 
+    <!-- 回到底部（离底 >300px 显示） -->
+    <div v-if="showToBottom" class="to-bottom" @click="toBottom">↓</div>
+
     <!-- 输入栏 -->
     <div class="composer" safe-area-inset-bottom>
       <div class="chips" v-if="pendingImages.length || pendingFiles.length">
@@ -175,7 +178,7 @@
       </div>
       <div class="input-flat">
         <div class="input-box">
-          <textarea v-model="draft" rows="1" placeholder="提出后续修改要求…" @keydown.enter.prevent="send" />
+          <textarea v-model="draft" rows="1" placeholder="提出后续修改要求…" @keydown.enter.prevent="send" @input="autoGrow" />
           <span class="ic" @click="imgInput?.click()"><van-icon name="photo-o" /></span>
           <span class="ic" @click="fileInput?.click()"><van-icon name="description" /></span>
           <span class="ic" @click="openAt"><van-icon name="link-o" /></span>
@@ -186,11 +189,15 @@
       </div>
     </div>
 
-    <!-- 模型快切 -->
-    <van-popup v-model:show="modelSheet" position="bottom" round>
+    <!-- 模型快切（半屏 ActionSheet：50vh，带 tags 徽标） -->
+    <van-popup v-model:show="modelSheet" position="bottom" round :style="{ height: '50%' }">
       <div class="sheet">
-        <div class="sh">切换主模型</div>
-        <div v-for="m in models" :key="m.id" class="si mono" :class="{ cur: m.id === detail?.model_id }" @click="pickModel(m.id)">{{ m.name }}{{ m.provider ? ' · ' + m.provider : '' }}</div>
+        <div class="sh">切换主模型（当前 pin：{{ shortModel }}）</div>
+        <div v-for="m in models" :key="m.id" class="si mono" :class="{ cur: m.id === detail?.model_id }" @click="pickModel(m.id)">
+          <span class="si-nm">{{ m.name }}</span>
+          <span class="si-tg">{{ (m.tags || []).map((t: string) => '[' + t + ']').join(' ') }}</span>
+          <span v-if="m.id === detail?.model_id" class="si-pin">当前</span>
+        </div>
       </div>
     </van-popup>
 
@@ -393,7 +400,7 @@ async function promoteNow() {
 const busy = computed(() => !!detail.value && ['running', 'waiting_approval', 'waiting_ask'].includes(detail.value.status));
 const shortModel = computed(() => (detail.value?.model_id || '自动').slice(0, 12));
 
-const models = ref<{ id: string; name: string; provider?: string }[]>([]);
+const models = ref<{ id: string; name: string; provider?: string; tags?: string[] }[]>([]);
 const modelSheet = ref(false);
 const moreSheet = ref(false);
 const renameDlg = ref(false);
@@ -660,6 +667,29 @@ function previewImg(url: string) {
   showImagePreview([url]);
 }
 
+// 长按消息（2026-09-20 修复：lpTarget 此前从未赋值，长按菜单形同虚设）
+let lpTimer: ReturnType<typeof setTimeout> | null = null;
+function lpStart(m: ConvoMessage) {
+  clearTimeout(lpTimer!);
+  lpTimer = setTimeout(() => { lpTarget.value = m; lpSheet.value = true; }, 500);
+}
+function lpCancel() { clearTimeout(lpTimer!); }
+
+function autoGrow(e: Event) {
+  const ta = e.target as HTMLTextAreaElement;
+  ta.style.height = '36px';
+  ta.style.height = Math.min(110, ta.scrollHeight) + 'px';
+}
+
+// 回到底部按钮（离底 >300px 时显示）
+const showToBottom = ref(false);
+function onStreamScroll() {
+  const el = streamEl.value;
+  if (!el) return;
+  showToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight > 300;
+}
+function toBottom() { const el = streamEl.value; if (el) el.scrollTop = el.scrollHeight; }
+
 function lpCopy() {
   lpSheet.value = false;
   if (lpTarget.value) navigator.clipboard?.writeText(lpTarget.value.text).catch(() => {});
@@ -725,7 +755,8 @@ onBeforeUnmount(() => off?.());
 </script>
 
 <style scoped>
-.page { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+.page { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.to-bottom { position: absolute; right: 14px; bottom: 80px; width: 30px; height: 30px; border-radius: 50%; background: var(--bg-raised, #181b21); border: 1px solid var(--line); color: var(--text-2); display: flex; align-items: center; justify-content: center; font-size: 13px; z-index: 5; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
 .nav-title { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
 .mono { font-family: var(--font-mono, monospace); }
 .model-pill { font-size: 11px; color: var(--accent); }
@@ -814,8 +845,12 @@ onBeforeUnmount(() => off?.());
 .send:disabled { opacity: .6; }
 
 .sheet { padding: 12px 0 18px; max-height: 100%; overflow: auto; }
+.si-nm { font-size: 12.5px; }
+.si-tg { font-size: 9.5px; color: var(--text-3, #626a76); margin-left: 8px; }
+.si-pin { margin-left: auto; font-size: 10px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 99px; padding: 2px 9px; }
 .sheet .sh { text-align: center; font-size: 11px; color: var(--text-3); padding: 4px 0 8px; }
 .sheet .si { padding: 13px 18px; font-size: 14px; text-align: center; }
+.sheet .si:has(.si-nm) { display: flex; align-items: center; gap: 8px; text-align: left; font-size: 12.5px; }
 .sheet .si:active { background: var(--bg-inset); }
 .sheet .si.cur { color: var(--accent); }
 .sheet .si.danger { color: var(--danger); }
@@ -909,18 +944,18 @@ onBeforeUnmount(() => off?.());
 
 /* ===== v5 原生风 ===== */
 .nav-title { font-weight: 700; }
-.u-row { display: flex; justify-content: flex-end; margin: 14px 0 6px; }
+.u-row { display: flex; justify-content: flex-end; margin: 6px 0 3px; }
 .u-bub { max-width: 84%; background: linear-gradient(135deg, var(--accent-deep, #ff9349), color-mix(in srgb, var(--accent) 78%, #000)); border-radius: 20px 20px 6px 20px; padding: 10px 15px; font-size: 14.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 html.light .u-bub { background: var(--accent); }
 .u-bub .ph { margin-top: 7px; width: 130px; height: 88px; border-radius: 10px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.25); object-fit: cover; }
 .file-line { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.a { margin: 18px 0 24px; }
+.a { margin: 10px 0 12px; }
 .a-head { display: flex; align-items: baseline; gap: 7px; margin-bottom: 6px; }
 .a-head .nm { font-size: 13px; font-weight: 700; }
 .a-head .md { font-size: 10px; color: var(--t3, #5f6773); }
 .a-head .tm { margin-left: auto; font-family: var(--font-mono, monospace); font-size: 10px; color: var(--t3, #5f6773); }
 .a-head .live { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); align-self: center; animation: livepulse 1.2s infinite; }
-.plan { margin: 10px 0 4px; }
+.plan { margin: 6px 0 3px; }
 .plan-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--t2, #9aa3ae); background: var(--bg-raise, #14161b); border: 1px solid var(--line); border-radius: 99px; padding: 6px 13px; max-width: 100%; }
 .plan-pill .plan-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: livepulse 1.2s infinite; flex: none; }
 .plan-pill .cur { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
@@ -934,22 +969,22 @@ html.light .u-bub { background: var(--accent); }
 .plan-step.in_progress { color: var(--t1); }
 .plan-step.in_progress .mark { color: var(--accent); animation: livepulse 1.2s infinite; }
 .plan-step.blocked .mark { color: var(--danger); }
-.chip { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--t2, #9aa3ae); background: var(--bg-raise, #14161b); border: 1px solid var(--line-soft, #1a1d24); border-radius: 99px; padding: 6px 13px; margin: 8px 0 2px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--t2, #9aa3ae); background: var(--bg-raise, #14161b); border: 1px solid var(--line-soft, #1a1d24); border-radius: 99px; padding: 4px 11px; margin: 6px 0 2px; }
 .chip .st { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 .chip .car { color: var(--t3); font-size: 8px; transition: transform .15s; }
 .chip .car.open { transform: rotate(90deg); }
 .logs { margin: 6px 0 2px; border-radius: 12px; background: var(--bg-raise, #14161b); border: 1px solid var(--line-soft, #1a1d24); padding: 8px 12px; display: flex; flex-direction: column; gap: 1px; }
-.lg { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--t2, #9aa3ae); line-height: 2.1; }
+.lg { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono, monospace); font-size: 11px; color: var(--t2, #9aa3ae); line-height: 1.5; }
 .lg .st { width: 5px; height: 5px; border-radius: 50%; background: var(--ok); flex: none; }
 .lg.err .st { background: var(--danger); }
 .lg .tg { color: var(--t1); flex: none; }
 .lg .ar { color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lg .rs { margin-left: auto; font-size: 10px; flex: none; }
 .lg .rs.good { color: var(--ok); }
-.thinking { font-size: 12.5px; line-height: 1.8; color: var(--t3, #5f6773); border-left: 2px solid var(--line); padding-left: 11px; margin: 10px 0; max-height: 150px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.thinking { font-size: 12.5px; line-height: 1.7; color: var(--t3, #5f6773); border-left: 2px solid var(--line); padding-left: 11px; margin: 6px 0; max-height: 130px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .thinking .lab { font-size: 9.5px; letter-spacing: .16em; margin-bottom: 3px; opacity: .7; }
-.ans { margin-top: 4px; font-size: 15px; line-height: 1.9; overflow-wrap: anywhere; }
-.ans .md :deep(p) { margin: 8px 0; }
+.ans { margin-top: 3px; font-size: 15px; line-height: 1.7; overflow-wrap: anywhere; }
+.ans .md :deep(p) { margin: 5px 0; }
 .ans .md :deep(li) { margin: 5px 0 5px 18px; }
 .ans .md :deep(code) { font-family: var(--font-mono, monospace); font-size: 12.5px; background: var(--bg-raise, #14161b); padding: 2px 7px; border-radius: 6px; }
 .ans .md :deep(pre) { background: var(--bg-raise, #14161b); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.7; overflow-x: auto; margin: 9px 0; }

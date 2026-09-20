@@ -164,7 +164,7 @@ export interface AgentLiveState {
 }
 
 export interface ModelPoolItem {
-  provider?: string; id: string; name: string; }
+  provider?: string; id: string; name: string; tags?: string[]; }
 
 export interface FsListing {
   path: string;

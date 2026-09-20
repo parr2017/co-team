@@ -1051,9 +1051,10 @@ onBeforeUnmount(() => {
 .plain { white-space: pre-wrap; }
 
 /* 轮次块 */
-.turn { margin: 12px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-panel); overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+.turn { margin: 8px 0; border: none; border-radius: 0; background: none; overflow: visible; box-shadow: none; }
+.turn + .turn { border-top: 1px solid var(--line); }
 .turn.live { border-color: color-mix(in srgb, var(--ok) 30%, var(--line)); }
-.turn-head { display: flex; align-items: center; gap: 9px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.turn-head { display: flex; align-items: center; gap: 9px; padding: 4px 4px 2px; border-bottom: none; }
 .t-avatar { width: 24px; height: 24px; border-radius: 7px; background: var(--accent); color: var(--accent-text); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; }
 .t-name { font-size: 14px; font-weight: 600; }
 .t-model { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; }
@@ -1062,9 +1063,9 @@ onBeforeUnmount(() => {
 @keyframes livepulse { 0%,100% { opacity: 1; } 50% { opacity: .2; } }
 
 /* 执行区 */
-.acts { position: relative; padding: 10px 16px 6px; }
-.acts::before { content: ''; position: absolute; left: 23px; top: 18px; bottom: 16px; width: 1px; background: linear-gradient(to bottom, var(--line-strong), transparent); }
-.act-line { position: relative; display: flex; align-items: center; gap: 9px; padding: 5px 8px 5px 22px; border-radius: 7px; font-size: 12px; min-height: 30px; }
+.acts { position: relative; padding: 4px 4px 2px; }
+.acts::before { content: ''; position: absolute; left: 21px; top: 14px; bottom: 12px; width: 1px; background: linear-gradient(to bottom, var(--line-strong), transparent); }
+.act-line { position: relative; display: flex; align-items: center; gap: 9px; padding: 2px 8px 2px 20px; border-radius: 7px; font-size: 12px; min-height: 22px; }
 .act-line:hover { background: var(--bg-inset); }
 .act-line::before { content: ''; position: absolute; left: 3px; top: 50%; transform: translateY(-50%); width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 14%, transparent); }
 .act-line.err::before { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 14%, transparent); }
@@ -1087,9 +1088,9 @@ onBeforeUnmount(() => {
 .think-body { padding: 2px 0 14px; font-size: 12.5px; line-height: 1.85; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; border-left: 2px solid var(--line-strong); margin: 0 18px 0 32px; padding-left: 14px; }
 
 /* 结论 */
-.conclusion { padding: 16px 20px 8px; }
-.conclusion .md { line-height: 1.85; font-size: 15px; overflow-wrap: anywhere; }
-.conclusion .md :deep(p) { margin: 8px 0; }
+.conclusion { padding: 4px 4px 4px; }
+.conclusion .md { line-height: 1.7; font-size: 14.5px; overflow-wrap: anywhere; }
+.conclusion .md :deep(p) { margin: 5px 0; }
 .conclusion .md :deep(li) { margin: 5px 0 5px 20px; color: var(--text-1); }
 .conclusion .md :deep(code) { font-family: var(--font-mono); font-size: 12.5px; background: var(--bg-inset); padding: 2px 6px; border-radius: 5px; border: 1px solid var(--line); }
 .conclusion .md :deep(pre) { background: var(--bg-page); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.75; overflow-x: auto; margin: 10px 0; }
@@ -1108,10 +1109,10 @@ onBeforeUnmount(() => {
 .inline .fbtn { flex: none; }
 .askcard { border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 6%, var(--bg-panel)); color: var(--text-1); }
 .ask-input { flex: 1; min-width: 140px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-inset); color: var(--text-1); font-size: 12px; outline: none; }
-.notice { margin: 8px 16px 0; font-size: 11.5px; color: var(--text-3); }
-.notice.warn { border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--bg-panel)); color: var(--warn); border-radius: 7px; padding: 6px 10px; }
-.notice.think-placeholder { border: none; background: none; padding: 8px 16px 0; }
-.acts-fold { position: relative; padding: 4px 16px 0; }
+.notice { margin: 2px 4px; font-size: 11.5px; color: var(--text-3); }
+.notice.warn { border-left: 2px solid var(--warn); background: none; color: var(--warn); border-radius: 0; padding: 1px 8px; }
+.notice.think-placeholder { border: none; background: none; padding: 2px 4px; }
+.acts-fold { position: relative; padding: 2px 4px 0; }
 .acts-fold > summary { list-style: none; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); padding: 5px 8px; border-radius: 7px; cursor: pointer; user-select: none; }
 .acts-fold > summary:hover { background: var(--bg-inset); }
 .acts-fold > summary .car { font-size: 10px; color: var(--text-3); transition: transform .15s; }
@@ -1158,7 +1159,7 @@ onBeforeUnmount(() => {
 .ops .ts { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3); }
 
 /* 运行中 live 区（嵌轮内） */
-.live-think { padding: 10px 16px 2px; }
+.live-think { padding: 4px 4px 2px; }
 .live-think .lab { font-size: 10.5px; color: var(--text-3); letter-spacing: .14em; margin-bottom: 3px; }
 .live-scroll { max-height: 180px; }
 .cursor { display: inline-block; width: 8px; height: 15px; background: var(--accent); vertical-align: -2px; animation: cursorbk 1s steps(2) infinite; }

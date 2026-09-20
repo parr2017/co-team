@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>移动端对话 UI 重设计预览 — 密排 + 半屏模型选择</title>
+<style>
+:root {
+  /* 与原移动端 style.css 同源配色（暖橙 accent + 五层底色） */
+  --bg: #0c0d10;
+  --bg-raise: #181b21;
+  --bg-overlay: #1d2129;
+  --bg-inset: #0f1115;
+  --bg-panel: #121419;
+  --line: #23272f;
+  --line-strong: #31363f;
+  --text-1: #e9ebee;
+  --text-2: #98a0ab;
+  --text-3: #626a76;
+  --accent: #ff9349;
+  --accent-text: #0c0d10;
+  --accent-soft: rgba(255, 147, 73, .12);
+  --ok: #3fb96f;
+  --warn: #d29922;
+  --err: #e5534b;
+  /* 用户气泡：原移动端渐变橙（accent → accent-press） */
+  --user-bub: linear-gradient(135deg, #ff9349, color-mix(in srgb, #ff9349 78%, #000));
+  --font-mono: 'JetBrains Mono', Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  background: #060708;
+  color: var(--text-1);
+  font: 13px/1.6 -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh;
+}
+/* 手机画框 */
+.phone {
+  width: 375px; height: 760px; background: var(--bg);
+  border: 1px solid #2a2e36; border-radius: 28px; overflow: hidden;
+  display: flex; flex-direction: column; position: relative;
+  box-shadow: 0 12px 48px rgba(0,0,0,.5);
+}
+.note {
+  position: fixed; right: 20px; top: 16px; max-width: 300px;
+  font-size: 11px; color: #6b7280; line-height: 1.7; text-align: right;
+}
+
+/* ---------- 顶栏 ---------- */
+.nav {
+  flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px 8px; border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.nav .back { color: var(--text-2); font-size: 15px; cursor: pointer; }
+.nav .title { flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-pill {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--accent);
+  background: var(--accent-soft); border-radius: 99px; padding: 3px 9px; cursor: pointer; white-space: nowrap;
+}
+.nav .more { color: var(--text-2); font-size: 14px; cursor: pointer; padding: 0 2px; }
+
+.projline {
+  flex-shrink: 0; font-size: 10px; color: var(--text-3); font-family: var(--font-mono);
+  padding: 3px 12px; border-bottom: 1px solid var(--line);
+  background: var(--bg-raise); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---------- 消息流：密排（单轮间距 12px） ---------- */
+.stream { flex: 1; overflow-y: auto; padding: 8px 12px 10px; }
+.turn { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+.turn + .turn { border-top: 1px solid var(--line); padding-top: 6px; }
+
+/* 用户气泡（收紧 padding） */
+.u-row { display: flex; justify-content: flex-end; margin: 3px 0 2px; }
+.u-bub {
+  max-width: 82%; background: var(--user-bub); color: var(--accent-text);
+  border-radius: 20px 20px 6px 20px; padding: 5px 11px; font-size: 13px;
+}
+
+/* 工具折叠 chip：单行 20px（原 line-height 2.1 卡片） */
+.toolfold > summary {
+  list-style: none; display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-2);
+  padding: 2px 6px; min-height: 20px; cursor: pointer; border-radius: 5px;
+}
+.toolfold > summary:hover { background: var(--bg-raise); }
+.toolfold > summary .car { font-size: 8px; color: var(--text-3); transition: transform .12s; }
+.toolfold[open] > summary .car { transform: rotate(90deg); }
+.toolfold > summary .lg-st { color: var(--ok); }
+.toolfold .lg-items { padding: 1px 0 2px 16px; display: flex; flex-direction: column; }
+.toolfold .lg {
+  display: flex; gap: 6px; font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-2); padding: 1px 4px; line-height: 1.4;
+}
+.toolfold .lg .st { color: var(--ok); flex: none; }
+.toolfold .lg .st.err { color: var(--err); }
+.toolfold .lg .tg { color: var(--accent); flex: none; }
+.toolfold .lg .ar { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 思考：单行内联 */
+.think { font-size: 10.5px; color: var(--text-3); padding: 1px 6px; cursor: pointer; }
+.think b { color: var(--text-2); font-weight: 500; }
+
+/* notice：单行内联灰字（不再整块卡片） */
+.line-note { font-size: 10.5px; color: var(--text-2); padding: 1px 6px; border-left: 2px solid var(--warn); margin: 1px 0 1px 6px; }
+
+/* plan 步骤：胶囊 ↔ 勾选清单 */
+.planfold > summary {
+  list-style: none; display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--text-2); padding: 2px 6px; min-height: 20px; cursor: pointer; border-radius: 5px;
+}
+.planfold > summary:hover { background: var(--bg-raise); }
+.planfold > summary .car { font-size: 8px; color: var(--text-3); }
+.planfold > summary .p-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.3s infinite; }
+.planfold > summary .p-cur { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.planfold .p-steps { padding: 2px 0 3px 14px; border-left: 2px solid var(--line); margin: 0 0 2px 8px; }
+.p-step { display: flex; gap: 6px; font-size: 11.5px; padding: 2px 0; color: var(--text-2); align-items: baseline; }
+.p-step .mark { width: 13px; text-align: center; flex: none; font-size: 10px; }
+.p-step.done .mark { color: var(--ok); }
+.p-step.done .txt { text-decoration: line-through; color: var(--text-3); }
+.p-step.cur { color: var(--text-1); }
+.p-step.cur .mark { color: var(--accent); animation: pulse 1.2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* 结论：无气泡全宽直排（line-height 1.7） */
+.ans { padding: 0 2px; font-size: 13px; line-height: 1.7; }
+.ans .md h2 { font-size: 12.5px; color: var(--accent); margin: 5px 0 2px; }
+.ans .md p { margin: 2px 0; }
+.ans .md li { margin: 1px 0 1px 14px; }
+.ans .md code { font-family: var(--font-mono); font-size: 10.5px; background: var(--bg-inset); padding: 1px 4px; border-radius: 3px; }
+.ops { display: flex; gap: 12px; font-size: 10px; color: var(--text-3); padding: 2px 4px; margin-top: 2px; }
+.ops span { cursor: pointer; }
+.ops span:hover { color: var(--accent); }
+
+/* diff 细条 */
+.diffline { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-2); padding: 1px 6px; cursor: pointer; }
+.diffline .add { color: var(--ok); }
+.diffline .del { color: var(--err); }
+
+/* live 区 */
+.live-tool { display: flex; gap: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-2); padding: 1px 6px; align-items: center; }
+.live-tool .ld { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.1s infinite; flex: none; }
+.cursor { display: inline-block; width: 7px; height: 13px; background: var(--accent); vertical-align: -2px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* 回到底部 */
+.to-bottom {
+  position: absolute; right: 14px; bottom: 76px;
+  background: var(--bg-raise); border: 1px solid var(--line); color: var(--text-2);
+  border-radius: 50%; width: 30px; height: 30px; display: none;
+  align-items: center; justify-content: center; cursor: pointer; font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.3);
+}
+
+/* ---------- 输入栏（textarea 自增高） ---------- */
+.composer {
+  flex-shrink: 0; border-top: 1px solid var(--line); background: var(--bg);
+  padding: 7px 10px calc(7px + env(safe-area-inset-bottom));
+  display: flex; align-items: flex-end; gap: 7px;
+}
+.composer .plus {
+  width: 30px; height: 30px; flex: none; border-radius: 50%;
+  background: var(--bg-inset); color: var(--text-2); display: flex; align-items: center; justify-content: center;
+  cursor: pointer; font-size: 15px; border: 1px solid var(--line);
+}
+.composer textarea {
+  flex: 1; background: var(--bg-raise); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text-1); font: 13px/1.5 inherit; padding: 6px 10px; outline: none; resize: none;
+  height: 32px; min-height: 32px; max-height: 110px; overflow-y: auto;
+}
+.composer .send {
+  height: 30px; flex: none; background: var(--accent); color: #fff; border: none;
+  border-radius: 8px; padding: 0 13px; font-size: 12px; cursor: pointer;
+}
+
+/* ---------- 半屏 ActionSheet：选择模型 ---------- */
+.mask {
+  position: absolute; inset: 0; background: rgba(0,0,0,.45);
+  display: none; z-index: 10;
+}
+.mask.show { display: block; }
+.sheet {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 50vh; background: var(--bg-raise); border-radius: 14px 14px 0 0;
+  display: flex; flex-direction: column; z-index: 11;
+  transform: translateY(100%); transition: transform .22s ease;
+}
+.sheet.show { transform: translateY(0); }
+.sheet .sh-head {
+  display: flex; align-items: center; padding: 11px 14px 7px; border-bottom: 1px solid var(--line);
+  font-size: 12.5px; font-weight: 600; flex-shrink: 0;
+}
+.sheet .sh-head .x { margin-left: auto; color: var(--text-3); cursor: pointer; font-size: 13px; }
+.sheet .sh-list { flex: 1; overflow-y: auto; padding: 4px 0 calc(8px + env(safe-area-inset-bottom)); }
+.si {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; cursor: pointer; border-bottom: 1px solid var(--line);
+}
+.si:active { background: var(--bg-inset); }
+.si .nm { font-size: 12.5px; }
+.si .tg { font-size: 9.5px; color: var(--text-3); font-family: var(--font-mono); }
+.si .pin {
+  margin-left: auto; font-size: 10px; color: var(--accent);
+  background: var(--accent-soft); border-radius: 99px; padding: 2px 9px;
+}
+.si .dot-cur { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+/* ---------- 长按消息菜单 ---------- */
+.lp-menu {
+  position: absolute; z-index: 12; background: var(--bg-raise); border: 1px solid var(--line);
+  border-radius: 9px; padding: 2px; display: none; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.lp-menu.show { display: block; }
+.lp-menu div { padding: 7px 16px; font-size: 12px; cursor: pointer; border-radius: 6px; }
+.lp-menu div:hover { background: var(--bg-inset); }
+
+.stream::-webkit-scrollbar { width: 0; }
+.sh-list::-webkit-scrollbar { width: 0; }
+</style>
+</head>
+<body>
+<div class="note">
+  移动端对话重设计预览（375px 模拟）<br>
+  · 点右上模型胶囊 → 半屏 ActionSheet<br>
+  · 长按用户气泡 → 复制/引用菜单<br>
+  · 输入框随内容自增高 · 回到底部按钮
+</div>
+
+<div class="phone">
+  <div class="nav">
+    <span class="back">‹</span>
+    <span class="title">想改一下ui，你有什么建议吗</span>
+    <span class="model-pill" onclick="openModelSheet()">glm-5.3-flash ▾</span>
+    <span class="more">⋯</span>
+  </div>
+  <div class="projline">D:\pxx\projects\uni-account</div>
+
+  <div class="stream" id="stream" onscroll="onScroll()">
+    <!-- turn 1 -->
+    <div class="turn">
+      <div class="u-row"><div class="u-bub" oncontextmenu="lp(event, this)">想改一下ui，你有什么建议吗</div></div>
+
+      <details class="toolfold">
+        <summary><span class="car">▶</span><span class="lg-st">⚙</span>9 步侦查 · 最近 read_file<span style="margin-left:auto;color:var(--text-3)">38s</span></summary>
+        <div class="lg-items">
+          <div class="lg"><span class="st">✓</span><span class="tg">list_files</span><span class="ar">.</span></div>
+          <div class="lg"><span class="st">✓</span><span class="tg">read_file</span><span class="ar">src/pages/login.vue</span></div>
+          <div class="lg"><span class="st">✓</span><span class="tg">read_file</span><span class="ar">src/pages/register.vue</span></div>
+          <div class="lg"><span class="st">✗</span><span class="tg">load_skill</span><span class="ar">vant-ui（未绑定）</span></div>
+        </div>
+      </details>
+
+      <div class="think">思考 <b>· 已读 4 个页面，直接给建议（咨询类不启动服务）</b></div>
+
+      <div class="planfold">
+        <summary><span class="car">▶</span><span class="p-dot"></span>计划 2/5<span class="p-cur">改 login.vue：渐变遮罩 + 表单间距</span></summary>
+        <div class="p-steps">
+          <div class="p-step done"><span class="mark">✓</span><span class="txt">读页面现状</span></div>
+          <div class="p-step done"><span class="mark">✓</span><span class="txt">确认方案</span></div>
+          <div class="p-step cur"><span class="mark">◐</span><span class="txt">改 login.vue</span></div>
+          <div class="p-step"><span class="mark">◌</span><span class="txt">check_page 渲染验证</span></div>
+          <div class="p-step"><span class="mark">◌</span><span class="txt">汇报 diff</span></div>
+        </div>
+      </details>
+
+      <div class="ans">
+        <div class="md">
+          <p>四个主要页面：登录、注册、首页、个人中心。建议：</p>
+          <h2>登录/注册页</h2>
+          <li>背景图加 <code>linear-gradient</code> 遮罩保证可读性</li>
+          <li>表单间距 <code>0 32rpx</code> → <code>0 40rpx</code></li>
+          <h2>首页</h2>
+          <li>功能菜单 2×4 网格，图标 64rpx 统一</li>
+          <p>要我直接改哪一项？说"改登录页"就动手。</p>
+        </div>
+      </div>
+      <div class="ops"><span>📋 复制</span><span>⑂ 分叉</span><span>14:22</span></div>
+
+      <div class="diffline" onclick="alert('展开 diff 明细')">⚙ diff · 2 文件 <span class="add">+38</span> <span class="del">-5</span> ▸</div>
+    </div>
+
+    <!-- turn 2：执行中 live -->
+    <div class="turn">
+      <div class="u-row"><div class="u-bub" oncontextmenu="lp(event, this)">改登录页，按你说的方案来</div></div>
+
+      <div class="live-tool"><span class="ld"></span>正在执行 write_file src/pages/login.vue</div>
+      <div class="live-tool"><span class="ld"></span>正在执行 check_page http://localhost:5173</div>
+      <div class="line-note">首轮已自动创建快照 <b>convo-start</b>，diff 可一键回滚</div>
+
+      <div class="ans"><div class="md"><p>登录页已改完，渲染验证通过：渐变遮罩生效、表单间距统一 40rpx。<span class="cursor"></span></p></div></div>
+    </div>
+  </div>
+
+  <div class="to-bottom" id="toBottom" onclick="scrollBottom()">↓</div>
+
+  <div class="composer">
+    <div class="plus" onclick="alert('附件菜单：图片 / 文件 / @成员')">+</div>
+    <textarea id="ta" rows="1" placeholder="提出后续修改要求…" oninput="autoGrow(this)"></textarea>
+    <button class="send">发送</button>
+  </div>
+
+  <!-- 半屏模型选择 ActionSheet -->
+  <div class="mask" id="mask" onclick="closeModelSheet()"></div>
+  <div class="sheet" id="sheet">
+    <div class="sh-head">选择模型（当前 pin：glm-5.3-flash）<span class="x" onclick="closeModelSheet()">✕</span></div>
+    <div class="sh-list">
+      <div class="si" onclick="pick(this)"><span class="nm">glm-5.3-flash</span><span class="tg">[code] [tools] [vision]</span><span class="pin">当前</span></div>
+      <div class="si" onclick="pick(this)"><span class="nm">deepseek-v4-pro</span><span class="tg">[code] [tools]</span><span class="dot-cur"></span></div>
+      <div class="si" onclick="pick(this)"><span class="nm">Qwen3.8-Flash-Next</span><span class="tg">[code] [tools]</span></div>
+      <div class="si" onclick="pick(this)"><span class="nm">glm-5.2</span><span class="tg">[code] [tools] [vision]</span></div>
+      <div class="si" onclick="pick(this)"><span class="nm">step-5-preview</span><span class="tg">[code]</span></div>
+      <div class="si" onclick="pick(this)"><span class="nm">sensenova-6.8-flash-lite</span><span class="tg">[code]</span></div>
+    </div>
+  </div>
+
+  <!-- 长按消息菜单 -->
+  <div class="lp-menu" id="lpMenu">
+    <div onclick="alert('已复制'); hideLp()">📋 复制</div>
+    <div onclick="alert('已引用到输入框'); hideLp()">↩ 引用回复</div>
+    <div onclick="alert('查看该轮 diff'); hideLp()">⚙ 查看相关 diff</div>
+  </div>
+</div>
+
+<script>
+function openModelSheet() {
+  document.getElementById('mask').classList.add('show');
+  document.getElementById('sheet').classList.add('show');
+}
+function closeModelSheet() {
+  document.getElementById('mask').classList.remove('show');
+  document.getElementById('sheet').classList.remove('show');
+}
+function pick(el) { alert('已切换 pin → ' + el.querySelector('.nm').textContent); closeModelSheet(); }
+
+let lpTimer = null;
+function lp(e, el) {
+  e.preventDefault();
+  const menu = document.getElementById('lpMenu');
+  const r = el.getBoundingClientRect();
+  const phone = document.querySelector('.phone').getBoundingClientRect();
+  menu.style.left = Math.max(8, r.left - phone.left) + 'px';
+  menu.style.top = (r.bottom - phone.top + 4) + 'px';
+  menu.classList.add('show');
+  clearTimeout(lpTimer);
+  lpTimer = setTimeout(hideLp, 3000);
+}
+function hideLp() { document.getElementById('lpMenu').classList.remove('show'); }
+document.addEventListener('click', (e) => { if (!e.target.closest('.lp-menu')) hideLp(); });
+
+function autoGrow(ta) {
+  ta.style.height = '32px';
+  ta.style.height = Math.min(110, ta.scrollHeight) + 'px';
+}
+function onScroll() {
+  const s = document.getElementById('stream');
+  const far = s.scrollHeight - s.scrollTop - s.clientHeight > 300;
+  document.getElementById('toBottom').style.display = far ? 'flex' : 'none';
+}
+function scrollBottom() {
+  const s = document.getElementById('stream');
+  s.scrollTop = s.scrollHeight;
+}
+// 初始贴底
+window.addEventListener('load', () => { const s = document.getElementById('stream'); s.scrollTop = s.scrollHeight; });
+</script>
+</body>
+</html>
