@@ -286,6 +286,10 @@ async function main(): Promise<void> {
   if (heads.restored.length) logger.info('Startup sweep: stale task HEADs restored', { restored: heads.restored });
   if (heads.held.length) logger.warn('Startup sweep: task branches with unmerged commits held', { held: heads.held });
 
+  // 协作会话：上一进程死在 turn 中途遗留的 busyKey/running 状态（无属主会卡住会话），启动即清
+  const { clearStaleConvoLocks } = await import('./convo');
+  await clearStaleConvoLocks(logger);
+
   // improvement 7 (R6): project-specific grading keywords from config.yaml
   if (config.grading) {
     configureGrader(config.grading);

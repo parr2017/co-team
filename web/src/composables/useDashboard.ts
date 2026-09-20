@@ -243,6 +243,8 @@ async function probeUnauthorized() {
 function resyncAfterReconnect() {
   void loadAgents();
   void loadTasks(taskPage.value, taskPageSize.value);
+  // 会话消息不在增量事件补拉范围（ConvoView 监听后 refreshActive 全量拉取）
+  window.dispatchEvent(new CustomEvent('coteam:convo-resync'));
 }
 
 function connectWs() {

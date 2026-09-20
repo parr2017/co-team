@@ -77,7 +77,7 @@
 
           <!-- 轮内非工具卡 -->
           <template v-for="m in turn.items" :key="m.id">
-            <div v-if="m.kind === 'notice'" class="notice">{{ m.text }}</div>
+            <div v-if="m.kind === 'notice'" class="notice" :class="{ warn: (m.meta as any)?.retry || (m.meta as any)?.turn_complete || (m.meta as any)?.stale_reset }">{{ m.text }}</div>
             <div v-else-if="m.kind === 'degrade' && (m.meta as any)?.broken" class="inline danger">模型断连 · {{ m.text }}</div>
         <div v-else-if="m.kind === 'degrade' && (m.meta as any)?.recovered" class="inline warn">已恢复 · {{ m.text }}</div>
         <div v-else-if="m.kind === 'degrade'" class="inline warn">{{ m.text }}</div>
@@ -131,11 +131,19 @@
 
           <!-- 运行中 live -->
           <template v-if="isTurnLive(turn)">
+            <div v-if="toolLive.length" class="logs live-logs">
+              <div v-for="(tl, tli) in toolLive" :key="'tl' + tli" class="lg">
+                <span class="st" />
+                <span class="tg">{{ tl.tool }}</span>
+                <span class="ar">{{ tl.command }}</span>
+                <span class="rs">执行中…</span>
+              </div>
+            </div>
             <div v-if="reasonBuf" class="thinking">
               <div class="lab">思考</div>{{ reasonBuf.slice(-700) }}
             </div>
             <div v-if="streamingText" class="ans"><div class="md"><MdView :source="streamingText" /><span class="cursor" /></div></div>
-            <div v-if="!reasonBuf && !streamingText && !turnActs(turn).length" class="notice">正在思考…</div>
+            <div v-if="!reasonBuf && !streamingText && !toolLive.length" class="notice">正在思考…</div>
           </template>
         </div>
       </template>
@@ -277,6 +285,8 @@ const queuedCount = ref(0);
 const streamEl = ref<HTMLElement>();
 const streamBuf = ref<Record<string, string>>({});
 const reasonBuf = ref('');
+// 工具执行中步骤（convo_tool_start → convo_tool）：实时展示"正在执行…"，批次完成清空
+const toolLive = ref<{ tool: string; command: string }[]>([]);
 
 // v5：轮次分组 + plan/logs 状态
 interface TurnGroup { user?: ConvoMessage; items: ConvoMessage[] }
@@ -671,13 +681,20 @@ onMounted(async () => {
     const p: any = msg.payload || {};
     if (p.convo_id !== convoId) return;
     if (t === 'convo_status' || t === 'convo_tool' || t === 'convo_approval') {
+      if (t === 'convo_tool') toolLive.value = [];
+      if (t === 'convo_status' && p.status !== 'running') { toolLive.value = []; reasonBuf.value = ''; streaming.value = false; }
       load();
+    } else if (t === 'convo_tool_start') {
+      for (const c of p.calls || []) toolLive.value.push({ tool: c.tool || '', command: c.command || c.path || '' });
+      streaming.value = true;
+      nextTick(() => { if (isNearEnd()) scrollEnd(); });
     } else if (t === 'convo_message') {
       const m = p.message;
       if (detail.value && m && !detail.value.messages.some((x) => x.id === m.id)) detail.value.messages.push(m);
       if (m?.role === 'assistant' && m?.kind === 'text') {
         streamBuf.value = {};
         reasonBuf.value = '';
+        toolLive.value = [];
         streaming.value = false;
       }
       nextTick(() => { if (isNearEnd()) scrollEnd(); });
@@ -877,6 +894,9 @@ onBeforeUnmount(() => off?.());
 .inline.ask input { flex: 1; min-width: 100px; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-inset); color: var(--text-1); font-size: 12px; outline: none; }
 .q-inline { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notice { margin: 8px 14px 0; font-size: 10.5px; color: var(--text-3); }
+.notice.warn { color: var(--warn, #e6a23c); border: 1px solid var(--line-soft, #1a1d24); background: var(--bg-raise, #14161b); border-radius: 8px; padding: 6px 10px; }
+.live-logs { margin: 6px 0 2px; }
+.live-logs .lg .st { background: var(--accent, #4b8bff); animation: pulse 1.1s infinite; }
 .interrupt-sep { display: flex; align-items: center; gap: 7px; color: var(--danger); font-size: 10.5px; margin: 8px 14px 0; }
 .interrupt-sep .sq { width: 8px; height: 8px; border: 2px solid var(--danger); border-radius: 2px; flex: none; }
 .interrupt-sep::after { content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--danger) 30%, transparent); }

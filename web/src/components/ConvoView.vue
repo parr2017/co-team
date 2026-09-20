@@ -128,22 +128,29 @@
                   </div>
                 </div>
 
-                <!-- 执行日志 -->
-                <div v-if="turnActs(turn).length" class="acts">
-                  <div v-for="(a, ai) in turnActs(turn)" :key="ai" class="act-line" :class="{ err: !a.ok, live: a.live }">
-                    <span class="tool-tag">{{ a.tool }}</span>
-                    <span class="act-args">{{ a.args }}</span>
-                    <span class="act-res">
-                      <span v-if="a.res" class="pill" :class="{ bad: !a.ok, dim: a.ok && !a.isExit }">{{ a.res }}</span>
-                      <span v-if="a.extra">{{ a.extra }}</span>
-                      <span v-if="a.live">执行中</span>
-                    </span>
+                <!-- 执行日志（默认折叠；执行中的轮次自动展开） -->
+                <details v-if="turnActs(turn).length" class="acts-fold" :open="isTurnLive(turn) || undefined">
+                  <summary class="acts-sum">
+                    <span class="car">▶</span>
+                    <span>执行了 {{ turnActs(turn).length }} 步</span>
+                    <span class="last-tool">{{ turnActs(turn)[turnActs(turn).length - 1]?.tool }}</span>
+                  </summary>
+                  <div class="acts">
+                    <div v-for="(a, ai) in turnActs(turn)" :key="ai" class="act-line" :class="{ err: !a.ok, live: a.live }">
+                      <span class="tool-tag">{{ a.tool }}</span>
+                      <span class="act-args">{{ a.args }}</span>
+                      <span class="act-res">
+                        <span v-if="a.res" class="pill" :class="{ bad: !a.ok, dim: a.ok && !a.isExit }">{{ a.res }}</span>
+                        <span v-if="a.extra">{{ a.extra }}</span>
+                        <span v-if="a.live">执行中</span>
+                      </span>
+                    </div>
                   </div>
-                </div>
+                </details>
 
                 <!-- 轮内非工具卡（审批/提问/文件/降级/打断/提示）按原顺序 -->
                 <template v-for="m in turn.items" :key="m.id">
-                  <div v-if="m.kind === 'notice'" class="notice">{{ m.text }}</div>
+                  <div v-if="m.kind === 'notice'" class="notice" :class="{ warn: m.meta?.retry || m.meta?.turn_complete || m.meta?.stale_reset }">{{ m.text }}</div>
                   <div v-else-if="m.kind === 'degrade' && m.meta?.broken" class="inline danger">
                     <span>模型断连</span><span style="flex:1;min-width:0">{{ m.text }}</span>
                     <el-button size="small" class="fbtn" @click="openModelPop">切换模型</el-button>
@@ -212,6 +219,13 @@
 
                 <!-- 运行中 live 区（嵌在当前轮内） -->
                 <template v-if="isTurnLive(turn)">
+                  <div v-if="toolLive.length" class="acts">
+                    <div v-for="(tl, tli) in toolLive" :key="'tl' + tli" class="act-line live">
+                      <span class="tool-tag">{{ tl.tool }}</span>
+                      <span class="act-args">{{ tl.command }}</span>
+                      <span class="act-res"><span class="pill dim">执行中…</span></span>
+                    </div>
+                  </div>
                   <div v-if="reasoningText" class="live-think">
                     <div class="lab">思考</div>
                     <div class="think-body live-scroll">{{ reasoningText.slice(-1000) }}</div>
@@ -219,7 +233,7 @@
                   <div v-if="streamingText" class="conclusion">
                     <div class="md"><MdView :source="streamingText" /><span class="cursor" /></div>
                   </div>
-                  <div v-if="!reasoningText && !streamingText && !turnActs(turn).length" class="notice" style="padding:8px 16px">正在思考…</div>
+                  <div v-if="!reasoningText && !streamingText && !toolLive.length" class="notice think-placeholder">正在思考…</div>
                 </template>
               </div>
             </template>
@@ -627,6 +641,10 @@ async function forkMsg(m: ConvoMessage) {
 // 思考流（convo_reason）：流式期间累积展示，最终消息到达后清空（回放走 meta.reasoning）
 const reasonBuf = ref('');
 const reasoningText = computed(() => reasonBuf.value);
+
+// 工具执行中步骤（convo_tool_start → convo_tool）：实时展示"正在执行 grep…"，批次完成清空
+const toolLive = ref<{ tool: string; command: string }[]>([]);
+function clearToolLive() { toolLive.value = []; }
 // 本轮 turn 基线：进入 running 时记录消息数，运行卡"执行"区实时显示其后新增的 tool 消息
 const turnBaseline = ref(0);
 const lastStatus = ref('');
@@ -913,9 +931,12 @@ async function previewFile(p: string) {
 
 // ---------- WS 事件 ----------
 let offEvent: (() => void) | null = null;
+function onConvoResync() { if (activeId.value) refreshActive(); }
 onMounted(async () => {
   await loadMeta();
   await loadConvos();
+  // 断线重连补拉（useDashboard resyncAfterReconnect 只补拉 agents/tasks，会话消息靠此兜底）
+  window.addEventListener('coteam:convo-resync', onConvoResync as EventListener);
   offEvent = onEvent((msg) => {
     const t = msg.type || '';
     if (!t.startsWith('convo_')) return;
@@ -923,7 +944,10 @@ onMounted(async () => {
     if (t === 'convo_status') {
       const c = convos.value.find((x) => x.id === p.convo_id);
       if (c) c.status = p.status;
-      if (p.convo_id === activeId.value && detail.value) detail.value.status = p.status;
+      if (p.convo_id === activeId.value && detail.value) {
+        detail.value.status = p.status;
+        if (p.status !== 'running') { reasonBuf.value = ''; clearToolLive(); streaming.value = false; }
+      }
     } else if (t === 'convo_message') {
       const m = p.message;
       if (p.convo_id === activeId.value && detail.value && m) {
@@ -932,6 +956,7 @@ onMounted(async () => {
           // 最终回复替换流式气泡
           for (const k of Object.keys(streamBuf)) delete streamBuf[k];
           reasonBuf.value = '';
+          clearToolLive();
           streaming.value = false;
         }
         nextTick(() => { if (isNearEnd()) scrollEnd(); });
@@ -958,16 +983,25 @@ onMounted(async () => {
       loadConvos();
     } else if (t === 'convo_queued') {
       queuedCounts[p.convo_id] = (queuedCounts[p.convo_id] || 0) + 1;
+    } else if (t === 'convo_tool_start') {
+      // 工具批次开始：实时步骤行（此前整批跑完才见，干活过程零可见）
+      if (p.convo_id === activeId.value) {
+        for (const c of p.calls || []) toolLive.value.push({ tool: c.tool || '', command: c.command || c.path || '' });
+        streaming.value = true;
+        nextTick(() => { if (isNearEnd()) scrollEnd(); });
+      }
     } else if (t === 'convo_approval') {
       if (p.convo_id === activeId.value) refreshActive();
     } else if (t === 'convo_tool') {
       if (p.convo_id === activeId.value) refreshActive();
+      if (p.convo_id === activeId.value) clearToolLive();
     }
   });
 });
 
 onBeforeUnmount(() => {
   offEvent?.();
+  window.removeEventListener('coteam:convo-resync', onConvoResync as EventListener);
 });
 </script>
 
@@ -1075,6 +1109,14 @@ onBeforeUnmount(() => {
 .askcard { border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 6%, var(--bg-panel)); color: var(--text-1); }
 .ask-input { flex: 1; min-width: 140px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--bg-inset); color: var(--text-1); font-size: 12px; outline: none; }
 .notice { margin: 8px 16px 0; font-size: 11.5px; color: var(--text-3); }
+.notice.warn { border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--bg-panel)); color: var(--warn); border-radius: 7px; padding: 6px 10px; }
+.notice.think-placeholder { border: none; background: none; padding: 8px 16px 0; }
+.acts-fold { position: relative; padding: 4px 16px 0; }
+.acts-fold > summary { list-style: none; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); padding: 5px 8px; border-radius: 7px; cursor: pointer; user-select: none; }
+.acts-fold > summary:hover { background: var(--bg-inset); }
+.acts-fold > summary .car { font-size: 10px; color: var(--text-3); transition: transform .15s; }
+.acts-fold[open] > summary .car { transform: rotate(90deg); }
+.acts-fold > summary .last-tool { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
 .interrupt-sep { display: flex; align-items: center; gap: 8px; color: var(--danger); font-size: 11.5px; margin: 10px 16px 0; }
 .interrupt-sep .sq { width: 9px; height: 9px; border: 2px solid var(--danger); border-radius: 2px; flex: none; }
 .interrupt-sep::after { content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--danger) 30%, transparent); }

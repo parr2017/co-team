@@ -418,7 +418,9 @@ export async function promoteConvoMessage(deps: ConvoDeps, convoId: string): Pro
   const busy = !!(await busGet(busyKey(convoId)));
   if (busy) {
     await interruptConvo(deps, convoId);
-    // turn 收尾 finally 会检测 hasPendingUserInput 重触发——排队消息自动被消费
+    // stale 兜底路径已复位 busy；ctrl 路径 abort 未即时生效时 busy 仍在，
+    // 交由 turn 收尾 finally 消费排队——此时强制删锁会造成双 turn 并发，不做
+    if (!(await busGet(busyKey(convoId))) && (await hasPendingUserInput(convoId))) triggerConvoTurn(deps, convoId);
     return { ok: true, promoted: true, interrupted: true };
   }
   const pending = (await busGet<number[]>(pendingKey(convoId))) || [];
@@ -465,9 +467,12 @@ export function triggerConvoTurn(deps: ConvoDeps, convoId: string): void {
   });
 }
 
+/** busy 标记 TTL：正常 turn 由 finally 删除；此处只作崩溃遗留的兜底，10 分钟足够。 */
+const CONVO_BUSY_TTL_MS = 10 * 60 * 1000;
+
 async function acquireBusy(convoId: string): Promise<boolean> {
   const existing = await busGet<number>(busyKey(convoId));
-  if (existing && Date.now() - existing < 24 * 3600 * 1000) return false; // 24h TTL 兜底进程崩溃遗留
+  if (existing && Date.now() - existing < CONVO_BUSY_TTL_MS) return false;
   await busSet(busyKey(convoId), Date.now());
   return true;
 }
@@ -517,19 +522,17 @@ export async function runResponseLoop(deps: ConvoDeps, convoId: string): Promise
   }
 }
 
-/** 停止当前 turn（只停不发）；排队消息保留，下次发消息时继续处理。 */
-export async function stopConvo(deps: ConvoDeps, convoId: string): Promise<void> {
+/** 会话状态写回（runTurnCore 之外的复位入口用）。 */
+async function setConvoStatus(convoId: string, s: ConvoStatus): Promise<void> {
   const convo = await getConvo(convoId);
-  if (!convo) throw new ConvoError(404, `convo not found: ${convoId}`);
-  if (!(await busGet(busyKey(convoId)))) return;
-  await interruptConvo(deps, convoId);
+  if (!convo || convo.status === s) return;
+  convo.status = s;
+  await saveConvo(convo);
+  await emitProgress('convo_status', { convo_id: convoId, status: s });
 }
 
-/** 打断：abort LLM 流与在飞命令 + 作废在飞审批/提问 + kill 本 turn 后台进程。 */
-export async function interruptConvo(deps: ConvoDeps, convoId: string): Promise<void> {
-  const ctrl = turnAborts.get(convoId);
-  if (ctrl) ctrl.abort(new Error('用户打断'));
-  // 在飞审批/提问连带作废（内存 resolver 释放 + KV 记录落终态，回放可见）
+/** 在飞审批/提问连带作废（内存 resolver 释放 + KV 记录落终态，回放可见）。 */
+async function markInterruptedGates(convoId: string): Promise<void> {
   const markApprovals = async () => {
     const all = await loadApprovals(convoId);
     let changed = false;
@@ -559,6 +562,37 @@ export async function interruptConvo(deps: ConvoDeps, convoId: string): Promise<
     askResolvers.delete(askId);
     resolve({ id: askId.split(':')[1], question: '', ts: '', status: 'cancelled', answered_at: new Date().toISOString() });
   }
+}
+
+/** 停止当前 turn（只停不发）；排队消息保留，下次发消息时继续处理。 */
+export async function stopConvo(deps: ConvoDeps, convoId: string): Promise<void> {
+  const convo = await getConvo(convoId);
+  if (!convo) throw new ConvoError(404, `convo not found: ${convoId}`);
+  if (!(await busGet(busyKey(convoId)))) return;
+  await interruptConvo(deps, convoId);
+}
+
+/**
+ * 打断：abort LLM 流与在飞命令 + 作废在飞审批/提问 + kill 本 turn 后台进程。
+ * stale 兜底（2026-09-20）：进程重启/崩溃后 turnAborts 内存空而 busyKey 残留——
+ * 此前 interruptConvo 是静默 no-op，插话/停止毫无反应、状态永远"运行中"。
+ * 现在复位为空闲、落打断卡并重驱动排队消息（插话立即生效）。
+ */
+export async function interruptConvo(deps: ConvoDeps, convoId: string): Promise<void> {
+  const ctrl = turnAborts.get(convoId);
+  if (!ctrl && (await busGet(busyKey(convoId)))) {
+    // stale turn：内存无属主，KV 锁残留 → 复位 + 可见提示 + 消费排队。
+    // 卡片必须是 notice（非 turn 终态）——interrupt 卡会被 hasPendingUserInput
+    // 视为"本轮已收场"，把排在它后面的排队用户消息吞掉，导致插话永远不被消费。
+    await busDel(busyKey(convoId));
+    await setConvoStatus(convoId, 'idle');
+    await markInterruptedGates(convoId);
+    await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '检测到上一进程遗留的挂起轮次，已复位为空闲；排队消息将继续处理。', meta: { stale_reset: true } });
+    if (await hasPendingUserInput(convoId)) triggerConvoTurn(deps, convoId);
+    return;
+  }
+  if (ctrl) ctrl.abort(new Error('用户打断'));
+  await markInterruptedGates(convoId);
   for (const pid of turnBgPids.get(convoId) || []) killPidTree(pid, convoId);
   turnBgPids.delete(convoId);
 }
@@ -571,6 +605,31 @@ function killPidTree(pid: number, ws: string): void {
       process.kill(pid);
     }
   } catch { /* 进程已退出——fine */ }
+}
+
+/**
+ * Server startup：上一进程死在 turn 中途会遗留 busyKey（此前 TTL 24h，会卡住会话一整天）
+ * 与卡死的 running 状态——启动即清扫（镜像 clearStaleDiscussionLocks / restoreStaleTaskHeads）。
+ * 返回清扫的会话数。
+ */
+export async function clearStaleConvoLocks(logger?: { info(msg: string, meta?: unknown): void }): Promise<number> {
+  const busyKeys = await busKeys('convo:*:busy');
+  const cleared = new Set<string>();
+  for (const k of busyKeys) {
+    const id = k.replace(/^convo:/, '').replace(/:busy$/, '');
+    await busDel(k);
+    cleared.add(id);
+  }
+  for (const id of cleared) {
+    const convo = await getConvo(id);
+    if (convo && convo.status !== 'idle') {
+      convo.status = 'idle';
+      await saveConvo(convo);
+      await emitProgress('convo_status', { convo_id: id, status: 'idle' });
+    }
+  }
+  if (cleared.size) logger?.info('cleared stale convo busy locks', { count: cleared.size });
+  return cleared.size;
 }
 
 // ---------- turn 核心 ----------
@@ -682,6 +741,8 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
 
       if (calls.length && !last) {
         void emitProgress('convo_delta', { convo_id: convoId, stream_id: stream.sid, discarded: true });
+        // 工具批次开始即推送（此前整批跑完才发 convo_tool——执行全程用户看不到任何进度）
+        await emitProgress('convo_tool_start', { convo_id: convoId, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })) });
         const results = await runConvoToolCalls(deps, convo, policy, calls, turn, abort.signal, chosen.name);
         if (turn.aborted) break;
         toolRan = true;
@@ -704,6 +765,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
           // 连续散文，直接采纳会把违约写进 transcript 毒化后续轮次）。
           // 工具已执行过的散文收尾是轻微违约，直接采纳不重试（不白烧一次调用）。
           proseRetried = true;
+          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: '模型本轮未按 JSON 契约输出（返回了纯文本），引擎已自动纠正重试。', meta: { retry: 'prose', original: plain.slice(0, 400) } });
           convo_msgs.push({ role: 'assistant', content: res.content });
           convo_msgs.push({ role: 'user', content: CORRECTIVE_JSON_MSG });
           continue;
@@ -719,6 +781,9 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         const falseClaims = findFalseFileClaims(replyText, convo.workspace);
         if (replyText && (ACTION_CLAIM_RE.test(replyText) || falseClaims.length > 0)) {
           lazyRetried = true;
+          await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: falseClaims.length
+            ? `模型口头声称完成但工作区不存在 ${falseClaims.join('、')}——引擎已自动纠正重试。`
+            : '模型口头承诺动手但未调用任何工具——引擎已自动纠正重试。', meta: { retry: 'lazy' } });
           convo_msgs.push({ role: 'assistant', content: res.content });
           convo_msgs.push({ role: 'user', content: CORRECTIVE_ACT_MSG + (falseClaims.length ? ` 另外你声称已创建/写入的 ${falseClaims.join('、')} 在工作区中并不存在——不要虚构完成状态，实际执行后以工具结果为准。` : '') });
           finalParsed = null; // 本条口头承诺作废，重驱动
