@@ -234,10 +234,16 @@ export function grepFiles(workspace: string, pattern: string, subPath?: string):
 
 export function gitLog(workspace: string): { ok: boolean; log?: string; error?: string } {
   try {
-    const result = executeCommand('git log --oneline -20', workspace, { level: 'normal', whitelist_commands: [] } as any);
+    // 注意白名单字段是 camelCase（whitelistCommands）——此前误传 snake_case 导致
+    // canExecute 读到 undefined 抛 TypeError"Cannot read properties of undefined"
+    // （git_diff 已修，git_log 漏修，实测 learn-english 会话报"工具不存在"）
+    const result = executeCommand('git log --oneline -20', workspace, { level: 'normal', whitelistCommands: null, maxTimeSec: 30 } as any);
     return { ok: true, log: result.stdout || '(no commits)' };
   } catch (e: any) {
-    return { ok: false, error: e.message };
+    const msg = String(e?.message || e);
+    // 非 git 工作区给友好提示（首次提交后可用），而非裸命令错误
+    if (/not a git repository|fatal:/i.test(msg)) return { ok: false, error: '工作区不是 git 仓库（git init 并完成首次提交后可用）' };
+    return { ok: false, error: msg };
   }
 }
 

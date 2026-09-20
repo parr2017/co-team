@@ -699,4 +699,49 @@ describe('convo FC 原生工具通道（opencode/ZCode 同款）', () => {
     const finalMsg = msgs.filter((m) => m.kind === 'text' && m.role === 'assistant').pop();
     expect(String(finalMsg?.text || '')).toContain('完整结论'); // 最终是完整结论而非半截意图
   }, 20000);
+
+  it('full 权限放行敏感门：powershell 敏感命令直接执行不 park（strict 仍拦截）', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    await convo.updateConvo(deps, c.id, { policy_level: 'full' });
+    behaviors.push(() => toolCalls([{ tool: 'exec', command: 'powershell -NoProfile -Command \"Get-Date\"' }]));
+    behaviors.push(() => reply('done'));
+    await convo.sendConvoMessage(deps, c.id, { text: '跑个命令' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    // 不应出现审批卡（waiting_approval）——敏感门被 full 豁免
+    expect(msgs.some((m) => m.kind === 'approval')).toBe(false);
+    expect((await convo.getConvo(c.id))?.status).toBe('idle');
+    const toolCard = msgs.find((m) => m.kind === 'tool');
+    expect(toolCard).toBeTruthy();
+  }, 20000);
+
+  it('patchConvo 并发保护：turn 运行中改 policy_level，turn 收尾后不被旧对象覆盖', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // 慢行为挂起 turn，期间用户改权限
+    behaviors.push(async () => { await sleep(300); return reply('第一轮完成'); });
+    await convo.sendConvoMessage(deps, c.id, { text: '第一条消息' }, { trigger: false });
+    const loop = convo.runResponseLoop(deps, c.id).catch(() => {});
+    await waitForStatus(c.id, 'running');
+    await convo.updateConvo(deps, c.id, { policy_level: 'approve_required' });
+    await loop;
+    // turn 收尾（setStatus idle 走 patchConvo 局部写）后 policy_level 保持新值
+    expect((await convo.getConvo(c.id))?.policy_level).toBe('approve_required');
+  }, 20000);
+
+  it('FC 叙述正文不丢弃：同响应叙述+tool_calls → 叙述 text 消息与工具卡都上屏', async () => {
+    process.env.COTEAM_LLM_NATIVE_TOOLS = '1';
+    configureNativeTools(true);
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    // mock：行为返回叙述正文 + tool_calls 混合形态（FC 下模型常见）
+    behaviors.push(() => ({ content: '我先看一下当前文件结构，然后写入。', toolCalls: [{ tool: 'write_file', path: 'fc-narr.txt', content: 'ok\n' }] }));
+    behaviors.push(() => ({ content: '文件已写入完成。' }));
+    await convo.sendConvoMessage(deps, c.id, { text: '写个文件' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'text' && m.role === 'assistant' && String(m.text).includes('先看一下当前文件结构'))).toBe(true); // 叙述保留
+    expect(msgs.some((m) => m.kind === 'tool' && (JSON.stringify((m.meta as any)?.calls || []).includes('write_file') || String(m.text).includes('fc-narr.txt')))).toBe(true); // 工具卡
+    expect(fs.readFileSync(path.join(ws, 'fc-narr.txt'), 'utf-8')).toBe('ok\n');
+    process.env.COTEAM_LLM_NATIVE_TOOLS = '0';
+    configureNativeTools(false);
+  }, 20000);
 });

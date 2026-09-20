@@ -136,7 +136,7 @@
                     <span class="last-tool">{{ turnActs(turn)[turnActs(turn).length - 1]?.tool }}</span>
                   </summary>
                   <div class="acts">
-                    <div v-for="(a, ai) in turnActs(turn)" :key="ai" class="act-line" :class="{ err: !a.ok, live: a.live }">
+                    <div v-for="(a, ai) in turnActs(turn)" :key="ai" class="act-line" :class="{ err: !a.ok, live: a.live }" :title="a.gist || ''">
                       <span class="tool-tag">{{ a.tool }}</span>
                       <span class="act-args">{{ a.args }}</span>
                       <span class="act-res">
@@ -162,14 +162,22 @@
                     <span>降级</span><span>{{ m.text.replace(/^主模型/, '').replace(/，本轮已自动?降级为/, ' → ') }}</span>
                     <el-button size="small" class="fbtn" v-if="detail?.model_id && m.meta?.actual !== detail?.model_id" @click="changeModel(detail!.model_id!)">改回主模型</el-button>
                   </div>
-                  <div v-else-if="m.kind === 'approval'" class="inline danger">
-                    <span>待审批</span><span class="cmd">{{ m.meta?.command || m.text }}</span>
-                    <template v-if="m.meta?.status === 'pending'">
+                  <div v-else-if="m.kind === 'approval'" class="inline danger approval-card">
+                    <div class="ap-row">
+                      <span>待审批</span>
+                      <span class="cmd" :title="m.meta?.command">{{ cmdHead(m.meta?.command || m.text) }}</span>
+                      <el-button v-if="cmdLong(m.meta?.command || m.text)" size="small" class="fbtn" @click="toggleCmdFull(m.id! as string)">查看完整命令 ▸</el-button>
+                      <el-button v-if="cmdLong(m.meta?.command || m.text)" size="small" class="fbtn" @click="copyText(m.meta?.command || m.text)">📋 复制</el-button>
+                    </div>
+                    <pre v-if="cmdFullOpen.has(m.id as string)" class="cmd-full mono">{{ m.meta?.command || m.text }}</pre>
+                    <div class="ap-row" v-if="m.meta?.status === 'pending'">
                       <el-button size="small" class="fbtn" @click="resolveApproval(m.meta!.approval_id, 'reject')">拒绝</el-button>
                       <el-button size="small" class="fbtn" @click="resolveApproval(m.meta!.approval_id, 'always')">总是允许</el-button>
                       <el-button size="small" class="fbtn p" @click="resolveApproval(m.meta!.approval_id, 'once')">批准一次</el-button>
-                    </template>
-                    <span v-else class="act-res"><span class="pill" :class="{ bad: m.meta?.status === 'rejected' }">{{ m.meta?.status === 'rejected' ? '已拒绝' : m.meta?.status === 'approved_always' ? '已授权' : '已执行' }}</span></span>
+                    </div>
+                    <div class="ap-row" v-else>
+                      <span class="act-res"><span class="pill" :class="{ bad: m.meta?.status === 'rejected' }">{{ m.meta?.status === 'rejected' ? '已拒绝' : m.meta?.status === 'approved_always' ? '已授权' : '已执行' }}</span></span>
+                    </div>
                   </div>
                   <div v-else-if="m.kind === 'ask'" class="inline askcard">
                     <span>提问</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ m.text }}</span>
@@ -559,7 +567,16 @@ function turnDuration(turn: TurnGroup): string {
   if (ms <= 0 || ms > 3600_000) return '';
   return ms > 60_000 ? `${Math.round(ms / 6000) / 10}m` : `${Math.round(ms / 100) / 10}s`;
 }
-interface ActLine { tool: string; args: string; res: string; extra?: string; ok: boolean; isExit: boolean; live?: boolean }
+interface ActLine { tool: string; args: string; res: string; extra?: string; ok: boolean; isExit: boolean; live?: boolean; gist?: string }
+/** 工具失败原因分类（2026-09-20：去掉误导的"工具不存在"标签，按真实原因显示） */
+function failLabel(gist: string): string {
+  if (/find text not found/i.test(gist)) return '锚点未匹配';
+  if (/路径越界/.test(gist)) return '🚫 已拦截';
+  if (/directory not found|not found|ENOENT/i.test(gist)) return '路径不存在';
+  if (/Cannot read properties|is not a function|undefined/i.test(gist)) return '引擎错误';
+  if (/不是内部或外部命令|command not found/i.test(gist)) return '命令不存在';
+  return `失败：${gist.slice(0, 40)}`;
+}
 function turnActs(turn: TurnGroup): ActLine[] {
   const lines: ActLine[] = [];
   for (const m of turn.items) {
@@ -569,7 +586,7 @@ function turnActs(turn: TurnGroup): ActLine[] {
       const isExit = /exit \d+/.test(c.output_gist || '');
       let res = '';
       if (isExit) res = (c.output_gist || '').match(/exit \d+/)?.[0] || '';
-      else if (c.ok === false) res = c.tool.startsWith('mcp__') ? 'MCP 失败' : '工具不存在';
+      else if (c.ok === false) res = c.tool.startsWith('mcp__') ? 'MCP 失败' : failLabel(c.output_gist || '');
       else if (c.output_gist) {
         const nums = c.output_gist.match(/^([+-]?\d+[\s,]*)+/);
         res = /^\+\d+/.test(c.output_gist) ? c.output_gist.slice(0, 12) : '';
@@ -580,6 +597,7 @@ function turnActs(turn: TurnGroup): ActLine[] {
         args: c.args_summary || '',
         res, extra: isExit ? (c.output_gist || '').replace(/.*exit \d+\s*·?\s*/, '').slice(0, 10) : '',
         ok: c.ok !== false, isExit,
+        gist: c.ok === false ? (c.output_gist || '') : undefined, // 失败行 title/详情用完整原因
       });
     }
     // 运行中且该批是最后一条 tool 消息 → 追加"执行中"占位行
@@ -627,6 +645,16 @@ function diffStat(patch?: string): { add: number; del: number } {
 }
 async function copyText(t: string) {
   try { await navigator.clipboard.writeText(t); ElMessage.success('已复制'); } catch { /* 剪贴板权限 */ }
+}
+// 审批命令：完整可见 + 查看详情（2026-09-20 实测 learn-english 会话：长命令被省略号截断看不全）
+const CMD_LONG_CHARS = 120;
+function cmdLong(cmd?: string): boolean { return !!cmd && cmd.length > CMD_LONG_CHARS; }
+function cmdHead(cmd: string): string { return cmdLong(cmd) ? cmd.slice(0, 80) + `…（共 ${cmd.length} 字符，点"查看完整命令"）` : cmd; }
+const cmdFullOpen = ref(new Set<string>());
+function toggleCmdFull(id: string) {
+  const s = new Set(cmdFullOpen.value);
+  if (s.has(id)) s.delete(id); else s.add(id);
+  cmdFullOpen.value = s;
 }
 async function forkMsg(m: ConvoMessage) {
   if (!detail.value) return;
@@ -1104,7 +1132,14 @@ onBeforeUnmount(() => {
 .inline { margin: 10px 0 4px; border-radius: 9px; padding: 8px 14px; font-size: 12.5px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .inline.warn { border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--bg-panel)); color: var(--warn); }
 .inline.danger { border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel)); color: var(--danger); }
-.inline .cmd { font-family: var(--font-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inline .cmd { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.approval-card { display: flex; flex-direction: column; gap: 5px; align-items: stretch; }
+.approval-card .ap-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.approval-card .cmd-full {
+  margin: 0; background: var(--bg-page); border: 1px solid var(--line); border-radius: 7px;
+  padding: 9px 11px; font-size: 11.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-all;
+  max-height: 240px; overflow-y: auto;
+}
 .inline .sp { flex: 1; }
 .inline .fbtn { flex: none; }
 .askcard { border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 6%, var(--bg-panel)); color: var(--text-1); }

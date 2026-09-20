@@ -67,7 +67,7 @@
             <span class="car" :class="{ open: logsOpen.has(turn.user?.id || String(ti)) }">▶</span>
           </div>
           <div v-if="turnActs(turn).length && logsOpen.has(turn.user?.id || String(ti))" class="logs">
-            <div v-for="(a, ai) in turnActs(turn)" :key="ai" class="lg" :class="{ err: !a.ok }">
+            <div v-for="(a, ai) in turnActs(turn)" :key="ai" class="lg" :class="{ err: !a.ok }" @click="a.gist && showToast(a.gist)">
               <span class="st" />
               <span class="tg">{{ a.tool }}</span>
               <span class="ar">{{ a.args }}</span>
@@ -83,7 +83,8 @@
         <div v-else-if="m.kind === 'degrade'" class="inline warn">{{ m.text }}</div>
             <div v-else-if="m.kind === 'approval'" class="appr">
               <div class="l1">待审批 · 白名单外命令</div>
-              <div class="cmd mono">{{ m.meta?.command || m.text }}</div>
+              <div class="cmd mono" style="white-space:pre-wrap;word-break:break-all" @click="openCmdFull(m)">{{ cmdHead(m.meta?.command || m.text) }}</div>
+              <div v-if="cmdLong(m.meta?.command || m.text)" class="cmd-more" @click="openCmdFull(m)">查看完整命令 ▸（共 {{ (m.meta?.command || m.text).length }} 字符）</div>
               <div v-if="m.meta?.status === 'pending'" class="acts">
                 <button @click="resolveApproval(m.meta!.approval_id, 'reject')">拒绝</button>
                 <button @click="resolveApproval(m.meta!.approval_id, 'always')">总是允许</button>
@@ -231,6 +232,15 @@
       </div>
     </van-popup>
 
+    <!-- 审批命令完整详情（半屏，等宽完整命令 + 复制） -->
+    <van-popup v-model:show="cmdFullSheet" position="bottom" round :style="{ height: '55%' }">
+      <div class="sheet">
+        <div class="sh-h"><span>完整命令</span><span class="x" @click="cmdFullSheet = false">✕</span></div>
+        <pre class="cmd-full mono">{{ cmdFullDraft }}</pre>
+        <div class="btnrow"><button class="btn-g" @click="cmdFullSheet = false">关闭</button><button class="btn-p" @click="lpCopyRaw(cmdFullDraft)">📋 复制命令</button></div>
+      </div>
+    </van-popup>
+
     <!-- 长按消息 -->
     <van-popup v-model:show="lpSheet" position="bottom" round>
       <div class="sheet">
@@ -327,7 +337,16 @@ function fmtTime(ts: string): string {
   const d = new Date(ts);
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
-interface ActLine { tool: string; args: string; res: string; ok: boolean; isExit: boolean; live?: boolean }
+interface ActLine { tool: string; args: string; res: string; ok: boolean; isExit: boolean; live?: boolean; gist?: string }
+/** 工具失败原因分类（2026-09-20：去掉误导的"不存在"标签，按真实原因显示） */
+function failLabel(gist: string): string {
+  if (/find text not found/i.test(gist)) return '锚点未匹配';
+  if (/路径越界/.test(gist)) return '🚫 已拦截';
+  if (/directory not found|not found|ENOENT/i.test(gist)) return '路径不存在';
+  if (/Cannot read properties|is not a function|undefined/i.test(gist)) return '引擎错误';
+  if (/不是内部或外部命令|command not found/i.test(gist)) return '命令不存在';
+  return `失败：${gist.slice(0, 40)}`;
+}
 function turnActs(turn: TurnGroup): ActLine[] {
   const lines: ActLine[] = [];
   for (const m of turn.items) {
@@ -337,9 +356,9 @@ function turnActs(turn: TurnGroup): ActLine[] {
       const isExit = /exit \d+/.test(c.output_gist || '');
       let res = '';
       if (isExit) res = (c.output_gist || '').match(/exit \d+/)?.[0] || '';
-      else if (c.ok === false) res = c.tool.startsWith('mcp__') ? 'MCP 失败' : '不存在';
+      else if (c.ok === false) res = c.tool.startsWith('mcp__') ? 'MCP 失败' : failLabel(c.output_gist || '');
       else if (/\+\d+(\s*−\d+)?/.test(c.output_gist || '')) res = (c.output_gist || '').match(/\+\d+(\s*−\d+)?/)?.[0] || '';
-      lines.push({ tool: c.tool.startsWith('mcp__') ? 'mcp:' + c.mcp?.server : c.tool, args: c.args_summary || '', res, ok: c.ok !== false, isExit });
+      lines.push({ tool: c.tool.startsWith('mcp__') ? 'mcp:' + c.mcp?.server : c.tool, args: c.args_summary || '', res, ok: c.ok !== false, isExit, gist: c.ok === false ? (c.output_gist || '') : undefined });
     }
     if (busy.value && m === turn.items[turn.items.length - 1]) {
       lines.push({ tool: '…', args: '下一步执行中', res: '', ok: true, isExit: false, live: true });
@@ -696,6 +715,19 @@ function lpCopy() {
   showToast('已复制');
 }
 
+function lpCopyRaw(t: string) {
+  navigator.clipboard?.writeText(t).catch(() => {});
+  showToast('已复制');
+}
+
+// 审批命令：完整可见 + 查看详情（2026-09-20 实测 learn-english 会话：长命令被截断看不全）
+const CMD_LONG_CHARS = 120;
+const cmdFullSheet = ref(false);
+const cmdFullDraft = ref('');
+function cmdLong(cmd?: string): boolean { return !!cmd && cmd.length > CMD_LONG_CHARS; }
+function cmdHead(cmd: string): string { return cmdLong(cmd) ? cmd.slice(0, 80) + '…' : (cmd || ''); }
+function openCmdFull(m: ConvoMessage) { cmdFullDraft.value = (m.meta?.command as string) || m.text; cmdFullSheet.value = true; }
+
 function lpQuote() {
   lpSheet.value = false;
   if (lpTarget.value) draft.value = `> ${lpTarget.value.text.slice(0, 40)}…\n`;
@@ -1035,6 +1067,16 @@ html.light .input-box { background: var(--bg-inset); }
 .sw.on { background: var(--ok); border-color: var(--ok); color: #fff; }
 .sh-h { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 6px; font-size: 13px; font-weight: 600; color: var(--text-1); }
 .sh-h .x { font-size: 12px; color: var(--t3, #5f6773); font-weight: 400; padding: 4px 8px; }
+.cmd-more { font-size: 11px; color: var(--accent); padding: 0 2px 4px; cursor: pointer; }
+.cmd-full {
+  margin: 0 0 8px; background: var(--bg-inset, #0f1115); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; font-size: 11.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-all;
+  color: var(--text-1); max-height: 320px; overflow-y: auto; flex: 1;
+}
+.sheet .btnrow { display: flex; gap: 8px; padding: 0 14px 12px; }
+.sheet .btnrow .btn-g, .sheet .btnrow .btn-p { flex: 1; padding: 9px 0; border-radius: 9px; font-size: 12.5px; }
+.sheet .btnrow .btn-g { border: 1px solid var(--line); background: none; color: var(--text-2, #98a0ab); }
+.sheet .btnrow .btn-p { border: none; background: var(--accent); color: var(--accent-text, #0c0d10); font-weight: 600; }
 .inline.danger { border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel)); color: var(--danger); }
 .comp-meta { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--t3, #5f6773); margin-bottom: 5px; }
 .comp-meta .hint { flex: 1; }

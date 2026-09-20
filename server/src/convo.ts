@@ -258,6 +258,21 @@ async function saveConvo(c: Convo): Promise<void> {
   await busSet(convoKey(c.id), c);
 }
 
+/**
+ * 局部写（2026-09-20 并发覆盖修复）：重读最新 → 只合并目标字段 → 保存。
+ * turn 运行期的 setStatus/快照/ensureTitle 此前用 turn 开始时的旧对象整体
+ * saveConvo——用户并发改的 policy_level/title/auto_switch 被旧值覆盖回去
+ * （实测"改完权限显示还是旧的"）。turn 内所有局部写一律走此函数。
+ */
+async function patchConvo(id: string, patch: Partial<Convo>): Promise<void> {
+  const cur = await getConvo(id);
+  if (!cur) return;
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) (cur as any)[k] = v;
+  }
+  await saveConvo(cur);
+}
+
 export async function listConvos(): Promise<Convo[]> {
   const keys = (await busKeys('convo:*')).filter((k) => !/:messages$|:pending$|:busy$|:approvals$|:always$|:asks$|:undo$/.test(k));
   const out: Convo[] = [];
@@ -666,8 +681,8 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
   const turn = { writes: 0, aborted: false };
 
   const setStatus = async (s: ConvoStatus) => {
-    convo.status = s;
-    await saveConvo(convo);
+    // 局部写：重读最新再合并，不用 turn 开始时的旧对象整体覆盖（并发修改保护）
+    await patchConvo(convoId, { status: s });
     await emitProgress('convo_status', { convo_id: convoId, status: s });
   };
   await setStatus('running');
@@ -678,8 +693,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     if (!convo.snapshot_id && convo.workspace && fs.existsSync(path.join(convo.workspace, '.git'))) {
       try {
         const snap = await createSnapshot(convoId, { tag: 'convo-start', workspace: convo.workspace, note: `协作会话「${convo.title}」首轮自动快照` });
-        convo.snapshot_id = snap.id;
-        await saveConvo(convo);
+        await patchConvo(convoId, { snapshot_id: snap.id });
       } catch (e) {
         deps.logger.warn('convo snapshot failed', { convoId, error: String((e as Error)?.message || e) });
       }
@@ -793,6 +807,12 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
 
       if (calls.length && !last) {
         void emitProgress('convo_delta', { convo_id: convoId, stream_id: stream.sid, discarded: true });
+        // FC 叙述不丢弃（2026-09-20 实测 learn-english 会话）：模型常在同一次响应里输出
+        // 叙述正文 + tool_calls——此前正文被 discarded 清掉（"内容出来马上折叠进执行步骤"），
+        // 现在先固化为 text 消息上屏再落工具卡（LLM 历史原本就含此正文，纯上屏行为修复）
+        if (fc && res.content.trim()) {
+          await appendConvoMessage(convoId, { role: 'assistant', kind: 'text', text: res.content, model: chosen.name });
+        }
         // 工具批次开始即推送（此前整批跑完才发 convo_tool——执行全程用户看不到任何进度）
         await emitProgress('convo_tool_start', { convo_id: convoId, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })) });
         const results = await runConvoToolCalls(deps, convo, policy, calls, turn, abort.signal, chosen.name);
@@ -1312,9 +1332,9 @@ async function runConvoToolCalls(
         if (!steps.length) { results.push({ tool: name, ok: false, error: 'steps 不能为空（3~8 条为宜）' }); continue; }
         const cur = await getConvo(convo.id);
         if (!cur) { results.push({ tool: name, ok: false, error: '会话不存在' }); continue; }
-        cur.plan = { steps: steps.map((t) => ({ text: t, status: 'pending' as const, ts: new Date().toISOString() })), updated_at: new Date().toISOString() };
-        await saveConvo(cur);
-        await emitProgress('convo_plan', { convo_id: convo.id, plan: cur.plan });
+        const plan = { steps: steps.map((t) => ({ text: t, status: 'pending' as const, ts: new Date().toISOString() })), updated_at: new Date().toISOString() };
+        await patchConvo(convo.id, { plan });
+        await emitProgress('convo_plan', { convo_id: convo.id, plan });
         results.push({ tool: name, ok: true, steps: steps.length, note: '已创建步骤清单——每完成一步必须 update_plan 打勾。' });
         records.push({ tool: name, args_summary: steps.join(' / ').slice(0, 120), output_gist: `规划 ${steps.length} 步`, ok: true });
         continue;
@@ -1336,7 +1356,7 @@ async function runConvoToolCalls(
           const next = steps.find((x) => x.status === 'pending');
           if (next) next.status = 'in_progress';
         }
-        await saveConvo(cur);
+        await patchConvo(convo.id, { plan: cur.plan });
         await emitProgress('convo_plan', { convo_id: convo.id, plan: cur.plan });
         const done = steps.filter((x) => x.status === 'done').length;
         results.push({ tool: name, ok: true, progress: `${done}/${steps.length}` });
@@ -1402,7 +1422,10 @@ async function convoExec(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy
   if (cls.strict) return { tool, ok: false, sensitive: true, error: `绝对禁止的命令（${cls.reasons.join('、')}）——任何配置下都不允许执行` };
 
   const always = await sessionAlwaysList(convo.id);
-  const needApproval = !canExecute(policy, command) || (cls.sensitive && !policy.allow_sensitive);
+  // full = 会话目录内完全控制（2026-09-20 实测 learn-english 会话）：除 strict 绝对禁止外
+  // 全部放行——敏感门也豁免（此前 allow_sensitive 是全局开关，会话级 full 管不到它，
+  // powershell 读 BOM 都要审批，用户预期 full 即全部）。目录监狱与 strict 拦截仍生效。
+  const needApproval = policy.level !== 'full' && (!canExecute(policy, command) || (cls.sensitive && !policy.allow_sensitive));
   if (needApproval && !matchesAlways(always, command)) {
     const verdict = await parkForApproval(deps, convo, command);
     if (verdict.status === 'rejected') return { tool, ok: false, error: '用户拒绝执行该命令' };
@@ -1448,7 +1471,8 @@ async function parkForApproval(deps: ConvoDeps, convo: Convo, command: string): 
   list.push(rec);
   await busSet(approvalsKey(convo.id), list.slice(-50));
   const cur = await getConvo(convo.id);
-  if (cur) { cur.status = 'waiting_approval'; await saveConvo(cur); await emitProgress('convo_status', { convo_id: convo.id, status: 'waiting_approval' }); }
+  await patchConvo(convo.id, { status: 'waiting_approval' });
+  await emitProgress('convo_status', { convo_id: convo.id, status: 'waiting_approval' });
   await emitProgress('convo_approval', { convo_id: convo.id, approval: rec });
   await appendConvoMessage(convo.id, { role: 'system', kind: 'approval', text: command, meta: { approval_id: rec.id, command, status: 'pending' } });
 
@@ -1468,7 +1492,8 @@ async function parkForApproval(deps: ConvoDeps, convo: Convo, command: string): 
   });
 
   const cur2 = await getConvo(convo.id);
-  if (cur2) { cur2.status = 'running'; await saveConvo(cur2); await emitProgress('convo_status', { convo_id: convo.id, status: 'running' }); }
+  await patchConvo(convo.id, { status: 'running' });
+  await emitProgress('convo_status', { convo_id: convo.id, status: 'running' });
   return verdict;
 }
 
@@ -1498,8 +1523,8 @@ async function convoAsk(deps: ConvoDeps, convo: Convo, question: string): Promis
   const list = await loadAsks(convo.id);
   list.push(rec);
   await busSet(asksKey(convo.id), list.slice(-100));
-  const cur = await getConvo(convo.id);
-  if (cur) { cur.status = 'waiting_ask'; await saveConvo(cur); await emitProgress('convo_status', { convo_id: convo.id, status: 'waiting_ask' }); }
+  await patchConvo(convo.id, { status: 'waiting_ask' });
+  await emitProgress('convo_status', { convo_id: convo.id, status: 'waiting_ask' });
   await emitProgress('convo_ask', { convo_id: convo.id, ask: rec });
   await appendConvoMessage(convo.id, { role: 'assistant', kind: 'ask', text: question, meta: { ask_id: rec.id, status: 'pending' } });
 
@@ -1519,7 +1544,8 @@ async function convoAsk(deps: ConvoDeps, convo: Convo, question: string): Promis
   });
 
   const cur2 = await getConvo(convo.id);
-  if (cur2) { cur2.status = 'running'; await saveConvo(cur2); await emitProgress('convo_status', { convo_id: convo.id, status: 'running' }); }
+  await patchConvo(convo.id, { status: 'running' });
+  await emitProgress('convo_status', { convo_id: convo.id, status: 'running' });
 
   if (answer.status === 'answered' && answer.answer) return { tool: 'ask_user', ok: true, answer: answer.answer };
   return { tool: 'ask_user', ok: true, answer: '', note: answer.status === 'timeout' ? '超时未回答——请基于合理假设继续，并在回复中明确写出的假设。' : '用户未回答——请基于合理假设继续，并在回复中明确写出的假设。' };
@@ -1605,8 +1631,8 @@ async function maybeCompact(deps: ConvoDeps, convo: Convo): Promise<void> {
     ], undefined, 0.2, undefined, COMPACTION_CAP_MS);
     const summary = res.content.trim().slice(0, 4000);
     if (!summary) return;
-    convo.compaction = { summary, upto_id: slice[slice.length - 1].id, at: new Date().toISOString() };
-    await saveConvo(convo);
+    const compaction = { summary, upto_id: slice[slice.length - 1].id, at: new Date().toISOString() };
+    await patchConvo(convo.id, { compaction });
     await appendConvoMessage(convo.id, { role: 'system', kind: 'notice', text: `长对话自动压缩：${slice.length} 条早期消息已折叠为摘要（最近 ${COMPACTION_KEEP_RAW} 条保持原文），上下文规模得到控制。` });
     deps.logger.info('convo compaction done', { convoId: convo.id, folded: slice.length });
   } catch (e) {
@@ -1620,9 +1646,10 @@ async function ensureTitle(convo: Convo): Promise<void> {
   const msgs = await getConvoMessages(convo.id);
   const firstUser = msgs.find((m) => m.role === 'user' && m.kind === 'text' && m.text.trim());
   if (!firstUser) return;
-  convo.title = firstUser.text.replace(/\s+/g, ' ').trim().slice(0, 24) || convo.title;
-  await saveConvo(convo);
-  await emitProgress('convo_status', { convo_id: convo.id, status: convo.status, title: convo.title });
+  const title = firstUser.text.replace(/\s+/g, ' ').trim().slice(0, 24) || convo.title;
+  // 局部写：重读最新再合并，避免覆盖用户并发修改的 policy_level 等字段
+  await patchConvo(convo.id, { title });
+  await emitProgress('convo_status', { convo_id: convo.id, status: convo.status, title });
 }
 
 /** fork：按消息锚点复制出新会话（工作区/模型/人设/压缩锚点随迁，快照重新累计）。 */
