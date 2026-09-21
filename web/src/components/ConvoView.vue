@@ -150,7 +150,17 @@
 
                 <!-- 轮内非工具卡（审批/提问/文件/降级/打断/提示）按原顺序 -->
                 <template v-for="m in turn.items" :key="m.id">
-                  <div v-if="m.kind === 'notice'" class="notice" :class="{ warn: m.meta?.retry || m.meta?.turn_complete || m.meta?.stale_reset }">{{ m.text }}</div>
+                  <div v-if="m.kind === 'notice' && m.meta?.knowledge_candidate" class="notice cand-card">
+                    <div class="cand-tag">经验候选</div>
+                    <div class="cand-title">{{ m.meta.knowledge_candidate.title }}</div>
+                    <div class="cand-body">{{ m.meta.knowledge_candidate.content }}</div>
+                    <div v-if="!m.meta.knowledge_candidate.confirmed && !m.meta.knowledge_candidate.dismissed" class="cand-actions">
+                      <el-button size="small" type="primary" :loading="confirmingCand === m.id" @click="confirmCandidate(m.id! as string, m.meta.knowledge_candidate)">确认入库</el-button>
+                      <el-button size="small" @click="dismissCandidate(m.id! as string)">忽略</el-button>
+                    </div>
+                    <div v-else class="cand-done">{{ m.meta.knowledge_candidate.confirmed ? '已入库' : '已忽略' }}</div>
+                  </div>
+                  <div v-else-if="m.kind === 'notice'" class="notice" :class="{ warn: m.meta?.retry || m.meta?.turn_complete || m.meta?.stale_reset }">{{ m.text }}</div>
                   <div v-else-if="m.kind === 'degrade' && m.meta?.broken" class="inline danger">
                     <span>模型断连</span><span style="flex:1;min-width:0">{{ m.text }}</span>
                     <el-button size="small" class="fbtn" @click="openModelPop">切换模型</el-button>
@@ -676,6 +686,25 @@ async function forkMsg(m: ConvoMessage) {
 const reasonBuf = ref('');
 /** P0.3：等待/重试瞬时说明（convo_waiting / convo_retry 事件驱动，消息到达即清） */
 const waitNote = ref('');
+/** P1.4 经验候选卡确认中 */
+const confirmingCand = ref('');
+async function confirmCandidate(msgId: string, cand: any) {
+  confirmingCand.value = msgId;
+  try {
+    await api.confirmKnowledge({ title: cand.title, content: cand.content, category: cand.category, project_id: cand.project_id, tags: ['确认经验'], source: cand.source });
+    ElMessage.success('已沉淀到项目知识库');
+    const msg = detail.value?.messages.find((x) => x.id === msgId);
+    if (msg?.meta?.knowledge_candidate) msg.meta.knowledge_candidate.confirmed = true;
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    confirmingCand.value = '';
+  }
+}
+function dismissCandidate(msgId: string) {
+  const msg = detail.value?.messages.find((x) => x.id === msgId);
+  if (msg?.meta?.knowledge_candidate) msg.meta.knowledge_candidate.dismissed = true;
+}
 const reasoningText = computed(() => reasonBuf.value);
 
 // 工具执行中步骤（convo_tool_start → convo_tool）：实时展示"正在执行 grep…"，批次完成清空
@@ -1174,6 +1203,12 @@ onBeforeUnmount(() => {
 .notice { margin: 2px 4px; font-size: 11.5px; color: var(--text-3); }
 .notice.warn { border-left: 2px solid var(--warn); background: none; color: var(--warn); border-radius: 0; padding: 1px 8px; }
 .notice.think-placeholder { border: none; background: none; padding: 2px 4px; }
+.notice.cand-card { border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: var(--r-ctl); background: var(--bg-raised); padding: 8px 10px; color: var(--text-1); }
+.cand-card .cand-tag { font-size: 10px; color: var(--accent); font-family: var(--font-mono); letter-spacing: 0.04em; }
+.cand-card .cand-title { font-size: 12px; font-weight: 600; margin-top: 2px; }
+.cand-card .cand-body { font-size: 11.5px; color: var(--text-3); margin-top: 3px; white-space: pre-wrap; }
+.cand-card .cand-actions { margin-top: 7px; display: flex; gap: 6px; }
+.cand-card .cand-done { margin-top: 7px; font-size: 11px; color: var(--text-3); }
 .acts-fold { position: relative; padding: 2px 4px 0; }
 .acts-fold > summary { list-style: none; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); padding: 5px 8px; border-radius: 7px; cursor: pointer; user-select: none; }
 .acts-fold > summary:hover { background: var(--bg-inset); }

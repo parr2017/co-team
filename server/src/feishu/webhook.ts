@@ -98,6 +98,14 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
         return;
       }
 
+      // P1.4 入站留存：飞书里说的需求细节/偏好此前只进任务描述字符串，会话上下文完全丢失——
+      // 现在环形缓冲留存（最近 50 条），供后续把聊天上下文关联进任务/简报生成
+      try {
+        const inbox = (await busGet<{ ts: string; user: string; text: string; project_id: string }[]>('feishu:inbound')) || [];
+        inbox.push({ ts: new Date().toISOString(), user: msg.userId, text: msg.text.slice(0, 500), project_id: project.id });
+        await busSet('feishu:inbound', inbox.slice(-50), 30 * 24 * 3600);
+      } catch { /* 留存失败不阻塞任务创建 */ }
+
       const { taskId, needsClarification, questions } = await deps.createTask(msg.text, project.workspace, project.id, { level: 'standard' });
       if (needsClarification) {
         await sendText(cfg, msg.chatId, `任务 ${taskId} 需要澄清：\n${(questions || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}\n\n请在 Dashboard 的澄清面板回复。`);

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { showSuccessToast, showFailToast } from 'vant';
 import { api, statusLabel } from '../api';
 import type { TaskGraph } from '../api';
 import { useDashboard } from '../composables/useDashboard';
@@ -34,6 +35,8 @@ async function load() {
     const d = await api.getProject(projectId.value);
     projectName.value = d.name;
     projectTasks.value = d.tasks || [];
+    // P1.1 项目档案字段（ProjectRecord 扩展字段可选存在）
+    project.value = d as unknown as Record<string, string>;
   } catch (e: any) {
     error.value = e.message || '加载失败';
   }
@@ -44,6 +47,50 @@ async function load() {
     projectKnowledge.value = [];
   }
   loading.value = false;
+}
+
+// ---------- P1.1 项目档案（简报 + 结构化字段） ----------
+const project = ref<Record<string, string> | null>(null);
+const showBriefEdit = ref(false);
+const briefSaving = ref(false);
+const briefForm = ref<Record<string, string>>({ description: '', tech_stack: '', conventions: '', domain: '', stage: '', audience: '', brief: '' });
+const briefGenerating = ref(false);
+function openBriefEdit() {
+  briefForm.value = {
+    description: project.value?.description || '',
+    tech_stack: project.value?.tech_stack || '',
+    conventions: project.value?.conventions || '',
+    domain: project.value?.domain || '',
+    stage: project.value?.stage || '',
+    audience: project.value?.audience || '',
+    brief: project.value?.brief || '',
+  };
+  showBriefEdit.value = true;
+}
+async function saveBrief() {
+  briefSaving.value = true;
+  try {
+    await api.updateProject(projectId.value, { ...briefForm.value });
+    showSuccessToast('项目档案已保存');
+    showBriefEdit.value = false;
+    await load();
+  } catch (e: any) {
+    showFailToast(e.message || '保存失败');
+  } finally {
+    briefSaving.value = false;
+  }
+}
+async function genBrief() {
+  briefGenerating.value = true;
+  try {
+    const r = await api.generateProjectBrief(projectId.value);
+    briefForm.value.brief = r.brief;
+    showSuccessToast('简报初稿已生成，可编辑后保存');
+  } catch (e: any) {
+    showFailToast(e.message || '生成失败');
+  } finally {
+    briefGenerating.value = false;
+  }
 }
 
 onMounted(() => {
@@ -161,6 +208,24 @@ function goCreate() {
         <div v-if="stats.waitingMe" class="stat-waiting">⚠ {{ stats.waitingMe }} 个任务需要你处理（审批/澄清/确认）</div>
       </div>
 
+      <!-- P1.1 项目档案（简报 + 结构化字段，双端一致） -->
+      <div class="wx-caption">项目档案</div>
+      <div class="wx-group">
+        <div class="brief-card" @click="openBriefEdit">
+          <div class="brief-head">
+            <span class="brief-lb">项目简报{{ project?.brief_updated_at ? ' · ' + (project.brief_updated_at || '').slice(5, 10) + ' 更新' : '' }}</span>
+            <span class="brief-edit">编辑</span>
+          </div>
+          <div v-if="project?.brief" class="brief-body">{{ project.brief.slice(0, 160) }}{{ project.brief.length > 160 ? '…' : '' }}</div>
+          <div v-else class="brief-body dim">未生成 — 点「编辑」用 AI 从项目材料生成，也可手填结构化字段</div>
+          <div v-if="project?.tech_stack || project?.conventions || project?.domain" class="brief-fields">
+            <span v-if="project?.tech_stack" class="exp-tag">{{ project.tech_stack }}</span>
+            <span v-if="project?.domain" class="exp-tag">{{ project.domain }}</span>
+            <span v-if="project?.stage" class="exp-tag">{{ project.stage }}</span>
+          </div>
+        </div>
+      </div>
+
       <div class="wx-caption">项目任务</div>
       <div class="wx-group task-group">
         <div v-if="!sorted.length" class="t-empty">暂无任务，点右上角 + 下发</div>
@@ -194,6 +259,36 @@ function goCreate() {
         </div>
       </div>
     </div>
+
+    <!-- P1.1 项目档案编辑（双端一致） -->
+    <van-popup v-model:show="showBriefEdit" position="bottom" round :style="{ maxHeight: '85%' }">
+      <div class="brief-editor">
+        <div class="be-title">项目档案</div>
+        <van-cell-group inset>
+          <van-field v-model="briefForm.description" label="一句话" placeholder="这个项目是做什么的" />
+          <van-field v-model="briefForm.tech_stack" label="技术栈" placeholder="如 Vue3 + TS" />
+          <van-field v-model="briefForm.conventions" label="约定" placeholder="编码/协作约定" />
+          <van-field v-model="briefForm.domain" label="领域" placeholder="业务域" />
+          <van-field v-model="briefForm.stage" label="阶段" placeholder="原型/开发/维护" />
+          <van-field v-model="briefForm.audience" label="受众" placeholder="目标用户" />
+        </van-cell-group>
+        <div class="be-bar">
+          <van-button size="small" :loading="briefGenerating" @click="genBrief">AI 生成简报</van-button>
+        </div>
+        <van-field
+          v-model="briefForm.brief"
+          type="textarea"
+          rows="6"
+          autosize
+          label="简报"
+          label-align="top"
+          placeholder="项目简报（AI 生成后可编辑；每次任务/会话/讨论前注入）"
+        />
+        <div class="be-bar save">
+          <van-button size="small" type="primary" :loading="briefSaving" @click="saveBrief">保存档案</van-button>
+        </div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -214,6 +309,19 @@ function goCreate() {
 
 /* stat header: big-number hierarchy like WeChat pay cards */
 .stat-card { padding: 18px 16px 16px; }
+
+/* P1.1 项目档案卡 */
+.brief-card { padding: 12px 14px; }
+.brief-head { display: flex; justify-content: space-between; align-items: center; }
+.brief-lb { font-size: var(--fs-aux); color: var(--text-2); font-weight: 600; }
+.brief-edit { font-size: var(--fs-aux); color: var(--accent); }
+.brief-body { font-size: var(--fs-aux); color: var(--text-3); margin-top: 5px; line-height: 1.5; }
+.brief-body.dim { color: var(--text-3); opacity: 0.75; }
+.brief-fields { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.brief-editor { padding: 14px 0 20px; max-height: 80vh; overflow-y: auto; }
+.be-title { font-size: 15px; font-weight: 600; text-align: center; padding: 4px 0 10px; }
+.be-bar { padding: 10px 16px 4px; display: flex; gap: 8px; }
+.be-bar.save { justify-content: flex-end; padding-bottom: 12px; }
 .stat-row { display: flex; gap: 8px; margin-bottom: 14px; }
 .stat-item { flex: 1; text-align: center; }
 .stat-num { font-size: 26px; font-weight: 700; color: var(--text); line-height: 1.1; font-variant-numeric: tabular-nums; }

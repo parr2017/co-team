@@ -44,6 +44,17 @@
                   {{ String(row.m.meta.convert_confirm.state) === 'confirmed' ? `✓ 已确认开工${row.m.meta.convert_confirm.task_id ? `，任务 ${row.m.meta.convert_confirm.task_id}` : ''}` : '✕ 已取消，继续讨论' }}
                 </div>
               </div>
+              <!-- P1.4 经验候选卡（双端一致）：确认入库 / 忽略 -->
+              <div v-else-if="row.m.kind === 'card' && row.m.meta?.knowledge_candidate" class="sys-card cand-card">
+                <div class="cand-tag">经验候选</div>
+                <div class="cand-title">{{ row.m.meta.knowledge_candidate.title }}</div>
+                <div class="cand-body">{{ row.m.meta.knowledge_candidate.content }}</div>
+                <div v-if="!row.m.meta.knowledge_candidate.confirmed && !row.m.meta.knowledge_candidate.dismissed" class="cand-actions">
+                  <el-button size="small" type="primary" :loading="confirmingCand === row.m.id" @click="confirmCand(row.m.id, row.m.meta.knowledge_candidate)">确认入库</el-button>
+                  <el-button size="small" @click="dismissCand(row.m.id, row.m.meta.knowledge_candidate)">忽略</el-button>
+                </div>
+                <div v-else class="done-line" :class="row.m.meta.knowledge_candidate.confirmed ? 'ok' : ''">{{ row.m.meta.knowledge_candidate.confirmed ? '已入库' : '已忽略' }}</div>
+              </div>
               <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
               <div v-else-if="row.m.kind === 'notice'" class="notice"><span class="ic">⚙</span><span>{{ row.m.text }}</span></div>
               <div v-else class="sysline"><span>{{ row.m.text }}</span></div>
@@ -379,6 +390,24 @@ async function sendAskAnswer(bridge: { task_id: string; ask_id: string }) {
 }
 
 const { current, busy, thinking, activity, waitNote, streams, liveTools, memberActivity, send, react, round, stop, setMode, roles } = useDiscussion();
+
+// ---------- P1.4 经验候选卡（双端一致） ----------
+const confirmingCand = ref('');
+async function confirmCand(msgId: string, cand: any) {
+  confirmingCand.value = msgId;
+  try {
+    await api.confirmKnowledge({ title: cand.title, content: cand.content, category: cand.category, project_id: cand.project_id, tags: ['确认经验'], source: cand.source });
+    ElMessage.success('已沉淀到项目知识库');
+    cand.confirmed = true;
+  } catch (e: any) {
+    ElMessage.error(e.message);
+  } finally {
+    confirmingCand.value = '';
+  }
+}
+function dismissCand(_msgId: string, cand: any) {
+  cand.dismissed = true;
+}
 const mode = computed(() => (current.value?.mode as string) || 'manual');
 
 // ---------- 转任务确认卡（agent 发起 → 用户拍板） ----------
@@ -916,6 +945,12 @@ watch(() => current.value?.id, (id) => {
   border: 1px solid var(--line-strong); border-radius: var(--r-panel); padding: 8px 16px;
   max-width: 80%; text-align: center;
 }
+/* P1.4 经验候选卡 */
+.sys-card.cand-card { text-align: left; border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.cand-card .cand-tag { font-size: 10px; color: var(--accent); font-family: var(--font-mono); letter-spacing: 0.04em; }
+.cand-card .cand-title { font-size: var(--fs-sub, 13px); font-weight: 600; margin-top: 3px; color: var(--text-1); }
+.cand-card .cand-body { font-size: 12px; color: var(--text-3); margin-top: 4px; white-space: pre-wrap; }
+.cand-card .cand-actions { margin-top: 8px; display: flex; gap: 6px; justify-content: flex-end; }
 .notice {
   display: flex; gap: 9px; align-items: flex-start; max-width: 640px; margin: 8px auto;
   padding: 8px 12px; border-radius: var(--r-panel);

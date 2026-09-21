@@ -36,6 +36,8 @@ export interface ApiContext {
   taskQueue: TaskQueueManager;
   /** feature: 每日问题报告 — scanner handle so the PUT config route can hot-reload it */
   dailyReportScanner?: { reload(enabled: boolean, hour: number): void };
+  /** P1.5 Dream 整理线程 — graceful shutdown handle */
+  stopDreamScanner?: () => void;
   /** 外部 MCP 服务管理器（MCP client）；未配置=undefined，mcp 配置路由按空列表处理 */
   mcp?: McpManager;
 }
@@ -217,6 +219,52 @@ export function createApi(ctx: ApiContext): Hono {
     if (!body.text) throw new HttpError(400, 'text is required');
     await addProjectMemory(id, body.text, 'manual');
     return c.json({ status: 'added' });
+  });
+
+  // P1.1：项目元数据编辑（结构化字段 + 简报，字段白名单防整对象覆盖）
+  app.put('/api/projects/:id', async (c) => {
+    const { updateProject } = await import('../store');
+    const body = await readJsonAuto<{ name?: string; description?: string; tech_stack?: string; conventions?: string; domain?: string; stage?: string; audience?: string; brief?: string }>(c);
+    const updated = await updateProject(c.req.param('id'), body);
+    if (!updated) throw new HttpError(404, 'project not found');
+    return c.json({ status: 'updated', project: updated });
+  });
+
+  // P1.1：项目简报初稿生成（LLM 从 description/记忆/知识/任务汇总；用户可在 UI 再编辑）
+  app.post('/api/projects/:id/brief', async (c) => {
+    const { getProject, listProjectTasks, getProjectMemory, updateProject } = await import('../store');
+    const { listKnowledge } = await import('../knowledge');
+    const { chat } = await import('../llm');
+    const { extractJson, stripCodeFence } = await import('../llm');
+    const id = c.req.param('id');
+    const proj = await getProject(id);
+    if (!proj) throw new HttpError(404, 'project not found');
+    const [memory, tasks, knowledge] = await Promise.all([
+      getProjectMemory(id, 30),
+      listProjectTasks(id),
+      Promise.resolve(listKnowledge({ category: 'project', project_id: id, limit: 10 })),
+    ]);
+    const entry = ctx.modelPool.selectStrongModel() ?? ctx.modelPool.selectStrongModel(['code']);
+    if (!entry) throw new HttpError(503, '模型池无可用模型，无法生成简报');
+    const facts = [
+      `项目名：${proj.name}`,
+      proj.description ? `描述：${proj.description}` : '',
+      proj.tech_stack ? `技术栈：${proj.tech_stack}` : '',
+      proj.domain ? `领域：${proj.domain}` : '',
+      proj.audience ? `受众：${proj.audience}` : '',
+      proj.stage ? `阶段：${proj.stage}` : '',
+      memory.length ? `项目记忆（最近 ${Math.min(10, memory.length)} 条）：\n${memory.slice(-10).map((m) => `- ${m.text}`).join('\n')}` : '',
+      knowledge.length ? `知识库条目：\n${knowledge.slice(0, 5).map((k) => `- 《${k.title}》${k.content.slice(0, 120)}`).join('\n')}` : '',
+      tasks.length ? `历史任务：${tasks.slice(0, 8).map((t) => `${t.description?.slice(0, 60) || t.task_id}（${t.status}）`).join('；')}` : '',
+    ].filter(Boolean).join('\n');
+    const res = await chat(entry, [
+      { role: 'system', content: '你是项目档案管理员。根据给定的项目材料写一份《项目简报》（Markdown，300-600 字），供 AI 协作系统在每次任务前注入作为项目概念基准。必须包含以下小节：## 一句话定位、## 技术栈与架构要点、## 关键约定（编码/协作规范）、## 当前状态与进行中的事、## 注意事项（踩坑与经验）。忠实于材料，材料中没有的写「暂无记录」，禁止编造。直接输出 Markdown 正文，无代码栅栏。' },
+      { role: 'user', content: facts },
+    ], undefined, 0.2);
+    const brief = stripCodeFence(res.content).trim();
+    if (!brief) throw new HttpError(502, '简报生成结果为空，请重试');
+    const updated = await updateProject(id, { brief, brief_updated_at: new Date().toISOString() });
+    return c.json({ status: 'generated', brief, project: updated });
   });
 
   // ---------- tasks ----------
@@ -1156,8 +1204,9 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- knowledge base (improvement 3) ----------
 
   app.get('/api/knowledge', async (c) => {
-    const { listKnowledge, searchKnowledgeHybrid, listStaleKnowledge } = await import('../knowledge');
-    const category = c.req.query('category') as 'general-tech' | 'project' | undefined;
+    const { listKnowledge, searchKnowledgeHybrid, listStaleKnowledge, isValidCategory } = await import('../knowledge');
+    const categoryRaw = c.req.query('category') || '';
+    const category = isValidCategory(categoryRaw) ? categoryRaw : undefined;
     const projectId = c.req.query('project_id') || undefined;
     const q = c.req.query('q') || '';
     // source filter: e.g. source=discussion:<id> lists experiences deposited by one group discussion
@@ -1178,15 +1227,15 @@ export function createApi(ctx: ApiContext): Hono {
   });
 
   app.post('/api/knowledge', async (c) => {
-    const { writeKnowledge, listKnowledge, categoryDir } = await import('../knowledge');
+    const { writeKnowledge, listKnowledge, categoryDir, isValidCategory } = await import('../knowledge');
     const body = await readJsonAuto<{ title?: string; content?: string; category?: string; project_id?: string; tags?: string[] }>(c);
     if (!body.title || !body.content) throw new HttpError(400, 'title and content are required');
+    const category = isValidCategory(body.category) ? body.category : 'general-tech';
     try {
       // governance: semantic near-duplicate — when the embedding model is configured,
       // a ≥0.95 cosine match updates the existing entry instead of creating a copy
       if ((await import('../embeddings')).embeddingEnabled()) {
         const embeddings = await import('../embeddings');
-        const category = body.category === 'project' ? 'project' as const : 'general-tech' as const;
         const candidates = listKnowledge({ category, project_id: body.project_id });
         const vectors = await embeddings.ensureEntryVectors(candidates, (e) => categoryDir(e.category, e.project_id));
         const qv = await embeddings.embedQuery(`${body.title}\n${body.content}`);
@@ -1212,10 +1261,30 @@ export function createApi(ctx: ApiContext): Hono {
       const result = writeKnowledge({
         title: body.title,
         content: body.content,
-        category: body.category === 'project' ? 'project' : 'general-tech',
+        category,
         project_id: body.project_id,
         tags: body.tags,
         source: 'user',
+      });
+      return c.json({ status: result.updated ? 'updated' : 'created', id: result.id });
+    } catch (e: any) {
+      throw new HttpError(400, String(e.message || e));
+    }
+  });
+
+  // P1.4 经验候选卡确认入库（半自动沉淀：用户点确认才写知识库，忽略则不留存）
+  app.post('/api/knowledge/confirm', async (c) => {
+    const { writeKnowledge, isValidCategory } = await import('../knowledge');
+    const body = await readJsonAuto<{ title?: string; content?: string; category?: string; project_id?: string; tags?: string[]; source?: string }>(c);
+    if (!body.title || !body.content) throw new HttpError(400, 'title and content are required');
+    try {
+      const result = writeKnowledge({
+        title: body.title,
+        content: body.content,
+        category: isValidCategory(body.category) ? body.category : 'project',
+        project_id: body.project_id,
+        tags: body.tags?.length ? body.tags : ['确认经验'],
+        source: body.source || 'confirmed',
       });
       return c.json({ status: result.updated ? 'updated' : 'created', id: result.id });
     } catch (e: any) {
@@ -1719,7 +1788,34 @@ export function createApi(ctx: ApiContext): Hono {
       repairTaskId = created.taskId;
     }
     const updated = await resolveReportItem(date, body.item_id, body.action, repairTaskId);
+    // P1.5 裁决回流：用户对问题报告的裁决（修什么/怎么修）沉淀为知识——同类问题下次直接命中
+    try {
+      const { writeKnowledge } = await import('../knowledge');
+      writeKnowledge({
+        title: `问题裁决：${item.category} · ${item.sample.slice(0, 50)}`,
+        content: `问题模式：${item.sample.slice(0, 500)}\n\n用户裁决：${body.action === 'skip' ? '已确认忽略' : `已转修复任务 ${repairTaskId || ''}`}\n来源：每日问题报告 ${date}（${item.count} 次出现）`,
+        category: 'feedback',
+        project_id: undefined,
+        tags: ['问题报告', body.action],
+        source: `daily-report:${date}`,
+      });
+    } catch { /* 裁决回流失败不阻塞响应 */ }
     return c.json({ status: 'resolved', action: body.action, task_id: repairTaskId, report: updated });
+  });
+
+  // ---------- P1.5 Dream 整理线程（手动触发 + 治理报告查询） ----------
+
+  app.post('/api/dream/run', async (c) => {
+    const { runDreamConsolidation } = await import('../dream');
+    const body = await readJsonAuto<{ force?: boolean }>(c).catch(() => ({}) as { force?: boolean });
+    const result = await runDreamConsolidation(ctx.modelPool, logger, { force: body?.force === true });
+    return c.json({ status: 'done', ...result });
+  });
+
+  app.get('/api/dream/report', async (c) => {
+    const date = c.req.query('date') || new Date().toISOString().slice(0, 10);
+    const report = await import('../bus').then((m) => m.busGet(`dream:governance:${date}`));
+    return c.json({ date, ...(report || { candidates: [] }) });
   });
 
   // ---------- project progress & cost report (进度成本表) ----------

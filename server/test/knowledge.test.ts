@@ -91,8 +91,11 @@ describe('转义翻倍循环回归（2026-09-15 193MB 怪兽复盘）', () => {
     }
     const entry = getKnowledge(id, root)!;
     expect(entry.title).toBe('任务复盘 t1：UI 重构\前端分层');
+    const size1 = fs.statSync(file).size;
+    // P1.2 起 hits/last_hit_at 落 frontmatter：首次命中使文件增长一次，之后体积恒定（不再指数翻倍）
+    expect(size1).toBeGreaterThanOrEqual(size0);
     const size5 = fs.statSync(file).size;
-    expect(size5).toBe(size0); // 体积恒定——不再指数翻倍
+    expect(size5).toBe(size1);
     expect(size5).toBeLessThan(100_000);
   });
 

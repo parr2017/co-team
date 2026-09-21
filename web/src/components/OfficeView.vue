@@ -85,6 +85,28 @@
       </el-collapse>
     </div>
 
+    <!-- P1.1 项目档案（结构化字段 + 简报，双轨） -->
+    <div class="office-memory">
+      <el-collapse>
+        <el-collapse-item :title="`项目档案（概念/简报${detail?.brief ? ' · 已生成' : ' · 未生成'}）`" name="brief">
+          <el-form label-width="70px" size="small" class="brief-form">
+            <el-form-item label="一句话"><el-input v-model="editForm.description" placeholder="这个项目是做什么的" /></el-form-item>
+            <el-form-item label="技术栈"><el-input v-model="editForm.tech_stack" placeholder="如 Vue3 + TS + Vite" /></el-form-item>
+            <el-form-item label="约定"><el-input v-model="editForm.conventions" placeholder="编码/协作约定，分号分隔" /></el-form-item>
+            <el-form-item label="领域"><el-input v-model="editForm.domain" placeholder="业务域" /></el-form-item>
+            <el-form-item label="阶段"><el-input v-model="editForm.stage" placeholder="原型/开发/维护" /></el-form-item>
+            <el-form-item label="受众"><el-input v-model="editForm.audience" placeholder="目标用户" /></el-form-item>
+          </el-form>
+          <div class="brief-bar">
+            <el-button size="small" :loading="briefGenerating" @click="genBrief">AI 生成简报</el-button>
+            <el-button size="small" type="primary" :loading="briefSaving" @click="saveBriefForm">保存档案</el-button>
+          </div>
+          <el-input v-model="editForm.brief" type="textarea" :rows="6" placeholder="项目简报（AI 生成后可编辑；每次任务/会话/讨论前注入作为项目概念基准）" />
+          <div v-if="detail?.brief_updated_at" class="brief-ts mono">更新于 {{ fmtShort(detail.brief_updated_at) }}</div>
+        </el-collapse-item>
+      </el-collapse>
+    </div>
+
     <!-- 项目记忆 -->
     <div class="office-memory">
       <el-collapse>
@@ -193,7 +215,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { renderMarkdown } from '../utils/md';
 import MdView from './MdView.vue';
@@ -400,6 +422,43 @@ async function addMemory() {
   } catch (e: any) { ElMessage.error(e.message); }
 }
 
+// ---------- P1.1 项目档案（结构化字段 + 简报） ----------
+const briefGenerating = ref(false);
+const briefSaving = ref(false);
+const editForm = ref<Record<string, string>>({});
+function syncEditForm() {
+  const d = detail.value;
+  editForm.value = {
+    description: d?.description || '',
+    tech_stack: d?.tech_stack || '',
+    conventions: d?.conventions || '',
+    domain: d?.domain || '',
+    stage: d?.stage || '',
+    audience: d?.audience || '',
+    brief: d?.brief || '',
+  };
+}
+watch(() => detail.value?.brief_updated_at, () => syncEditForm());
+async function saveBriefForm() {
+  if (!props.projectId) return;
+  briefSaving.value = true;
+  try {
+    await api.updateProject(props.projectId, { ...editForm.value });
+    ElMessage.success('项目档案已保存');
+    await refreshDetail();
+  } catch (e: any) { ElMessage.error(e.message); } finally { briefSaving.value = false; }
+}
+async function genBrief() {
+  if (!props.projectId) return;
+  briefGenerating.value = true;
+  try {
+    const r = await api.generateProjectBrief(props.projectId);
+    editForm.value.brief = r.brief;
+    ElMessage.success('简报初稿已生成（可编辑后保存）');
+    await refreshDetail();
+  } catch (e: any) { ElMessage.error(e.message); } finally { briefGenerating.value = false; }
+}
+
 async function deleteTask(taskId: string) {
   try { await ElMessageBox.confirm('确定删除该任务？', '删除确认', { type: 'warning' }); } catch { return; }
   try { await api.deleteTask(taskId); ElMessage.success('任务已删除'); await refreshDetail(); } catch (e: any) { ElMessage.error(e.message); }
@@ -439,6 +498,9 @@ defineExpose({ refreshDetail, loadAgents });
 
 <style scoped>
 .office { display: flex; flex-direction: column; gap: 20px; }
+.brief-form { margin-bottom: 10px; }
+.brief-bar { display: flex; gap: 8px; margin-bottom: 8px; }
+.brief-ts { margin-top: 6px; font-size: 10.5px; color: var(--text-3); }
 .office-head { display: flex; align-items: center; gap: 14px; }
 .oh-main { flex: 1; min-width: 0; }
 .oh-name { font-size: 16px; font-weight: 700; color: var(--text-1); }

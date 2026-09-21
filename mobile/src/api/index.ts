@@ -53,6 +53,14 @@ function post<T>(url: string, payload?: unknown): Promise<T> {
   });
 }
 
+function put<T>(url: string, payload?: unknown): Promise<T> {
+  return request<T>(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+}
+
 // ---------- types (mobile subset) ----------
 
 export type TaskStatus =
@@ -514,6 +522,14 @@ export const api = {
     if (params.source) sp.set('source', params.source);
     return request<{ entries: KnowledgeEntry[] }>(`/api/knowledge?${sp}`);
   },
+  // P1.4 经验候选卡确认入库（与 web 同契约）
+  confirmKnowledge: (payload: { title: string; content: string; category?: string; project_id?: string; tags?: string[]; source?: string }) =>
+    post<{ status: string; id: string }>('/api/knowledge/confirm', payload),
+  // P1.1 项目元数据编辑与简报生成（与 web 同契约）
+  updateProject: (id: string, payload: { name?: string; description?: string; tech_stack?: string; conventions?: string; domain?: string; stage?: string; audience?: string; brief?: string }) =>
+    put<{ status: string; project: unknown }>(`/api/projects/${id}`, payload),
+  generateProjectBrief: (id: string) =>
+    post<{ status: string; brief: string; project: unknown }>(`/api/projects/${id}/brief`, {}),
   // 包 D：全局命令权限（级别 + 白名单）
   getPermissions: () =>
     request<{ permissions: { level: string; whitelist_commands: string[]; max_time_sec?: number }; levels: string[] }>('/api/config/permissions'),

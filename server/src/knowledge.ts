@@ -3,7 +3,25 @@ import * as path from 'node:path';
 import { PROJECT_ROOT } from './config';
 import { cosine, embeddingEnabled, ensureEntryVectors, embedQuery } from './embeddings';
 
-export type KnowledgeCategory = 'general-tech' | 'project';
+/**
+ * P1.2 四类记忆（改造移植星瑶 KAIROS）：general-tech 全局技术经验；project 项目事实与方案；
+ * feedback 用户纠正与规范（正文强制 规则+Why+How to apply 结构）；decision 关键决策及其理由；
+ * reference 外部资源指针。project 域分类按 project_id 归档到 projects/<id>/，向后兼容旧条目。
+ */
+export type KnowledgeCategory = 'general-tech' | 'project' | 'feedback' | 'decision' | 'reference';
+
+const PROJECT_SCOPED_CATEGORIES: readonly KnowledgeCategory[] = ['project', 'feedback', 'decision', 'reference'];
+
+export function isProjectScopedCategory(c: KnowledgeCategory): boolean {
+  return (PROJECT_SCOPED_CATEGORIES as readonly string[]).includes(c);
+}
+
+export function isValidCategory(c: unknown): c is KnowledgeCategory {
+  return typeof c === 'string' && (c === 'general-tech' || (PROJECT_SCOPED_CATEGORIES as readonly string[]).includes(c));
+}
+
+/** feedback 类条目的正文结构要求（星瑶 memory_kairos.py:207 同款），供 LLM 提炼 prompt 引用 */
+export const FEEDBACK_STRUCTURE_HINT = 'feedback 类经验正文必须三段：第一行规则本体（一句话祈使句）；**Why:** 为什么（踩过的坑/用户纠正的原因）；**How to apply:** 下次遇到什么场景怎么应用。';
 
 export interface KnowledgeEntry {
   id: string;
@@ -19,6 +37,10 @@ export interface KnowledgeEntry {
   /** OBS-1 注入命中计数：relevantKnowledge 注入 prompt 时累加（经验闭环度量） */
   hits?: number;
   last_hit_at?: string;
+  /** P1 溯源：产生该条目的任务 id（任务复盘自动写入时携带） */
+  task_id?: string;
+  /** P1 置信度：LLM 自动提炼未过人工确认的条目标 low（确认卡确认后转 normal/移除） */
+  confidence?: 'low' | 'normal';
 }
 
 export interface KnowledgeWriteInput {
@@ -28,6 +50,8 @@ export interface KnowledgeWriteInput {
   project_id?: string;
   tags?: string[];
   source?: string;
+  task_id?: string;
+  confidence?: 'low' | 'normal';
 }
 
 export interface KnowledgeQuery {
@@ -46,7 +70,7 @@ export function rootDir(root?: string): string {
 
 export function categoryDir(category: KnowledgeCategory, projectId: string | undefined, root?: string): string {
   const base = rootDir(root);
-  return category === 'project' && projectId
+  return isProjectScopedCategory(category) && projectId
     ? path.join(base, 'projects', projectId)
     : path.join(base, 'general-tech');
 }
@@ -80,6 +104,10 @@ export function entryToMarkdown(entry: KnowledgeEntry): string {
     `created_at: ${entry.created_at}`,
     `updated_at: ${entry.updated_at}`,
     ...(entry.updated_by ? [`updated_by: ${entry.updated_by}`] : []),
+    ...(entry.task_id ? [`task_id: ${entry.task_id}`] : []),
+    ...(entry.confidence && entry.confidence !== 'normal' ? [`confidence: ${entry.confidence}`] : []),
+    ...(entry.hits ? [`hits: ${entry.hits}`] : []),
+    ...(entry.last_hit_at ? [`last_hit_at: ${entry.last_hit_at}`] : []),
     '---',
   ].join('\n');
   return `${fm}\n\n${entry.content}\n`;
@@ -94,13 +122,17 @@ export function markdownToEntry(fileName: string, raw: string): KnowledgeEntry |
     return {
       id: String(fm.id),
       title: String(fm.title),
-      category: (fm.category === 'project' ? 'project' : 'general-tech') as KnowledgeCategory,
+      category: (isValidCategory(fm.category) ? fm.category : 'general-tech'),
       project_id: fm.project_id ? String(fm.project_id) : undefined,
       tags: Array.isArray(fm.tags) ? fm.tags.map(String) : [],
       source: String(fm.source ?? 'unknown'),
       created_at: String(fm.created_at ?? new Date().toISOString()),
       updated_at: String(fm.updated_at ?? fm.created_at ?? new Date().toISOString()),
       updated_by: fm.updated_by ? String(fm.updated_by) : undefined,
+      task_id: fm.task_id ? String(fm.task_id) : undefined,
+      confidence: fm.confidence === 'low' ? 'low' : undefined,
+      hits: Number(fm.hits) > 0 ? Number(fm.hits) : undefined,
+      last_hit_at: fm.last_hit_at ? String(fm.last_hit_at) : undefined,
       content: raw.slice(match[0].length).trim(),
     };
   } catch {
@@ -200,7 +232,8 @@ function readAll(root?: string): KnowledgeEntry[] {
 
 function matchQuery(entry: KnowledgeEntry, query: KnowledgeQuery): boolean {
   if (query.category && entry.category !== query.category) return false;
-  if (query.category === 'project' && query.project_id && entry.project_id !== query.project_id) return false;
+  // 项目域分类（project/feedback/decision/reference）按 project_id 过滤
+  if (query.category && isProjectScopedCategory(query.category) && query.project_id && entry.project_id !== query.project_id) return false;
   return true;
 }
 
@@ -209,7 +242,7 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
   const title = sanitizeKnowledgeTitle(input.title || '');
   if (!title) throw new Error('knowledge title is required');
   if (!input.content || !input.content.trim()) throw new Error('knowledge content is required');
-  const category: KnowledgeCategory = input.category === 'project' ? 'project' : 'general-tech';
+  const category: KnowledgeCategory = isValidCategory(input.category) ? input.category : 'general-tech';
   const dir = categoryDir(category, input.project_id, root);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -218,7 +251,7 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
     (e) => e.title === title && e.category === category && (e.project_id ?? undefined) === (input.project_id ?? undefined)
   );
   if (existing) {
-    const updated: KnowledgeEntry = { ...existing, title, content: sanitizeKnowledgeContent(input.content), tags: input.tags ?? existing.tags, updated_at: now };
+    const updated: KnowledgeEntry = { ...existing, title, content: sanitizeKnowledgeContent(input.content), tags: input.tags ?? existing.tags, updated_at: now, ...(input.task_id ? { task_id: input.task_id } : {}), ...(input.confidence ? { confidence: input.confidence } : {}) };
     const file = path.join(categoryDir(existing.category, existing.project_id, root), `${existing.id}.md`);
     fs.writeFileSync(file, entryToMarkdown(updated), 'utf-8');
     invalidateEntryCache(file);
@@ -231,12 +264,14 @@ export function writeKnowledge(input: KnowledgeWriteInput, root?: string): { id:
     id,
     title,
     category,
-    project_id: category === 'project' ? input.project_id : undefined,
+    project_id: isProjectScopedCategory(category) ? input.project_id : undefined,
     tags: input.tags ?? [],
     source: input.source || 'system',
     created_at: now,
     updated_at: now,
     content: sanitizeKnowledgeContent(input.content),
+    ...(input.task_id ? { task_id: input.task_id } : {}),
+    ...(input.confidence ? { confidence: input.confidence } : {}),
   };
   const newFile = path.join(dir, `${id}.md`);
   fs.writeFileSync(newFile, entryToMarkdown(entry), 'utf-8');

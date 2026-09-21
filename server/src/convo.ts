@@ -35,6 +35,7 @@ import type { KnowledgeToolContext } from './tools';
 import { pickSkillsForNode, formatSkillsBlock, formatSkillsCatalog } from './skills';
 import { getSkills } from './skills';
 import { relevantKnowledge } from './knowledge';
+import { distillKnowledgeCandidates } from './distill';
 import { classifyCommand } from './commandGuard';
 import { canExecute, policyFromConfig, executeCommandAsync, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
@@ -315,6 +316,29 @@ async function appendConvoMessage(id: string, msg: Omit<ConvoMessage, 'id' | 'ts
 }
 
 export async function deleteConvo(id: string): Promise<void> {
+  // P1.4 删除前强制归档：有实质内容且绑定项目的会话，删除时把对话摘要沉淀为
+  // low-confidence 知识条目——结论与决策不随会话删除而蒸发（用户可在知识库治理中裁决）
+  try {
+    const convo = await getConvo(id);
+    const msgs = await getConvoMessages(id);
+    const substantive = msgs.filter((m) => (m.role === 'user' && m.kind === 'text') || (m.role === 'assistant' && m.kind === 'text'));
+    if (convo?.project_id && substantive.length >= 6) {
+      const { writeKnowledge } = await import('./knowledge');
+      const digest = substantive.slice(-30)
+        .map((m) => `${m.role === 'user' ? '用户' : '助手'}: ${String(m.text || '').slice(0, 200)}`)
+        .join('\n')
+        .slice(0, 4000);
+      writeKnowledge({
+        title: `会话归档：${convo.title.slice(0, 40)}`,
+        content: `本会话删除前自动归档（${new Date().toISOString()}，共 ${substantive.length} 条对话）。\n\n${digest}`,
+        category: 'project',
+        project_id: convo.project_id,
+        tags: ['会话归档'],
+        source: `convo:${id}`,
+        confidence: 'low',
+      });
+    }
+  } catch { /* 归档失败不阻塞删除 */ }
   for (const key of [convoKey(id), msgsKey(id), pendingKey(id), busyKey(id), approvalsKey(id), alwaysKey(id), asksKey(id), undoKey(id)]) {
     await busDel(key);
   }
@@ -959,6 +983,28 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
           const stillClaiming = COMPLETION_CLAIM_RE.test(reply);
           await appendConvoMessage(convoId, { role: 'system', kind: 'notice', text: `提醒：本轮模型${falseClaims.length ? `声称已完成的 ${falseClaims.join('、')} 在工作区中不存在` : stillClaiming ? '声称「已完成/已验证」但未执行任何验证工具' : '声称的工作未经任何工具执行'}——以上回复不可当作完成依据，请以工具记录与 diff 卡为准，或重发指令/更换模型。` });
         }
+        // P1.4 经验候选卡（半自动沉淀）：有实质结论时后台提炼 0-1 条候选，用户确认才入库
+        if (reply.length >= 150 && convo.project_id) {
+          void (async () => {
+            try {
+              const msgs = await getConvoMessages(convoId);
+              const lastUser = [...msgs].reverse().find((m) => m.role === 'user' && m.kind === 'text');
+              const candidates = await distillKnowledgeCandidates(
+                deps.pool,
+                `用户输入：${String(lastUser?.text || '').slice(0, 1500)}\n\n助手结论：${reply.slice(0, 2000)}`,
+                '协作会话',
+                deps.logger,
+              );
+              for (const cand of candidates.slice(0, 1)) {
+                await appendConvoMessage(convoId, {
+                  role: 'system', kind: 'notice',
+                  text: `💡 经验候选：${cand.title}\n${cand.content}`,
+                  meta: { knowledge_candidate: { ...cand, project_id: convo.project_id, source: `convo:${convoId}` } },
+                });
+              }
+            } catch { /* 候选提炼失败不影响会话 */ }
+          })();
+        }
         for (const p of shares) {
           const rel = p.replace(/\\/g, '/');
           const abs = path.resolve(convo.workspace, rel);
@@ -1134,6 +1180,12 @@ async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPl
   const proj = convo.project_id ? await getProject(convo.project_id) : null;
   const memories = convo.project_id ? await getProjectMemory(convo.project_id, 8) : [];
   const wsBlock = convo.workspace ? `\n## 工作区\n项目根目录（你的工作目录，所有相对路径基于它）：${convo.workspace}${proj ? `\n项目名：${proj.name}` : ''}` : '';
+  // P1.1 项目简报注入（概念基准；无简报退化注入结构化字段）
+  const briefBlock = proj?.brief
+    ? `\n## 项目简报（概念基准，与现场冲突时以实际侦查为准）\n${proj.brief.slice(0, 2000)}`
+    : proj && (proj.tech_stack || proj.conventions || proj.domain)
+      ? `\n## 项目要点\n${[proj.tech_stack && `- 技术栈：${proj.tech_stack}`, proj.conventions && `- 约定：${proj.conventions}`, proj.domain && `- 领域：${proj.domain}`, proj.stage && `- 阶段：${proj.stage}`].filter(Boolean).join('\n')}`
+      : '';
 
   const scripts: string[] = [];
   if (convo.workspace) {
@@ -1168,6 +1220,7 @@ async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPl
 - 该工作区可能同时有其他任务/会话在并行改动，对文件内容做"读-改-写"时要基于刚读到的最新内容。
 ${rollbackBlock}
 ${wsBlock}
+${briefBlock}
 ${scripts.length ? `\n## 项目脚本\n${scripts.join('\n')}` : ''}
 ${memories.length ? `\n## 本项目经验与规范\n${memories.map((m) => `- ${m.text}`).join('\n')}` : ''}
 ${skillsBlock ? `\n## 技能索引（正文按需 load_skill 拉取）\n${skillsBlock}` : ''}
@@ -1188,7 +1241,7 @@ ${fc ? `## 工具（原生工具通道：直接发起工具调用，参数按工
 修改文件（直接写入项目工作区，改前先读）：
  {"tool":"write_file","path":"相对路径","content":"文件全文"} 或 {"tool":"edit_file","path":"相对路径","find":"原文片段","replace":"新片段"}
 视觉辅助： {"tool":"screenshot","url":"http://localhost:PORT/","question":"..."} | {"tool":"look_image","path":"相对路径","question":"..."} | 渲染验证 {"tool":"check_page","url":"...","expect":["关键文本"]}
-阻塞提问（需要用户拍板才能继续时）： {"tool":"ask_user","question":"问题"}   知识沉淀： {"tool":"write_knowledge","category":"general-tech|project","title":"标题","content":"内容"}
+阻塞提问（需要用户拍板才能继续时）： {"tool":"ask_user","question":"问题"}   知识沉淀： {"tool":"write_knowledge","category":"general-tech|project|feedback|decision|reference","title":"标题","content":"内容"}
 反馈文件给用户（文件卡片，可预览下载）： {"tool":"share_file","path":"相对路径"}
 调度子智能体（并行 ≤3，各自独立工具循环；适合并行侦查/评审/测试等分工）： {"tool":"spawn_agent","agent":"dev|review|docs|test|...","task":"明确的子任务描述"}
 任务步骤清单（多文件/多验证环节的活先规划再动手，逐步打勾；简单问答不要用）：

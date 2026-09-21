@@ -1384,27 +1384,108 @@ export class Orchestrator {
 
     // improvement 3: post-task review deposits a structured lesson into the knowledge base
     // P3 档级驱动：轻量任务不写知识库复盘（typo 级复盘是噪音且膨胀知识库——193MB 知识怪兽教训）
+    // P1.3 改造：复盘不再是一行模板句——后台 LLM 消费 deliverable/defects/失败原因，
+    // 提炼结构化经验（成果/踩坑 Why+How to apply/下次注意）写知识库（task_id 溯源 + low-confidence）
     try {
       const changes = (result.changes || []) as string[];
       if (levelProfile.knowledge && (changes.length > 0 || status === 'failed')) {
-        await writeKnowledge({
-          title: `任务复盘 ${taskId}：${description.slice(0, 40)}`,
-          content: [
-            `状态: ${status}`,
-            changes.length ? `产出变更:\n${changes.slice(0, 10).map((c) => '- ' + c).join('\n')}` : '产出变更: 无',
-            result.error ? `失败原因: ${String(result.error).slice(0, 300)}` : '',
-            graph.project_id ? `项目: ${graph.project_id}` : '',
-          ].filter(Boolean).join('\n\n'),
-          category: graph.project_id ? 'project' : 'general-tech',
-          project_id: graph.project_id,
-          tags: ['任务复盘', status],
-          source: `task:${taskId}`,
+        void this.reviewTaskWithLlm(taskId, graph, status, result, description, changes).catch((e) => {
+          this.logger.warn('LLM task review failed (non-fatal)', { taskId, error: String((e as Error)?.message || e) });
         });
       }
     } catch (e) {
       this.logger.warn('Knowledge review deposit failed (non-fatal)', { taskId, error: String(e) });
     }
     return result;
+  }
+
+  /**
+   * P1.3 任务终局 LLM 复盘：LLM 从任务结果材料提炼 1-3 条结构化经验写知识库。
+   * - LLM 失败/解析失败 → 回退到旧模板句写入（复盘永不因提炼失败而丢失）
+   * - 全部条目带 task_id 溯源 + confidence=low（半自动治理：确认后转正）
+   * - 后台执行，不阻塞任务完成返回
+   */
+  private async reviewTaskWithLlm(taskId: string, graph: TaskGraph, status: string, result: Record<string, any>, description: string, changes: string[]): Promise<void> {
+    const materials = [
+      `任务：${description.slice(0, 300)}`,
+      `状态：${status}`,
+      changes.length ? `变更文件（前 10）:\n${changes.slice(0, 10).map((c) => '- ' + c).join('\n')}` : '变更文件：无',
+      result.error ? `失败原因（前 600 字）：${String(result.error).slice(0, 600)}` : '',
+      Array.isArray(result.defects) && result.defects.length
+        ? `未修复缺陷：\n${result.defects.map((d: any) => `- ${d?.title || '?'}: ${String(d?.detail || '').slice(0, 150)}`).join('\n')}`
+        : '',
+      (result as Record<string, any>).gate_test ? `测试闸：${JSON.stringify((result as Record<string, any>).gate_test).slice(0, 300)}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    const entry = this.pool?.selectStrongModel(['code']) ?? this.pool?.selectStrongModel();
+    if (!entry) throw new Error('模型池无可用模型');
+
+    let llmOk = false;
+    try {
+      const res = await chat(entry, [
+        { role: 'system', content: `你是项目经验提炼员。根据任务执行材料，提炼可复用的结构化经验。只输出纯 JSON（无代码栅栏）：
+{"review_summary":"一句话总结这次任务做成了什么/败在哪（≤80字）","lessons":[{"category":"feedback|project|general-tech","title":"经验标题（≤30字，具体可检索）","content":"经验正文"}]}
+lessons 规则：
+- 只提炼"下次还会用到"的通用经验；一次性的任务流水账不写
+- 每条 content 必须三段：规则本体（一句话祈使句）；**Why:** 为什么（依据材料中的事实）；**How to apply:** 什么场景怎么用
+- category 选择：用户纠正/规范类 → feedback；本项目特有事实/方案 → project；通用技术经验 → general-tech
+- 最多 3 条；材料里没有值得提炼的就返回空数组 lessons:[]` },
+        { role: 'user', content: materials },
+      ], undefined, 0.2);
+      const parsed = extractJson(res.content) as { review_summary?: string; lessons?: { category?: string; title?: string; content?: string }[] } | null;
+      if (parsed && Array.isArray(parsed.lessons)) {
+        llmOk = true;
+        const catMap: Record<string, 'feedback' | 'project' | 'general-tech'> = { feedback: 'feedback', project: 'project', 'general-tech': 'general-tech' };
+        let deposited = 0;
+        for (const lesson of parsed.lessons.slice(0, 3)) {
+          const title = String(lesson?.title || '').trim();
+          const content = String(lesson?.content || '').trim();
+          if (!title || !content) continue;
+          const category = catMap[String(lesson?.category || '')] || 'project';
+          writeKnowledge({
+            title: `${title}`,
+            content,
+            category,
+            project_id: graph.project_id,
+            tags: ['任务复盘', status === 'failed' ? '失败复盘' : '成功经验'],
+            source: `task:${taskId}`,
+            task_id: taskId,
+            confidence: 'low',
+          });
+          deposited += 1;
+        }
+        if (deposited) {
+          const summary = String(parsed.review_summary || '').trim().slice(0, 150);
+          if (graph.project_id) {
+            await addProjectMemory(graph.project_id, `任务复盘「${description.slice(0, 30)}」已沉淀 ${deposited} 条经验（low-confidence，待确认转正）`, 'auto', taskId).catch(() => undefined);
+          }
+          if (summary) await addMemory(`任务「${description.slice(0, 40)}」${summary}`);
+          this.logger.info('LLM task review deposited', { taskId, lessons: deposited });
+          await emitProgress('task_review_deposited', { task_id: taskId, lessons: deposited, summary });
+        }
+      }
+    } catch (e) {
+      this.logger.warn('LLM task review distill failed, falling back to template', { taskId, error: String((e as Error)?.message || e) });
+    }
+
+    if (!llmOk) {
+      // 回退：模板句复盘（旧逻辑保留——提炼失败不丢复盘）
+      writeKnowledge({
+        title: `任务复盘 ${taskId}：${description.slice(0, 40)}`,
+        content: [
+          `状态: ${status}`,
+          changes.length ? `产出变更:\n${changes.slice(0, 10).map((c) => '- ' + c).join('\n')}` : '产出变更: 无',
+          result.error ? `失败原因: ${String(result.error).slice(0, 300)}` : '',
+          graph.project_id ? `项目: ${graph.project_id}` : '',
+        ].filter(Boolean).join('\n\n'),
+        category: graph.project_id ? 'project' : 'general-tech',
+        project_id: graph.project_id,
+        tags: ['任务复盘', status],
+        source: `task:${taskId}`,
+        task_id: taskId,
+        confidence: 'low',
+      });
+    }
   }
 
   // ---------- M5 最终验收闸 ----------
@@ -3134,9 +3215,23 @@ export class Orchestrator {
       ? `\n真实工作区路径: ${graphMeta.workspace}（任务成功合并后产物落在该路径；沙箱内验证用工作目录即可）`
       : '';
     const projectMemory = projectId ? await getProjectMemory(projectId, 8) : [];
-    const projectBlock = projectMemory.length
-      ? '\n\n## 本项目开发规范与经验\n' + projectMemory.map((m) => '- ' + m.text).join('\n')
-      : '';
+    // P1.1 项目简报注入：brief（LLM 初稿+人工编辑）为概念基准；无简报时退化注入结构化字段
+    const projectRec = projectId ? await getProject(projectId).catch(() => null) : null;
+    const projectBriefLines: string[] = [];
+    if (projectRec?.brief) {
+      projectBriefLines.push(projectRec.brief.slice(0, 2000));
+    } else if (projectRec) {
+      if (projectRec.tech_stack) projectBriefLines.push(`技术栈：${projectRec.tech_stack}`);
+      if (projectRec.conventions) projectBriefLines.push(`约定：${projectRec.conventions}`);
+      if (projectRec.domain) projectBriefLines.push(`领域：${projectRec.domain}`);
+      if (projectRec.stage) projectBriefLines.push(`阶段：${projectRec.stage}`);
+    }
+    const projectBlock = (projectBriefLines.length
+      ? '\n\n## 项目简报（本项目的概念基准，与现场冲突时以实际侦查为准）\n' + projectBriefLines.join('\n\n')
+      : '')
+      + (projectMemory.length
+        ? '\n\n## 本项目开发规范与经验\n' + projectMemory.map((m) => '- ' + m.text).join('\n')
+        : '');
 
     // improvement 9: the global goal rides along with every agent call
     // 缓存优先裁剪：goal 全文（可能是整份规划方案）曾是每次调用的固定重税，截断为

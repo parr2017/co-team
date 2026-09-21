@@ -439,6 +439,14 @@ export interface ProjectSummary {
   running: boolean;
   issues: number;
   updated_at: string;
+  // P1.1 项目概念双轨（均可选，旧记录缺省）
+  tech_stack?: string;
+  conventions?: string;
+  domain?: string;
+  stage?: string;
+  audience?: string;
+  brief?: string;
+  brief_updated_at?: string;
 }
 
 export interface ProjectDetail extends ProjectSummary {
@@ -727,6 +735,14 @@ export const api = {
   },
   createKnowledge: (payload: { title: string; content: string; category?: string; project_id?: string; tags?: string[] }) =>
     request<{ status: string; id: string }>('/api/knowledge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  // P1.4 经验候选卡确认入库
+  confirmKnowledge: (payload: { title: string; content: string; category?: string; project_id?: string; tags?: string[]; source?: string }) =>
+    request<{ status: string; id: string }>('/api/knowledge/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  // P1.1 项目元数据编辑与简报生成
+  updateProject: (id: string, payload: { name?: string; description?: string; tech_stack?: string; conventions?: string; domain?: string; stage?: string; audience?: string; brief?: string }) =>
+    request<{ status: string; project: ProjectSummary }>(`/api/projects/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  generateProjectBrief: (id: string) =>
+    request<{ status: string; brief: string; project: ProjectSummary }>(`/api/projects/${id}/brief`, { method: 'POST' }),
   updateKnowledge: (id: string, payload: { title?: string; content?: string; tags?: string[] }) =>
     request<{ status: string; entry: KnowledgeEntry }>(`/api/knowledge/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   deleteKnowledge: (id: string) => request(`/api/knowledge/${id}`, { method: 'DELETE' }),

@@ -11,9 +11,11 @@ vi.mock('../src/llm', async (importOriginal) => {
     chat: async (_entry: any, messages: { role: string; content: string }[]) => {
       calls += 1;
       // last system message should carry project memory injected by callAgent
+      // （P1.3 起，任务完成后还有一次后台复盘 LLM 调用——只记录 agent harness 的调用）
       const sys = [...messages].reverse().find((m) => m.role === 'system')?.content || '';
-      (globalThis as any).__lastSystem = sys;
+      if (sys.includes('行为准则')) (globalThis as any).__lastSystem = sys;
       (globalThis as any).__planUser = calls === 1 ? messages.find((m) => m.role === 'user')?.content : (globalThis as any).__planUser;
+      // 复盘调用期望 JSON 材料；agent 调用期望最终 JSON——统一返回最终 JSON 即可
       return {
         content: JSON.stringify({ status: 'success', summary: 'done', verification: '已逐项核对产出与任务要求', changes: ['out.txt: ok'], errors: [] }),
         promptTokens: 3,

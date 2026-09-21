@@ -337,7 +337,12 @@ async function main(): Promise<void> {
   const dailyReportScanner = startDailyReportScanner({ enabled: config.daily_report?.enabled ?? false, hour: config.daily_report?.hour ?? 9 });
   logger.info('Daily report scanner started', { enabled: config.daily_report?.enabled ?? false, hour: config.daily_report?.hour ?? 9 });
 
-  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue, dailyReportScanner, mcp };
+  // P1.5 Dream 整理线程：每日蒸馏项目记忆散条 → 知识条目（手动 /api/dream/run 可即时触发）
+  const { startDreamScanner } = await import('./dream');
+  const stopDreamScanner = startDreamScanner(modelPool, logger, config.daily_report?.hour ?? 4);
+  logger.info('Dream consolidation scanner started');
+
+  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue, dailyReportScanner, mcp, stopDreamScanner };
   const app = createApi(ctx);
 
   // browsers always probe /favicon.ico — answer 204 so it stops spamming the API log

@@ -119,7 +119,7 @@ export async function getTaskEvents(taskId: string): Promise<{ type: string; ts:
 
 const MEMORY_KEY = 'coteam:memory:lessons';
 
-export async function addMemory(lesson: string, maxItems = 20): Promise<void> {
+export async function addMemory(lesson: string, maxItems = 50): Promise<void> {
   if (!lesson) return;
   const lessons = (await busGet<{ ts: string; lesson: string }[]>(MEMORY_KEY)) || [];
   lessons.push({ ts: new Date().toISOString(), lesson });
@@ -187,10 +187,40 @@ export interface ProjectRecord {
   workspace: string;
   description?: string;
   created_at: string;
+  // ---------- P1.1 项目概念双轨（均可选，向后兼容旧记录） ----------
+  /** 字段轨：技术栈（逗号分隔或短句），程序消费 + 注入 */
+  tech_stack?: string;
+  /** 字段轨：项目约定（编码规范/协作约定，短句或分号分隔） */
+  conventions?: string;
+  /** 字段轨：领域/业务域（这个项目是做什么的） */
+  domain?: string;
+  /** 字段轨：当前阶段（原型/开发/维护…） */
+  stage?: string;
+  /** 字段轨：目标用户/受众 */
+  audience?: string;
+  /** 简报轨：LLM 生成初稿 + 人工编辑的叙述性项目简报（注入所有上下文面的头部） */
+  brief?: string;
+  brief_updated_at?: string;
 }
+
+/** 允许通过 PUT /api/projects/:id 更新的字段白名单（防整对象覆盖） */
+export const PROJECT_EDITABLE_FIELDS: (keyof ProjectRecord)[] = [
+  'name', 'description', 'tech_stack', 'conventions', 'domain', 'stage', 'audience', 'brief', 'brief_updated_at',
+];
 
 export async function saveProject(p: ProjectRecord): Promise<void> {
   await busSet(`project:${p.id}`, p);
+}
+
+/** P1.1：局部更新项目元数据（只接受白名单字段；返回更新后的记录或 null） */
+export async function updateProject(id: string, patch: Partial<ProjectRecord>): Promise<ProjectRecord | null> {
+  const p = await getProject(id);
+  if (!p) return null;
+  for (const key of PROJECT_EDITABLE_FIELDS) {
+    if (patch[key] !== undefined) (p as unknown as Record<string, unknown>)[key] = patch[key];
+  }
+  await saveProject(p);
+  return p;
 }
 
 export async function getProject(id: string): Promise<ProjectRecord | null> {
@@ -215,7 +245,13 @@ export async function addProjectMemory(projectId: string, text: string, kind: 'a
   const key = `project:${projectId}:memory`;
   const items = (await busGet<ProjectMemoryItem[]>(key)) || [];
   items.push({ text, ts: new Date().toISOString(), kind, task_id: taskId });
-  await busSet(key, items.slice(-50));
+  // P1.5：cap 50→200——FIFO 悄悄丢旧是经验蒸发主因之一；老散条由 Dream 线程蒸馏转正后移除
+  await busSet(key, items.slice(-200));
+}
+
+/** P1.5 Dream 蒸馏淘汰：整体替换项目记忆（Dream 线程把已吸收散条移除时使用）。 */
+export async function replaceProjectMemory(projectId: string, items: ProjectMemoryItem[]): Promise<void> {
+  await busSet(`project:${projectId}:memory`, items.slice(-200));
 }
 
 export async function getProjectMemory(projectId: string, limit = 10): Promise<ProjectMemoryItem[]> {

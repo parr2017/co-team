@@ -72,6 +72,24 @@ function activityLabel(agent: string): string {
   return '正在输入…';
 }
 
+// ---------- P1.4 经验候选卡（双端一致） ----------
+const confirmingCand = ref('');
+async function confirmCand(msgId: string, cand: any) {
+  confirmingCand.value = msgId;
+  try {
+    await api.confirmKnowledge({ title: cand.title, content: cand.content, category: cand.category, project_id: cand.project_id, tags: ['确认经验'], source: cand.source });
+    showToast('已沉淀到项目知识库');
+    cand.confirmed = true;
+  } catch (e: any) {
+    showToast(e.message || '入库失败');
+  } finally {
+    confirmingCand.value = '';
+  }
+}
+function dismissCand(_msgId: string, cand: any) {
+  cand.dismissed = true;
+}
+
 // ---------- 消息行模型（与 web DiscussionChat 同构：分组/系统卡片/工具条/引用） ----------
 
 // M5.2 ③：群内直接回答任务的 ask_user 提问（可附图）
@@ -583,6 +601,17 @@ const showExp = ref(false);
               {{ String(row.m.meta.convert_confirm.state) === 'confirmed' ? `✓ 已确认开工${row.m.meta.convert_confirm.task_id ? `，任务 ${row.m.meta.convert_confirm.task_id}` : ''}` : '✕ 已取消，继续讨论' }}
             </div>
           </div>
+          <!-- P1.4 经验候选卡（双端一致）：确认入库 / 忽略 -->
+          <div v-else-if="row.m.kind === 'card' && row.m.meta?.knowledge_candidate" class="sys-card cand">
+            <div class="cand-tag">经验候选</div>
+            <div class="cand-title">{{ row.m.meta.knowledge_candidate.title }}</div>
+            <div class="cand-body">{{ row.m.meta.knowledge_candidate.content }}</div>
+            <div v-if="!row.m.meta.knowledge_candidate.confirmed && !row.m.meta.knowledge_candidate.dismissed" class="cv-row">
+              <van-button size="small" :loading="confirmingCand === row.m.id" @click="dismissCand(row.m.id, row.m.meta.knowledge_candidate)">忽略</van-button>
+              <van-button size="small" type="primary" :loading="confirmingCand === row.m.id" @click="confirmCand(row.m.id, row.m.meta.knowledge_candidate)">确认入库</van-button>
+            </div>
+            <div v-else class="cv-done">{{ row.m.meta.knowledge_candidate.confirmed ? '✓ 已入库' : '已忽略' }}</div>
+          </div>
           <div v-else-if="row.m.kind === 'card'" class="sys-card">{{ row.m.text }}</div>
           <div v-else-if="row.m.kind === 'notice'" class="sys-notice"><span class="ic">⚙</span><span>{{ row.m.text }}</span></div>
           <span v-else class="sys-text">{{ row.m.text }}</span>
@@ -927,6 +956,11 @@ const showExp = ref(false);
 }
 .sys-notice .ic { color: var(--warn); flex: none; margin-top: 1px; }
 .sys-card { font-size: var(--fs-aux); color: var(--text-1); background: var(--bg-panel); border: 1px solid var(--line-strong); border-radius: var(--r-panel); padding: 9px 14px; max-width: 86%; text-align: center; }
+.sys-card.cand { text-align: left; border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.sys-card.cand .cand-tag { font-size: 10px; color: var(--accent); font-family: var(--font-mono, monospace); }
+.sys-card.cand .cand-title { font-size: var(--fs-aux); font-weight: 600; margin-top: 3px; }
+.sys-card.cand .cand-body { font-size: var(--fs-meta); color: var(--text-2); margin-top: 4px; white-space: pre-wrap; }
+.sys-card.cand .cv-row { margin-top: 8px; display: flex; gap: 8px; justify-content: flex-end; }
 /* ask 提问卡（accent 左缘） */
 .ask-card { text-align: left; max-width: 92%; border: 1px solid var(--accent-line); border-left: 3px solid var(--accent); background: var(--bg-raised); }
 .ask-q { margin-bottom: 8px; white-space: pre-wrap; font-size: var(--fs-body); font-weight: 600; }

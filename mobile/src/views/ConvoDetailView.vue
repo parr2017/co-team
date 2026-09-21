@@ -77,7 +77,17 @@
 
           <!-- 轮内非工具卡 -->
           <template v-for="m in turn.items" :key="m.id">
-            <div v-if="m.kind === 'notice'" class="notice" :class="{ warn: (m.meta as any)?.retry || (m.meta as any)?.turn_complete || (m.meta as any)?.stale_reset }">{{ m.text }}</div>
+            <div v-if="m.kind === 'notice' && (m.meta as any)?.knowledge_candidate" class="appr cand">
+              <div class="l1">经验候选</div>
+              <div class="cand-title">{{ (m.meta as any).knowledge_candidate.title }}</div>
+              <div class="cmd" style="white-space:normal">{{ (m.meta as any).knowledge_candidate.content }}</div>
+              <div v-if="!(m.meta as any).knowledge_candidate.confirmed && !(m.meta as any).knowledge_candidate.dismissed" class="acts">
+                <button @click="dismissCandidate(m.id! as string, m)">忽略</button>
+                <button class="p" :disabled="confirmingCand === m.id" @click="confirmCandidate(m.id! as string, (m.meta as any).knowledge_candidate, m)">{{ confirmingCand === m.id ? '入库中…' : '确认入库' }}</button>
+              </div>
+              <div v-else class="acts"><span class="done-lb">{{ (m.meta as any).knowledge_candidate.confirmed ? '已入库' : '已忽略' }}</span></div>
+            </div>
+            <div v-else-if="m.kind === 'notice'" class="notice" :class="{ warn: (m.meta as any)?.retry || (m.meta as any)?.turn_complete || (m.meta as any)?.stale_reset }">{{ m.text }}</div>
             <div v-else-if="m.kind === 'degrade' && (m.meta as any)?.broken" class="inline danger">模型断连 · {{ m.text }}</div>
         <div v-else-if="m.kind === 'degrade' && (m.meta as any)?.recovered" class="inline warn">已恢复 · {{ m.text }}</div>
         <div v-else-if="m.kind === 'degrade'" class="inline warn">{{ m.text }}</div>
@@ -310,6 +320,23 @@ const streamBuf = ref<Record<string, string>>({});
 const reasonBuf = ref('');
 // P0.3：等待/重试瞬时说明
 const waitNote = ref('');
+// P1.4 经验候选卡确认
+const confirmingCand = ref('');
+async function confirmCandidate(msgId: string, cand: any, m: ConvoMessage) {
+  confirmingCand.value = msgId;
+  try {
+    await api.confirmKnowledge({ title: cand.title, content: cand.content, category: cand.category, project_id: cand.project_id, tags: ['确认经验'], source: cand.source });
+    showToast('已沉淀到项目知识库');
+    if (m.meta?.knowledge_candidate) (m.meta as any).knowledge_candidate.confirmed = true;
+  } catch (e: any) {
+    showFailToast(e.message || '入库失败');
+  } finally {
+    confirmingCand.value = '';
+  }
+}
+function dismissCandidate(_msgId: string, m: ConvoMessage) {
+  if (m.meta?.knowledge_candidate) (m.meta as any).knowledge_candidate.dismissed = true;
+}
 // 工具执行中步骤（convo_tool_start → convo_tool）：实时展示"正在执行…"，批次完成清空
 const toolLive = ref<{ tool: string; command: string }[]>([]);
 
@@ -1050,6 +1077,8 @@ html.light .u-bub { background: var(--accent); }
 .diff .f { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff .btn { align-self: flex-start; font-size: 11px; color: var(--accent); padding: 5px 12px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .appr { margin-top: 12px; border-radius: 14px; background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); padding: 11px 13px; }
+.appr.cand { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.cand .cand-title { font-size: 13px; font-weight: 600; margin-top: 4px; color: var(--text-1); }
 .appr .l1 { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--danger); font-weight: 600; }
 .appr .cmd { font-size: 11.5px; margin: 7px 0 9px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .appr .acts { display: flex; gap: 8px; align-items: center; }

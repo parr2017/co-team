@@ -42,6 +42,7 @@ import { ingestUserImages, renderImagesForContext, type IncomingImage, type Stor
 import { executeCommandAsync, canExecute, policyFromConfig, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { discussionTaskDigest } from './discussionBridge';
+import { distillKnowledgeCandidates } from './distill';
 import { CAPACITY_RE } from './orchestrator/orchestrator';
 import { classifyCommand } from './commandGuard';
 import { spawn } from 'node:child_process';
@@ -278,8 +279,8 @@ async function appendMessage(id: string, msg: DiscussionMessage): Promise<Discus
 }
 
 /** Append a centered system line (status changes, notices). */
-async function appendSystemMessage(id: string, text: string, round?: number, kind?: DiscussionMessage['kind']): Promise<void> {
-  await appendMessage(id, { id: newId(), from: 'system', text, ts: new Date().toISOString(), round, kind });
+async function appendSystemMessage(id: string, text: string, round?: number, kind?: DiscussionMessage['kind'], meta?: Record<string, any>): Promise<void> {
+  await appendMessage(id, { id: newId(), from: 'system', text, ts: new Date().toISOString(), round, kind, meta });
 }
 
 /** M5.2 任务↔群聊互通：任务侧事件以系统通知落进讨论流；meta.bridge_ask 携带可回答的提问卡片。 */
@@ -514,6 +515,13 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
       const bg = [`- 名称：${proj.name}`, `- 目录（绝对路径，所有工具的根，禁止臆测其他路径）：${proj.workspace}`];
       if (proj.description) bg.push(`- 描述：${proj.description}`);
       parts.push(`# 项目背景（本讨论绑定项目，路径与配置以此为准）\n${bg.join('\n')}`);
+      // P1.1 项目简报注入（概念基准；数据标签包裹——简报是用户/LLM 可控内容）
+      if (proj.brief) {
+        parts.push(`# 项目简报（概念基准）\n${KNOWLEDGE_DATA_TAG_OPEN}\n${proj.brief.slice(0, 2400)}\n${KNOWLEDGE_DATA_TAG_CLOSE}`);
+      } else {
+        const fields = [proj.tech_stack && `- 技术栈：${proj.tech_stack}`, proj.conventions && `- 约定：${proj.conventions}`, proj.domain && `- 领域：${proj.domain}`, proj.audience && `- 受众：${proj.audience}`].filter(Boolean);
+        if (fields.length) parts.push(`## 项目要点\n${fields.join('\n')}`);
+      }
       const scripts = readScriptsSummary(proj.workspace);
       if (scripts) parts.push(`## 可用 npm scripts\n${scripts}`);
       try {
@@ -602,7 +610,7 @@ ${mcpBlock && !fc ? `外部 MCP 工具：\n${mcpBlock}\n` : ''}` : `## 工具面
 长驻服务（后台启动，返回 pid 与日志路径，随后可 exec 查端口 / read_file 看日志）：
  {"tool":"exec_background","command":"npm run dev"}   停止进程： {"tool":"kill_process","pid":12345}
 小改直干（工作台）：修 bug/调文案/小改动直接 {"tool":"write_file","path":"相对路径","content":"文件全文"} 或 {"tool":"edit_file","path":"相对路径","find":"原文片段","replace":"新片段"}——预算：单轮发言 ≤3 文件且合计 ≤80 行，写后自动落 diff 可一键回滚；超出预算或大改动一律 {"tool":"convert_to_project"} 转任务（预算内的小修别推给任务管线）
-知识沉淀： {"tool":"write_knowledge","category":"general-tech|project","title":"标题","content":"内容"}
+知识沉淀： {"tool":"write_knowledge","category":"general-tech|project|feedback|decision|reference","title":"标题","content":"内容"}
 转项目开发（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）： {"tool":"convert_to_project","auto_run":true}
 ${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments 字段）：\n${mcpBlock}\n` : ''}`}
 ${fc ? `## 输出方式
@@ -1530,6 +1538,24 @@ export async function runResponseLoop(deps: DiscussionDeps, discId: string, opts
     }
     if (exhausted) {
       await appendSystemMessage(discId, `已连续推进 ${discCfg.max_rounds} 轮自动讨论，本轮到此——继续发言即可开启新一轮，或生成方案`, undefined, 'notice');
+    }
+    // P1.4 讨论收场提炼：讨论循环正常结束（未转任务封存）→ 后台提炼要点 → 候选卡（用户确认才入库）
+    const liveEnd = await getDiscussion(discId);
+    if (liveEnd && liveEnd.status !== 'converted' && liveEnd.project_id) {
+      void (async () => {
+        try {
+          const msgs = await getMessages(discId);
+          const substantive = msgs.filter((m) => m.from !== 'system');
+          if (substantive.length < 6) return;
+          const transcript = substantive.slice(-20).map((m) => `${m.from === 'user' ? '用户' : m.from}: ${String(m.text || '').slice(0, 200)}`).join('\n');
+          const candidates = await distillKnowledgeCandidates(deps.pool, `讨论「${liveEnd.title}」\n${transcript}`, '群组讨论', deps.logger);
+          for (const cand of candidates.slice(0, 1)) {
+            await appendSystemMessage(discId, `💡 经验候选：${cand.title}\n${cand.content}`, undefined, 'card', {
+              knowledge_candidate: { ...cand, project_id: liveEnd.project_id, source: `discussion:${discId}` },
+            });
+          }
+        } catch { /* 收场提炼失败不影响讨论 */ }
+      })();
     }
   } finally {
     clearInterval(stampTimer);
