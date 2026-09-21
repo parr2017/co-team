@@ -36,7 +36,7 @@ import { pickSkillsForNode, formatSkillsBlock, formatSkillsCatalog } from './ski
 import { getSkills } from './skills';
 import { relevantKnowledge } from './knowledge';
 import { distillKnowledgeCandidates } from './distill';
-import { classifyCommand, looksLikeMutating } from './commandGuard';
+import { classifyCommand, isCommonDevCommand } from './commandGuard';
 import { canExecute, policyFromConfig, executeCommandAsync, isPermissionLevel, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { analyzeImages } from './vision';
@@ -95,6 +95,8 @@ export interface ConvoApproval {
   command: string;
   ts: string;
   status: 'pending' | 'approved_once' | 'approved_always' | 'rejected';
+  /** 审批触发原因：whitelist=白名单外/敏感命令；jail_out_of_scope=unrestricted 越界非开发命令 */
+  reason?: 'whitelist' | 'jail_out_of_scope';
   resolved_by?: string;
   resolved_at?: string;
 }
@@ -1271,7 +1273,7 @@ ${policyLevel === 'plan_only'
   : policyLevel === 'readonly'
     ? `\n## 当前权限：readonly（只读）\n本会话**不能写文件**（写入会被拒绝）；可执行白名单内的只读命令。需要改动时提示用户调整权限。`
     : policyLevel === 'unrestricted'
-      ? `\n## 当前权限：unrestricted（无边界）\n命令与读取**已解除目录监狱**：可以执行越界命令、读取项目目录外文件。但**写/删文件仍只能作用于项目目录内**（write_file/edit_file 越界会被拒）；越界的写/删类命令（含 \`>\` 重定向、rm/del/mv/cp 等）会转人工审批。请极度谨慎，操作外部路径前先说明意图。`
+      ? `\n## 当前权限：unrestricted（无边界）\n命令与读取**已解除目录监狱**：可以执行越界命令、读取项目目录外文件。其中**常见开发命令（node/java/npm/bash/python/git 等）越界可直接执行**；**其他越界命令会转人工审批**。**写/删文件仍只能作用于项目目录内**（write_file/edit_file 越界会被拒）。请极度谨慎，操作外部路径前先说明意图。`
       : ''}
 
 ${fc ? `## 工具（原生工具通道：直接发起工具调用，参数按工具声明传入；全部相对路径基于工作区）
@@ -1603,11 +1605,12 @@ async function convoExec(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy
 
   const always = await sessionAlwaysList(convo.id);
   // full = 会话目录内完全控制（2026-09-20 实测 learn-english 会话）：除 strict 绝对禁止外
-  // 全部放行——敏感门也豁免。unrestricted（无边界）= 命令监狱解除，但越界"写/删"命令转审批（见下）。
+  // 全部放行——敏感门也豁免。unrestricted（无边界）= 命令监狱解除：越界的常见开发命令
+  // （node/java/npm/bash/python/git 等）直接执行；其余越界命令转人工审批（见下）。
   // 目录监狱与 strict 拦截在 full 下仍生效。
   const needApproval = policy.level !== 'full' && policy.level !== 'unrestricted' && (!canExecute(policy, command) || (cls.sensitive && !policy.allow_sensitive));
   if (needApproval && !matchesAlways(always, command)) {
-    const verdict = await parkForApproval(deps, convo, command);
+    const verdict = await parkForApproval(deps, convo, command, 'whitelist');
     if (verdict.status === 'rejected') return { tool, ok: false, error: '用户拒绝执行该命令' };
     if (verdict.status === 'approved_always') {
       const list = await sessionAlwaysList(convo.id);
@@ -1616,16 +1619,15 @@ async function convoExec(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy
     }
   }
 
-  // unrestricted：命令监狱已解除——越界命令写审计日志；命中"写/删"特征且越界者仍转人工审批
-  // （方案 c）；读类/项目内命令直接放行。
+  // unrestricted：命令监狱已解除——越界命令记审计日志（保持现状）；常见开发命令直接放行，
+  // 其余越界命令转人工审批。
   if (policy.jailBypass) {
     const jail = assertWithinJail(command, convo.workspace);
     if (!jail.ok) {
-      const mutating = looksLikeMutating(command);
-      deps.logger.warn('convo unrestricted 越界命令', { convoId: convo.id, command: command.slice(0, 200), violations: jail.violations.slice(0, 5), mutating });
-      if (mutating && !matchesAlways(always, command)) {
-        const verdict = await parkForApproval(deps, convo, command);
-        if (verdict.status === 'rejected') return { tool, ok: false, error: '用户拒绝越界写/删命令' };
+      deps.logger.warn('convo unrestricted 越界命令', { convoId: convo.id, command: command.slice(0, 200), violations: jail.violations.slice(0, 5), dev: isCommonDevCommand(command) });
+      if (!isCommonDevCommand(command) && !matchesAlways(always, command)) {
+        const verdict = await parkForApproval(deps, convo, command, 'jail_out_of_scope');
+        if (verdict.status === 'rejected') return { tool, ok: false, error: '用户拒绝越界命令' };
         if (verdict.status === 'approved_always') {
           const list = await sessionAlwaysList(convo.id);
           list.push(command);
@@ -1669,8 +1671,8 @@ async function convoExec(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy
 }
 
 /** 审批 park：落库 + 事件 + 阻塞等待用户裁决（once/always/reject；打断/删除会话连带拒绝） */
-async function parkForApproval(deps: ConvoDeps, convo: Convo, command: string): Promise<ConvoApproval> {
-  const rec: ConvoApproval = { id: newId(), command, ts: new Date().toISOString(), status: 'pending' };
+async function parkForApproval(deps: ConvoDeps, convo: Convo, command: string, reason: 'whitelist' | 'jail_out_of_scope' = 'whitelist'): Promise<ConvoApproval> {
+  const rec: ConvoApproval = { id: newId(), command, ts: new Date().toISOString(), status: 'pending', reason };
   const list = await loadApprovals(convo.id);
   list.push(rec);
   await busSet(approvalsKey(convo.id), list.slice(-50));
@@ -1678,7 +1680,7 @@ async function parkForApproval(deps: ConvoDeps, convo: Convo, command: string): 
   await patchConvo(convo.id, { status: 'waiting_approval' });
   await emitProgress('convo_status', { convo_id: convo.id, status: 'waiting_approval' });
   await emitProgress('convo_approval', { convo_id: convo.id, approval: rec });
-  await appendConvoMessage(convo.id, { role: 'system', kind: 'approval', text: command, meta: { approval_id: rec.id, command, status: 'pending' } });
+  await appendConvoMessage(convo.id, { role: 'system', kind: 'approval', text: command, meta: { approval_id: rec.id, command, status: 'pending', reason } });
 
   const verdict = await new Promise<ConvoApproval>((resolve) => {
     let settled = false;

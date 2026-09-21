@@ -715,6 +715,53 @@ describe('convo FC 原生工具通道（opencode/ZCode 同款）', () => {
     expect(toolCard).toBeTruthy();
   }, 20000);
 
+  it('unrestricted：越界常见开发命令（node）直接执行，不 park', async () => {
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    await convo.updateConvo(deps, c.id, { policy_level: 'unrestricted' });
+    const outside = path.join(os.tmpdir(), `ct-unrest-out-${Date.now()}.js`);
+    behaviors.push(() => toolCalls([{ tool: 'exec', command: `node "${outside}"` }]));
+    behaviors.push(() => reply('done'));
+    await convo.sendConvoMessage(deps, c.id, { text: '跑开发命令' }, { trigger: false });
+    await convo.runResponseLoop(deps, c.id);
+    const msgs = await convo.getConvoMessages(c.id);
+    expect(msgs.some((m) => m.kind === 'approval')).toBe(false); // 常见开发命令不 park
+    expect((await convo.getConvo(c.id))?.status).toBe('idle');
+  }, 20000);
+
+  it('unrestricted：越界非开发命令（rm）park → reason=jail_out_of_scope', async () => {
+    convo.configureConvo({ permissions: { level: 'full' }, ask_timeout_sec: 30, auto_retry_base_ms: 20 });
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    await convo.updateConvo(deps, c.id, { policy_level: 'unrestricted' });
+    const outside = path.join(os.tmpdir(), `ct-unrest-del-${Date.now()}`).replace(/\\/g, '/');
+    behaviors.push(() => toolCalls([{ tool: 'exec', command: `rm -rf "${outside}"` }]));
+    behaviors.push(() => reply('done'));
+    await convo.sendConvoMessage(deps, c.id, { text: '跑删除命令' }, { trigger: false });
+    const loop = convo.runResponseLoop(deps, c.id).catch(() => {});
+    await waitFor(() => convo.listPendingApprovals(c.id).then((l) => l.length > 0));
+    const [pending] = await convo.listPendingApprovals(c.id);
+    expect(pending.reason).toBe('jail_out_of_scope');
+    const approvalMsg = (await convo.getConvoMessages(c.id)).find((m) => m.kind === 'approval');
+    expect(approvalMsg?.meta?.reason).toBe('jail_out_of_scope');
+    await convo.resolveConvoApproval(deps, c.id, pending.id, 'reject');
+    await loop;
+    expect((await convo.getConvo(c.id))?.status).toBe('idle');
+  }, 20000);
+
+  it('对照：approve_required 下越界开发命令仍 park（reason=whitelist）', async () => {
+    convo.configureConvo({ permissions: { level: 'approve_required', whitelist_commands: [] } });
+    const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
+    const outside = path.join(os.tmpdir(), `ct-approve-node-${Date.now()}.js`);
+    behaviors.push(() => toolCalls([{ tool: 'exec', command: `node "${outside}"` }]));
+    behaviors.push(() => reply('done'));
+    await convo.sendConvoMessage(deps, c.id, { text: '跑命令' }, { trigger: false });
+    const loop = convo.runResponseLoop(deps, c.id).catch(() => {});
+    await waitFor(() => convo.listPendingApprovals(c.id).then((l) => l.length > 0));
+    const [pending] = await convo.listPendingApprovals(c.id);
+    expect(pending.reason).toBe('whitelist');
+    await convo.resolveConvoApproval(deps, c.id, pending.id, 'once');
+    await loop;
+  }, 20000);
+
   it('patchConvo 并发保护：turn 运行中改 policy_level，turn 收尾后不被旧对象覆盖', async () => {
     const c = await convo.createConvo(deps, { project_id: 'p1', model_id: 'fake-model' });
     // 慢行为挂起 turn，期间用户改权限

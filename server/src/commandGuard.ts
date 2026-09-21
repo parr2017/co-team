@@ -230,48 +230,62 @@ export function classifyCommand(command: string): CommandClassification {
   return { sensitive: reasons.length > 0, strict, reasons, segments };
 }
 
-// ========== 写/删特征识别（unrestricted：越界写/删命令转审批，读类命令直接放行） ==========
+// ========== 常见开发命令识别（unrestricted：越界时按首词白名单放行，其余转审批） ==========
 
-/** 明确会写/删文件的 bin（含 PowerShell 动名词形式） */
-const WRITE_BINS = new Set([
+/** 明确会写/删文件的 bin（用于解释器内联代码扫描：`powershell -Command "Remove-Item x"` 不算开发命令） */
+const INLINE_WRITE_BINS = new Set([
   'rm', 'del', 'erase', 'rd', 'rmdir', 'remove-item',
   'mv', 'move', 'cp', 'copy', 'xcopy', 'robocopy',
   'tee', 'truncate', 'dd', 'touch', 'mkdir', 'md', 'ren', 'rename',
   'ln', 'mklink', 'chmod', 'chown', 'chgrp', 'icacls', 'cacls', 'attrib', 'takeown',
   'set-content', 'add-content', 'clear-content', 'out-file', 'new-item',
   'copy-item', 'move-item', 'rename-item', 'set-item',
-  'npm', 'pnpm', 'yarn', 'pip', 'pip3', 'conda',
 ]);
 
-/** git 变更型子命令（会改工作区/仓库） */
-const GIT_MUTATING_SUBS = new Set(['checkout', 'reset', 'clean', 'apply', 'restore', 'stash', 'commit', 'merge', 'rebase', 'rm', 'mv', 'add', 'pull', 'fetch', 'switch', 'cherry-pick', 'revert']);
+/** 常见开发命令首词：unrestricted 下越界可直接执行（2026-09-22 语义调整）。
+ *  非此清单的越界命令（rm/del/format/curl|sh 等）仍转人工审批；strict 命令任何情况都拦。 */
+const COMMON_DEV_BINS = new Set([
+  // shell / 解释器
+  'bash', 'sh', 'zsh', 'cmd', 'powershell', 'pwsh',
+  'node', 'nodejs', 'deno', 'bun', 'python', 'python3', 'py', 'perl', 'ruby', 'php',
+  // 运行时 / 包管理
+  'npm', 'npx', 'pnpm', 'yarn', 'pip', 'pip3', 'conda',
+  'java', 'javac', 'mvn', 'gradle', 'gradlew', 'dotnet', 'go', 'cargo', 'rustc',
+  // 构建 / 测试 / 检查工具
+  'tsc', 'ts-node', 'tsx', 'vite', 'vitest', 'jest', 'eslint', 'prettier', 'webpack', 'rollup',
+  'make', 'gcc', 'g++', 'clang', 'cmake',
+  // 版本控制
+  'git',
+]);
 
-/** 引号感知的输出去向重定向（> / >> / 2> / &>）——引号内的 > 不算。 */
-function hasOutputRedirect(command: string): boolean {
-  let quote: string | null = null;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (quote) { if (ch === quote) quote = null; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; continue; }
-    if (ch === '>') return true;
+/** 解释器内联代码里的写/删文件特征（字符串扫描，覆盖 JS/Python 等 API 调用）。 */
+const INLINE_WRITE_RE = /(writefile|writefilesync|appendfile|createwritestream|fs\.write|shutil\.|\bopen\s*\([^)]*['"][wax]|\.write\s*\(|os\.remove|os\.rename|os\.makedirs|\.unlink|rmdir|\brm\b|\bdel\b|mkdir|rename|copyfile|truncate|set-content|out-file|remove-item|new-item)/i;
+
+/** 解释器内联代码是否含写/删文件特征（`node -e "fs.writeFileSync(...)"` / powershell -Command "Remove-Item"）。 */
+function inlineCodeLooksMutating(segment: string): boolean {
+  const { args } = firstWord(segment);
+  const hasInline = args.some((a) => INLINE_CODE_FLAGS.has(a.toLowerCase()));
+  if (!hasInline) return false;
+  for (const a of args) {
+    if (INLINE_CODE_FLAGS.has(a.toLowerCase())) continue;
+    // 剥离包裹引号/括号后再分段匹配（命令式内联代码）
+    const cleaned = a.replace(/^["'`(]+/, '').replace(/["'`),]+$/, '');
+    for (const sub of splitChained(cleaned)) {
+      if (INLINE_WRITE_BINS.has(firstWord(sub).bin)) return true;
+    }
+    // 字符串扫描（API 调用式内联代码，如 JS/Python 的 writeFileSync）
+    if (INLINE_WRITE_RE.test(a)) return true;
   }
   return false;
 }
 
-/** 判断命令是否带"写/删文件"特征（启发式，不可靠；仅用于 unrestricted 越界时转审批）。
- *  局限（诚实记录）：解释器间接执行/编码命令理论上可绕过——与 commandGuard 其余检查同源。 */
-export function looksLikeMutating(command: string): boolean {
+/** 越界命令是否属于"常见开发命令"：链式每段首词都需命中白名单（`node a && rm b` 不会借首词放行）；
+ *  解释器内联代码若含写/删特征（如 `powershell -Command "Remove-Item x"`）也不算。 */
+export function isCommonDevCommand(command: string): boolean {
   if (!command) return false;
-  if (hasOutputRedirect(command)) return true;
-  for (const seg of splitChained(command)) {
-    const { bin, args } = firstWord(seg);
-    if (!bin) continue;
-    if (WRITE_BINS.has(bin)) return true;
-    if (INTERPRETERS.has(bin) && args.some((a) => INLINE_CODE_FLAGS.has(a.toLowerCase()))) return true;
-    if (bin === 'sed' && args.some((a) => a === '-i' || a.startsWith('-i'))) return true;
-    if (bin === 'git' && GIT_MUTATING_SUBS.has((args[0] || '').toLowerCase())) return true;
-  }
-  return false;
+  const segs = splitChained(command);
+  if (segs.length === 0) return false;
+  return segs.every((seg) => COMMON_DEV_BINS.has(firstWord(seg).bin) && !inlineCodeLooksMutating(seg));
 }
 
 /** 链式命令的每段首词都必须过白名单（非 full 策略用）——`git log && del x` 不再借首词放行。 */

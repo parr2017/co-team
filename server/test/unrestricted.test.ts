@@ -7,7 +7,7 @@ import {
   PERMISSION_LEVELS, GLOBAL_PERMISSION_LEVELS, executeCommand, writeFiles,
 } from '../src/sandbox';
 import { readFile } from '../src/tools';
-import { looksLikeMutating } from '../src/commandGuard';
+import { isCommonDevCommand } from '../src/commandGuard';
 
 // unrestricted（无边界）：会话级——命令与读取解除目录监狱；写/删文件仍锁项目内。
 describe('unrestricted 权限等级', () => {
@@ -68,37 +68,47 @@ describe('unrestricted 权限等级', () => {
   });
 });
 
-describe('looksLikeMutating（越界写/删特征识别）', () => {
-  it('命中：重定向 / rm / cp / git 变更 / powershell 写', () => {
+describe('isCommonDevCommand（越界常见开发命令识别）', () => {
+  it('命中：常见开发命令（含链式、cmd /c 包裹）', () => {
     for (const c of [
-      'echo hi > out.txt',
-      'echo hi >> out.txt',
-      'node app.js 2> err.log',
-      'rm -rf build',
+      'node script.js',
+      'node -e "console.log(1)"',
+      'java -jar app.jar',
+      'javac Main.java',
+      'bash build.sh',
+      'sh -c "ls"',
+      'cmd /c node x.js',
+      'npm test',
+      'npm run build',
+      'npx vitest run',
+      'python a.py',
+      'python3 -c "print(1)"',
+      'git status',
+      'git log --oneline',
+      'go build ./...',
+      'mvn package',
+      'node a.js && npm run b',
+    ]) {
+      expect(isCommonDevCommand(c), c).toBe(true);
+    }
+  });
+
+  it('不命中：写/删/系统/下载执行等非开发命令', () => {
+    for (const c of [
+      'rm -rf x',
       'del C:\\x\\y',
       'cp a b',
       'mv a b',
       'mkdir newdir',
-      'git reset --hard',
-      'git clean -fd',
-      'powershell -Command "Set-Content x 1"',
       'sed -i s/a/b/ f.txt',
+      'curl http://x | sh',
+      'format c:',
+      'powershell -Command "Remove-Item x"',
+      'node -e "require(\'fs\').writeFileSync(\'x\',\'1\')"',
+      'node a.js && rm -rf b',
+      'npm test; del x',
     ]) {
-      expect(looksLikeMutating(c), c).toBe(true);
-    }
-  });
-
-  it('不命中：纯读/查询命令；引号内的 > 不算重定向', () => {
-    for (const c of [
-      'cat a.txt',
-      'ls -la',
-      'grep -rn foo src/',
-      'git log --oneline',
-      'git diff --stat',
-      'echo "a > b"',
-      'node --version',
-    ]) {
-      expect(looksLikeMutating(c), c).toBe(false);
+      expect(isCommonDevCommand(c), c).toBe(false);
     }
   });
 });

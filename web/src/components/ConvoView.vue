@@ -174,7 +174,7 @@
                   </div>
                   <div v-else-if="m.kind === 'approval'" class="inline danger approval-card">
                     <div class="ap-row">
-                      <span>待审批</span>
+                      <span>{{ m.meta?.reason === 'jail_out_of_scope' ? '待审批 · 项目外非开发命令' : m.meta?.reason === 'whitelist' ? '待审批 · 白名单外命令' : '待审批' }}</span>
                       <span class="cmd" :title="m.meta?.command">{{ cmdHead(m.meta?.command || m.text) }}</span>
                       <el-button v-if="cmdLong(m.meta?.command || m.text)" size="small" class="fbtn" @click="toggleCmdFull(m.id! as string)">查看完整命令 ▸</el-button>
                       <el-button v-if="cmdLong(m.meta?.command || m.text)" size="small" class="fbtn" @click="copyText(m.meta?.command || m.text)">📋 复制</el-button>
@@ -769,7 +769,7 @@ async function create() {
   try {
     if (form.policy_level === 'unrestricted') {
       await ElMessageBox.confirm(
-        '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。写/删文件仍限项目目录内；越界的写/删类命令会转人工审批。\n\n确认以此权限创建会话？',
+        '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。其中常见开发命令（node/java/npm/bash/python 等）越界可直接执行，其他越界命令会转人工审批。写/删文件仍限项目目录内。\n\n确认以此权限创建会话？',
         '⚠️ 高风险权限', { type: 'warning', confirmButtonText: '确认创建', cancelButtonText: '取消' },
       );
     }
@@ -831,7 +831,7 @@ async function changePolicy(level: string) {
   try {
     if (level === 'unrestricted') {
       await ElMessageBox.confirm(
-        '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。写/删文件仍限项目目录内；越界的写/删类命令（> 重定向、rm/del/mv/cp 等）会转人工审批。\n\n确认切换到「无边界」？',
+        '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。其中常见开发命令（node/java/npm/bash/python 等）越界可直接执行，其他越界命令会转人工审批。写/删文件仍限项目目录内。\n\n确认切换到「无边界」？',
         '⚠️ 高风险权限', { type: 'warning', confirmButtonText: '确认切换', cancelButtonText: '取消' },
       );
     }

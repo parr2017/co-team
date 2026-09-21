@@ -92,7 +92,7 @@
         <div v-else-if="m.kind === 'degrade' && (m.meta as any)?.recovered" class="inline warn">已恢复 · {{ m.text }}</div>
         <div v-else-if="m.kind === 'degrade'" class="inline warn">{{ m.text }}</div>
             <div v-else-if="m.kind === 'approval'" class="appr">
-              <div class="l1">待审批 · 白名单外命令</div>
+              <div class="l1">{{ m.meta?.reason === 'jail_out_of_scope' ? '待审批 · 项目外非开发命令' : m.meta?.reason === 'whitelist' ? '待审批 · 白名单外命令' : '待审批' }}</div>
               <div class="cmd mono" style="white-space:pre-wrap;word-break:break-all" @click="openCmdFull(m)">{{ cmdHead(m.meta?.command || m.text) }}</div>
               <div v-if="cmdLong(m.meta?.command || m.text)" class="cmd-more" @click="openCmdFull(m)">查看完整命令 ▸（共 {{ (m.meta?.command || m.text).length }} 字符）</div>
               <div v-if="m.meta?.status === 'pending'" class="acts">
@@ -435,7 +435,7 @@ async function pickPerm(level: string) {
     if (level === 'unrestricted') {
       await showConfirmDialog({
         title: '⚠️ 高风险权限',
-        message: '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。写/删文件仍限项目目录内；越界的写/删类命令会转人工审批。确认切换？',
+        message: '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。其中常见开发命令（node/java/npm/bash/python 等）越界可直接执行，其他越界命令会转人工审批。写/删文件仍限项目目录内。确认切换？',
         confirmButtonText: '确认切换',
       });
     }
