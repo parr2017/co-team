@@ -524,13 +524,14 @@ export interface DailyReport {
   resolved: Record<string, { action: string; ts: string; task_id?: string }>;
 }
 
-export const PERMISSION_LEVELS = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'] as const;
+export const PERMISSION_LEVELS = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full', 'unrestricted'] as const;
 export const PERMISSION_LEVEL_LABELS: Record<string, string> = {
   plan_only: '只出方案',
   readonly: '只读',
   approve_required: '改动需审批',
   whitelist_auto: '白名单自动',
   full: '目录内完全控制',
+  unrestricted: '无边界（解除目录监狱）',
 };
 
 /** 协作会话：单 agent 长对话直接操作项目工作区（服务端 convo.ts 的镜像） */

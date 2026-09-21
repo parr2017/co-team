@@ -5,10 +5,14 @@ import { spawnSync, spawn } from 'node:child_process';
 import { simpleGit } from 'simple-git';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 
-/** Command execution levels (feature: 命令执行分级), from most to least restrictive. */
-export type PermissionLevel = 'plan_only' | 'readonly' | 'approve_required' | 'whitelist_auto' | 'full';
+/** Command execution levels (feature: 命令执行分级), from most to least restrictive.
+ *  `unrestricted`（无边界）为**协作会话专用**：解除命令与读取的目录监狱（写/删文件仍锁项目内）。 */
+export type PermissionLevel = 'plan_only' | 'readonly' | 'approve_required' | 'whitelist_auto' | 'full' | 'unrestricted';
 
-export const PERMISSION_LEVELS: PermissionLevel[] = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'];
+export const PERMISSION_LEVELS: PermissionLevel[] = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full', 'unrestricted'];
+
+/** 全局配置（config.yaml permissions.level / 任务 execution_policy）允许的级别——**不含**会话级 unrestricted。 */
+export const GLOBAL_PERMISSION_LEVELS: PermissionLevel[] = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'];
 
 export function isPermissionLevel(v: unknown): v is PermissionLevel {
   return typeof v === 'string' && (PERMISSION_LEVELS as string[]).includes(v);
@@ -20,6 +24,8 @@ export interface PermissionPolicy {
   maxTimeSec: number;
   /** 群聊放行敏感命令（rm/python -c/git push 等）；绝对禁止命令（sudo/schtasks 等）不受此开关影响 */
   allow_sensitive?: boolean;
+  /** 无边界（unrestricted）：解除命令与读取的目录监狱；写/删文件工具**不**受此影响（仍锁项目内） */
+  jailBypass?: boolean;
 }
 
 /** 已告警过的非法 level（每进程每值一次——o3xmkraj 实测 `level: normal` 静默回退
@@ -40,6 +46,7 @@ export function policyFromConfig(permissions?: { level?: string; whitelist_comma
     whitelistCommands,
     maxTimeSec: permissions?.max_time_sec ?? 300,
     allow_sensitive: permissions?.allow_sensitive ?? false,
+    jailBypass: level === 'unrestricted',
   };
 }
 
@@ -53,17 +60,20 @@ export function policyWithLevel(
     ? override.whitelist_commands.map(String)
     : base.whitelistCommands;
   const raw = (override.level || '').trim();
+  // 任务执行策略不接受会话级 unrestricted（只给协作会话）；命中即回退 base.level
+  const level = isPermissionLevel(raw) && raw !== 'unrestricted' ? raw : base.level;
   return {
-    level: isPermissionLevel(raw) ? raw : base.level,
+    level,
     whitelistCommands,
     maxTimeSec: base.maxTimeSec,
     allow_sensitive: base.allow_sensitive,
+    jailBypass: level === 'unrestricted',
   };
 }
 
 export function canExecute(policy: PermissionPolicy, command: string): boolean {
-  // 'full' 意味着完全控制：白名单检查整体豁免
-  if (policy.level === 'full') return true;
+  // 'full' / 'unrestricted' 意味着完全控制：白名单检查整体豁免
+  if (policy.level === 'full' || policy.level === 'unrestricted') return true;
   if (policy.whitelistCommands === null) return true;
   const parts = command.trim().split(/\s+/);
   if (parts.length === 0 || !parts[0]) return false;
@@ -259,10 +269,12 @@ export function executeCommand(command: string, cwd: string, policy: PermissionP
   if (!canExecute(policy, command)) {
     return { command, allowed: false, returncode: -1, stdout: '', stderr: 'command not in whitelist' };
   }
-  // 目录监狱：命令里的绝对路径/`..` 逃逸一律拒绝——与权限级别无关（full = 目录内完全控制）
-  const jail = assertWithinJail(command, cwd);
-  if (!jail.ok) {
-    return { command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, cwd) };
+  // 目录监狱：命令里的绝对路径/`..` 逃逸一律拒绝——full = 目录内完全控制；unrestricted = 解除
+  if (!policy.jailBypass) {
+    const jail = assertWithinJail(command, cwd);
+    if (!jail.ok) {
+      return { command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, cwd) };
+    }
   }
   const timeout = (timeoutSec ?? policy.maxTimeSec) * 1000;
   try {
@@ -305,11 +317,13 @@ export function executeCommandAsync(
       resolve({ command, allowed: false, returncode: -1, stdout: '', stderr: 'command not in whitelist' });
       return;
     }
-    // 目录监狱（同 executeCommand）：越界命令不执行
-    const jail = assertWithinJail(command, cwd);
-    if (!jail.ok) {
-      resolve({ command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, cwd) });
-      return;
+    // 目录监狱（同 executeCommand）：越界命令不执行；unrestricted 解除
+    if (!policy.jailBypass) {
+      const jail = assertWithinJail(command, cwd);
+      if (!jail.ok) {
+        resolve({ command, allowed: false, returncode: -1, stdout: '', stderr: jailViolationMessage(jail.violations, cwd) });
+        return;
+      }
     }
 
     const timeout = (timeoutSec ?? policy.maxTimeSec) * 1000;

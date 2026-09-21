@@ -767,6 +767,12 @@ async function create() {
   if (!form.project_id) { ElMessage.warning('请选择项目'); return; }
   creating.value = true;
   try {
+    if (form.policy_level === 'unrestricted') {
+      await ElMessageBox.confirm(
+        '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。写/删文件仍限项目目录内；越界的写/删类命令会转人工审批。\n\n确认以此权限创建会话？',
+        '⚠️ 高风险权限', { type: 'warning', confirmButtonText: '确认创建', cancelButtonText: '取消' },
+      );
+    }
     const r = await api.convoCreate({
       project_id: form.project_id,
       title: form.title || undefined,
@@ -779,7 +785,7 @@ async function create() {
     await loadConvos();
     await openConvo(r.convo.id);
   } catch (e: any) {
-    ElMessage.error(e.message);
+    if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message);
   } finally {
     creating.value = false;
   }
@@ -823,10 +829,17 @@ async function changeAutoSwitch(on: boolean) {
 async function changePolicy(level: string) {
   if (!detail.value) return;
   try {
+    if (level === 'unrestricted') {
+      await ElMessageBox.confirm(
+        '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。写/删文件仍限项目目录内；越界的写/删类命令（> 重定向、rm/del/mv/cp 等）会转人工审批。\n\n确认切换到「无边界」？',
+        '⚠️ 高风险权限', { type: 'warning', confirmButtonText: '确认切换', cancelButtonText: '取消' },
+      );
+    }
     await api.convoUpdate(detail.value.id, { policy_level: level || null });
     detail.value.policy_level = level || undefined;
     ElMessage.success(level ? `权限已切换为${PERMISSION_LEVEL_LABELS[level]}` : '权限已切换为继承全局');
   } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return;
     ElMessage.error(e.message);
   }
 }

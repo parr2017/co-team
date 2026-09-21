@@ -171,6 +171,8 @@ permissions:
   # 命令执行分级：plan_only（只出方案不写代码）/ readonly（只读）/
   # approve_required（白名单外命令需人工审批，默认）/ whitelist_auto（白名单自动，其余拒绝）/
   # full（项目目录内完全控制——目录监狱对所有级别生效：命令中的越界绝对路径/`..` 一律拒绝）
+  # 注：会话级 unrestricted（无边界，解除命令/读取的目录监狱）**只能**在协作会话 policy_level 里设置，
+  #     不写入全局配置（此处不生效）、不适用于任务与群组讨论。
   level: approve_required
   whitelist_commands:
     - python

@@ -277,6 +277,7 @@
         <div class="si" :class="{ cur: detail?.policy_level === 'approve_required' }" @click="pickPerm('approve_required')">approve_required · 改动需审批</div>
         <div class="si" :class="{ cur: detail?.policy_level === 'whitelist_auto' }" @click="pickPerm('whitelist_auto')">whitelist_auto · 白名单自动</div>
         <div class="si" :class="{ cur: detail?.policy_level === 'full' }" @click="pickPerm('full')">full · 目录内完全控制</div>
+        <div class="si danger" :class="{ cur: detail?.policy_level === 'unrestricted' }" @click="pickPerm('unrestricted')">unrestricted · 无边界（解除目录监狱）</div>
       </div>
     </van-popup>
 
@@ -425,16 +426,26 @@ const askDraft = ref('');
 const promoting = ref(false);
 const permSheet = ref(false);
 const PERM_LABELS: Record<string, string> = {
-  '': '继承全局', plan_only: '只出方案', readonly: '只读', approve_required: '改动需审批', whitelist_auto: '白名单自动', full: '完全控制',
+  '': '继承全局', plan_only: '只出方案', readonly: '只读', approve_required: '改动需审批', whitelist_auto: '白名单自动', full: '完全控制', unrestricted: '无边界',
 };
 const permLabel = computed(() => PERM_LABELS[detail.value?.policy_level || ''] || '继承全局');
 async function pickPerm(level: string) {
   permSheet.value = false;
   try {
+    if (level === 'unrestricted') {
+      await showConfirmDialog({
+        title: '⚠️ 高风险权限',
+        message: '「无边界」将解除命令与读取的目录监狱：agent 可执行越界命令、读取项目目录外的文件。写/删文件仍限项目目录内；越界的写/删类命令会转人工审批。确认切换？',
+        confirmButtonText: '确认切换',
+      });
+    }
     await api.convoUpdate(convoId, { policy_level: level || null });
     showToast(level ? `权限已切换为 ${PERM_LABELS[level]}` : '权限已切换为继承全局');
     await load();
-  } catch (e: any) { showFailToast(e.message); }
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close') return;
+    showFailToast(e.message);
+  }
 }
 async function toggleAutoSwitch() {
   try {

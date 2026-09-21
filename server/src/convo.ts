@@ -36,7 +36,7 @@ import { pickSkillsForNode, formatSkillsBlock, formatSkillsCatalog } from './ski
 import { getSkills } from './skills';
 import { relevantKnowledge } from './knowledge';
 import { distillKnowledgeCandidates } from './distill';
-import { classifyCommand } from './commandGuard';
+import { classifyCommand, looksLikeMutating } from './commandGuard';
 import { canExecute, policyFromConfig, executeCommandAsync, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { analyzeImages } from './vision';
@@ -1053,7 +1053,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         for (const p of shares) {
           const rel = p.replace(/\\/g, '/');
           const abs = path.resolve(convo.workspace, rel);
-          const ok = convo.workspace && abs.startsWith(path.resolve(convo.workspace)) && fs.existsSync(abs) && fs.statSync(abs).isFile();
+          const ok = convo.workspace && (policy.jailBypass || abs.startsWith(path.resolve(convo.workspace))) && fs.existsSync(abs) && fs.statSync(abs).isFile();
           await appendConvoMessage(convoId, {
             role: 'assistant', kind: 'file', text: rel,
             meta: ok ? { path: rel, size: fs.statSync(abs).size, missing: false } : { path: rel, missing: true },
@@ -1274,7 +1274,9 @@ ${policyLevel === 'plan_only'
   ? `\n## 当前权限：plan_only（只出方案）\n本会话**不能执行命令、不能写文件**（工具会被直接拒绝、白耗迭代）。请只做只读侦查与规划，把方案讲清楚；需要真正动手时，明确提示用户在会话设置把权限切到「目录内完全控制」或「改动需审批」。`
   : policyLevel === 'readonly'
     ? `\n## 当前权限：readonly（只读）\n本会话**不能写文件**（写入会被拒绝）；可执行白名单内的只读命令。需要改动时提示用户调整权限。`
-    : ''}
+    : policyLevel === 'unrestricted'
+      ? `\n## 当前权限：unrestricted（无边界）\n命令与读取**已解除目录监狱**：可以执行越界命令、读取项目目录外文件。但**写/删文件仍只能作用于项目目录内**（write_file/edit_file 越界会被拒）；越界的写/删类命令（含 \`>\` 重定向、rm/del/mv/cp 等）会转人工审批。请极度谨慎，操作外部路径前先说明意图。`
+      : ''}
 
 ${fc ? `## 工具（原生工具通道：直接发起工具调用，参数按工具声明传入；全部相对路径基于工作区）
 只读侦查：list_files | read_file(path[,line_start,line_end]) | read_dir(path) | grep(pattern[,path]) | git_log | git_diff | load_skill(name)
@@ -1548,7 +1550,7 @@ async function runConvoToolCalls(
       if (name === 'share_file') {
         const rel = String(call.path || '').trim().replace(/\\/g, '/');
         const abs = convo.workspace ? path.resolve(convo.workspace, rel) : '';
-        const ok = !!rel && !!convo.workspace && abs.startsWith(path.resolve(convo.workspace)) && fs.existsSync(abs) && fs.statSync(abs).isFile();
+        const ok = !!rel && !!convo.workspace && (policy.jailBypass || abs.startsWith(path.resolve(convo.workspace))) && fs.existsSync(abs) && fs.statSync(abs).isFile();
         if (!ok) { results.push({ tool: 'share_file', ok: false, path: rel, error: '文件不存在或越界（目录监狱）' }); continue; }
         await appendConvoMessage(convo.id, { role: 'assistant', kind: 'file', text: rel, meta: { path: rel, size: fs.statSync(abs).size } });
         results.push({ tool: 'share_file', ok: true, path: rel });
@@ -1605,9 +1607,9 @@ async function convoExec(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy
 
   const always = await sessionAlwaysList(convo.id);
   // full = 会话目录内完全控制（2026-09-20 实测 learn-english 会话）：除 strict 绝对禁止外
-  // 全部放行——敏感门也豁免（此前 allow_sensitive 是全局开关，会话级 full 管不到它，
-  // powershell 读 BOM 都要审批，用户预期 full 即全部）。目录监狱与 strict 拦截仍生效。
-  const needApproval = policy.level !== 'full' && (!canExecute(policy, command) || (cls.sensitive && !policy.allow_sensitive));
+  // 全部放行——敏感门也豁免。unrestricted（无边界）= 命令监狱解除，但越界"写/删"命令转审批（见下）。
+  // 目录监狱与 strict 拦截在 full 下仍生效。
+  const needApproval = policy.level !== 'full' && policy.level !== 'unrestricted' && (!canExecute(policy, command) || (cls.sensitive && !policy.allow_sensitive));
   if (needApproval && !matchesAlways(always, command)) {
     const verdict = await parkForApproval(deps, convo, command);
     if (verdict.status === 'rejected') return { tool, ok: false, error: '用户拒绝执行该命令' };
@@ -1618,7 +1620,31 @@ async function convoExec(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy
     }
   }
 
+  // unrestricted：命令监狱已解除——越界命令写审计日志；命中"写/删"特征且越界者仍转人工审批
+  // （方案 c）；读类/项目内命令直接放行。
+  if (policy.jailBypass) {
+    const jail = assertWithinJail(command, convo.workspace);
+    if (!jail.ok) {
+      const mutating = looksLikeMutating(command);
+      deps.logger.warn('convo unrestricted 越界命令', { convoId: convo.id, command: command.slice(0, 200), violations: jail.violations.slice(0, 5), mutating });
+      if (mutating && !matchesAlways(always, command)) {
+        const verdict = await parkForApproval(deps, convo, command);
+        if (verdict.status === 'rejected') return { tool, ok: false, error: '用户拒绝越界写/删命令' };
+        if (verdict.status === 'approved_always') {
+          const list = await sessionAlwaysList(convo.id);
+          list.push(command);
+          await busSet(alwaysKey(convo.id), list.slice(-30));
+        }
+      }
+    }
+  }
+
   if (background) {
+    // 目录监狱：非 unrestricted 时后台命令同样受限（此前后台分支漏检 jail，2026-09-21 修复）
+    if (!policy.jailBypass) {
+      const jail = assertWithinJail(command, convo.workspace);
+      if (!jail.ok) return { tool, ok: false, error: jailViolationMessage(jail.violations, convo.workspace) };
+    }
     const logDir = path.join(convo.workspace, '.coteam-logs');
     fs.mkdirSync(logDir, { recursive: true });
     const logPath = path.join(logDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 6)}.log`);
@@ -1636,7 +1662,7 @@ async function convoExec(deps: ConvoDeps, convo: Convo, policy: PermissionPolicy
   }
   // 审批通过（once/always）= 用户的白名单授权：按完全控制执行（监狱与 strict 拦截仍生效）
   const execPolicy: PermissionPolicy = needApproval
-    ? { level: 'full', whitelistCommands: null, maxTimeSec: policy.maxTimeSec, allow_sensitive: policy.allow_sensitive }
+    ? { level: 'full', whitelistCommands: null, maxTimeSec: policy.maxTimeSec, allow_sensitive: policy.allow_sensitive, jailBypass: policy.jailBypass }
     : policy;
   const r = await executeCommandAsync(command, convo.workspace, execPolicy, convoCfg.execTimeoutSec, signal);
   return {

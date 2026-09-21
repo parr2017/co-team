@@ -114,10 +114,10 @@ export function listFiles(workspace: string, limit = 200): string[] {
   return out;
 }
 
-export function readFile(workspace: string, filePath: string, lineStart?: number, lineEnd?: number): { ok: boolean; path: string; content?: string; error?: string; truncated?: boolean; total_lines?: number } {
+export function readFile(workspace: string, filePath: string, lineStart?: number, lineEnd?: number, jailBypass?: boolean): { ok: boolean; path: string; content?: string; error?: string; truncated?: boolean; total_lines?: number } {
   const base = path.resolve(workspace);
   const target = path.resolve(base, filePath);
-  if (!target.startsWith(base)) return { ok: false, path: filePath, error: 'path outside workspace' };
+  if (!jailBypass && !target.startsWith(base)) return { ok: false, path: filePath, error: 'path outside workspace' };
   if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return { ok: false, path: filePath, error: `file not found: ${filePath}` };
   const stat = fs.statSync(target);
   // M5（2y3tuote 实证）：行范围读取——大文件节点 5 轮工具预算 × 16k 截断拼不出完整现场，
@@ -148,10 +148,10 @@ export function readFile(workspace: string, filePath: string, lineStart?: number
   return { ok: true, path: filePath, content: text };
 }
 
-export function readDir(workspace: string, dirPath: string): { ok: boolean; path: string; entries?: string[]; error?: string } {
+export function readDir(workspace: string, dirPath: string, jailBypass?: boolean): { ok: boolean; path: string; entries?: string[]; error?: string } {
   const base = path.resolve(workspace);
   const target = path.resolve(base, dirPath);
-  if (!target.startsWith(base)) return { ok: false, path: dirPath, error: 'path outside workspace' };
+  if (!jailBypass && !target.startsWith(base)) return { ok: false, path: dirPath, error: 'path outside workspace' };
   if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) return { ok: false, path: dirPath, error: `directory not found: ${dirPath}` };
   try {
     const entries = fs.readdirSync(target, { withFileTypes: true }).map((e) => `${e.isDirectory() ? '[dir] ' : ''}${e.name}`);
@@ -161,11 +161,11 @@ export function readDir(workspace: string, dirPath: string): { ok: boolean; path
   }
 }
 
-export function grepFiles(workspace: string, pattern: string, subPath?: string): { ok: boolean; matches?: { file: string; line: number; text: string }[]; error?: string } {
+export function grepFiles(workspace: string, pattern: string, subPath?: string, jailBypass?: boolean): { ok: boolean; matches?: { file: string; line: number; text: string }[]; error?: string } {
   if (!pattern) return { ok: false, error: 'pattern is required' };
   const base = path.resolve(workspace);
   const searchRoot = subPath ? path.resolve(base, subPath) : base;
-  if (!searchRoot.startsWith(base)) return { ok: false, error: 'path outside workspace' };
+  if (!jailBypass && !searchRoot.startsWith(base)) return { ok: false, error: 'path outside workspace' };
   if (!fs.existsSync(searchRoot)) return { ok: false, error: `path not found: ${subPath || '.'}` };
 
   let regex: RegExp;
@@ -464,13 +464,13 @@ export interface LookImageResult {
 }
 
 /** 分析 workspace 内任意图片文件（含 Playwright page.screenshot() 产物）。 */
-export async function lookImage(workspace: string, imagePath: string, question: string | undefined, vision?: VisionBridge): Promise<LookImageResult> {
+export async function lookImage(workspace: string, imagePath: string, question: string | undefined, vision?: VisionBridge, jailBypass?: boolean): Promise<LookImageResult> {
   const p = String(imagePath || '').trim();
   if (!p) return { ok: false, path: p, error: 'path 不能为空' };
   if (!vision) return { ok: false, path: p, error: '当前上下文未接入视觉模型服务（vision bridge 缺失）' };
   const base = path.resolve(workspace);
   const target = path.resolve(base, p);
-  if (!target.startsWith(base)) return { ok: false, path: p, error: 'path outside workspace' };
+  if (!jailBypass && !target.startsWith(base)) return { ok: false, path: p, error: 'path outside workspace' };
   const ext = path.extname(target).toLowerCase();
   const mediaType = IMAGE_MEDIA_TYPES[ext];
   if (!mediaType) return { ok: false, path: p, error: `不支持的图片格式: ${ext || '(无扩展名)'}；支持 ${Object.keys(IMAGE_MEDIA_TYPES).join(' ')}` };
@@ -521,11 +521,11 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
     } else if (name === 'read_file' || name === 'read') {
       const ls = Number(call.line_start ?? (call as any).lineStart);
       const le = Number(call.line_end ?? (call as any).lineEnd);
-      results.push({ tool: 'read_file', ...readFile(workspace, call.path || '', Number.isFinite(ls) && ls > 0 ? ls : undefined, Number.isFinite(le) && le > 0 ? le : undefined) });
+      results.push({ tool: 'read_file', ...readFile(workspace, call.path || '', Number.isFinite(ls) && ls > 0 ? ls : undefined, Number.isFinite(le) && le > 0 ? le : undefined, policy?.jailBypass) });
     } else if (name === 'read_dir' || name === 'readdir') {
-      results.push({ tool: 'read_dir', ...readDir(workspace, call.path || '') });
+      results.push({ tool: 'read_dir', ...readDir(workspace, call.path || '', policy?.jailBypass) });
     } else if (name === 'grep' || name === 'search') {
-      results.push({ tool: 'grep', ...grepFiles(workspace, call.pattern || call.query || '', call.path) });
+      results.push({ tool: 'grep', ...grepFiles(workspace, call.pattern || call.query || '', call.path, policy?.jailBypass) });
     } else if (name === 'git_log') {
       results.push({ tool: 'git_log', ...gitLog(workspace) });
     } else if (name === 'git_diff') {
@@ -550,7 +550,7 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
       // 视觉辅助：分析 workspace 内图片（含 Playwright page.screenshot() 产物）
       results.push({
         tool: 'look_image',
-        ...(await lookImage(workspace, String(call.path || call.url || ''), call.question ? String(call.question) : undefined, knowledgeCtx?.vision)),
+        ...(await lookImage(workspace, String(call.path || call.url || ''), call.question ? String(call.question) : undefined, knowledgeCtx?.vision, policy?.jailBypass)),
       });
     } else if (name === 'write_knowledge') {
       if (!knowledgeCtx) {

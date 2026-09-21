@@ -230,6 +230,50 @@ export function classifyCommand(command: string): CommandClassification {
   return { sensitive: reasons.length > 0, strict, reasons, segments };
 }
 
+// ========== 写/删特征识别（unrestricted：越界写/删命令转审批，读类命令直接放行） ==========
+
+/** 明确会写/删文件的 bin（含 PowerShell 动名词形式） */
+const WRITE_BINS = new Set([
+  'rm', 'del', 'erase', 'rd', 'rmdir', 'remove-item',
+  'mv', 'move', 'cp', 'copy', 'xcopy', 'robocopy',
+  'tee', 'truncate', 'dd', 'touch', 'mkdir', 'md', 'ren', 'rename',
+  'ln', 'mklink', 'chmod', 'chown', 'chgrp', 'icacls', 'cacls', 'attrib', 'takeown',
+  'set-content', 'add-content', 'clear-content', 'out-file', 'new-item',
+  'copy-item', 'move-item', 'rename-item', 'set-item',
+  'npm', 'pnpm', 'yarn', 'pip', 'pip3', 'conda',
+]);
+
+/** git 变更型子命令（会改工作区/仓库） */
+const GIT_MUTATING_SUBS = new Set(['checkout', 'reset', 'clean', 'apply', 'restore', 'stash', 'commit', 'merge', 'rebase', 'rm', 'mv', 'add', 'pull', 'fetch', 'switch', 'cherry-pick', 'revert']);
+
+/** 引号感知的输出去向重定向（> / >> / 2> / &>）——引号内的 > 不算。 */
+function hasOutputRedirect(command: string): boolean {
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) { if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '>') return true;
+  }
+  return false;
+}
+
+/** 判断命令是否带"写/删文件"特征（启发式，不可靠；仅用于 unrestricted 越界时转审批）。
+ *  局限（诚实记录）：解释器间接执行/编码命令理论上可绕过——与 commandGuard 其余检查同源。 */
+export function looksLikeMutating(command: string): boolean {
+  if (!command) return false;
+  if (hasOutputRedirect(command)) return true;
+  for (const seg of splitChained(command)) {
+    const { bin, args } = firstWord(seg);
+    if (!bin) continue;
+    if (WRITE_BINS.has(bin)) return true;
+    if (INTERPRETERS.has(bin) && args.some((a) => INLINE_CODE_FLAGS.has(a.toLowerCase()))) return true;
+    if (bin === 'sed' && args.some((a) => a === '-i' || a.startsWith('-i'))) return true;
+    if (bin === 'git' && GIT_MUTATING_SUBS.has((args[0] || '').toLowerCase())) return true;
+  }
+  return false;
+}
+
 /** 链式命令的每段首词都必须过白名单（非 full 策略用）——`git log && del x` 不再借首词放行。 */
 export function canExecuteChain(policy: { level: string; whitelistCommands: string[] | null }, command: string, whitelistCheck: (segment: string) => boolean): boolean {
   if (policy.level === 'full' || policy.whitelistCommands === null) return true;
