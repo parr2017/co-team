@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { ModelEntry } from './scheduler';
+import { noteRealUsage, warnIfDrift } from './tokenEstimator';
 
 /** OpenAI 原生 function calling 的工具声明（opencode/ZCode 同款工具通道）。 */
 export interface LlmToolSpec {
@@ -344,6 +345,13 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
   if (!finishReason && !content.trim() && !aggregatedToolCalls.length) {
     throw new Error(`LLM 调用失败：connection_died(流未产出 finish_reason 即结束，且无内容)`);
   }
+  // P2.1 校准环：真实 prompt_tokens 回馈估算器（EMA 限幅），基线 = min(真实, 估算) 语义
+  if (promptTokens > 0) {
+    try {
+      noteRealUsage(promptTokens, JSON.stringify(messages));
+      warnIfDrift();
+    } catch { /* 校准失败不影响调用 */ }
+  }
   return {
     content,
     ...(aggregatedToolCalls.length ? { toolCalls: aggregatedToolCalls } : {}),
@@ -394,6 +402,13 @@ async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: str
     completionTokens = Math.max(1, Math.floor(content.length / 4));
   }
   const cached = (usage as any)?.prompt_tokens_details?.cached_tokens;
+  // P2.1 校准环（非流式同款）
+  if (promptTokens > 0) {
+    try {
+      noteRealUsage(promptTokens, JSON.stringify(messages));
+      warnIfDrift();
+    } catch { /* 校准失败不影响调用 */ }
+  }
   return {
     content,
     ...(toolCalls.length ? { toolCalls } : {}),

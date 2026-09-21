@@ -5,6 +5,7 @@ import { canExecute, executeCommand, executeCommandAsync, writeFiles, CommandRes
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { classifyCommand, canExecuteChain } from './commandGuard';
 import { writeKnowledge } from './knowledge';
+import { estimateTokensCalibrated } from './tokenEstimator';
 import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
 import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agentMessages';
 import { findSkillForAgent } from './skills';
@@ -44,17 +45,10 @@ const MAX_READ_CHARS = 16000;
 const IGNORED_DIRS = new Set(['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']);
 const GREP_MAX_RESULTS = 80;
 
-/** 缓存优先裁剪的度量基线：CJK 1 token/字、其余 ~4 字符/token 的保守启发式 */
+/** 缓存优先裁剪的度量基线：P2.1 起委托 tokenEstimator（CJK 1:1 + 其余 4.2:1 + 真实用量校准环）。
+ *  保留同名导出——全系统 30+ 调用点无需改动。 */
 export function estimateTokens(s: string): number {
-  let cjk = 0;
-  let other = 0;
-  // 用显式码点区间：字面量字符类里 "空格-〿" 会连出 U+0020..U+303F 把拉丁字母吞进 CJK
-  const CJK = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/;
-  for (const ch of s) {
-    if (CJK.test(ch)) cjk += 1;
-    else other += 1;
-  }
-  return cjk + Math.ceil(other / 4);
+  return estimateTokensCalibrated(s);
 }
 
 /** load_skill 注入上限：技能正文按需拉取后仍然限幅，防单技能撑爆窗口 */
@@ -668,6 +662,46 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
         results.push({ tool: 'answer', ok: okDone, ...(okDone ? {} : { error: '提问不存在或已收场' }) });
       } catch (e: any) {
         results.push({ tool: 'answer', ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
+    } else if (name === 'knowledge_search') {
+      // P2.3 知识自取：agent 可检索知识库取全文（注入片段只有 400 字符，此处可拿到完整内容）
+      const query = String(call.query || '').trim();
+      if (!query) {
+        results.push({ tool: name, ok: false, error: 'query 不能为空' });
+        continue;
+      }
+      try {
+        const { searchKnowledgeHybrid } = await import('./knowledge');
+        const hits = await searchKnowledgeHybrid(query, { project_id: knowledgeCtx?.project_id, limit: 5 });
+        results.push({
+          tool: name,
+          ok: true,
+          count: hits.length,
+          entries: hits.map((h) => ({ id: h.id, title: h.title, category: h.category, content: h.content.slice(0, 1200), updated_at: h.updated_at })),
+          note: hits.length ? '' : '知识库无相关条目——不要臆测，如实说明未找到相关经验',
+        });
+      } catch (e: any) {
+        results.push({ tool: name, ok: false, error: String(e?.message || e).slice(0, 160) });
+      }
+    } else if (name === 'scratchpad_search') {
+      // P2.4 便签检索：折叠/省略的早前侦查结论可从任务便签找回（"折而可找回"）
+      const query = String(call.query || '').trim();
+      if (!knowledgeCtx?.task_id) {
+        results.push({ tool: name, ok: false, error: 'scratchpad 仅在任务执行中可用' });
+        continue;
+      }
+      try {
+        const { scratchSearch } = await import('./scratchpad');
+        const hits = await scratchSearch(knowledgeCtx.task_id, query, 6);
+        results.push({
+          tool: name,
+          ok: true,
+          count: hits.length,
+          entries: hits.map((h) => ({ kind: h.kind, key: h.key, summary: h.summary, ts: h.ts })),
+          note: hits.length ? '' : '便签中无相关记录——用只读工具重新侦查',
+        });
+      } catch (e: any) {
+        results.push({ tool: name, ok: false, error: String(e?.message || e).slice(0, 160) });
       }
     } else if (name === 'write_file' || name === 'write') {
       // o3xmkraj 复盘：渐进落盘——文件边想边写，最终 JSON 不再憋全量内容（单轮输出爆炸的根源）

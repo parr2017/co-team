@@ -54,6 +54,8 @@ import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, detect
 import { createSnapshot } from '../snapshot';
 import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
 import { TurnProgressGuard, EvidenceLedger, emptyObservation, readSignature, READ_ONLY_PROGRESS_TOOLS, type ProgressObservation } from '../progressGuard';
+import { snipOldToolResults, elideLongToolResults } from '../contextWaterline';
+import { scratchPut, scratchClear, scratchFromToolCall } from '../scratchpad';
 import { buildOrchTools, nativeToolsOn } from '../toolSchema';
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
@@ -1327,6 +1329,8 @@ export class Orchestrator {
     const status = String(result.status);
     // improvement #4 (C4): task terminal — report messages nobody consumed into the journal
     await flushUndelivered(taskId).catch(() => {});
+    // P2.4：任务终态清理 scratchpad（便签生命周期 = 任务生命周期）
+    void scratchClear(taskId).catch(() => undefined);
     this.logger.info('Task execution completed', {
       taskId,
       status,
@@ -3187,11 +3191,17 @@ lessons 规则：
     const baseBudget = tierCap ? Math.min(entry.max_tokens ?? 128000, tierCap) : entry.max_tokens ?? 128000;
     const roundBudgetFor = (round: number): number =>
       Math.min(entry.max_tokens ?? 128000, Math.min(baseBudget * Math.pow(2, round), 128000));
-    // M7 折叠线按模型上下文窗口动态化：min(窗口×0.6, 窗口−4096 预留)；窗口未知回退全局常量；
-    // complex 侦查型节点上浮 1.5 档。保持"每尝试至多折叠一次+确定性折叠"原则不变。
+    // M7 折叠线按模型上下文窗口动态化（P2.2 四级水位线改造）：
+    //   0.50w snip（工具结果掐头去尾，免费）→ 0.62w elide（占位符化）→ 0.72w 断崖折叠 → 0.90w 物理上限
+    // 便宜的本地改写先扛，付费/不可逆的动作留在高水位；每尝试至多折叠一次+确定性改写原则不变。
     const ctxWindow = (entry as any).context_length ?? 0;
-    let foldLimit = ctxWindow > 0 ? Math.min(Math.floor(ctxWindow * 0.6), ctxWindow - 4096) : this.contextCfg.max_prompt_tokens;
-    if (node.complexity === 'complex') foldLimit = Math.floor(foldLimit * 1.5);
+    const baseWindow = ctxWindow > 0 ? ctxWindow : this.contextCfg.max_prompt_tokens * 4;
+    const snipLimit = Math.floor(baseWindow * 0.5);
+    const elideLimit = Math.floor(baseWindow * 0.62);
+    let foldLimit = ctxWindow > 0 ? Math.min(Math.floor(ctxWindow * 0.72), ctxWindow - 4096) : this.contextCfg.max_prompt_tokens;
+    if (node.complexity === 'complex') {
+      foldLimit = Math.floor(foldLimit * 1.5);
+    }
     // 节点级总时长预算：原 plugin.timeout 的单调用绞杀语义已废除（时长不判死），
     // 现在只在轮次之间检查"整个节点是否跑得过久"，超线转人工而不是记模型失败
     const nodeBudgetMs = plugin.timeout && plugin.timeout > 0 ? plugin.timeout * 1000 : 0;
@@ -3254,13 +3264,14 @@ lessons 规则：
       review: '代码审查 质量 缺陷', test: '测试 验证 用例', 'front-dev': '前端 页面 UI',
       dev: '实现 接口', deploy: '部署 环境', launcher: '启动 运行 服务', docs: '文档', refactor: '重构',
     };
-    const knowledgeHits = await relevantKnowledge(`${node.name} ${context} ${roleKeywords[plugin.name] || ''}`, { project_id: projectId, limit: 3 });
+    const knowledgeHits = await relevantKnowledge(`${node.name} ${context} ${roleKeywords[plugin.name] || ''}`, { project_id: projectId, limit: 5 });
     // OBS-1 经验闭环度量：命中即计数（hits/last_hit_at 落盘知识条目）
     if (knowledgeHits.length) { try { recordKnowledgeHits(knowledgeHits.map((k) => k.id)); } catch { /* best effort */ } }
     // PH.7 防注入：指令词黑名单过滤 + 数据标签包裹——条目是模型/用户可控内容，不可当指令
+    // P2.3b：片段 200→400 字符 + 指引 knowledge_search 取全文
     const safeHits = knowledgeHits.filter((k) => isSafeForInjection(k.title) && isSafeForInjection(k.content));
     const knowledgeBlock = safeHits.length
-      ? `\n\n## 相关知识库条目\n${KNOWLEDGE_DATA_TAG_OPEN}\n${safeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 200)}`).join('\n')}${KNOWLEDGE_DATA_TAG_CLOSE}`
+      ? `\n\n## 相关知识库条目\n${KNOWLEDGE_DATA_TAG_OPEN}\n${safeHits.map((k) => `- 【${k.title}】${k.content.slice(0, 400)}`).join('\n')}${KNOWLEDGE_DATA_TAG_CLOSE}\n（片段仅供索引——需要某条的完整内容时用 knowledge_search 工具按标题检索取全文）`
       : '';
 
     // harness (执行骨架): layered system prompt replacing the flat block concatenation —
@@ -3770,6 +3781,13 @@ lessons 规则：
           // PH.3：fresh 结果按调用签名落进累计证据表（重复调用保留旧值，哈希只反映真实新增量）
           const k = dedupKeyByIdx.get(orig);
           if (k) evidence.record(k, freshResults[i]);
+          // P2.4：确定性提取「文件/命令 + 关键发现」入任务 scratchpad——折叠/elide 后仍可检索找回
+          const t = fresh[i] as Record<string, any>;
+          const r = freshResults[i] as Record<string, any>;
+          if (t && typeof t === 'object' && r && typeof r === 'object') {
+            const se = scratchFromToolCall(String(t.tool || ''), t, r, round + 1);
+            if (se) void scratchPut(taskId, se).catch(() => undefined);
+          }
         });
         const results = positioned;
         // PH.3：本轮确定性观察——mutation + 证据哈希 + 有界读取签名
@@ -3884,11 +3902,25 @@ lessons 规则：
           this.logger.info('mid-round intervention injected', { taskId, nodeId: node.id, round: round + 2, count: midInterventions.length });
         }
 
-        // 断崖压缩（缓存优先：循环内其余时刻严格 append-only）：估算超硬预算才折叠，
-        // 折叠是确定性的纯函数、每尝试至多一次——一次 prefill 重置换后续全部小 prompt。
-        // 折叠真正发生才置位（历史不足一轮时继续观察后续轮次）
+        // P2.2 四级水位线（缓存优先：循环内其余时刻严格 append-only）：
+        //   0.50w snip → 0.62w elide → 0.72w 断崖折叠 → 0.90w 物理上限（413 分型兜底）。
+        // 全部确定性改写、按条冻结（幂等）——同参数重复调用不产生新字节，前缀缓存可复用。
         if (!foldedOnce) {
-          const est = estimateTokens(JSON.stringify(messages));
+          let est = estimateTokens(JSON.stringify(messages));
+          if (est > snipLimit) {
+            const n = snipOldToolResults(messages, { snipChars: 1500, protectTail: 2 });
+            if (n) {
+              est = estimateTokens(JSON.stringify(messages));
+              this.logger.info('Waterline snip', { taskId, nodeId: node.id, round: round + 1, mutated: n, est_after: est });
+            }
+          }
+          if (est > elideLimit) {
+            const n = elideLongToolResults(messages, { elideChars: 3000, protectTail: 2 });
+            if (n) {
+              est = estimateTokens(JSON.stringify(messages));
+              this.logger.info('Waterline elide', { taskId, nodeId: node.id, round: round + 1, elided: n, est_after: est });
+            }
+          }
           if (est > foldLimit && foldMessagesInto(messages)) {
             foldedOnce = true;
             // 折叠与去重指针的一致性：旧 tool_result 正文已被折叠摘要取代，指向它们的

@@ -29,7 +29,7 @@ import { CAPACITY_RE } from './orchestrator/orchestrator';
 import type { McpManager } from './mcp/manager';
 import type { Logger } from './logger';
 import type { AgentPlugin } from './agents';
-import { applyToolCalls } from './tools';
+import { applyToolCalls, estimateTokens } from './tools';
 import { extractReplyStreaming } from './discussion';
 import type { KnowledgeToolContext } from './tools';
 import { pickSkillsForNode, formatSkillsBlock, formatSkillsCatalog } from './skills';
@@ -1733,30 +1733,45 @@ async function convoWrite(deps: ConvoDeps, convo: Convo, policy: PermissionPolic
 
 // ---------- 长对话打磨：自动压缩 / 标题生成 / fork / 文件搜索 ----------
 
-/** 触发阈值：compaction 锚点之后的消息条数；压缩时保留最近 KEEP_RAW 条原文 */
+/** 触发阈值（P2.5 token 化）：锚点后消息条数 ≥60 或估算 token ≥ 0.5×主模型窗口即压缩 */
 const COMPACTION_THRESHOLD = 60;
+const COMPACTION_TOKEN_RATIO = 0.5;
 const COMPACTION_KEEP_RAW = 10;
 const COMPACTION_CAP_MS = 60_000;
+/** 压缩失败 notice 的限频（≥6h 才再提醒一次，防刷屏） */
+const COMPACTION_FAIL_NOTICE_MS = 6 * 3600 * 1000;
 
 /**
- * 长对话自动压缩（M5）：锚点后消息超阈值 → LLM 把「锚点后 ~ 最近 10 条」折叠为结构化摘要，
- * 追加进 compaction 锚点（下一 turn 的 LLM 历史 = 摘要 + 锚点后消息）。尽力而为：
- * 失败静默跳过（下一 turn 再试），绝不阻塞正常对话。
+ * 长对话自动压缩（M5 / P2.5 修复版）：锚点后消息超阈值（条数或 token 水位）→ LLM 把
+ * 「锚点后 ~ 最近 10 条」折叠为结构化摘要，追加进 compaction 锚点（下一 turn 的 LLM
+ * 历史 = 摘要 + 锚点后消息）。尽力而为：失败落限频 notice（用户可见，不再静默），
+ * 绝不阻塞正常对话。
  */
 async function maybeCompact(deps: ConvoDeps, convo: Convo): Promise<void> {
   try {
     const msgs = await getConvoMessages(convo.id);
     const uptoIdx = convo.compaction ? msgs.findIndex((m) => m.id === convo.compaction!.upto_id) : -1;
     const pending = msgs.length - (uptoIdx + 1);
-    if (pending < COMPACTION_THRESHOLD) return;
+    const pendingText = msgs.slice(uptoIdx + 1).map((m) => m.text).join('\n');
+    const { entry: primary } = resolvePrimary(deps, convo);
+    const tokenCap = primary?.context_length ? Math.floor(primary.context_length * COMPACTION_TOKEN_RATIO) : 24000;
+    const pendingTokens = estimateTokens(pendingText);
+    if (pending < COMPACTION_THRESHOLD && pendingTokens < tokenCap) return;
     const slice = msgs.slice(uptoIdx + 1, msgs.length - COMPACTION_KEEP_RAW);
     if (slice.length < 10) return;
     const { entry } = resolvePrimary(deps, convo);
     if (!entry) return;
-    const transcript = slice
-      .map((m) => `${m.role}/${m.kind}: ${m.text.replace(/\s+/g, ' ').slice(0, 240)}`)
-      .join('\n')
-      .slice(-24000);
+    // P2.5 双截断修复：每条 240→400 字符；整体截断改为保头+保尾（中段 marker）——
+    // 旧实现 .slice(-24000) 尾切会把"用户最初的目标与决策"整段丢掉
+    const perMsg = 400;
+    let transcript = slice
+      .map((m) => `${m.role}/${m.kind}: ${m.text.replace(/\s+/g, ' ').slice(0, perMsg)}`)
+      .join('\n');
+    if (transcript.length > 40000) {
+      const headKeep = 26000;
+      const tailKeep = 13000;
+      transcript = `${transcript.slice(0, headKeep)}\n…[中段 ${transcript.length - headKeep - tailKeep} 字符压缩输入已省略，正文仍在会话流中]…\n${transcript.slice(-tailKeep)}`;
+    }
     const res = await chat(entry, [
       { role: 'system', content: '你是会话压缩器。把协作会话的早期历史压缩为后续对话可续用的结构化中文摘要（≤1200 字），必须保留：用户的目标与全部决策、已完成的改动（文件/命令/结果）、未完成事项、关键约定与教训。只输出摘要正文。' },
       { role: 'user', content: `${convo.compaction ? `此前已有摘要（请在此基础上合并）：\n${convo.compaction.summary}\n\n` : ''}以下是待压缩的历史：\n${transcript}` },
@@ -1766,9 +1781,19 @@ async function maybeCompact(deps: ConvoDeps, convo: Convo): Promise<void> {
     const compaction = { summary, upto_id: slice[slice.length - 1].id, at: new Date().toISOString() };
     await patchConvo(convo.id, { compaction });
     await appendConvoMessage(convo.id, { role: 'system', kind: 'notice', text: `长对话自动压缩：${slice.length} 条早期消息已折叠为摘要（最近 ${COMPACTION_KEEP_RAW} 条保持原文），上下文规模得到控制。` });
-    deps.logger.info('convo compaction done', { convoId: convo.id, folded: slice.length });
+    deps.logger.info('convo compaction done', { convoId: convo.id, folded: slice.length, pendingTokens });
   } catch (e) {
-    deps.logger.warn('convo compaction skipped', { convoId: convo.id, error: String((e as Error)?.message || e) });
+    const msg = String((e as Error)?.message || e);
+    deps.logger.warn('convo compaction skipped', { convoId: convo.id, error: msg.slice(0, 160) });
+    // P2.5 失败可见：限频落 notice（压缩连续失败用户有权知道，而不是摘要悄悄过期）
+    try {
+      const failKey = `convo:${convo.id}:compaction_fail_notice`;
+      const last = (await busGet<string>(failKey)) || '';
+      if (!last || Date.now() - new Date(last).getTime() > COMPACTION_FAIL_NOTICE_MS) {
+        await busSet(failKey, new Date().toISOString(), 7 * 24 * 3600);
+        await appendConvoMessage(convo.id, { role: 'system', kind: 'notice', text: `长对话压缩失败（${msg.slice(0, 80)}）——历史暂时保持原文，上下文占用会继续增长；若对话变慢可开新会话（fork 可携带摘要）。` });
+      }
+    } catch { /* 通知失败不追踪 */ }
   }
 }
 

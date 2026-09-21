@@ -75,11 +75,15 @@ function orchStaticTools(): LlmToolSpec[] {
     { type: 'function', function: { name: 'screenshot', description: `截图并交视觉模型分析（断言覆盖不了的视觉问题）`, parameters: obj({ url: s('页面 URL'), question: s('要确认的视觉问题（可选）'), window_size: s('模拟视口宽,高（可选）') }, ['url']) } },
     { type: 'function', function: { name: 'look_image', description: `分析工作目录内任意图片`, parameters: obj({ path: s('相对路径'), question: s('要确认的问题（可选）') }, ['path']) } },
     { type: 'function', function: { name: 'write_knowledge', description: `沉淀经验到知识库`, parameters: obj({ category: s('general-tech | project'), title: s('条目标题'), tags: strArr('标签（可选）'), content: s('经验内容（Markdown）') }, ['category', 'title', 'content']) } },
+    { type: 'function', function: { name: 'knowledge_search', description: `检索知识库取全文（语义+关键词混合；需要完整经验时用）`, parameters: obj({ query: s('检索问题/关键词') }, ['query']) } },
+    { type: 'function', function: { name: 'scratchpad_search', description: `检索任务便签找回早前侦查结论（历史已折叠时用）`, parameters: obj({ query: s('文件路径/命令/主题词') }, ['query']) } },
     { type: 'function', function: { name: 'write_doc', description: `写协作文档（实现 API 后必须更新 API_CONTRACT；产出不计入 changes）`, parameters: obj({ type: s('TASK_SPEC | API_CONTRACT | STATUS_REPORT'), content: s('完整 Markdown 内容') }, ['type', 'content']) } },
     { type: 'function', function: { name: 'send_message', description: `给其他 Agent/主 Agent/用户发留言（收件方下次执行时收到）`, parameters: obj({ to: s('agent名 | orchestrator | user'), text: s('留言内容（≤2000字）') }, ['to', 'text']) } },
     { type: 'function', function: { name: 'ask_user', description: `阻塞提问：需要用户拍板`, parameters: obj({ question: s('问题') }, ['question']) } },
     { type: 'function', function: { name: 'ask_agent', description: `向其他 Agent 提问（实时转交）`, parameters: obj({ to: s('目标 agent 名'), question: s('问题') }, ['to', 'question']) } },
     { type: 'function', function: { name: 'answer', description: `回答其他 Agent 的实时提问（ask_id 原样带回）`, parameters: obj({ ask_id: s('提问的 ask_id'), content: s('回答内容') }, ['ask_id', 'content']) } },
+    { type: 'function', function: { name: 'knowledge_search', description: `检索项目/通用知识库取全文（语义+关键词混合；注入条目只有片段，需要完整经验时用本工具）`, parameters: obj({ query: s('检索问题/关键词') }, ['query']) } },
+    { type: 'function', function: { name: 'scratchpad_search', description: `检索任务便签找回早前侦查的关键发现（历史已折叠/省略时用）`, parameters: obj({ query: s('文件路径/命令/主题词') }, ['query']) } },
   ];
 }
 

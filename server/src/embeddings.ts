@@ -17,6 +17,11 @@ import { getLogger } from './logger';
 export interface EmbeddingConfig {
   pool: ModelPool | null;
   model?: string;
+  /**
+   * P2.3 独立 embedding 端点（不占用 chat 模型池）：OpenAI 兼容 /v1/embeddings。
+   * 与 pool+model 二选一，standalone 优先——bge-m3 类专用向量服务通常不在 chat 池里。
+   */
+  standalone?: { base_url: string; api_key?: string | null; model: string };
 }
 
 let cfg: EmbeddingConfig = { pool: null };
@@ -27,14 +32,25 @@ export function setEmbeddingConfig(c: EmbeddingConfig): void {
 }
 
 export function embeddingEnabled(): boolean {
+  if (cfg.standalone?.base_url && cfg.standalone?.model) return true;
   return !!(cfg.pool && cfg.model && cfg.pool.getModel(cfg.model));
 }
 
 export function embeddingModelName(): string {
-  return cfg.model || '';
+  return cfg.standalone?.model || cfg.model || '';
 }
 
 function entryModel(): ModelEntry | null {
+  // P2.3 独立端点 → 构造伪 ModelEntry（getClient 只用 base_url/api_key/name）
+  if (cfg.standalone?.base_url && cfg.standalone?.model) {
+    return {
+      id: 'embedding-standalone',
+      name: cfg.standalone.model,
+      api_key: cfg.standalone.api_key || 'unused',
+      base_url: cfg.standalone.base_url,
+      tags: ['embedding'],
+    } as unknown as ModelEntry;
+  }
   return cfg.pool && cfg.model ? cfg.pool.getModel(cfg.model) : null;
 }
 

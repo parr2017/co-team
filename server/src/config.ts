@@ -66,8 +66,9 @@ export interface AppConfig {
   redis: { host: string; port: number; db: number; password?: string };
   knowledge: {
     dir: string;
-    /** RAG upgrade: model_pool entry name used for /v1/embeddings; unset/missing → keyword search only */
-    embedding?: { enabled?: boolean; model?: string };
+    /** RAG upgrade: model_pool entry name used for /v1/embeddings; unset/missing → keyword search only.
+     *  P2.3 支持独立向量服务端点（base_url+api_key+model，不占 chat 模型池），standalone 优先。 */
+    embedding?: { enabled?: boolean; model?: string; base_url?: string; api_key?: string };
     /** governance: entries not updated for this many days are stale candidates */
     stale_days?: number;
   };
@@ -269,7 +270,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
     knowledge: {
       dir: path.isAbsolute(raw.knowledge?.dir || '') ? raw.knowledge.dir : path.join(root, raw.knowledge?.dir || 'data/knowledge'),
       embedding: raw.knowledge?.embedding
-        ? { enabled: raw.knowledge.embedding.enabled ?? false, model: raw.knowledge.embedding.model }
+        ? {
+            enabled: raw.knowledge.embedding.enabled ?? false,
+            model: raw.knowledge.embedding.model,
+            base_url: raw.knowledge.embedding.base_url,
+            api_key: raw.knowledge.embedding.api_key,
+          }
         : undefined,
       stale_days: raw.knowledge?.stale_days ?? 90,
     },

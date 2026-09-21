@@ -175,10 +175,18 @@ async function main(): Promise<void> {
 
   // knowledge RAG: point the embedding helper at the configured model_pool entry
   // (disabled / missing model → keyword search stays active everywhere)
+  // P2.3：standalone 独立向量端点（base_url+model）优先——不占 chat 模型池
   if (config.knowledge.embedding?.enabled && config.knowledge.embedding.model) {
     const { setEmbeddingConfig } = await import('./embeddings');
-    setEmbeddingConfig({ pool: modelPool, model: config.knowledge.embedding.model });
-    logger.info('Knowledge embedding enabled', { model: config.knowledge.embedding.model });
+    const emb = config.knowledge.embedding;
+    const embedModel = emb.model as string;
+    if (emb.base_url) {
+      setEmbeddingConfig({ pool: null, standalone: { base_url: emb.base_url, api_key: emb.api_key ?? null, model: embedModel } });
+      logger.info('Knowledge embedding enabled (standalone endpoint)', { model: embedModel, base_url: emb.base_url });
+    } else {
+      setEmbeddingConfig({ pool: modelPool, model: embedModel });
+      logger.info('Knowledge embedding enabled', { model: embedModel });
+    }
   }
 
   // 外部 MCP 服务接入（MCP client）：无配置=零影响；连接失败仅 warn + 退避重试，不阻塞启动
