@@ -182,7 +182,7 @@ export function registerConvoRoutes(app: Hono, ctx: ApiContext): void {
 
   // fork：按消息锚点复制出新会话
   app.post('/api/convos/:id/fork', async (c) => {
-    const body = await readJsonAuto<{ message_id?: string; title?: string }>(c);
+    const body = await readJsonAuto<{ message_id?: string; title?: string; resetPolicy?: boolean }>(c);
     const convo = await forkConvo(deps(), c.req.param('id'), body);
     return c.json({ status: 'forked', convo });
   });

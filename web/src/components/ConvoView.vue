@@ -226,11 +226,9 @@
                   <button class="fbtn" @click="showDiffDialog(m.meta?.patch || '')">查看 diff</button>
                 </div>
 
-                <!-- 结论操作行（ZCode 式） -->
-                <div v-for="m in turn.items.filter(x => x.role === 'assistant' && x.kind === 'text')" :key="'o' + m.id" class="ops">
+                <!-- 结论操作行（ZCode 式）：每轮仅在最终结论下渲染一次 -->
+                <div v-for="m in turnLastText(turn)" :key="'o' + m.id" class="ops">
                   <button @click="copyText(m.text)"><el-icon><CopyDocument /></el-icon>复制</button>
-                  <button :class="{ on: msgVote[m.id] === 'up' }" @click="msgVote[m.id] = 'up'">👍</button>
-                  <button :class="{ on: msgVote[m.id] === 'down' }" @click="msgVote[m.id] = 'down'">👎</button>
                   <button @click="forkMsg(m)"><el-icon><Share /></el-icon>分叉</button>
                   <span class="ts">{{ fmtTime(m.ts) }}</span>
                 </div>
@@ -459,8 +457,8 @@ function pickAt(f: string) {
 async function fork() {
   if (!detail.value) return;
   try {
-    const r = await api.convoFork(detail.value.id, { title: `${detail.value.title}（副本）` });
-    ElMessage.success('已复制出新会话');
+    const r = await api.convoFork(detail.value.id, { title: `${detail.value.title}（副本）`, resetPolicy: true });
+    ElMessage.success('已复制出新会话（权限已重置为继承全局）');
     await loadConvos();
     await openConvo(r.convo.id);
   } catch (e: any) {
@@ -627,11 +625,16 @@ function turnThinking(turn: TurnGroup): string {
   const parts = turn.items.map((m) => (m.meta?.reasoning as string) || '').filter(Boolean);
   return parts.join('\n\n');
 }
+// 每轮只保留「最终结论」的结论操作行：FC 叙述 + 自动续跑会让一轮出现多条 assistant text，
+// 逐条渲染会叠出多个 复制/分叉/时间行（此前"对话尾部多次渲染"的根因）。
+function turnLastText(turn: TurnGroup): ConvoMessage[] {
+  const texts = turn.items.filter((m) => m.role === 'assistant' && m.kind === 'text');
+  return texts.length ? [texts[texts.length - 1]] : [];
+}
 
-// 步骤清单展开态 + 投票本地态
+// 步骤清单展开态
 const planOpen = ref(false);
 const changesOpen = reactive(new Set<string>());
-const msgVote = reactive<Record<string, 'up' | 'down'>>({});
 const planDone = computed(() => detail.value?.plan?.steps.filter((x) => x.status === 'done').length || 0);
 const planCur = computed(() => detail.value?.plan?.steps.find((x) => x.status === 'in_progress'));
 function modelLabel(m: { name: string; provider?: string }): string {
@@ -675,8 +678,8 @@ function toggleCmdFull(id: string) {
 async function forkMsg(m: ConvoMessage) {
   if (!detail.value) return;
   try {
-    const r = await api.convoFork(detail.value.id, { message_id: m.id, title: `${detail.value.title}（分叉）` });
-    ElMessage.success('已从该结论分叉出新会话');
+    const r = await api.convoFork(detail.value.id, { message_id: m.id, title: `${detail.value.title}（分叉）`, resetPolicy: true });
+    ElMessage.success('已从该结论分叉出新会话（权限已重置为继承全局）');
     await loadConvos();
     await openConvo(r.convo.id);
   } catch (e: any) { ElMessage.error(e.message); }
@@ -1252,7 +1255,6 @@ onBeforeUnmount(() => {
 .ops { display: flex; align-items: center; gap: 2px; padding: 8px 16px 2px; }
 .ops button { font-size: 11.5px; color: var(--text-3); background: none; border: none; padding: 4px 9px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
 .ops button:hover { color: var(--text-1); background: var(--bg-inset); }
-.ops button.on { color: var(--accent); }
 .ops .ts { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3); }
 
 /* 运行中 live 区（嵌轮内） */

@@ -228,7 +228,7 @@ redis:
 #     whitelist_commands: [python, pip, git, npm, node, mkdir, cp, mv, rm, ls, cat, chmod]
 #     allow_sensitive: false     # true 时敏感命令（rm/git push 等）不再强制审批
 #   exec_timeout_sec: 180        # 同步命令超时（秒）
-#   max_tool_iter: 15            # 单轮 turn 工具迭代上限
+#   max_tool_iter: 40            # 单轮 turn 每段工具迭代上限（段数上限 4，段末自动续跑）
 #   ask_timeout_sec: 3600        # ask_user/命令审批 的等待上限（秒，超时按假设继续/拒绝）
 #   auto_retry_count: 10         # 自动切换关时：主模型失败的同模型重试次数（默认 10）
 #   auto_retry_base_ms: 1000     # 重试退避基数毫秒（指数 2^i 封顶 10×base）

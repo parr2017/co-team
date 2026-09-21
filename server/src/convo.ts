@@ -136,7 +136,9 @@ export interface ConvoConfig {
 }
 
 const EXEC_TIMEOUT_SEC = 180;
-const MAX_TOOL_ITER = 15;
+const MAX_TOOL_ITER = 40;
+/** 单轮 turn 自动续跑段数：每段 maxToolIter 次工具迭代，段末仍有工具调用则自动续跑（E）。 */
+const MAX_TOOL_SEGMENTS = 4;
 const ASK_TIMEOUT_MS = 60 * 60 * 1000;
 const WALLCLOCK_CAP_MS = 0; // 超时不判死（2026-09-09 纪律）：失败判定只认 llm 层确定性信号
 const MAX_MESSAGES = 2000;
@@ -712,6 +714,19 @@ export async function clearStaleConvoLocks(logger?: { info(msg: string, meta?: u
 
 // ---------- turn 核心 ----------
 
+/** 会话级权限：从最新 convo 实时解析（A：用户中途切权限对在飞轮次即时生效，
+ *  不再沿用 turn 开始时的快照——此前"改完权限 agent 仍报 plan_only"的根因）。 */
+async function resolveConvoPolicy(convoId: string): Promise<PermissionPolicy> {
+  const cur = await getConvo(convoId);
+  if (!cur?.policy_level) return convoCfg.policy;
+  return policyFromConfig({
+    level: cur.policy_level,
+    whitelist_commands: convoCfg.policy.whitelistCommands ?? undefined,
+    max_time_sec: convoCfg.policy.maxTimeSec,
+    allow_sensitive: convoCfg.policy.allow_sensitive,
+  });
+}
+
 async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
   const convo = await getConvo(convoId);
   if (!convo) return;
@@ -752,7 +767,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       }
     }
 
-    const system = await buildSystemPrompt(deps, convo, plugin);
+    const system = await buildSystemPrompt(deps, convo, plugin, policy.level);
     // PH.6 回滚纠正账本：注入后立即清除标记（纠正块只注入回滚后的第一个 turn）
     if (convo.rollback_at) {
       const live = await getConvo(convoId);
@@ -774,7 +789,8 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     // tool_calls 结构化字段，正文即回复——不存在"模型没按 JSON 输出→解析失败→烧纠正重试"。
     // llm.native_tools=false 时整体回退 JSON 文本契约路径。
     const fc = nativeToolsOn();
-    const fcTools = fc ? buildConvoTools({ mcp: deps.mcp, agentId: plugin?.name || convo.agent_id, execTimeoutSec: convoCfg.execTimeoutSec ?? 180 }) : undefined;
+    // 工具集在每轮迭代内按"最新权限"重建（C：plan_only 不暴露 exec/write；A：中途切 full
+    // 当轮即可获得执行工具）——故不在此处一次性构建。
     // 输出契约兜底检测（2026-09-20 修复）：模型未按 JSON 契约输出工具调用/回复而是直接
     // 写了散文——保留其文字（不丢用户要的答案），但必须如实告知本轮"只回复、没干活"，
     // 否则会被静默包装成成功回复，掩盖"光回复不干活"的行为。
@@ -785,9 +801,18 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
     let lazyRetried = false;  // 形态 B 口头承诺动手但零工具已纠正重试
     let intentRetried = false; // FC 意图叙述句（"让我检查…"）已纠正重试
     let echoRetried = false;   // FC 工具活动行回显（"✓ exec「…」"）已纠正重试
+    let planPolicyNoticed = false; // C：plan_only/readonly 拦截已落 notice（每次 turn 至多一次）
 
-    for (let iter = 0; iter < convoCfg.maxToolIter; iter++) {
-      const last = iter === convoCfg.maxToolIter - 1;
+    // 单轮 turn 分 MAX_TOOL_SEGMENTS 段自动续跑（E）：每段预算 convoCfg.maxToolIter；
+    // 段末仍有工具调用则落 notice 并继续下一段，只有最后一段的最后一次迭代才注入"停止语"。
+    const totalToolIter = convoCfg.maxToolIter * MAX_TOOL_SEGMENTS;
+    for (let iter = 0; iter < totalToolIter; iter++) {
+      const last = iter === totalToolIter - 1;
+      const segBoundary = !last && (iter + 1) % convoCfg.maxToolIter === 0;
+      // A：每轮迭代按最新会话权限重算（用户中途切权限即时生效）
+      const effPolicy = await resolveConvoPolicy(convoId);
+      // C：按最新权限过滤工具（plan_only 不暴露 exec/write）
+      const fcTools = fc ? buildConvoTools({ mcp: deps.mcp, agentId: plugin?.name || convo.agent_id, execTimeoutSec: convoCfg.execTimeoutSec ?? 180, level: effPolicy.level }) : undefined;
       let stream = { acc: '', emitted: 0, lastAt: 0, sid: `${convoId}:t#${iter}` };
       const onDelta = (d: string) => {
         stream.acc += d;
@@ -875,14 +900,34 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
         }
         // 工具批次开始即推送（此前整批跑完才发 convo_tool——执行全程用户看不到任何进度）
         await emitProgress('convo_tool_start', { convo_id: convoId, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })) });
-        const results = await runConvoToolCalls(deps, convo, policy, calls, turn, abort.signal, chosen.name);
+        const results = await runConvoToolCalls(deps, convo, effPolicy, calls, turn, abort.signal, chosen.name);
         if (turn.aborted) break;
         toolRan = true;
+        // C：权限直接拒绝（plan_only/readonly）时落一次显式 notice，让用户一眼看到是权限问题
+        if (!planPolicyNoticed && results.results.some((r) => {
+          const err = String((r as { error?: string })?.error || '');
+          return err.includes('不允许执行命令') || err.includes('不允许修改文件');
+        })) {
+          planPolicyNoticed = true;
+          await appendConvoMessage(convoId, {
+            role: 'system', kind: 'notice',
+            text: `当前会话权限为 ${effPolicy.level}（${effPolicy.level === 'plan_only' ? '只出方案' : '只读'}）：命令/写入被拒绝。请在会话顶部把权限切到「目录内完全控制」或「改动需审批」后再继续。`,
+            meta: { policy_blocked: true, level: effPolicy.level },
+          });
+        }
         const records = results.records;
         await appendConvoMessage(convoId, { role: 'assistant', kind: 'tool', text: activityLine(calls, results.results), model: chosen.name, meta: { calls: records } });
         await emitProgress('convo_tool', { convo_id: convoId, calls: calls.map((c) => ({ tool: c.tool, command: c.command, path: c.path })), results: results.results });
         convo_msgs.push({ role: 'assistant', content: res.content });
         convo_msgs.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(results.results).slice(0, 16000)}\n\n${fc ? '信息足够就给出给用户的最终回复（正文直接输出，不要再包 JSON）；需要继续动手再调用工具。' : '信息足够就用 reply 给用户最终回复；需要继续动手再发 tool_calls。'}` });
+        // E：段末仍有工具调用 → 自动续跑下一段（不逼用户手动"继续"）
+        if (segBoundary) {
+          await appendConvoMessage(convoId, {
+            role: 'system', kind: 'notice',
+            text: `已达单段迭代上限（${convoCfg.maxToolIter} 次），任务尚未收尾，自动继续下一段（共 ${MAX_TOOL_SEGMENTS} 段）。`,
+            meta: { auto_continue: true, segment: Math.floor(iter / convoCfg.maxToolIter) + 1 },
+          });
+        }
         continue;
       }
       if (calls.length && last) {
@@ -909,7 +954,7 @@ async function runTurnCore(deps: ConvoDeps, convoId: string): Promise<void> {
       }
       // 引擎级自纠错：形态 B 嘴炮——零工具 + "正在动手"式声称 / "已创建 X"假完成（工作区核验）
       // / "已修复·已验证·测试通过"完成声称（PH.2 断言门）→ 纠正重试一次
-      if (!calls.length && finalParsed && !toolRan && !lazyRetried && !last && iter < convoCfg.maxToolIter - 1) {
+      if (!calls.length && finalParsed && !toolRan && !lazyRetried && !last) {
         const replyText = String(finalParsed.reply || '');
         const falseClaims = findFalseFileClaims(replyText, convo.workspace);
         const completeClaim = COMPLETION_CLAIM_RE.test(replyText);
@@ -1173,7 +1218,7 @@ async function chatOnModelChain(
 
 // ---------- system prompt（静态前缀：单 turn 内字节稳定） ----------
 
-async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPlugin): Promise<string> {
+async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPlugin, policyLevel?: string): Promise<string> {
   const fc = nativeToolsOn();
   const identity = plugin?.prompt?.trim()
     || '你是「搭档」，与用户结对协作的工程 agent：直接读写项目工作区、执行命令、交付改动。';
@@ -1225,6 +1270,11 @@ ${scripts.length ? `\n## 项目脚本\n${scripts.join('\n')}` : ''}
 ${memories.length ? `\n## 本项目经验与规范\n${memories.map((m) => `- ${m.text}`).join('\n')}` : ''}
 ${skillsBlock ? `\n## 技能索引（正文按需 load_skill 拉取）\n${skillsBlock}` : ''}
 ${mcpBlock && !fc ? `\n## 外部 MCP 工具（参数放独立 arguments 字段）\n${mcpBlock}` : ''}
+${policyLevel === 'plan_only'
+  ? `\n## 当前权限：plan_only（只出方案）\n本会话**不能执行命令、不能写文件**（工具会被直接拒绝、白耗迭代）。请只做只读侦查与规划，把方案讲清楚；需要真正动手时，明确提示用户在会话设置把权限切到「目录内完全控制」或「改动需审批」。`
+  : policyLevel === 'readonly'
+    ? `\n## 当前权限：readonly（只读）\n本会话**不能写文件**（写入会被拒绝）；可执行白名单内的只读命令。需要改动时提示用户调整权限。`
+    : ''}
 
 ${fc ? `## 工具（原生工具通道：直接发起工具调用，参数按工具声明传入；全部相对路径基于工作区）
 只读侦查：list_files | read_file(path[,line_start,line_end]) | read_dir(path) | grep(pattern[,path]) | git_log | git_diff | load_skill(name)
@@ -1809,8 +1859,10 @@ async function ensureTitle(convo: Convo): Promise<void> {
   await emitProgress('convo_status', { convo_id: convo.id, status: convo.status, title });
 }
 
-/** fork：按消息锚点复制出新会话（工作区/模型/人设/压缩锚点随迁，快照重新累计）。 */
-export async function forkConvo(deps: ConvoDeps, id: string, opts?: { message_id?: string; title?: string }): Promise<Convo> {
+/** fork：按消息锚点复制出新会话（工作区/模型/人设/压缩锚点随迁，快照重新累计）。
+ *  权限默认重置为「继承全局」（D：避免副本继承源会话的 plan_only 而继续卡死）；
+ *  显式传 resetPolicy:false 才保留源权限。 */
+export async function forkConvo(deps: ConvoDeps, id: string, opts?: { message_id?: string; title?: string; resetPolicy?: boolean }): Promise<Convo> {
   const src = await getConvo(id);
   if (!src) throw new ConvoError(404, `convo not found: ${id}`);
   const msgs = await getConvoMessages(id);
@@ -1820,8 +1872,10 @@ export async function forkConvo(deps: ConvoDeps, id: string, opts?: { message_id
     if (i < 0) throw new ConvoError(400, `message not found: ${opts.message_id}`);
     upto = i;
   }
+  const resetPolicy = opts?.resetPolicy !== false;
   const copy: Convo = {
     ...src,
+    policy_level: resetPolicy ? undefined : src.policy_level,
     id: newId() + Date.now().toString(36).slice(-4),
     title: (opts?.title || `${src.title}（副本）`).slice(0, 120),
     status: 'idle',

@@ -156,4 +156,15 @@ describe('convo API（/api/convos）', () => {
     const s = await json(await app.request(`/api/convos/${cr.convo.id}/search?q=a`));
     expect(Array.isArray(s.files)).toBe(true);
   }, 20000);
+
+  it('fork 默认重置权限为继承全局（D）；resetPolicy:false 才保留', async () => {
+    const cr = await json(await post('/api/convos', { policy_level: 'plan_only' }));
+    expect(cr.convo.policy_level).toBe('plan_only');
+    // 默认：副本权限被重置（避免继承 plan_only 继续卡死）
+    const fk = await json(await post(`/api/convos/${cr.convo.id}/fork`, { title: '副本' }));
+    expect(fk.convo.policy_level).toBeUndefined();
+    // 显式保留
+    const keep = await json(await post(`/api/convos/${cr.convo.id}/fork`, { title: '保留权限', resetPolicy: false }));
+    expect(keep.convo.policy_level).toBe('plan_only');
+  }, 20000);
 });

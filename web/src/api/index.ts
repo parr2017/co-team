@@ -1012,7 +1012,7 @@ export const api = {
     request<{ status: string; ok: boolean; snapshot_id: string; git_action: string; details: string[] }>(`/api/convos/${id}/rollback`, { method: 'POST' }),
   convoFile: (id: string, path: string) =>
     request<{ name: string; size: number; kind: 'text' | 'image'; content?: string; dataUrl?: string }>(`/api/convos/${id}/file?path=${encodeURIComponent(path)}`),
-  convoFork: (id: string, payload?: { message_id?: string; title?: string }) =>
+  convoFork: (id: string, payload?: { message_id?: string; title?: string; resetPolicy?: boolean }) =>
     request<{ status: string; convo: Convo }>(`/api/convos/${id}/fork`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) }),
   convoSearchFiles: (id: string, q: string, limit = 20) =>
     request<{ files: string[]; total: number }>(`/api/convos/${id}/search?q=${encodeURIComponent(q)}&limit=${limit}`),

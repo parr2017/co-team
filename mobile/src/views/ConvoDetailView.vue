@@ -125,7 +125,7 @@
           <!-- 结论全宽 -->
           <div v-for="m in turn.items.filter(x => x.role === 'assistant' && x.kind === 'text')" :key="'c' + m.id" class="ans">
             <div class="md"><MdView :source="m.text" /></div>
-            <div class="ops">
+            <div class="ops" v-if="isLastText(turn, m)">
               <span class="op" @click="copyText(m.text)">复制</span>
               <span class="op" @click="forkMsg(m)">分叉</span>
               <span class="tm mono">{{ fmtTime(m.ts) }}</span>
@@ -404,13 +404,18 @@ function turnActs(turn: TurnGroup): ActLine[] {
 function turnThinking(turn: TurnGroup): string {
   return turn.items.map((m) => (m.meta?.reasoning as string) || '').filter(Boolean).join('\n\n');
 }
+// 每轮只在最终结论下渲染一次操作行：FC 叙述 + 自动续跑会让一轮有多条 assistant text。
+function isLastText(turn: TurnGroup, m: ConvoMessage): boolean {
+  const texts = turn.items.filter((x) => x.role === 'assistant' && x.kind === 'text');
+  return texts.length > 0 && texts[texts.length - 1].id === m.id;
+}
 async function copyText(t: string) {
   try { await navigator.clipboard?.writeText(t); showToast('已复制'); } catch { /* ignore */ }
 }
 async function forkMsg(m: ConvoMessage) {
   try {
-    const r = await api.convoFork(convoId, { message_id: m.id, title: `${detail.value?.title || '会话'}（分叉）` });
-    showToast('已分叉出新会话');
+    const r = await api.convoFork(convoId, { message_id: m.id, title: `${detail.value?.title || '会话'}（分叉）`, resetPolicy: true });
+    showToast('已分叉出新会话（权限已重置）');
     router.replace(`/convo/${r.convo.id}`);
   } catch (e: any) { showFailToast(e.message); }
 }
@@ -505,8 +510,8 @@ function pickAt(f: string) {
 async function doFork() {
   moreSheet.value = false;
   try {
-    const r = await api.convoFork(convoId, { title: `${detail.value?.title || '会话'}（副本）` });
-    showToast('已复制出新会话');
+    const r = await api.convoFork(convoId, { title: `${detail.value?.title || '会话'}（副本）`, resetPolicy: true });
+    showToast('已复制出新会话（权限已重置）');
     router.replace(`/convo/${r.convo.id}`);
   } catch (e: any) {
     showFailToast(e.message);

@@ -566,7 +566,7 @@ export const api = {
     post<{ status: string }>(`/api/convos/${id}/rollback`),
   convoFile: (id: string, path: string) =>
     request<{ name: string; size: number; kind: 'text' | 'image'; content?: string; dataUrl?: string }>(`/api/convos/${id}/file?path=${encodeURIComponent(path)}`),
-  convoFork: (id: string, payload?: { message_id?: string; title?: string }) =>
+  convoFork: (id: string, payload?: { message_id?: string; title?: string; resetPolicy?: boolean }) =>
     post<{ status: string; convo: ConvoSummary }>(`/api/convos/${id}/fork`, payload || {}),
   convoSearchFiles: (id: string, q: string, limit = 20) =>
     request<{ files: string[]; total: number }>(`/api/convos/${id}/search?q=${encodeURIComponent(q)}&limit=${limit}`),

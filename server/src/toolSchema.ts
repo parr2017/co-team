@@ -129,9 +129,17 @@ function mcpTools(mcp: McpManager | undefined, agent: string): LlmToolSpec[] {
   return specs;
 }
 
-/** convo 引擎工具声明（静态集 + MCP 动态集）。 */
-export function buildConvoTools(opts: { mcp?: McpManager; agentId: string; execTimeoutSec: number }): LlmToolSpec[] {
-  return [...convoStaticTools(opts.execTimeoutSec), ...mcpTools(opts.mcp, opts.agentId)];
+/** convo 引擎工具声明（静态集 + MCP 动态集）。level 为 plan_only/readonly 时剔除会被
+ *  权限直接拒绝的工具（C：不暴露不可用工具，避免模型反复尝试空转、白耗迭代预算）。 */
+export function buildConvoTools(opts: { mcp?: McpManager; agentId: string; execTimeoutSec: number; level?: string }): LlmToolSpec[] {
+  const all = [...convoStaticTools(opts.execTimeoutSec), ...mcpTools(opts.mcp, opts.agentId)];
+  const blocked = opts.level === 'plan_only'
+    ? new Set(['exec', 'exec_background', 'kill_process', 'write_file', 'edit_file'])
+    : opts.level === 'readonly'
+      ? new Set(['write_file', 'edit_file'])
+      : null;
+  if (!blocked) return all;
+  return all.filter((t) => !blocked.has(String((t as { function?: { name?: string } }).function?.name || '')));
 }
 
 /** orchestrator 工具轮声明（静态集 + MCP 动态集）。 */
