@@ -37,7 +37,7 @@ import { getSkills } from './skills';
 import { relevantKnowledge } from './knowledge';
 import { distillKnowledgeCandidates } from './distill';
 import { classifyCommand, looksLikeMutating } from './commandGuard';
-import { canExecute, policyFromConfig, executeCommandAsync, type PermissionPolicy } from './sandbox';
+import { canExecute, policyFromConfig, executeCommandAsync, isPermissionLevel, type PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 import { analyzeImages } from './vision';
 import { ingestUserImages, renderImagesForContext, type IncomingImage, type StoredImage } from './media';
@@ -402,10 +402,6 @@ export async function createConvo(deps: ConvoDeps, input: { project_id?: string;
   await busSet(convoKey(convo.id), convo);
   await emitProgress('convo_status', { convo_id: convo.id, status: 'idle', title: convo.title });
   return convo;
-}
-
-function isPermissionLevel(v: unknown): v is string {
-  return ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'].includes(String(v));
 }
 
 export async function updateConvo(deps: ConvoDeps, id: string, patch: { title?: string; model_id?: string | null; policy_level?: string | null; auto_switch?: boolean }): Promise<Convo> {

@@ -167,4 +167,17 @@ describe('convo API（/api/convos）', () => {
     const keep = await json(await post(`/api/convos/${cr.convo.id}/fork`, { title: '保留权限', resetPolicy: false }));
     expect(keep.convo.policy_level).toBe('plan_only');
   }, 20000);
+
+  it('会话级权限 unrestricted 可持久化（回归：convo 本地 isPermissionLevel 曾漏掉该等级）', async () => {
+    const cr = await json(await post('/api/convos', { policy_level: 'unrestricted' }));
+    expect(cr.convo.policy_level).toBe('unrestricted');
+    // 创建后立即读回（模拟刷新页面）——必须仍在
+    const got = await json(await app.request(`/api/convos/${cr.convo.id}`));
+    expect(got.policy_level).toBe('unrestricted');
+    // PATCH 到 unrestricted 亦持久化
+    const upd = await json(await patch(`/api/convos/${cr.convo.id}`, { policy_level: 'unrestricted' }));
+    expect(upd.convo.policy_level).toBe('unrestricted');
+    const got2 = await json(await app.request(`/api/convos/${cr.convo.id}`));
+    expect(got2.policy_level).toBe('unrestricted');
+  }, 20000);
 });
