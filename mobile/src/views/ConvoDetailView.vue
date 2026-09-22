@@ -11,6 +11,9 @@
     </van-nav-bar>
     <div class="projline">{{ detail?.workspace || '（未绑定项目）' }}</div>
 
+    <!-- 断线可见：WS 断开时提示"不是模型没回应" -->
+    <div v-if="!connected" class="conn-ribbon"><span class="spin" />连接已断开，正在重连…</div>
+
     <div ref="streamEl" class="stream" @scroll="onStreamScroll">
       <!-- v5 原生风轮次渲染 -->
       <template v-for="(turn, ti) in turns" :key="ti">
@@ -32,7 +35,7 @@
           </div>
         </div>
 
-        <div v-if="turn.items.length" class="a">
+        <div v-if="turn.items.length || isTurnLive(turn)" class="a">
           <div class="a-head">
             <span v-if="isTurnLive(turn)" class="live" />
             <span class="nm">搭档</span>
@@ -154,8 +157,12 @@
               <div class="lab">思考</div>{{ reasonBuf.slice(-700) }}
             </div>
             <div v-if="streamingText" class="ans"><div class="md"><MdView :source="streamingText" /><span class="cursor" /></div></div>
-            <div v-if="!reasonBuf && !streamingText && !toolLive.length" class="notice">正在思考…</div>
+            <div v-if="!reasonBuf && !streamingText && !toolLive.length" class="notice"><span class="spin" />{{ pendingHint }}</div>
             <div v-if="waitNote" class="notice" style="color: var(--text-3, #9aa3ad)">⏳ {{ waitNote }}</div>
+            <!-- 无响应兜底：本地等待超阈值仍无任何活动帧 → 提供一键重连重试 -->
+            <div v-if="localPending && waitSec >= 45 && !waitNote" class="notice" style="color: var(--text-3, #9aa3ad)">
+              ⏳ 仍未收到响应，<span class="relink" @click="reconnectAndRefresh">点此重连并重试</span>
+            </div>
           </template>
         </div>
       </template>
@@ -302,7 +309,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { showFailToast, showConfirmDialog, showImagePreview, showToast } from 'vant';
 import { api, type ConvoDetail, type ConvoMessage } from '../api';
@@ -310,7 +317,7 @@ import { useWs } from '../composables/useWs';
 import MdView from '../components/MdView.vue';
 
 const router = useRouter();
-const { onEvent } = useWs();
+const { onEvent, onResync, connected, forceReconnect } = useWs();
 
 const detail = ref<ConvoDetail | null>(null);
 const draft = ref('');
@@ -467,8 +474,32 @@ async function promoteNow() {
     promoting.value = false;
   }
 }
-const busy = computed(() => !!detail.value && ['running', 'waiting_approval', 'waiting_ask'].includes(detail.value.status));
+const busy = computed(() => localPending.value || (!!detail.value && ['running', 'waiting_approval', 'waiting_ask'].includes(detail.value.status)));
 const shortModel = computed(() => (detail.value?.model_id || '自动').slice(0, 12));
+
+// 本地立即等待态：发送后不等服务端 status/WS 帧，先把本轮标记为 live（"发出去就有反馈"）
+const localPending = ref(false);
+const waitSec = ref(0);
+let waitTimer: ReturnType<typeof setInterval> | null = null;
+function startLocalWait() {
+  localPending.value = true;
+  waitSec.value = 0;
+  if (waitTimer) clearInterval(waitTimer);
+  waitTimer = setInterval(() => { waitSec.value += 1; }, 1000);
+}
+function clearLocalWait() {
+  localPending.value = false;
+  waitSec.value = 0;
+  if (waitTimer) { clearInterval(waitTimer); waitTimer = null; }
+}
+/** 服务端有任何本轮活动帧即让位（本地态不再压制真实状态） */
+function settleLocalWait() { if (localPending.value) clearLocalWait(); }
+/** 占位文案：发送中 → 已送达等待模型（带秒数）→ 正在思考 */
+const pendingHint = computed(() => {
+  if (sending.value) return '发送中…';
+  if (localPending.value) return `已送达，等待模型响应… ${waitSec.value}s`;
+  return '正在思考…';
+});
 
 const models = ref<{ id: string; name: string; provider?: string; tags?: string[] }[]>([]);
 const modelSheet = ref(false);
@@ -599,6 +630,13 @@ async function send() {
   const text = draft.value.trim();
   if (!text && !pendingImages.value.length && !pendingFiles.value.length && !pendingRefs.value.length) return;
   sending.value = true;
+  // 本地立即等待态：上屏即显示"发送中/等待模型响应"，不等服务端 status
+  streamBuf.value = {};
+  reasonBuf.value = '';
+  waitNote.value = '';
+  toolLive.value = [];
+  streaming.value = false;
+  startLocalWait();
   try {
     if (pendingFiles.value.length) {
       await api.convoUploadFiles(convoId, [...pendingFiles.value]);
@@ -621,6 +659,8 @@ async function send() {
     draft.value = '';
     await load();
   } catch (e: any) {
+    // 发送失败：撤掉本地等待态，避免界面一直"等待模型响应"
+    clearLocalWait();
     showFailToast(e.message);
   } finally {
     sending.value = false;
@@ -786,13 +826,18 @@ function lpQuote() {
 
 // ---------- WS 事件 ----------
 let off: (() => void) | null = null;
+let offResync: (() => void) | null = null;
 onMounted(async () => {
   await Promise.all([load(), loadModels()]);
+  // 断线/回前台补拉：漏帧时也能把回复与终态拉回来（手机切后台 socket 被杀的主因）
+  offResync = onResync(() => { void load(); });
   off = onEvent((msg: any) => {
     const t = msg?.type || '';
     if (!t.startsWith('convo_')) return;
     const p: any = msg.payload || {};
     if (p.convo_id !== convoId) return;
+    // 服务端已有活动帧：本地"立即等待态"让位，改用真实状态驱动
+    settleLocalWait();
     if (t === 'convo_status' || t === 'convo_tool' || t === 'convo_approval') {
       if (t === 'convo_tool') toolLive.value = [];
       if (t === 'convo_status' && p.status !== 'running') { toolLive.value = []; reasonBuf.value = ''; waitNote.value = ''; streaming.value = false; }
@@ -846,7 +891,30 @@ onMounted(async () => {
 });
 
 onActivated(load);
-onBeforeUnmount(() => off?.());
+onBeforeUnmount(() => {
+  off?.();
+  offResync?.();
+  if (waitTimer) { clearInterval(waitTimer); waitTimer = null; }
+  if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; }
+});
+
+// 兜底对账：busy 期间低频全量拉取，即使 WS 漏帧/假死也能把回复与终态补回来
+let reconcileTimer: ReturnType<typeof setInterval> | null = null;
+watch(busy, (b) => {
+  if (b && !reconcileTimer) {
+    reconcileTimer = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 20_000);
+  } else if (!b && reconcileTimer) {
+    clearInterval(reconcileTimer);
+    reconcileTimer = null;
+  }
+});
+
+/** 无响应兜底：重连 WS 并立刻全量拉取，重置本地等待计时 */
+function reconnectAndRefresh() {
+  try { forceReconnect(); } catch { /* noop */ }
+  startLocalWait();
+  void load();
+}
 </script>
 
 <style scoped>
@@ -1025,6 +1093,9 @@ onBeforeUnmount(() => off?.());
 .q-inline { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notice { margin: 8px 14px 0; font-size: 10.5px; color: var(--text-3); }
 .notice.warn { color: var(--warn, #e6a23c); border: 1px solid var(--line); background: var(--bg-raised); border-radius: 8px; padding: 6px 10px; }
+.notice .relink { color: var(--accent); text-decoration: underline; }
+.notice .spin, .conn-ribbon .spin { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok, #4caf50); margin-right: 6px; vertical-align: middle; animation: livepulse 1.3s infinite; }
+.conn-ribbon { padding: 5px 14px; font-size: 10.5px; color: var(--warn, #e6a23c); background: color-mix(in srgb, var(--warn, #e6a23c) 10%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--warn, #e6a23c) 25%, transparent); }
 .live-logs { margin: 6px 0 2px; }
 .live-logs .lg .st { background: var(--accent, #4b8bff); animation: pulse 1.1s infinite; }
 .interrupt-sep { display: flex; align-items: center; gap: 7px; color: var(--danger); font-size: 10.5px; margin: 8px 14px 0; }

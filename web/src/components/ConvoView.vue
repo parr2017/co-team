@@ -70,6 +70,10 @@
             <el-button size="small" type="danger" plain @click="rollback">回滚快照</el-button>
           </div>
         </div>
+        <!-- 断线可见：WS 断开时提示"不是模型没回应"，避免用户误判 -->
+        <div v-if="!connected" class="conn-ribbon">
+          <span class="spin" />连接已断开，正在重连…（消息会在这之后自动补拉）
+        </div>
 
         <div ref="streamEl" class="stream" @scroll="onScroll">
 <div class="col">
@@ -95,7 +99,7 @@
                 </div>
               </div>
 
-              <div v-if="turn.items.length" class="turn" :class="{ live: isTurnLive(turn) }">
+              <div v-if="turn.items.length || isTurnLive(turn)" class="turn" :class="{ live: isTurnLive(turn) }">
                 <div class="turn-head">
                   <div class="t-avatar">搭</div><div class="t-name">搭档</div>
                   <div class="t-model">{{ turnModel(turn) }}</div>
@@ -249,9 +253,16 @@
                   <div v-if="streamingText" class="conclusion">
                     <div class="md"><MdView :source="streamingText" /><span class="cursor" /></div>
                   </div>
-                  <div v-if="!reasoningText && !streamingText && !toolLive.length" class="notice think-placeholder">正在思考…</div>
+                  <div v-if="!reasoningText && !streamingText && !toolLive.length" class="notice think-placeholder">
+                    <span class="spin" />{{ pendingHint }}
+                  </div>
                   <!-- P0.3 等待/重试可见化：卡住时告诉用户"慢"还是"在重试" -->
                   <div v-if="waitNote" class="notice think-placeholder wait-note">⏳ {{ waitNote }}</div>
+                  <!-- 无响应兜底：本地等待超阈值仍无任何活动帧 → 提供一键重连重试 -->
+                  <div v-if="localPending && waitSec >= 45 && !waitNote" class="notice think-placeholder wait-note">
+                    ⏳ 仍未收到响应，可
+                    <a class="relink" @click="reconnectAndRefresh">点此重连并重试</a>
+                  </div>
                 </template>
               </div>
             </template>
@@ -381,7 +392,7 @@ import { useDashboard } from '../composables/useDashboard';
 import MdView from './MdView.vue';
 
 
-const { onEvent } = useDashboard();
+const { onEvent, connected, reconnectWs } = useDashboard();
 
 const STATUS_LABEL: Record<string, string> = { idle: '空闲', running: '运行中', waiting_approval: '待审批', waiting_ask: '待回答' };
 
@@ -399,13 +410,52 @@ const streamEl = ref<HTMLElement>();
 const createDlg = ref(false);
 const creating = ref(false);
 const form = reactive({ project_id: '', title: '', model_id: '', agent_id: 'partner', policy_level: '' });
-const busy = computed(() => detail.value?.status === 'running' || detail.value?.status === 'waiting_approval' || detail.value?.status === 'waiting_ask');
+/** 本地立即等待态：发送后不等服务端 status/WS 帧，先把本轮标记为 live（"发出去就有反馈"） */
+const localPending = ref(false);
+const localPendingAt = ref(0);
+/** 本地等待已持续秒数（仅 localPending 时每秒 +1，供占位文案计时） */
+const waitSec = ref(0);
+let waitTimer: ReturnType<typeof setInterval> | null = null;
+let localPendingSettled = false;
+const busy = computed(() => localPending.value || detail.value?.status === 'running' || detail.value?.status === 'waiting_approval' || detail.value?.status === 'waiting_ask');
 const queuedCount = computed(() => queuedCounts[activeId.value] || 0);
+
+function startLocalWait() {
+  localPending.value = true;
+  localPendingAt.value = Date.now();
+  localPendingSettled = false;
+  waitSec.value = 0;
+  if (waitTimer) clearInterval(waitTimer);
+  waitTimer = setInterval(() => { waitSec.value += 1; }, 1000);
+}
+function clearLocalWait() {
+  localPending.value = false;
+  localPendingSettled = true;
+  waitSec.value = 0;
+  if (waitTimer) { clearInterval(waitTimer); waitTimer = null; }
+}
+/** 服务端有任何本轮活动帧即让位（本地态不再压制真实状态） */
+function settleLocalWait() { if (localPending.value && !localPendingSettled) clearLocalWait(); }
+
+/** 占位文案：发送中 → 已送达等待模型（带秒数）→ 正在思考 */
+const pendingHint = computed(() => {
+  if (sending.value) return '发送中…';
+  if (localPending.value) return `已送达，等待模型响应… ${waitSec.value}s`;
+  return '正在思考…';
+});
 
 // 流式上屏：stream_id → 累积文本
 const streamBuf = reactive<Record<string, string>>({});
 const streaming = ref(false);
 const streamingText = computed(() => Object.values(streamBuf).join(''));
+/** 清空本轮实时流（思考/正文/工具/等待说明）——新一轮开始或收敛时调用 */
+function clearStreamState() {
+  for (const k of Object.keys(streamBuf)) delete streamBuf[k];
+  reasonBuf.value = '';
+  waitNote.value = '';
+  toolLive.value = [];
+  streaming.value = false;
+}
 
 // diff / 预览
 const diffDlg = ref(false);
@@ -524,6 +574,13 @@ async function refreshActive() {
 function isNearEnd(): boolean {
   const el = streamEl.value;
   return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+}
+
+/** 无响应兜底：重连 WS 并立刻全量拉取，重置本地等待计时 */
+function reconnectAndRefresh() {
+  try { reconnectWs(); } catch { /* noop */ }
+  startLocalWait();
+  void refreshActive();
 }
 function scrollEnd() {
   const el = streamEl.value;
@@ -730,16 +787,26 @@ const liveToolLines = computed(() => {
 watch(() => detail.value?.status, (st) => {
   if (st === 'running' && lastStatus.value !== 'running') {
     turnBaseline.value = detail.value?.messages.length || 0;
-    reasonBuf.value = '';
-    for (const k of Object.keys(streamBuf)) delete streamBuf[k];
+    clearStreamState();
   }
   if (st !== 'running' && lastStatus.value === 'running') {
-    // turn 收敛：清运行卡状态（消息本体已在流里）
-    reasonBuf.value = '';
-    for (const k of Object.keys(streamBuf)) delete streamBuf[k];
+    // turn 收敛：清运行卡状态（消息本体已在流里）+ 撤掉本地等待态
+    clearStreamState();
+    clearLocalWait();
   }
   lastStatus.value = st || '';
 });
+
+// 兜底对账：busy 期间低频全量拉取，即使 WS 漏帧/假死也能把回复与终态补回来
+let reconcileTimer: ReturnType<typeof setInterval> | null = null;
+watch(busy, (b) => {
+  if (b && !reconcileTimer) {
+    reconcileTimer = setInterval(() => { if (document.visibilityState === 'visible') void refreshActive(); }, 20_000);
+  } else if (!b && reconcileTimer) {
+    clearInterval(reconcileTimer);
+    reconcileTimer = null;
+  }
+}, { immediate: true });
 
 async function removeConvo(c: Convo) {
   try {
@@ -894,6 +961,9 @@ async function send() {
   const text = draft.value.trim();
   if (!text && !pendingImages.value.length && !pendingFiles.value.length && !pendingRefs.value.length) return;
   sending.value = true;
+  // 本地立即等待态：上屏即显示"发送中/等待模型响应"，不等服务端 status
+  clearStreamState();
+  startLocalWait();
   try {
     let uploaded: ConvoFileRef[] = [];
     if (pendingFiles.value.length) {
@@ -918,9 +988,10 @@ async function send() {
     }
     await api.convoSend(detail.value.id, { text: text + refNote, images: images.length ? images : undefined });
     draft.value = '';
-    if (!busy.value) delete queuedCounts[detail.value.id];
     await refreshActive();
   } catch (e: any) {
+    // 发送失败：撤掉本地等待态，避免界面一直"等待模型响应"
+    clearLocalWait();
     ElMessage.error(e.message);
   } finally {
     sending.value = false;
@@ -1022,6 +1093,8 @@ onMounted(async () => {
     const t = msg.type || '';
     if (!t.startsWith('convo_')) return;
     const p: any = msg.payload || {};
+    // 服务端已有活动帧：本地"立即等待态"让位，改用真实状态驱动
+    if (p.convo_id === activeId.value) settleLocalWait();
     if (t === 'convo_status') {
       const c = convos.value.find((x) => x.id === p.convo_id);
       if (c) c.status = p.status;
@@ -1102,6 +1175,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   offEvent?.();
   window.removeEventListener('coteam:convo-resync', onConvoResync as EventListener);
+  if (waitTimer) { clearInterval(waitTimer); waitTimer = null; }
+  if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; }
 });
 </script>
 
@@ -1219,6 +1294,10 @@ onBeforeUnmount(() => {
 .notice { margin: 2px 4px; font-size: 11.5px; color: var(--text-3); }
 .notice.warn { border-left: 2px solid var(--warn); background: none; color: var(--warn); border-radius: 0; padding: 1px 8px; }
 .notice.think-placeholder { border: none; background: none; padding: 2px 4px; }
+.notice .relink { color: var(--accent); cursor: pointer; }
+.notice .relink:hover { text-decoration: underline; }
+.think-placeholder .spin, .conn-ribbon .spin { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: middle; animation: livepulse 1.3s infinite; }
+.conn-ribbon { padding: 5px 16px; font-size: var(--fs-meta); color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, transparent); }
 .notice.cand-card { border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: var(--r-ctl); background: var(--bg-raised); padding: 8px 10px; color: var(--text-1); }
 .cand-card .cand-tag { font-size: 10px; color: var(--accent); font-family: var(--font-mono); letter-spacing: 0.04em; }
 .cand-card .cand-title { font-size: 12px; font-weight: 600; margin-top: 2px; }
