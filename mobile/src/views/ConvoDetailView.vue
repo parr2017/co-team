@@ -1033,9 +1033,7 @@ function reconnectAndRefresh() {
 .preview-text { font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.7; overflow: auto; padding: 0 12px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .day-sep { text-align: center; font-size: 10px; color: var(--text-3); display: flex; align-items: center; gap: 10px; margin: 2px 0; }
 .day-sep::before, .day-sep::after { content: ''; flex: 1; height: 1px; background: var(--line); }
-.user-row { display: flex; justify-content: flex-end; }
-.user-msg { max-width: 82%; background: color-mix(in srgb, var(--accent) 11%, var(--bg-panel)); border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent); border-radius: 12px 12px 3px 12px; padding: 9px 12px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
-.user-msg .ph { width: 74px; height: 55px; border-radius: 5px; border: 1px solid var(--line-strong); object-fit: cover; margin-top: 6px; }
+/* 注：旧 .user-row/.user-msg 已被 .u-row/.u-bub 取代（模板 v5 原生风），此处删除死代码 */
 .imgrow { display: flex; gap: 5px; flex-wrap: wrap; }
 .file-line { display: flex; align-items: center; gap: 5px; font-size: 12px; }
 .file-line a { color: var(--accent); }
@@ -1111,9 +1109,16 @@ function reconnectAndRefresh() {
 /* ===== v5 原生风 ===== */
 .nav-title { font-weight: 700; }
 .u-row { display: flex; justify-content: flex-end; margin: 6px 0 3px; }
-.u-bub { max-width: 84%; background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 78%, #000)); color: var(--accent-text); border-radius: 20px 20px 6px 20px; padding: 10px 15px; font-size: 14.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
-html.light .u-bub { background: var(--accent); }
-.u-bub .ph { margin-top: 7px; width: 130px; height: 88px; border-radius: 10px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.25); object-fit: cover; }
+/* 用户气泡对齐 web ConvoView 的既定设计：浅色半透明底 + 深色正文（--text-1）。
+   旧实现是「橙底黑字」且整条 background 依赖 color-mix——不被支持时
+   （iOS Safari <16.2 / 旧 WebView）该声明整条失效，气泡变透明后近黑字
+   落在深色页面上 = 用户发言彻底消失。现改为：正文用 --text-1（两主题都稳），
+   底色用实底 + @supports 叠色，任何环境都可见。 */
+.u-bub { max-width: 84%; background: var(--bg-raised); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 20px 20px 6px 20px; padding: 10px 15px; font-size: 14.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+@supports (background: color-mix(in srgb, red 50%, blue)) {
+  .u-bub { background: color-mix(in srgb, var(--accent) 11%, var(--bg-raised)); border-color: color-mix(in srgb, var(--accent) 24%, transparent); }
+}
+.u-bub .ph { margin-top: 7px; width: 130px; height: 88px; border-radius: 10px; background: var(--bg-inset); border: 1px solid var(--line-strong); object-fit: cover; }
 .u-bub .file-line a { color: inherit; text-decoration: underline; }
 .file-line { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .a { margin: 10px 0 12px; }
