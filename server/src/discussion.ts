@@ -25,6 +25,7 @@ import { busGet, busSet, busDel, busKeys } from './bus';
 import { emitProgress, addProjectMemory, addAgentMemory, getAgentMemory, getProjectMemory, saveProject, getProject, getTaskGraph, listTaskGraphs } from './store';
 import type { ProjectRecord } from './store';
 import { chat, extractJson, stripCodeFence, salvageToolCalls, normalizeToolCalls, LLM_WAIT_GIVEUP_RE } from './llm';
+import { chatStructured } from './structured';
 import type { LlmResponse } from './llm';
 import type { LlmToolSpec } from './llm';
 import { nativeToolsOn, buildDiscussionTools } from './toolSchema';
@@ -1199,7 +1200,10 @@ export async function routeSpeakers(
   if (!entry) return { speakers: [...disc.members], reason: '无可用模型，回退全员轮转', fallback: true };
   const latestUser = [...messages].reverse().find((m) => m.from === 'user');
   try {
-    const res = await chat(entry, [
+    // 路由/主持是幕后辅助调用：宁可判错（回退全员轮转/停止）也不能让用户等它——
+    // 推理模型可能长时间只吐 reasoning_content 不出正文（glm-5.3-flash 实测），
+    // 这类流按"任意 chunk 活着"永不触发 stalled，必须自带短墙钟。
+    const { parsed } = await chatStructured(entry, [
       {
         role: 'system',
         content: `你是群聊调度路由器，负责决定本轮哪些成员发言、按什么顺序。规则：
@@ -1207,18 +1211,25 @@ export async function routeSpeakers(
 2. 只选对当前话题真正有新信息/能动手解决问题的成员，优先 1 人，最多 ${MAX_ROUND_SPEAKERS} 人；复述、客套、无信息量的成员不选。
 3. ${firstSubstantive ? '这是开场轮：选择最相关的至多 2-3 位成员给出初始观点（不必全员）。' : '没有成员有新增内容时返回空数组。'}
 4. 若上一轮成员间存在分歧或互补发现，优先选能接力、验证或裁决的成员（真协作：接别人的结论往下走，不各说各话）。
-可选成员：${disc.members.join('、')}
-只输出纯 JSON：{"speakers":["成员名"],"reason":"一句话理由"}`,
+可选成员：${disc.members.join('、')}`,
       },
       {
         role: 'user',
         content: `话题：${disc.title}\n${latestUser ? `用户最新指示：${latestUser.text.slice(0, 500)}${(latestUser.meta as any)?.images?.length ? `（用户附图 ${(latestUser.meta as any).images.length} 张，视觉描述见讨论记录）` : ''}` : '（用户尚未发言）'}\n讨论记录：\n${renderTranscript(messages).slice(-4000) || '（空）'}`,
       },
-    // 路由/主持是幕后辅助调用：宁可判错（回退全员轮转/停止）也不能让用户等它——
-    // 推理模型可能长时间只吐 reasoning_content 不出正文（glm-5.3-flash 实测），
-    // 这类流按"任意 chunk 活着"永不触发 stalled，必须自带短墙钟。
-    ], undefined, 0, undefined, ROUTER_WALLCLOCK_CAP_MS);
-    const parsed = extractJson(res.content);
+    ], {
+      toolName: 'route_speakers',
+      description: '决定本轮哪些成员发言。输出：speakers（被选中的成员名数组）、reason（一句话理由）。',
+      schema: {
+        type: 'object',
+        properties: {
+          speakers: { type: 'array', items: { type: 'string' } },
+          reason: { type: 'string' },
+        },
+        required: ['speakers'],
+        additionalProperties: false,
+      },
+    });
     const picked = Array.isArray(parsed?.speakers)
       ? [...new Set(parsed.speakers.map(String))].filter((s) => disc.members.includes(s)).slice(0, MAX_ROUND_SPEAKERS)
       : null;
@@ -1400,14 +1411,25 @@ async function detectDivergence(deps: DiscussionDeps, disc: Discussion, round: n
   if (!entry) return false;
   const transcript = spokenReplies.map((r) => `- 【${r.agent}】${r.text.slice(0, 300)}`).join('\n');
   try {
-    const res = await chat(entry, [
+    const { parsed } = await chatStructured(entry, [
       {
         role: 'system',
-        content: '你是项目群聊的分歧检测员。判断多位成员的最新发言是否存在结论冲突（方向不一致、建议互斥、结论矛盾）。视角不同/互相补充不算冲突。只输出 JSON：{"conflict": true|false, "summary": "一句话冲突点"}',
+        content: '你是项目群聊的分歧检测员。判断多位成员的最新发言是否存在结论冲突（方向不一致、建议互斥、结论矛盾）。视角不同/互相补充不算冲突。',
       },
       { role: 'user', content: `话题：${disc.title}\n本轮发言：\n${transcript}` },
-    ], 1000, 0, undefined, ROUTER_WALLCLOCK_CAP_MS);
-    const parsed = extractJson(res.content);
+    ], {
+      toolName: 'detect_divergence',
+      description: '判断成员发言是否存在结论冲突。输出：conflict（是否冲突）、summary（一句话冲突点）。',
+      schema: {
+        type: 'object',
+        properties: {
+          conflict: { type: 'boolean' },
+          summary: { type: 'string' },
+        },
+        required: ['conflict'],
+        additionalProperties: false,
+      },
+    });
     if (parsed?.conflict === true) {
       await appendSystemMessage(disc.id, `⚠️ 第 ${round} 轮成员间存在分歧，需要你拍板：${String(parsed.summary || '').slice(0, 200)}`, round, 'card');
       await emitProgress('discussion_ask_user', { discussion_id: disc.id, agent: 'system', question: `成员间分歧：${String(parsed.summary || '').slice(0, 200)}`, round });
@@ -1427,14 +1449,25 @@ export async function moderatorCheck(deps: DiscussionDeps, disc: Discussion, las
   if (!entry) return { continue_round: true, reason: '无可用判定模型，默认继续' };
   const messages = await getMessages(disc.id);
   try {
-    const res = await chat(entry, [
+    const { parsed } = await chatStructured(entry, [
       {
         role: 'system',
-        content: '你是项目规划群聊的主持人。判断讨论是否还有必要进行下一轮：如果各成员仍在补充新信息/存在未解决的分歧/还有未完成的动手验证，继续；如果观点已重复、无新信息或已收敛，停止。只输出 JSON：{"continue": true|false, "reason": "一句话"}',
+        content: '你是项目规划群聊的主持人。判断讨论是否还有必要进行下一轮：如果各成员仍在补充新信息/存在未解决的分歧/还有未完成的动手验证，继续；如果观点已重复、无新信息或已收敛，停止。',
       },
       { role: 'user', content: `话题：${disc.title}\n最近消息：\n${renderTranscript(messages)}\n\n刚结束第 ${lastResult.round} 轮。` },
-    ], undefined, 0, undefined, MODERATOR_WALLCLOCK_CAP_MS);
-    const parsed = extractJson(res.content);
+    ], {
+      toolName: 'moderator_decision',
+      description: '判断讨论是否继续下一轮。输出：continue（是否继续）、reason（一句话理由）。',
+      schema: {
+        type: 'object',
+        properties: {
+          continue: { type: 'boolean' },
+          reason: { type: 'string' },
+        },
+        required: ['continue'],
+        additionalProperties: false,
+      },
+    });
     if (parsed?.continue !== true && parsed?.continue !== false) throw new Error('moderator output unparseable');
     return { continue_round: parsed.continue === true, reason: String(parsed?.reason || (parsed.continue === true ? '仍有新信息' : '观点已收敛')) };
   } catch (e) {

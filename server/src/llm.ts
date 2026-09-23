@@ -8,6 +8,9 @@ export interface LlmToolSpec {
   function: { name: string; description?: string; parameters?: Record<string, unknown> };
 }
 
+/** tool_choice 取值：auto 由模型自决；强制指定单个函数（结构化输出捕获用）。 */
+export type LlmToolChoice = 'auto' | 'none' | { type: 'function'; function: { name: string } };
+
 /** 归一化后的原生工具调用（与 JSON 契约路径的 {tool, ...args} 同构）。 */
 export interface LlmToolCall {
   tool: string;
@@ -166,12 +169,17 @@ export async function listUpstreamModels(apiKey: string, baseUrl: string): Promi
  * `onDelta` (7th arg) receives raw content deltas as they arrive (streaming mode only;
  * the non-streaming path cannot report progress). Consumers must treat it as best-effort.
  */
-export async function chat(entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown>; onReason?: (delta: string) => void; tools?: LlmToolSpec[]; onToolCallStart?: (toolName: string) => void; waitGiveUpMs?: number; onWaitNotice?: (info: LlmWaitNotice) => void }): Promise<LlmResponse> {
+export async function chat(entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens?: number, temperature = 0, signal?: AbortSignal, wallclockCapMs?: number, onDelta?: (delta: string) => void, opts?: { extraBody?: Record<string, unknown>; onReason?: (delta: string) => void; tools?: LlmToolSpec[]; toolChoice?: LlmToolChoice; onToolCallStart?: (toolName: string) => void; waitGiveUpMs?: number; onWaitNotice?: (info: LlmWaitNotice) => void }): Promise<LlmResponse> {
   const client = getClient(entry);
   // 输出上限是模型属性（model_pool 的 max_tokens），调用方不传即取模型配置
   const cap = maxTokens ?? entry.max_tokens ?? 128000;
-  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody, opts?.onReason, opts?.tools, opts?.onToolCallStart, opts?.waitGiveUpMs, opts?.onWaitNotice);
-  return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs, opts?.extraBody, opts?.tools);
+  // 强制单工具（结构化输出捕获）：流式下 tool_calls.arguments 分片聚合易碎且无需直播，
+  // 走非流式一次拿全（tool_choice 非 auto 时强制 chatOnce）。
+  if (opts?.toolChoice && opts.toolChoice !== 'auto') {
+    return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs, opts?.extraBody, opts?.tools, opts?.toolChoice);
+  }
+  if (STREAM_ENABLED) return chatStreamed(client, entry, messages, cap, temperature, signal, wallclockCapMs, onDelta, opts?.extraBody, opts?.onReason, opts?.tools, opts?.toolChoice, opts?.onToolCallStart, opts?.waitGiveUpMs, opts?.onWaitNotice);
+  return chatOnce(client, entry, messages, cap, temperature, signal, wallclockCapMs, opts?.extraBody, opts?.tools, opts?.toolChoice);
 }
 
 /** 客户端真实等待硬上限的错误特征（llm_wait_giveup）：调用方必须直接判死，不进任何重试循环。 */
@@ -221,7 +229,7 @@ function startWatchdog(
   }, every);
 }
 
-async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>, onReason?: (delta: string) => void, tools?: LlmToolSpec[], onToolCallStart?: (toolName: string) => void, waitGiveUpMs?: number, onWaitNotice?: (info: LlmWaitNotice) => void): Promise<LlmResponse> {
+async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, onDelta?: (delta: string) => void, extraBody?: Record<string, unknown>, onReason?: (delta: string) => void, tools?: LlmToolSpec[], toolChoice?: LlmToolChoice, onToolCallStart?: (toolName: string) => void, waitGiveUpMs?: number, onWaitNotice?: (info: LlmWaitNotice) => void): Promise<LlmResponse> {
   const startedAt = Date.now();
   const controller = new AbortController();
   const effectiveSignal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
@@ -253,7 +261,7 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
         stream_options: { include_usage: true },
         // 原生 function calling（opencode/ZCode 同款工具通道）：工具调用走供应商
         // tool_calls 字段而非正文 JSON——正文即回复，不存在"格式坏→烧纠正重试"
-        ...(tools?.length ? { tools, tool_choice: 'auto' as const } : {}),
+        ...(tools?.length ? { tools, tool_choice: toolChoice ?? 'auto' as const } : {}),
         // vLLM 扩展透传（如 enable_thinking:false 关闭 Qwen3 思考，E17）
         ...(entry.chat_template_kwargs ? { chat_template_kwargs: entry.chat_template_kwargs } : {}),
         // per-call 覆盖（o3xmkraj 复盘：E5 软重试降思考强度 reasoning_effort:low 等），
@@ -364,7 +372,7 @@ async function chatStreamed(client: OpenAI, entry: ModelEntry, messages: { role:
   };
 }
 
-async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, extraBody?: Record<string, unknown>, tools?: LlmToolSpec[]): Promise<LlmResponse> {
+async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: string; content: string | unknown[] }[], maxTokens: number, temperature: number, externalSignal?: AbortSignal, wallclockCapMsOverride?: number, extraBody?: Record<string, unknown>, tools?: LlmToolSpec[], toolChoice?: LlmToolChoice): Promise<LlmResponse> {
   const startedAt = Date.now();
   // 非流式没有进度信号可用——只能以总时长兜底（COTEAM_LLM_STREAM=0 的部署自担此限）
   const capMs = wallclockCapMsOverride !== undefined && wallclockCapMsOverride > 0 ? wallclockCapMsOverride : Math.max(policy.wallclockCapMs, 0) || policy.nonStreamTimeoutMs;
@@ -380,7 +388,7 @@ async function chatOnce(client: OpenAI, entry: ModelEntry, messages: { role: str
         messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         max_tokens: maxTokens,
         temperature,
-        ...(tools?.length ? { tools, tool_choice: 'auto' as const } : {}),
+        ...(tools?.length ? { tools, tool_choice: toolChoice ?? 'auto' as const } : {}),
         ...(entry.chat_template_kwargs ? { chat_template_kwargs: entry.chat_template_kwargs } : {}),
         ...(extraBody ?? {}),
       } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,

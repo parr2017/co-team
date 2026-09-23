@@ -1,4 +1,4 @@
-import { chat, extractJson, stripCodeFence } from './llm';
+import { chatStructured } from './structured';
 import type { ModelPool } from './scheduler';
 
 export interface ClarificationAssessment {
@@ -32,17 +32,29 @@ export async function assessRequirement(request: string, pool: ModelPool | null,
     ? `\n\n此前已进行的澄清问答：\n${priorAnswers.map((a, i) => `${i + 1}. 问：${a.question}\n   答：${a.answer}`).join('\n')}`
     : '';
   try {
-    const resp = await chat(
+    const { parsed, resp } = await chatStructured(
       model,
       [
         { role: 'system', content: SYSTEM },
         { role: 'user', content: `需求原文：\n${request.slice(0, 4000)}${prior}` },
       ],
-      2048,
-      0
+      {
+        toolName: 'assess_requirement',
+        description: '评估开发需求是否足够清晰。输出：clear（是否清晰）、missing（缺失维度）、questions（最多 3 个针对性问题）、summary（需求复述）。',
+        schema: {
+          type: 'object',
+          properties: {
+            clear: { type: 'boolean' },
+            missing: { type: 'array', items: { type: 'string' } },
+            questions: { type: 'array', items: { type: 'string' } },
+            summary: { type: 'string' },
+          },
+          required: ['clear'],
+          additionalProperties: false,
+        },
+      },
     );
     pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
-    const parsed = extractJson(stripCodeFence(resp.content));
     if (!parsed || typeof parsed.clear !== 'boolean') return heuristicAssessment(request);
     return {
       clear: parsed.clear === true,
@@ -99,7 +111,7 @@ export async function generateNodeBrief(
   const model = pool.selectModel(['code'], 'simple');
   if (!model) return fallback;
   try {
-    const resp = await chat(
+    const { parsed, resp } = await chatStructured(
       model,
       [
         { role: 'system', content: NODE_BRIEF_SYSTEM },
@@ -113,11 +125,23 @@ export async function generateNodeBrief(
           ].filter(Boolean).join('\n'),
         },
       ],
-      2048,
-      0
+      {
+        toolName: 'node_brief',
+        description: '生成开发节点的实施前简报。输出：approach（实施思路）、files（预计改动文件）、risks（风险点）、questions（需要用户确认的问题，最多 3 个）。',
+        schema: {
+          type: 'object',
+          properties: {
+            approach: { type: 'string' },
+            files: { type: 'array', items: { type: 'string' } },
+            risks: { type: 'array', items: { type: 'string' } },
+            questions: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['approach'],
+          additionalProperties: false,
+        },
+      },
     );
     pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
-    const parsed = extractJson(stripCodeFence(resp.content));
     if (!parsed) return fallback;
     return {
       approach: typeof parsed.approach === 'string' && parsed.approach.trim() ? parsed.approach.trim() : input.nodeName,

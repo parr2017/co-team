@@ -12,7 +12,7 @@
 import { busGet, busSet, busDel } from './bus';
 import { listProjects, getProjectMemory, replaceProjectMemory, emitProgress } from './store';
 import { writeKnowledge, listKnowledge, FEEDBACK_STRUCTURE_HINT } from './knowledge';
-import { chat, extractJson, stripCodeFence } from './llm';
+import { chatStructured } from './structured';
 import type { ModelPool } from './scheduler';
 import type { Logger } from './logger';
 
@@ -35,15 +35,36 @@ async function distillProjectMemory(pool: ModelPool, projectName: string, items:
   const entry = pool.selectStrongModel(['code']) ?? pool.selectStrongModel();
   if (!entry) return [];
   try {
-    const res = await chat(entry, [
-      { role: 'system', content: `你是知识整理员（Dream）。下面是项目「${projectName}」积累的零散经验记录。把它们提炼合并为 1-4 条结构化知识条目（去重、去粗取精、合并同类）。只输出纯 JSON（无代码栅栏）：
-{"entries":[{"category":"feedback|project","title":"标题（≤30字，具体可检索）","content":"正文"}]}
+    const { parsed } = await chatStructured(entry, [
+      { role: 'system', content: `你是知识整理员（Dream）。下面是项目「${projectName}」积累的零散经验记录。把它们提炼合并为 1-4 条结构化知识条目（去重、去粗取精、合并同类）。
 - content 必须三段：规则本体（一句话祈使句）；**Why:** 为什么；**How to apply:** 什么场景怎么用。${FEEDBACK_STRUCTURE_HINT}
 - category：用户纠正/规范/避坑 → feedback；项目特有事实/方案 → project
-- 零散记录里没有可提炼的就返回 {"entries":[]}。禁止编造。` },
+- 零散记录里没有可提炼的就返回 entries 空数组。禁止编造。` },
       { role: 'user', content: items.map((it, i) => `${i + 1}. ${it.text}`).join('\n').slice(0, 10000) },
-    ], undefined, 0.2);
-    const parsed = extractJson(stripCodeFence(res.content)) as { entries?: { category?: string; title?: string; content?: string }[] } | null;
+    ], {
+      toolName: 'distill_memory',
+      description: '把项目零散经验提炼为结构化知识条目。输出：entries（知识条目数组：category/title/content）。',
+      schema: {
+        type: 'object',
+        properties: {
+          entries: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                category: { type: 'string', enum: ['feedback', 'project', 'general-tech'] },
+                title: { type: 'string' },
+                content: { type: 'string' },
+              },
+              required: ['category', 'title', 'content'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['entries'],
+        additionalProperties: false,
+      },
+    });
     if (!parsed || !Array.isArray(parsed.entries)) return [];
     const out: { title: string; content: string; category: 'feedback' | 'project' }[] = [];
     for (const raw of parsed.entries.slice(0, 4)) {

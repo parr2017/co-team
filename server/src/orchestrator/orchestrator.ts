@@ -57,6 +57,7 @@ import { TurnProgressGuard, EvidenceLedger, emptyObservation, readSignature, REA
 import { snipOldToolResults, elideLongToolResults } from '../contextWaterline';
 import { scratchPut, scratchClear, scratchFromToolCall } from '../scratchpad';
 import { buildOrchTools, nativeToolsOn } from '../toolSchema';
+import { chatStructured } from '../structured';
 import { reloadSkills, getSkills, pickSkillsForNode, formatSkillsBlock } from '../skills';
 import { saveDeliverable } from '../deliverable';
 import { PROJECT_ROOT, DEFAULT_META_PATHS, type SelfModGateConfig, type ContextConfig } from '../config';
@@ -1426,17 +1427,38 @@ export class Orchestrator {
 
     let llmOk = false;
     try {
-      const res = await chat(entry, [
-        { role: 'system', content: `你是项目经验提炼员。根据任务执行材料，提炼可复用的结构化经验。只输出纯 JSON（无代码栅栏）：
-{"review_summary":"一句话总结这次任务做成了什么/败在哪（≤80字）","lessons":[{"category":"feedback|project|general-tech","title":"经验标题（≤30字，具体可检索）","content":"经验正文"}]}
-lessons 规则：
+      const { parsed } = await chatStructured(entry, [
+        { role: 'system', content: `你是项目经验提炼员。根据任务执行材料，提炼可复用的结构化经验。
 - 只提炼"下次还会用到"的通用经验；一次性的任务流水账不写
 - 每条 content 必须三段：规则本体（一句话祈使句）；**Why:** 为什么（依据材料中的事实）；**How to apply:** 什么场景怎么用
 - category 选择：用户纠正/规范类 → feedback；本项目特有事实/方案 → project；通用技术经验 → general-tech
-- 最多 3 条；材料里没有值得提炼的就返回空数组 lessons:[]` },
+- 最多 3 条；材料里没有值得提炼的就返回 lessons 空数组` },
         { role: 'user', content: materials },
-      ], undefined, 0.2);
-      const parsed = extractJson(res.content) as { review_summary?: string; lessons?: { category?: string; title?: string; content?: string }[] } | null;
+      ], {
+        toolName: 'review_lessons',
+        description: '从任务执行材料提炼可复用经验。输出：review_summary（一句话总结）、lessons（经验条目数组：category/title/content）。',
+        schema: {
+          type: 'object',
+          properties: {
+            review_summary: { type: 'string' },
+            lessons: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  category: { type: 'string', enum: ['feedback', 'project', 'general-tech'] },
+                  title: { type: 'string' },
+                  content: { type: 'string' },
+                },
+                required: ['category', 'title', 'content'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['review_summary', 'lessons'],
+          additionalProperties: false,
+        },
+      });
       if (parsed && Array.isArray(parsed.lessons)) {
         llmOk = true;
         const catMap: Record<string, 'feedback' | 'project' | 'general-tech'> = { feedback: 'feedback', project: 'project', 'general-tech': 'general-tech' };
@@ -3582,7 +3604,9 @@ lessons 规则：
           }
           await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'round', text: `✅ E5 软重试成功（降思考强度后输出 ${retryResp.completionTokens} token）`, ts: new Date().toISOString(), node_id: node.id, node_name: node.name, model: entry.name });
         }
-        parsed = extractJson(content);
+        // 原生 function calling：工具轮来自供应商 tool_calls（正文可能为空/散文），
+        // 与强制终稿分支（line 3709）同款——FC 工具轮先取 resp.toolCalls，正文 JSON 兜底
+        parsed = resp.toolCalls?.length ? { tool_calls: resp.toolCalls } : extractJson(content);
         // malformed tool-call JSON (nested/unclosed tool_calls) is recoverable:
         // pull out the individual {"tool":...} fragments and run them as a normal tool round
         if (!parsed) {
@@ -3637,7 +3661,9 @@ lessons 规则：
             messages.push({ role: 'assistant', content });
             // E5⑤: keep this example identical to the harness L6 contract (verification included),
             // otherwise the repaired JSON passes parse but fails the schema gate next round.
-            messages.push({ role: 'user', content: '你返回的内容无法解析为 JSON。请严格按照以下格式输出（不要包含任何 markdown 或额外文字）：\n{"status":"success|failed","changes":[],"summary":"你的分析或结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
+            messages.push({ role: 'user', content: nativeTools
+              ? '你的输出既不是供应商 tool_calls 工具调用，也不是可解析的最终 JSON。请二选一：需要动手就通过供应商工具通道发起 tool_calls（不要写进正文）；工作已完成就直接输出最终 JSON（不要包含任何 markdown 或额外文字）：\n{"status":"success|failed","changes":[],"summary":"你的分析或结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}'
+              : '你返回的内容无法解析为 JSON。请严格按照以下格式输出（不要包含任何 markdown 或额外文字）：\n{"status":"success|failed","changes":[],"summary":"你的分析或结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
             continue;
           }
         }
@@ -3691,7 +3717,9 @@ lessons 规则：
         // If this is the last round and model still requests tools, force final output
         if (round >= maxRounds - 1) {
           messages.push({ role: 'assistant', content });
-          messages.push({ role: 'user', content: '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
+          messages.push({ role: 'user', content: nativeTools
+            ? '工具调用已达上限。请立即通过供应商工具通道不要再请求工具，直接输出最终 JSON 结果。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}'
+            : '工具调用已达上限。请立即基于已有信息输出最终 JSON 结果，不要再请求工具。格式：\n{"status":"success|failed","changes":[],"summary":"分析结果","verification":"验证方式与结果","errors":[],"files":[],"commands":[]}' });
           // Do one more round to get final output
           const finalResp = await chat(entry, messages, roundBudget, escalate ? 0.3 : 0, this.taskSignals.get(taskId)?.signal, nodeCapMs, onDelta);
           this.pool!.recordUsage(entry.id, finalResp.promptTokens, finalResp.completionTokens);

@@ -3,7 +3,7 @@ import { CHANNELS, TaskGraph } from '../types';
 import { getTaskGraph, getTaskEvents, appendJournal } from '../store';
 import { listAsks } from '../askGate';
 import { notify } from '../notify';
-import { chat, extractJson } from '../llm';
+import { chatStructured } from '../structured';
 import { getLogger } from '../logger';
 import type { ModelPool } from '../scheduler';
 import type { AgentPlugin } from '../agents';
@@ -196,11 +196,36 @@ export class Supervisor {
     let actions: SupervisorAction[] = [];
     let assessment = '';
     try {
-      const resp = await chat(entry, [
+      const { parsed } = await chatStructured(entry, [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: digest },
-      ], 2000, 0);
-      const parsed = extractJson(resp.content);
+      ], {
+        toolName: 'supervisor_evaluate',
+        description: '评估任务现状并给出监督动作。输出：assessment（现状一句话）、actions（监督动作数组：nudge 催办 / help 主agent方案建议 / propose_retry 提案重试 / report 升级用户 / suggest_insert 插入节点）。',
+        schema: {
+          type: 'object',
+          properties: {
+            assessment: { type: 'string' },
+            actions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  action: { type: 'string', enum: ['nudge', 'help', 'propose_retry', 'report', 'suggest_insert'] },
+                  node_id: { type: 'string' },
+                  message: { type: 'string' },
+                  new_node: { type: 'object', properties: { name: { type: 'string' }, agent: { type: 'string' } }, additionalProperties: false },
+                  after_node_id: { type: 'string' },
+                },
+                required: ['action'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['assessment'],
+          additionalProperties: false,
+        },
+      });
       assessment = String(parsed?.assessment || '').slice(0, 300);
       actions = Array.isArray(parsed?.actions) ? (parsed.actions as SupervisorAction[]).slice(0, 5) : [];
     } catch (e) {

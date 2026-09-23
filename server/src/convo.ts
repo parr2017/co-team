@@ -2083,14 +2083,15 @@ ${convo.workspace || '（无绑定工作区）'}
 ${plugin.skills?.length ? `\n# 绑定技能（正文用 load_skill 拉取）\n${plugin.skills.join('、')}` : ''}
 
 ## 工具（相对路径基于工作区）
-侦查：{"tool":"list_files"} | {"tool":"read_file","path":"..","line_start":N,"line_end":M} | {"tool":"grep","pattern":".."} | {"tool":"git_diff"}
-执行：{"tool":"exec","command":".."}（≤${convoCfg.execTimeoutSec}s） | {"tool":"exec_background","command":".."} | {"tool":"kill_process","pid":N}
-写入：{"tool":"write_file","path":"..","content":".."} | {"tool":"edit_file","path":"..","find":"..","replace":".."}
-技能/知识：{"tool":"load_skill","name":".."} | {"tool":"write_knowledge","category":"project","title":"..","content":".."}
+${nativeToolsOn()
+    ? '工具通过供应商 tool_calls 通道直接调用（不要把工具调用写进正文文字）；单轮可并发多个调用。'
+    : '侦查：{"tool":"list_files"} | {"tool":"read_file","path":"..","line_start":N,"line_end":M} | {"tool":"grep","pattern":".."} | {"tool":"git_diff"}\n执行：{"tool":"exec","command":".."}（≤${convoCfg.execTimeoutSec}s） | {"tool":"exec_background","command":".."} | {"tool":"kill_process","pid":N}\n写入：{"tool":"write_file","path":"..","content":".."} | {"tool":"edit_file","path":"..","find":"..","replace":".."}\n技能/知识：{"tool":"load_skill","name":".."} | {"tool":"write_knowledge","category":"project","title":"..","content":".."}'}
 ${deps.mcp ? `\n## 外部 MCP 工具\n${deps.mcp.toolsIndex(agentName)}` : ''}
 
-## 输出契约（纯 JSON，禁止代码栅栏）
-A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
+## 输出契约
+${nativeToolsOn()
+    ? '需要动手就发起 tool_calls（供应商工具通道）；工作已完成就直接输出正文摘要（不再包 JSON）。'
+    : '纯 JSON，禁止代码栅栏：A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}'}
 工具结果以 user 消息回喂。`; 
 
   const msgs: { role: string; content: string | unknown[] }[] = [
@@ -2109,11 +2110,15 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
     for (let iter = 0; iter < SUB_MAX_ITER; iter++) {
       if (signal.aborted) { turn.aborted = true; break; }
       const last = iter === SUB_MAX_ITER - 1;
-      if (last) msgs.push({ role: 'user', content: '工具迭代次数已用完：不要再调用工具，立即用 reply 基于已获得的信息给出子任务摘要（如实说明已完成与未完成部分）。' });
+      const fc = nativeToolsOn();
+      const fcTools = fc ? buildConvoTools({ mcp: deps.mcp, agentId: plugin?.name || convo.agent_id, execTimeoutSec: convoCfg.execTimeoutSec ?? 180, level: policy.level }) : undefined;
+      if (last) msgs.push({ role: 'user', content: fc
+        ? '工具迭代次数已用完：不要再调用工具，立即基于已获得的信息给出子任务摘要（如实说明已完成与未完成的部分）。'
+        : '工具迭代次数已用完：不要再调用工具，立即用 reply 基于已获得的信息给出子任务摘要（如实说明已完成与未完成的部分）。' });
       let res: LlmResponse;
       let used = chain[0];
       try {
-        res = await chat(chain[0], msgs, undefined, 0.3, signal, SUB_WALLCLOCK_CAP_MS);
+        res = await chat(chain[0], msgs, undefined, 0.3, signal, SUB_WALLCLOCK_CAP_MS, undefined, fcTools ? { tools: fcTools } : undefined);
       } catch (e: any) {
         if (signal.aborted) break;
         const reason = String(e?.message || e);
@@ -2121,7 +2126,7 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
         if (!next) { summary = `子任务中断：模型调用失败（${reason.slice(0, 120)}）`; break; }
         await appendConvoMessage(convo.id, { role: 'system', kind: 'notice', text: `子智能体 ${agentName}：${chain[0].name} 调用失败，切换 ${next.name}。` });
         try {
-          res = await chat(next, msgs, undefined, 0.3, signal, SUB_WALLCLOCK_CAP_MS);
+          res = await chat(next, msgs, undefined, 0.3, signal, SUB_WALLCLOCK_CAP_MS, undefined, fcTools ? { tools: fcTools } : undefined);
           used = next;
         } catch (e2: any) {
           if (signal.aborted) break;
@@ -2129,9 +2134,13 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
           break;
         }
       }
+      // 原生 function calling：工具优先来自供应商 tool_calls；正文 JSON/纯散文兜底
+      let calls = fc ? (normalizeToolCalls(res.toolCalls) as Record<string, any>[]) : [];
       const parsed = extractJson(res.content);
-      let calls = normalizeToolCalls(parsed?.tool_calls);
-      if (!calls.length && !parsed && res.content.includes('"tool"')) calls = salvageToolCalls(res.content);
+      if (!calls.length) {
+        calls = normalizeToolCalls(parsed?.tool_calls);
+        if (!calls.length && !parsed && res.content.includes('"tool"')) calls = salvageToolCalls(res.content);
+      }
       if (calls.length && !last) {
         const sub = await runSubToolCalls(deps, convo, plugin, policy, calls, turn, signal);
         stepLines.push(...sub.lines);
@@ -2142,7 +2151,7 @@ A 动手：{"tool_calls":[...]}   B 收尾：{"reply":"子任务摘要"}
         }
         await appendConvoMessage(convo.id, { role: 'assistant', kind: 'tool', text: sub.line, model: used.name, meta: { subagent: agentName, calls: sub.records } });
         msgs.push({ role: 'assistant', content: res.content });
-        msgs.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(sub.results).slice(0, 12000)}\n\n信息足够就 reply 收尾；需要继续再发 tool_calls。` });
+        msgs.push({ role: 'user', content: `工具执行结果：\n${JSON.stringify(sub.results).slice(0, 12000)}\n\n${fc ? '信息足够就直接输出子任务摘要（正文，不再包 JSON）；需要继续再发起工具调用。' : '信息足够就 reply 收尾；需要继续再发 tool_calls。'}` });
         continue;
       }
       summary = String(parsed?.reply || res.content || '').trim().slice(0, 4000) || '（子任务无输出）';

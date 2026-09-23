@@ -1,4 +1,4 @@
-import { chat, extractJson, stripCodeFence } from '../llm';
+import { chatStructured } from '../structured';
 import { getMemory } from '../store';
 import type { ModelPool } from '../scheduler';
 import type { Router } from '../router';
@@ -252,13 +252,42 @@ async function llmPlan(request: string, pool: ModelPool, router: Router, model: 
     const { getLogger } = await import('../logger');
     getLogger().info('Planner dispatch', { model: model.name, prompt_chars: plannerUserMsg.length, pinned: !!pinnedModel });
     (globalThis as any).__coteamProbes = { ...(globalThis as any).__coteamProbes, plannerDispatch: { model: model.name, prompt_chars: plannerUserMsg.length, at: Date.now() } };
-    const resp = await chat(model, [
-      { role: 'system', content: 'You are a task planner. Use ONLY the given agent names. Output valid JSON only.' },
+    const { parsed: graph, resp } = await chatStructured(model, [
+      { role: 'system', content: 'You are a task planner. Use ONLY the given agent names.' },
       { role: 'user', content: plannerUserMsg },
-    ]);
+    ], {
+      toolName: 'plan_task',
+      description: '把需求拆解为有序任务节点图并输出：nodes（任务节点数组，含 agent 分配）、edges（依赖关系）、summary（拆解思路一句话）。',
+      schema: {
+        type: 'object',
+        properties: {
+          nodes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                agent: { type: 'string' },
+                reason: { type: 'string' },
+                required_skills: { type: 'array', items: { type: 'string' } },
+                complexity: { type: 'string', enum: ['simple', 'normal', 'complex'] },
+                requires_approval: { type: 'boolean' },
+                goal_link: { type: 'string' },
+              },
+              required: ['id', 'name', 'agent', 'reason', 'complexity', 'requires_approval'],
+              additionalProperties: false,
+            },
+          },
+          edges: { type: 'array', items: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 2 } },
+          summary: { type: 'string' },
+        },
+        required: ['nodes', 'edges', 'summary'],
+        additionalProperties: false,
+      },
+    });
     getLogger().info('Planner response', { model: model.name, content_chars: resp.content.length, elapsed_ms: resp.elapsedMs, completion_tokens: resp.completionTokens });
     pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
-    const graph = extractJson(stripCodeFence(resp.content));
     return normalizePlan(graph, available, skillMap);
   } catch (e) {
     // 2026-09-15 流洪水 OOM 复盘：规划模型故障（如 stream_flooded）必须记健康分，
@@ -342,13 +371,69 @@ export async function generateStagePlan(request: string, pool: ModelPool | null,
     const { getLogger } = await import('../logger');
     getLogger().info('Planner dispatch', { model: model.name, prompt_chars: content.length, stage: opts.stage });
     (globalThis as any).__coteamProbes = { ...(globalThis as any).__coteamProbes, plannerDispatch: { model: model.name, prompt_chars: content.length, stage: opts.stage, at: Date.now() } };
-    const resp = await chat(model, [
-      { role: 'system', content: 'You are a rolling task planner. Use ONLY the given agent names. Output valid JSON only.' },
+    const { parsed, resp } = await chatStructured(model, [
+      { role: 'system', content: 'You are a rolling task planner. Use ONLY the given agent names.' },
       { role: 'user', content },
-    ]);
+    ], {
+      toolName: 'plan_stage',
+      description: '规划下一阶段的最小节点集，或声明目标已达成（done=true + 逐项裁定）。输出：done、stage_goal、summary、nodes（任务节点数组）、edges、checklist（验收清单）、assessment、checklist_results（done 时的逐项裁定）。',
+      schema: {
+        type: 'object',
+        properties: {
+          done: { type: 'boolean' },
+          stage_goal: { type: 'string' },
+          summary: { type: 'string' },
+          assessment: { type: 'string' },
+          nodes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                agent: { type: 'string' },
+                reason: { type: 'string' },
+                required_skills: { type: 'array', items: { type: 'string' } },
+                complexity: { type: 'string', enum: ['simple', 'normal', 'complex'] },
+                requires_approval: { type: 'boolean' },
+                goal_link: { type: 'string' },
+              },
+              required: ['id', 'name', 'agent', 'reason', 'complexity', 'requires_approval'],
+              additionalProperties: false,
+            },
+          },
+          edges: { type: 'array', items: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 2 } },
+          checklist: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                requirement: { type: 'string' },
+                evidence_type: { type: 'string', enum: ['unit', 'build', 'e2e', 'command', 'manual'] },
+                target_platform: { type: 'string' },
+                target: { type: 'string' },
+              },
+              required: ['requirement'],
+              additionalProperties: false,
+            },
+          },
+          checklist_results: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { id: { type: 'string' }, done: { type: 'boolean' }, evidence: { type: 'string' } },
+              required: ['id', 'done'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    });
     getLogger().info('Planner response', { model: model.name, content_chars: resp.content.length, elapsed_ms: resp.elapsedMs, completion_tokens: resp.completionTokens });
     pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
-    const parsed = extractJson(stripCodeFence(resp.content));
     if (!parsed) return null;
 
     if (opts.stage > 1 && parsed.done === true) {
