@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { canExecute, executeCommand, executeCommandAsync, writeFiles, CommandResult, PermissionPolicy } from './sandbox';
 import { assertWithinJail, jailViolationMessage } from './workspace';
-import { classifyCommand, canExecuteChain } from './commandGuard';
+import { classifyCommand, canExecuteChain, isCommonDevCommand } from './commandGuard';
 import { writeKnowledge } from './knowledge';
 import { estimateTokensCalibrated } from './tokenEstimator';
 import { writeDoc, SSOT_DOC_TYPES, type SsotDocType } from './ssot';
@@ -44,6 +44,94 @@ const MAX_FILE_BYTES = 64 * 1024;
 const MAX_READ_CHARS = 16000;
 const IGNORED_DIRS = new Set(['.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode']);
 const GREP_MAX_RESULTS = 80;
+
+/** exec 同步执行的超时（秒）——协作会话同款 180s；轮内工具调用不该把节点预算烧穿 */
+const EXEC_TIMEOUT_SEC = 180;
+/** exec 结果回注上下文的字符预算（token 优先：stdout/stderr 各留尾部） */
+const EXEC_STDOUT_CHARS = 3000;
+const EXEC_STDERR_CHARS = 1500;
+
+/** Windows 进程树查杀（与 convo.ts killPidTree 同语义；shell:true 拉起的是 cmd.exe 壳） */
+function killPidTree(pid: number, ws: string): void {
+  try {
+    if (process.platform === 'win32') {
+      spawn(`taskkill /PID ${pid} /T /F`, { shell: true, cwd: ws, stdio: 'ignore' });
+    } else {
+      process.kill(pid);
+    }
+  } catch { /* 进程已退出——fine */ }
+}
+
+/**
+ * exec / exec_background 工具实现——权限语义与协作会话 convoExec 完全对齐：
+ *   plan_only / readonly → 硬拒；strict → 绝对禁止；
+ *   whitelist_auto / approve_required → 白名单外或敏感命令 park（needs_approval），
+ *   由调用方（任务管线）登记到任务级待审批队列，不阻塞工具轮；
+ *   full → 目录内完全控制；unrestricted → 解除目录监狱（越界常见开发命令直接执行，
+ *   其余越界命令 park，带回 reason: jail_out_of_scope）。
+ */
+async function execTool(tool: string, workspace: string, command: string, policy: PermissionPolicy, background: boolean): Promise<Record<string, any>> {
+  if (!command) return { tool, ok: false, error: 'command 不能为空' };
+  if (policy.level === 'plan_only' || policy.level === 'readonly') {
+    return { tool, ok: false, error: `当前权限为 ${policy.level}，不允许执行命令；请调整执行策略级别` };
+  }
+  const cls = classifyCommand(command);
+  if (cls.strict) return { tool, ok: false, sensitive: true, error: `绝对禁止的命令（${cls.reasons.join('、')}）——任何配置下都不允许执行` };
+
+  // 越界判定先于白名单：unrestricted 下越界的常见开发命令直接放行（记 audit），
+  // 其余越界命令 park 转人工（目录监狱纪律对非 development 命令仍生效）。
+  if (policy.jailBypass) {
+    const jail = assertWithinJail(command, workspace);
+    if (!jail.ok && !isCommonDevCommand(command)) {
+      return { tool, ok: false, needs_approval: true, sensitive: cls.sensitive, reason: 'jail_out_of_scope', pending_command: command, violations: jail.violations.slice(0, 5), error: `命令越出项目目录且不属于常见开发命令，已转人工审批：${jailViolationMessage(jail.violations, workspace)}` };
+    }
+  }
+
+  // full / unrestricted 之外：白名单外或敏感命令 → park（调用方决定如何登记）
+  const needApproval = policy.level !== 'full' && policy.level !== 'unrestricted' && (!canExecuteChain(policy, command, (seg) => canExecute(policy, seg)) || (cls.sensitive && !policy.allow_sensitive));
+  if (needApproval) {
+    return {
+      tool, ok: false, needs_approval: true, sensitive: cls.sensitive, reason: 'whitelist',
+      pending_command: command,
+      error: policy.level === 'approve_required'
+        ? `等待人工审批后重跑（命令不在白名单${cls.sensitive ? '且属敏感操作' : ''}）：${command}`
+        : `command not in whitelist: ${command}（当前策略 whitelist_auto 只执行白名单命令）`,
+    };
+  }
+
+  if (background) {
+    // 目录监狱：非 unrestricted 时后台命令同样受限
+    if (!policy.jailBypass) {
+      const jail = assertWithinJail(command, workspace);
+      if (!jail.ok) return { tool, ok: false, error: jailViolationMessage(jail.violations, workspace) };
+    }
+    const logDir = path.join(workspace, '.coteam-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 6)}.log`);
+    try {
+      const fd = fs.openSync(logPath, 'a');
+      const proc = spawn(command, { cwd: workspace, shell: true, detached: true, stdio: ['ignore', fd, fd] });
+      proc.unref();
+      fs.closeSync(fd);
+      return {
+        tool, ok: true, pid: proc.pid, command,
+        log: path.relative(workspace, logPath).replace(/\\/g, '/'),
+        note: '已后台启动（不代表成功）。等待数秒后用 exec 查端口/curl，或 read_file 看日志确认真实状态。',
+      };
+    } catch (e: any) {
+      return { tool, ok: false, command, error: String(e?.message || e).slice(0, 300) };
+    }
+  }
+
+  // full / unrestricted 走原策略（executeCommandAsync 内部再做一次 canExecute 校验——
+  // whitelist_auto 下非白名单命令在此仍会被拒，兜住 schema 与策略不一致的边界）
+  const r = await executeCommandAsync(command, workspace, policy, EXEC_TIMEOUT_SEC);
+  return {
+    tool, ok: r.allowed, command, returncode: r.returncode,
+    stdout: r.stdout.slice(-EXEC_STDOUT_CHARS), stderr: r.stderr.slice(-EXEC_STDERR_CHARS),
+    ...(r.allowed ? {} : { error: r.stderr || 'command not allowed' }),
+  };
+}
 
 /** 缓存优先裁剪的度量基线：P2.1 起委托 tokenEstimator（CJK 1:1 + 其余 4.2:1 + 真实用量校准环）。
  *  保留同名导出——全系统 30+ 调用点无需改动。 */
@@ -492,7 +580,7 @@ export async function lookImage(workspace: string, imagePath: string, question: 
 /** Read-only tools the agent may request mid-conversation, plus write_knowledge for
  *  experience deposit, write_doc for SSOT collaboration docs and send_message for
  *  agent-to-agent deferred messaging (improvement #4 behavioral contract). */
-export async function applyToolCalls(workspace: string, toolCalls: { tool: string; command?: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number; find?: string; replace?: string; arguments?: Record<string, unknown> }[] | undefined, knowledgeCtx?: KnowledgeToolContext, policy?: PermissionPolicy): Promise<unknown[]> {
+export async function applyToolCalls(workspace: string, toolCalls: { tool: string; command?: string; path?: string; pattern?: string; query?: string; title?: string; content?: string; tags?: string[]; category?: string; type?: string; to?: string; text?: string; name?: string; url?: string; expect?: string[]; line_start?: number; line_end?: number; question?: string; ask_id?: string; window_size?: string | number; find?: string; replace?: string; pid?: number; arguments?: Record<string, unknown> }[] | undefined, knowledgeCtx?: KnowledgeToolContext, policy?: PermissionPolicy): Promise<unknown[]> {
   const results: unknown[] = [];
   for (const call of toolCalls || []) {
     const name = (call.tool || '').toLowerCase();
@@ -784,17 +872,21 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
       if (!policy) {
         results.push({ tool: name, ok: false, error: 'execution policy not available' });
       } else {
-        const command = String(call.command || '').trim();
-        if (!command) {
-          results.push({ tool: name, ok: false, error: 'command 不能为空' });
-        } else {
-          const cls = classifyCommand(command);
-          if (cls.strict) {
-            results.push({ tool: name, ok: false, error: `绝对禁止的命令（${cls.reasons.join('、')}）` });
-          } else {
-            results.push({ tool: name, ...(await executeCommandAsync(command, workspace, policy)) });
-          }
-        }
+        results.push(await execTool(name, workspace, String(call.command || '').trim(), policy, false));
+      }
+    } else if (name === 'exec_background' || name === 'start_process') {
+      if (!policy) {
+        results.push({ tool: name, ok: false, error: 'execution policy not available' });
+      } else {
+        results.push(await execTool(name, workspace, String(call.command || '').trim(), policy, true));
+      }
+    } else if (name === 'kill_process') {
+      const pid = Number(call.pid);
+      if (!Number.isInteger(pid) || pid <= 0) {
+        results.push({ tool: 'kill_process', ok: false, error: 'pid 必须是正整数' });
+      } else {
+        killPidTree(pid, workspace);
+        results.push({ tool: 'kill_process', ok: true, pid });
       }
     } else {
       results.push({ tool: name, ok: false, error: `tool '${name}' not allowed mid-run` });

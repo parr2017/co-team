@@ -95,16 +95,16 @@
                   <span class="b-commit">{{ b.commit }}</span>
                 </div>
               </div>
-              <div class="wr-hint mono">点击节点查看详情与代码变更 · 点击成员切换会话</div>
+              <div class="wr-hint mono">点击节点查看详情与代码变更 · 点击成员筛选工作流</div>
             </div>
             <div class="wr-right">
               <div class="wr-switch">
-                <button class="sw-btn mono" :class="{ active: wrView === 'chat' }" @click="wrView = 'chat'">成员会话</button>
+                <button class="sw-btn mono" :class="{ active: wrView === 'chat' }" @click="wrView = 'chat'">工作流</button>
                 <button class="sw-btn mono" :class="{ active: wrView === 'node' }" :disabled="!selected" @click="wrView = 'node'">节点详情</button>
                 <span v-if="wrView === 'node' && selected" class="sw-cur mono">{{ selected.name }}</span>
               </div>
 
-              <!-- 成员会话视图 -->
+              <!-- 工作流视图 -->
               <template v-if="wrView === 'chat'">
                 <div class="live-head mono">
                   <span class="live-agent">{{ selectedAgent || '全体成员' }}</span>
@@ -112,7 +112,7 @@
                   <span v-if="selectedLive?.currentAction" class="live-action">{{ selectedLive.currentAction }}</span>
                 </div>
                 <div class="live-chat">
-                  <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" />
+                  <ChatStream ref="chatRef" :task-id="taskId" :filter-agent="selectedAgent || undefined" @open-node="selectNodeId" />
                 </div>
                 <InterventionBar :task-id="taskId" :task-status="task.status" />
               </template>
@@ -405,7 +405,7 @@
                   <el-option v-for="c in COMMON_WHITELIST" :key="c" :label="c" :value="c" />
                 </el-select>
                 <span class="mg-hint">
-                  只出方案：不写代码只给方案 · 改动需审批：白名单外命令等你批准 · 白名单自动：仅白名单命令自动执行 · 完全控制：全部自动执行
+                  只出方案：不写代码只给方案 · 只读：不写文件但可跑白名单命令 · 改动需审批：白名单外命令等你批准 · 白名单自动：仅白名单命令自动执行 · 完全控制：目录内全部自动执行 · 无边界：解除命令/读取的目录监狱（写文件仍锁项目内）
                 </span>
               </div>
               <div v-if="pendingCommands.length" class="mg-body">
@@ -526,7 +526,7 @@
 <script setup lang="ts">
 import { Document, Memo, FolderOpened } from '@element-plus/icons-vue';
 import { showApiError } from '../utils/apiError';
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, nextTick, onUnmounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { renderMarkdown as mdShared } from '../utils/md';
 import { api, PERMISSION_LEVELS, PERMISSION_LEVEL_LABELS, type TaskEvent, type TaskGraph, type TaskNode, type ProgressInfo, type SnapshotMeta } from '../api';
@@ -580,6 +580,7 @@ const clarifying = ref(false);
 let clarifyStateFetchedFor = '';
 
 const selected = computed(() => task.value?.nodes.find((n) => n.id === selectedNodeId.value) || null);
+const chatRef = ref<InstanceType<typeof ChatStream> | null>(null);
 
 // ---------- 阶段横幅 ----------
 
@@ -1145,6 +1146,9 @@ async function onOpen() {
       void refreshProgress();
     }
   }, 3000);
+  // 打开详情默认落到工作流最底部——先看最新执行情况，再按需上翻
+  await nextTick();
+  chatRef.value?.scrollToBottom();
 }
 
 function onClose() { window.clearInterval(pollTimer); emit('close'); }

@@ -819,7 +819,7 @@ export function createApi(ctx: ApiContext): Hono {
     if (!graph) throw new HttpError(404, 'task not found');
     const { isPermissionLevel } = await import('../sandbox');
     if (body.level !== null && body.level !== undefined && body.level !== '' && !isPermissionLevel(body.level)) {
-      throw new HttpError(400, 'level must be plan_only | readonly | approve_required | whitelist_auto | full');
+      throw new HttpError(400, 'level must be plan_only | readonly | approve_required | whitelist_auto | full | unrestricted');
     }
     if (body.level === null || body.level === '') {
       graph.execution_policy = undefined;
@@ -867,7 +867,23 @@ export function createApi(ctx: ApiContext): Hono {
     if (!graph) throw new HttpError(404, 'task not found');
     const node = graph.nodes.find((n) => n.id === nodeId);
     if (!node) throw new HttpError(404, 'node not found');
-    if (node.status !== 'failed' || !node.needs_human) throw new HttpError(400, '节点不是"需人工介入"的失败态，无需续跑');
+    // 三种可续跑形态：① needs_human 失败节点（人工修完环境/补完信息）；
+    // ② interrupted 被中断节点——含"反复重启被停靠 failed"的任务（infra_retries>3 时
+    //    sweepInterruptedTasks 判死，但成果都在，环境恢复后应当能人工复活，此前无路径）；
+    // ③ 僵尸 running 节点——持久状态是 running 但内存里没有执行器（进程被杀/异常丢线程），
+    //    调度器永远跳过它，只能经此接口解锁（2026-09-23 pk0udn4p s2-3 卡死 9 小时实证）。
+    //    isNodeExecuting 为 true 的一律拒绝：那是真在跑的节点，重置会双跑。
+    const zombieRunning = node.status === 'running' && !ctx.orchestrator.isNodeExecuting(taskId, nodeId);
+    const interrupted = node.status === 'interrupted';
+    if (!((node.status === 'failed' && node.needs_human) || zombieRunning || interrupted)) {
+      throw new HttpError(400, '节点不是"需人工介入/被中断/僵尸 running"态，无需续跑');
+    }
+    // 被停靠/中断的任务整体复活：清零重启计数与任务级失败态（入队时置 queued）
+    if (['failed', 'interrupted'].includes(graph.status)) {
+      graph.status = 'queued';
+      graph.infra_retries = 0;
+      await persistGraph(graph);
+    }
     const upstream = new Map<string, string[]>();
     for (const n of graph.nodes) upstream.set(n.id, []);
     for (const [src, dst] of graph.edges) upstream.get(dst)?.push(src);
@@ -1680,7 +1696,7 @@ export function createApi(ctx: ApiContext): Hono {
     const { policyFromConfig, GLOBAL_PERMISSION_LEVELS } = await import('../sandbox');
     const body = await c.req.json<{ level?: string; whitelist_commands?: string[]; max_time_sec?: number }>();
     const level = String(body.level || '').trim();
-    // 全局配置不接受会话级 unrestricted（只给协作会话，见 convo.policy_level）
+    // 全局权限：2026-09-23 起六档全开（unrestricted 曾只给协作会话；写/删文件仍锁项目内）
     if (!(GLOBAL_PERMISSION_LEVELS as string[]).includes(level)) throw new HttpError(400, `level 必须是以下之一: ${GLOBAL_PERMISSION_LEVELS.join(' | ')}`);
     if (!Array.isArray(body.whitelist_commands)) throw new HttpError(400, 'whitelist_commands must be an array');
     const whitelist = body.whitelist_commands.map((s) => String(s).trim()).filter(Boolean);

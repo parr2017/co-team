@@ -138,4 +138,10 @@ describe('TOOLCLAIM_RE / extractSpecPaths 纯函数', () => {
     expect(extractSpecPaths('写 README.md 和 docs')).toEqual([]);
     expect(extractSpecPaths('处理 d:/lib/x.dart 的盘符路径')).toEqual(['lib/x.dart']);
   });
+
+  it('extractSpecPaths：HTTP 路由 token 不当文件路径（pk0udn4p s2-3 实证）', () => {
+    // 节点名"启动 server 8787 与 Web 预览并冒烟 /ai/quiz、/ai/explain 降级接口"——ai/quiz 是路由
+    expect(extractSpecPaths('启动 server 8787 与 Web 预览并冒烟 /ai/quiz、/ai/explain 降级接口')).toEqual([]);
+    expect(extractSpecPaths('核验 build/web/ 产物完整性')).toEqual(['build/web']);
+  });
 });

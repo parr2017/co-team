@@ -136,3 +136,124 @@ describe('orchestrator 主循环原生 function calling', () => {
     expect(chatCalls[0].opts?.tools ?? []).toHaveLength(0);
   });
 });
+
+/**
+ * 2026-09-23 回归（learn-english 任务 pk0udn4p 节点 s2-1 失败实证）：
+ * 任务管线 agent 曾拿不到 exec 工具——无法运行 flutter analyze / flutter test，
+ * 只能申报"缺少 shell 命令执行工具"并被判合法阻塞，s2-2 起全部连带失败。
+ * 本组断言：FC exec 工具真实执行、stdout 回传后续轮可见、白名单策略按预期 park。
+ */
+describe('orchestrator exec 工具（回归：任务管线 shell 能力）', () => {
+  let tmp: string;
+  let orchestrator: Orchestrator;
+  let entry: any;
+  let plugin: any;
+
+  beforeEach(async () => {
+    process.env.COTEAM_FORCE_MEMORY = '1';
+    configureNativeTools(true);
+    chatCalls.length = 0;
+    script = [];
+    closeBus();
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-exec-'));
+    const devDir = path.join(tmp, 'dev');
+    fs.mkdirSync(devDir, { recursive: true });
+    fs.writeFileSync(path.join(devDir, 'agent.yaml'), 'name: dev\ntags: [code]\nrole: 开发\n');
+    await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
+    const pool = new ModelPool([cfg({ id: 'm1', name: 'm1', tags: ['code'] })]);
+    orchestrator = new Orchestrator({
+      agentsDir: tmp,
+      modelPool: pool,
+      policy: { level: 'full', whitelistCommands: null, maxTimeSec: 60 },
+      maxRetries: 1,
+      sandboxEnabled: false,
+      gitEnabled: false,
+      branchWorkflow: false,
+      outputTiers: { simple: 8000, normal: 32000, complex: 64000 },
+    });
+    await orchestrator.loadAgents();
+    entry = pool.getModel('m1');
+    plugin = (orchestrator as any).router.getAvailable().get('dev');
+  });
+
+  afterEach(() => {
+    configureNativeTools(true);
+    // 后台进程组兜底查杀：测试里 exec_background 起的不能留僵尸
+    (orchestrator as any).killTaskProcesses('t-exec');
+    (orchestrator as any).killTaskProcesses('t-fc');
+    fs.rmSync(tmp, { recursive: true, force: true });
+    closeBus();
+  });
+
+  it('FC exec 工具真实执行，stdout 回传且后续轮可见', async () => {
+    script = [
+      () => ({
+        content: '', promptTokens: 10, completionTokens: 20, finishReason: 'tool_calls',
+        toolCalls: [{ tool: 'exec', command: 'echo co-team-exec-marker' }],
+      }),
+      () => ({ content: successJson, promptTokens: 10, completionTokens: 20, finishReason: 'stop' }),
+    ];
+    const r = await (orchestrator as any).callAgent('t-exec', makeNode('e1'), plugin, entry, tmp, false, '', 'test', { level: 'full', whitelistCommands: null, maxTimeSec: 60 });
+    expect(r.status).toBe('success');
+    // 工具轮结果里有真实 stdout（marker 串）——即 exec 真的被 spawn 执行了
+    const toolResults = chatCalls[1]?.messages?.filter((m: any) => m.role === 'user').map((m: any) => String(m.content)).join('\n') || '';
+    expect(toolResults).toContain('co-team-exec-marker');
+  });
+
+  it('同轮两条不同 exec 命令都真实执行（dedupKey 补 command 回归）', async () => {
+    script = [
+      () => ({
+        content: '', promptTokens: 10, completionTokens: 20, finishReason: 'tool_calls',
+        toolCalls: [
+          { tool: 'exec', command: 'echo FIRST-CMD' },
+          { tool: 'exec', command: 'echo SECOND-CMD' },
+        ],
+      }),
+      () => ({ content: successJson, promptTokens: 10, completionTokens: 20, finishReason: 'stop' }),
+    ];
+    const r = await (orchestrator as any).callAgent('t-exec', makeNode('e2'), plugin, entry, tmp, false, '', 'test', { level: 'full', whitelistCommands: null, maxTimeSec: 60 });
+    expect(r.status).toBe('success');
+    // 第 2 轮注入的工具执行结果 must carry BOTH markers——修复前第二条被 dedup 吞掉
+    const toolResults = chatCalls[1]?.messages?.filter((m: any) => m.role === 'user').map((m: any) => String(m.content)).join('\n') || '';
+    expect(toolResults).toContain('FIRST-CMD');
+    expect(toolResults).toContain('SECOND-CMD');
+    expect(toolResults).not.toContain('结果从略');
+  });
+
+  it('whitelist_auto 下白名单外命令 park 到 pending_commands（不硬拒、不假完成）', async () => {
+    script = [
+      () => ({
+        content: '', promptTokens: 10, completionTokens: 20, finishReason: 'tool_calls',
+        toolCalls: [{ tool: 'exec', command: 'flutter analyze' }],
+      }),
+      () => ({ content: JSON.stringify({ status: 'success', summary: 'done', verification: 'see exec', changes: [], errors: [] }), promptTokens: 10, completionTokens: 20, finishReason: 'stop' }),
+    ];
+    const r = await (orchestrator as any).callAgent('t-exec', makeNode('e3'), plugin, entry, tmp, false, '', 'test', { level: 'whitelist_auto', whitelistCommands: ['echo'], maxTimeSec: 60 });
+    // 结果携带 pending_commands——调用方据此把节点挂 waiting_approval
+    expect((r as any).pending_commands).toEqual(['flutter analyze']);
+  });
+
+  it('plan_only 策略下 exec 工具根本不暴露（不空转）', async () => {
+    script = [
+      () => ({ content: successJson, promptTokens: 10, completionTokens: 20, finishReason: 'stop' }),
+    ];
+    await (orchestrator as any).callAgent('t-exec', makeNode('e4'), plugin, entry, tmp, false, '', 'test', { level: 'plan_only', whitelistCommands: null, maxTimeSec: 10 });
+    const tools = chatCalls[0].opts?.tools as { function: { name: string } }[] | undefined;
+    expect(tools?.some((t) => t.function.name === 'exec') ?? false).toBe(false);
+    expect(tools?.some((t) => t.function.name === 'read_file')).toBe(true);
+  });
+
+  it('exec_background 返回 pid 与 log，并登记到任务级进程组（可被 killTaskProcesses 查杀）', async () => {
+    script = [
+      () => ({
+        content: '', promptTokens: 10, completionTokens: 20, finishReason: 'tool_calls',
+        toolCalls: [{ tool: 'exec_background', command: 'echo bg-marker' }],
+      }),
+      () => ({ content: successJson, promptTokens: 10, completionTokens: 20, finishReason: 'stop' }),
+    ];
+    const r = await (orchestrator as any).callAgent('t-exec', makeNode('e5'), plugin, entry, tmp, false, '', 'test', { level: 'full', whitelistCommands: null, maxTimeSec: 60 });
+    expect(r.status).toBe('success');
+    const pids: Set<number> = (orchestrator as any).taskBgPids.get('t-exec') || new Set();
+    expect(pids.size).toBeGreaterThan(0);
+  });
+});

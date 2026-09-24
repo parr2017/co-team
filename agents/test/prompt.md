@@ -5,11 +5,12 @@
 ## 工作方式
 
 1. 用工具读取被测代码，先确认项目技术栈（是否存在 package.json / pyproject.toml / requirements.txt）
-2. 按技术栈选择测试框架，在 files 中编写测试文件：
+2. 按技术栈选择测试框架，用 write_file 编写测试文件：
    - JS/TS 项目（有 package.json）：vitest / jest / node --test，禁止使用 pytest/Python
    - Python 项目（有 pyproject.toml 或 requirements.txt）：pytest
-3. 用 commands 运行测试，例如 "npx vitest run"（JS 项目）或 "python -m pytest tests/ -x -q"（Python 项目）
-4. 测试命令失败会导致任务失败，请确保测试通过后再返回
+   - Flutter/Dart 项目（有 pubspec.yaml）：`flutter test` / `flutter analyze`
+3. **用 exec 工具运行测试**（例如 `{"tool":"exec","command":"npx vitest run"}`）——exec 会返回真实 stdout/stderr，你能看到失败详情并就地修复后重跑。**不要**把测试只写进最终 JSON 的 commands 字段（那条通道在节点结束后才执行，结果不会回传给你，你无法据其修复）。
+4. 测试命令失败会导致任务失败，请确保测试通过后再返回。无法执行（工具/环境缺失）时 status=failed 并在 errors 写清缺什么，禁止用"代码看起来对"代替真实运行证据。
 
 ## 可重复运行（硬性要求）
 
@@ -31,6 +32,9 @@
 {"tool_calls": [{"tool": "read_file", "path": "src/main.py"}]}
 {"tool_calls": [{"tool": "grep", "pattern": "def test_", "path": "tests/"}]}
 {"tool_calls": [{"tool": "read_dir", "path": "tests/"}]}
+{"tool_calls": [{"tool": "exec", "command": "npx vitest run"}]}
+{"tool_calls": [{"tool": "exec", "command": "python -m pytest tests/ -x -q"}]}
+{"tool_calls": [{"tool": "exec", "command": "flutter test"}]}
 ```
 
 ## 最终输出格式（JSON，不要 markdown 代码块）

@@ -6,13 +6,15 @@ import { simpleGit } from 'simple-git';
 import { assertWithinJail, jailViolationMessage } from './workspace';
 
 /** Command execution levels (feature: 命令执行分级), from most to least restrictive.
- *  `unrestricted`（无边界）为**协作会话专用**：解除命令与读取的目录监狱（写/删文件仍锁项目内）。 */
+ *  `unrestricted`（无边界）解除命令与读取的目录监狱；写/删文件工具在任何级别下都锁项目内。
+ *  2026-09-23 起对全局配置、任务 execution_policy、协作会话三处同时开放——
+ *  此前仅协作会话可用，任务侧会静默回退 base.level（用户"开了无边界却没生效"的根因）。 */
 export type PermissionLevel = 'plan_only' | 'readonly' | 'approve_required' | 'whitelist_auto' | 'full' | 'unrestricted';
 
 export const PERMISSION_LEVELS: PermissionLevel[] = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full', 'unrestricted'];
 
-/** 全局配置（config.yaml permissions.level / 任务 execution_policy）允许的级别——**不含**会话级 unrestricted。 */
-export const GLOBAL_PERMISSION_LEVELS: PermissionLevel[] = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full'];
+/** 全局配置（config.yaml permissions.level / 任务 execution_policy / 协作会话）允许的级别。 */
+export const GLOBAL_PERMISSION_LEVELS: PermissionLevel[] = ['plan_only', 'readonly', 'approve_required', 'whitelist_auto', 'full', 'unrestricted'];
 
 export function isPermissionLevel(v: unknown): v is PermissionLevel {
   return typeof v === 'string' && (PERMISSION_LEVELS as string[]).includes(v);
@@ -60,8 +62,8 @@ export function policyWithLevel(
     ? override.whitelist_commands.map(String)
     : base.whitelistCommands;
   const raw = (override.level || '').trim();
-  // 任务执行策略不接受会话级 unrestricted（只给协作会话）；命中即回退 base.level
-  const level = isPermissionLevel(raw) && raw !== 'unrestricted' ? raw : base.level;
+  // 2026-09-23：unrestricted 现在对任务同样有效（曾只给协作会话，命中即静默回退 base.level）
+  const level = isPermissionLevel(raw) ? raw : base.level;
   return {
     level,
     whitelistCommands,
@@ -71,13 +73,17 @@ export function policyWithLevel(
   };
 }
 
+/** 可执行文件后缀：`path.basename` 保留扩展名，而白名单与仓库惯例都是裸名——
+ *  不归一化会让 `npm.cmd` / `tool\flutterw.bat` 这类包装器永远过不了白名单。 */
+const EXE_SUFFIX_RE = /\.(exe|cmd|bat)$/i;
+
 export function canExecute(policy: PermissionPolicy, command: string): boolean {
   // 'full' / 'unrestricted' 意味着完全控制：白名单检查整体豁免
   if (policy.level === 'full' || policy.level === 'unrestricted') return true;
   if (policy.whitelistCommands === null) return true;
   const parts = command.trim().split(/\s+/);
   if (parts.length === 0 || !parts[0]) return false;
-  const bin = path.basename(parts[0]);
+  const bin = path.basename(parts[0]).replace(EXE_SUFFIX_RE, '');
   return policy.whitelistCommands.includes(bin);
 }
 

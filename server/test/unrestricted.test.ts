@@ -9,7 +9,8 @@ import {
 import { readFile } from '../src/tools';
 import { isCommonDevCommand } from '../src/commandGuard';
 
-// unrestricted（无边界）：会话级——命令与读取解除目录监狱；写/删文件仍锁项目内。
+// unrestricted（无边界）：命令与读取解除目录监狱；写/删文件仍锁项目内。
+// 2026-09-23 起对全局配置、任务 execution_policy、协作会话三处同时开放（此前仅会话级）。
 describe('unrestricted 权限等级', () => {
   let ws: string;
   let outside: string;
@@ -26,21 +27,26 @@ describe('unrestricted 权限等级', () => {
     try { fs.unlinkSync(outside); } catch { /* ignore */ }
   });
 
-  it('等级/策略：isPermissionLevel、PERMISSION_LEVELS 含、GLOBAL_PERMISSION_LEVELS 不含', () => {
+  it('等级/策略：isPermissionLevel、PERMISSION_LEVELS / GLOBAL 均含 unrestricted', () => {
     expect(isPermissionLevel('unrestricted')).toBe(true);
     expect(PERMISSION_LEVELS).toContain('unrestricted');
-    expect(GLOBAL_PERMISSION_LEVELS).not.toContain('unrestricted');
+    expect(GLOBAL_PERMISSION_LEVELS).toContain('unrestricted');
     expect(unrest.level).toBe('unrestricted');
     expect(unrest.jailBypass).toBe(true);
     expect(full.jailBypass).toBeFalsy();
     expect(canExecute(unrest, 'anything --goes')).toBe(true);
   });
 
-  it('任务执行策略（policyWithLevel）不接受 unrestricted：回退 base.level', () => {
+  // 回归（2026-09-23）：任务侧曾静默回退 base.level——web TaskForm/TaskDetail 下拉选了
+  // "无边界"却毫无效果，用户视角即"开了无边界还是失败"，实为任务管线没发 exec 工具。
+  it('任务执行策略（policyWithLevel）接受 unrestricted：不回退 base.level', () => {
     const base = policyFromConfig({ level: 'whitelist_auto', whitelist_commands: ['cat'] });
     const merged = policyWithLevel(base, { level: 'unrestricted' });
-    expect(merged.level).toBe('whitelist_auto');
-    expect(merged.jailBypass).toBeFalsy();
+    expect(merged.level).toBe('unrestricted');
+    expect(merged.jailBypass).toBe(true);
+    // 未指定 level 时仍继承 base（覆盖语义不被破坏）
+    const inherit = policyWithLevel(base, { whitelist_commands: ['python'] });
+    expect(inherit.level).toBe('whitelist_auto');
   });
 
   it('命令监狱：full 拒绝越界；unrestricted 放行', () => {

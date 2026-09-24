@@ -60,7 +60,7 @@ function convoStaticTools(execTimeoutSec: number): LlmToolSpec[] {
 
 // ---------- orchestrator 工具集（任务管线 agent 工具轮，harness L5） ----------
 
-function orchStaticTools(): LlmToolSpec[] {
+function orchStaticTools(execTimeoutSec: number): LlmToolSpec[] {
   return [
     { type: 'function', function: { name: 'list_files', description: `列出工作区文件树（只读侦查）`, parameters: obj({}, []) } },
     { type: 'function', function: { name: 'read_file', description: `读取文件内容（大文件按行范围续读，先 grep 定位行号）`, parameters: obj({ path: s('相对路径'), line_start: n('起始行（可选）'), line_end: n('结束行（可选）') }, ['path']) } },
@@ -69,6 +69,9 @@ function orchStaticTools(): LlmToolSpec[] {
     { type: 'function', function: { name: 'git_log', description: `查看提交历史`, parameters: obj({}, []) } },
     { type: 'function', function: { name: 'git_diff', description: `查看未提交变更`, parameters: obj({}, []) } },
     { type: 'function', function: { name: 'load_skill', description: `拉取已装载技能的正文（与侦查合并同一轮）`, parameters: obj({ name: s('技能名') }, ['name']) } },
+    { type: 'function', function: { name: 'exec', description: `同步执行命令（≤${execTimeoutSec}s：装依赖、构建、测试、查端口）——返回真实 stdout/stderr，验证节点必须用它跑构建/测试/分析并回读输出`, parameters: obj({ command: s('要执行的命令') }, ['command']) } },
+    { type: 'function', function: { name: 'exec_background', description: `后台启动长驻命令（返回 pid 与日志路径；不代表已就绪，需再确认）`, parameters: obj({ command: s('长驻命令，如 npm run dev') }, ['command']) } },
+    { type: 'function', function: { name: 'kill_process', description: `停止后台进程`, parameters: obj({ pid: n('要停止的进程 pid') }, ['pid']) } },
     { type: 'function', function: { name: 'write_file', description: `写入文件全文（渐进落盘：想清楚一个文件就立即写入）`, parameters: obj({ path: s('相对路径'), content: s('完整文件内容') }, ['path', 'content']) } },
     { type: 'function', function: { name: 'edit_file', description: `对已有文件做精确替换小改动`, parameters: obj({ path: s('相对路径'), find: s('要替换的原文（精确唯一）'), replace: s('替换后的文本') }, ['path', 'find', 'replace']) } },
     { type: 'function', function: { name: 'check_page', description: `渲染页面并断言关键文本（渲染级验证必用；仅 localhost）`, parameters: obj({ url: s('页面 URL'), expect: strArr('应出现的文本列表') }, ['url', 'expect']) } },
@@ -142,9 +145,17 @@ export function buildConvoTools(opts: { mcp?: McpManager; agentId: string; execT
   return all.filter((t) => !blocked.has(String((t as { function?: { name?: string } }).function?.name || '')));
 }
 
-/** orchestrator 工具轮声明（静态集 + MCP 动态集）。 */
-export function buildOrchTools(opts: { mcp?: McpManager; agent: string }): LlmToolSpec[] {
-  return [...orchStaticTools(), ...mcpTools(opts.mcp, opts.agent)];
+/** orchestrator 工具轮声明（静态集 + MCP 动态集）。level 为 plan_only/readonly 时剔除会被
+ *  权限直接拒绝的工具（同 buildConvoTools：不暴露不可用工具，避免模型反复尝试空转）。 */
+export function buildOrchTools(opts: { mcp?: McpManager; agent: string; level?: string; execTimeoutSec?: number }): LlmToolSpec[] {
+  const all = [...orchStaticTools(opts.execTimeoutSec ?? 300), ...mcpTools(opts.mcp, opts.agent)];
+  const blocked = opts.level === 'plan_only'
+    ? new Set(['exec', 'exec_background', 'kill_process', 'write_file', 'edit_file'])
+    : opts.level === 'readonly'
+      ? new Set(['write_file', 'edit_file'])
+      : null;
+  if (!blocked) return all;
+  return all.filter((t) => !blocked.has(String((t as { function?: { name?: string } }).function?.name || '')));
 }
 
 /** discussion 引擎声明（静态集 + MCP 动态集）。 */

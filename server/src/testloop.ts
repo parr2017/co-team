@@ -8,7 +8,7 @@ export interface TestFailure {
 }
 
 export interface ParsedTestOutput {
-  framework: 'vitest' | 'jest' | 'pytest' | 'js' | 'unknown';
+  framework: 'vitest' | 'jest' | 'pytest' | 'js' | 'flutter_test' | 'unknown';
   passed: boolean;
   failures: TestFailure[];
   summary: string;
@@ -29,10 +29,21 @@ export function detectStackMismatch(command: string, workspace: string): boolean
 }
 
 const TEST_COMMAND_PATTERN =
-  /^\s*(npm (run )?test|npx (vitest|jest)|yarn (test|vitest|jest)|pnpm (test|vitest|jest)|pytest|python -m pytest|python3 -m pytest|vitest|jest|go test|cargo test|node (--test|--experimental-test)\b)/;
+  /^\s*(npm (run )?test|npx (vitest|jest)|yarn (test|vitest|jest)|pnpm (test|vitest|jest)|pytest|python -m pytest|python3 -m pytest|vitest|jest|go test|cargo test|node (--test|--experimental-test)\b|(\.\/)?gradlew tests?\b|mvn test|flutter (test|analyze)|dart (test|analyze)|[\w.\/\\-]*flutterw(\.bat|\.cmd)?\s+(test|analyze)|swift test|xcodebuild test)/i;
 
 export function isTestCommand(command: string): boolean {
   return TEST_COMMAND_PATTERN.test(command || '');
+}
+
+/** parseTestOutput 的框架提示：从命令本身推断，避免 Dart 输出误入 pytest/js 分支。 */
+export function testFrameworkHint(command: string): 'pytest' | 'vitest' | 'jest' | 'flutter_test' | undefined {
+  const c = String(command || '');
+  if (/flutterw(\.bat|\.cmd)?\s+analyze|flutter\s+analyze/i.test(c)) return 'flutter_test';
+  if (/flutterw(\.bat|\.cmd)?\s+test|flutter\s+test|dart\s+test/i.test(c)) return 'flutter_test';
+  if (/pytest/i.test(c)) return 'pytest';
+  if (/vitest/i.test(c)) return 'vitest';
+  if (/jest/i.test(c)) return 'jest';
+  return undefined;
 }
 
 /** Identify a failed test run inside a node's command results. */
@@ -56,6 +67,10 @@ export function parseTestOutput(output: string, hint?: string): ParsedTestOutput
   const looksPytest = hint === 'pytest' || /={3,}\s*(FAILURES|short test summary info)\s*={3,}|FAILED\s+tests?[/\\]/i.test(text) || /_{5,}\s+\w+\s+_{5,}/.test(text) && /assert|Error/i.test(text);
   const looksJs = hint === 'vitest' || hint === 'jest' || /FAIL\s+\S+\s\(/.test(text) || /(✕|×|FAIL)\s/i.test(text) || /Tests:\s+\d+\s+failed/i.test(text);
 
+  // Dart/Flutter：`test/foo_test.dart 1:5 - SomeTest failed` + 汇总行
+  // "Some tests failed." / "N tests passed, M failed" / analyze 的 "N issues found"
+  const looksDart = hint === 'flutter_test' || hint === 'flutter_analyze' || /test\/[\w./\\-]+\.dart\s+\d+:\d+/i.test(text) || /\d+\s+(?:tests?|issues)\s+(?:passed|failed|found)/i.test(text) || /\u2022\s*[\w./\\-]+\.dart:\d+:\d+/i.test(text);
+
   if (looksPytest) {
     // FAILED tests/test_x.py::test_y - AssertionError: msg
     const re = /FAILED\s+(\S+)::(\S+?)\s*-\s*(.+)/g;
@@ -71,6 +86,24 @@ export function parseTestOutput(output: string, hint?: string): ParsedTestOutput
     }
     const pytestSummary = summarize(text);
     return { framework: 'pytest', passed: failures.length === 0, failures: dedupe(failures).slice(0, 10), summary: pytestSummary || `${failures.length} 个 pytest 用例失败`, parseOk: pytestSummary !== '' || failures.length > 0 };
+  }
+
+  if (looksDart) {
+    // `test/foo_test.dart 12:5 - counter increments [E]`
+    const re = /(test\/[\w./\\-]+\.dart)\s+\d+:\d+\s+-\s+([^\n]+?)(?:\s+\[E\])?\s*$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      failures.push({ name: `${m[1]} ${m[2].trim()}`.slice(0, 200), message: m[2].trim().slice(0, 300), stack: extractDartStack(text, m[2].trim()) });
+    }
+    if (!failures.length) {
+      // analyze 形态：`info • Message text • path:line:col • rule`
+      const re2 = /^\s*(?:error|warning|info)\s*\u2022\s*(.+?)\s*\u2022\s+([\w./\\-]+:\d+:\d+)/gm;
+      while ((m = re2.exec(text))) {
+        failures.push({ name: `${m[2]} ${m[1]}`.slice(0, 200), message: m[1].slice(0, 300) });
+      }
+    }
+    const dartSummary = summarize(text) || text.match(/\d+\s+tests?\s+passed[^\n]*/i)?.[0] || text.match(/\d+\s+issues?[^\n]*/i)?.[0] || '';
+    return { framework: 'flutter_test', passed: failures.length === 0, failures: dedupe(failures).slice(0, 10), summary: dartSummary.trim().slice(0, 200) || `${failures.length} 个用例失败`, parseOk: dartSummary.trim() !== '' || failures.length > 0 };
   }
 
   if (looksJs) {
@@ -114,6 +147,15 @@ function extractPytestStack(text: string, caseName: string): string | undefined 
   const block = text.slice(Math.max(0, idx - 1500), idx + 400);
   const eLines = block.split('\n').filter((l) => /^E\s+/.test(l) || /Error|assert/.test(l)).slice(-8);
   return eLines.length ? eLines.join('\n').slice(0, 600) : undefined;
+}
+
+/** Dart/Flutter 失败块：`Expected/Actual` 断言对 + 首个异常行 */
+function extractDartStack(text: string, caseName: string): string | undefined {
+  const idx = text.indexOf(caseName);
+  if (idx === -1) return undefined;
+  const block = text.slice(idx, idx + 800);
+  const lines = block.split('\n').filter((l) => /Expected|Actual|Error|Exception|package:|\.dart:\d+/.test(l)).slice(0, 8);
+  return lines.length ? lines.join('\n').slice(0, 600) : undefined;
 }
 
 const MAX_FIX_ROUNDS = 3;

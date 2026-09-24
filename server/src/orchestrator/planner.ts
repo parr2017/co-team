@@ -8,6 +8,10 @@ import { relevantKnowledge, isSafeForInjection } from '../knowledge';
 import { LEVEL_PROFILES } from '../grader';
 
 const EVIDENCE_TYPES = ['unit', 'build', 'e2e', 'command', 'manual'];
+/** 滚动规划器单次调用超时：它是"阶段收口裁决"调用，网关假死（key 过期/连接挂起）时
+ *  不允许无限期挂住任务——2026-09-23 pk0udn4p 实证挂死 16 分钟、25/25 节点无法收口。
+ *  3 分钟 > 免费模型正常规划耗时（观测 1-2 分钟），又能把假死圈进可见失败。 */
+const PLANNER_TIMEOUT_MS = 180_000;
 
 /** M4 滚动规划：单个阶段的计划 = 子图 + 阶段目标 + 结构化验收清单 */
 export interface StagePlan {
@@ -371,7 +375,7 @@ export async function generateStagePlan(request: string, pool: ModelPool | null,
     const { getLogger } = await import('../logger');
     getLogger().info('Planner dispatch', { model: model.name, prompt_chars: content.length, stage: opts.stage });
     (globalThis as any).__coteamProbes = { ...(globalThis as any).__coteamProbes, plannerDispatch: { model: model.name, prompt_chars: content.length, stage: opts.stage, at: Date.now() } };
-    const { parsed, resp } = await chatStructured(model, [
+    const chatCall = chatStructured(model, [
       { role: 'system', content: 'You are a rolling task planner. Use ONLY the given agent names.' },
       { role: 'user', content },
     ], {
@@ -432,6 +436,15 @@ export async function generateStagePlan(request: string, pool: ModelPool | null,
         additionalProperties: false,
       },
     });
+    // 滚动规划器超时护栏（2026-09-23 pk0udn4p 实证）：网关假死（key 过期/连接挂起）时
+    // chatStructured 可无限期挂起——25/25 节点全部完成的任务因此 16 分钟无法收口，
+    // 日志零输出、状态永驻 running。超时按"规划失败"走既有转人工路径（decision=null），
+    // 绝不静默挂死。原 promise 挂 no-op catch，防止超时后其 rejection 变 unhandled。
+    void chatCall.catch(() => {});
+    const guard = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`planner timeout after ${PLANNER_TIMEOUT_MS}ms`)), PLANNER_TIMEOUT_MS);
+    });
+    const { parsed, resp } = await Promise.race([chatCall, guard]);
     getLogger().info('Planner response', { model: model.name, content_chars: resp.content.length, elapsed_ms: resp.elapsedMs, completion_tokens: resp.completionTokens });
     pool.recordUsage(model.id, resp.promptTokens, resp.completionTokens);
     if (!parsed) return null;

@@ -255,20 +255,28 @@ async function main(): Promise<void> {
   // 进程时非主实例跳过，防误杀另一实例正在执行的任务；主实例死亡后接管者补扫补跑。
   const { startLeaderLoop } = await import('./leaderLock');
   const { getTaskGraph } = await import('./store');
+  const { reapStaleRunningNodes } = await import('./orchestrator/orchestrator');
   const runStartupSweep = async () => {
     const orphans = await orchestrator.sweepInterruptedTasks();
     if (orphans.resume.length) logger.warn('Startup sweep: interrupted tasks marked for auto-resume', { tasks: orphans.resume });
     if (orphans.queued.length) logger.warn('Startup sweep: orphaned queued tasks re-queued', { tasks: orphans.queued });
     if (orphans.planning.length) logger.warn('Startup sweep: interrupted plan_async tasks re-planning', { tasks: orphans.planning });
+    // 僵尸巡检（2026-09-23 pk0udn4p 实证）：sweepInterruptedTasks 只覆盖 running/finalizing
+    // 任务，且把在途节点改判 interrupted 后依赖"重新入队→execute 复位"链条——上一个进程
+    // 死在这两步之间就永久卡住。这里补扫 running/retrying 残留节点与断了链的 interrupted
+    // 任务。必须在 leader 锁内执行：dev watch 双实例重启时锁外跑会互相踩（实测双实例
+    // 一个复活任务、一个 12 秒后把它停靠，任务白白被判死）。
+    const { reEnqueue, reapedNodes } = await reapStaleRunningNodes(logger);
     // 永续开发（2026-09-15）：重启孤儿重建——interrupted 自动续跑、queued 孤儿重新排队、
     // planAsync 规划孤儿重新规划。全部走既有车道（容量探针照常限流）
-    for (const taskId of [...orphans.resume, ...orphans.queued]) {
+    const reviveCandidates = [...new Set([...orphans.resume, ...orphans.queued, ...reEnqueue])];
+    for (const taskId of reviveCandidates) {
       try {
         const g = await getTaskGraph(taskId);
         if (!g) continue;
-        if (g.status === 'failed') continue; // 反复中断已停靠人工
+        if (g.status === 'failed') continue; // 反复中断已停靠人工——复活必须走人工 retry，不自动唤醒
         await taskQueue.enqueue(taskId, g.project_id ?? null, g.workspace);
-        logger.info('Startup orphan re-enqueued', { taskId, kind: orphans.resume.includes(taskId) ? 'interrupted' : 'queued' });
+        logger.info('Startup orphan re-enqueued', { taskId, reaped: reapedNodes.some((n: string) => n.startsWith(taskId + '/')) });
       } catch (e) {
         logger.warn('Startup orphan re-enqueue failed', { taskId, error: String(e).slice(0, 200) });
       }
@@ -279,12 +287,6 @@ async function main(): Promise<void> {
       );
     }
   };
-  startLeaderLoop({
-    onBecomeLeader: () => {
-      void runStartupSweep().catch((e) => logger.warn('leader sweep failed', { error: String(e) }));
-    },
-  });
-
   // 群组讨论：引擎 v2 配置（组内执行策略/轮数上限/背景注入预算）+ 上一进程死在轮次中
   // 会遗留 busy/stop 锁（无属主，TTL 内会卡住讨论）——启动即清
   const { clearStaleDiscussionLocks, configureDiscussion, resumeOrphanedDiscussions } = await import('./discussion');
@@ -327,7 +329,14 @@ async function main(): Promise<void> {
     );
   };
 
-  // 永续开发：孤儿重建已并入编排锁回调（runStartupSweep）——非主实例不重复入队
+  // 编排锁必须晚于 taskQueue 装配：onBecomeLeader 可能在锁取得的瞬间就触发（另一个持有者
+  // 刚好到期），而 runStartupSweep 要调用 taskQueue.enqueue——早于声明处就是 TDZ
+  // ReferenceError（2026-09-23 实测：pk0udn4p 自动续跑因此静默失败，任务躺在 interrupted）。
+  startLeaderLoop({
+    onBecomeLeader: () => {
+      void runStartupSweep().catch((e) => logger.warn('leader sweep failed', { error: String(e) }));
+    },
+  });
 
   // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
   await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger, mcp });

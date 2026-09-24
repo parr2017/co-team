@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { generateTaskGraph, generateStagePlan, PlannedGraph } from './planner';
 import type { ChecklistItem } from '../types';
 import type { ModelPool, ModelEntry } from '../scheduler';
@@ -50,7 +50,7 @@ import { gradeTask, normalizeLevel, LEVEL_PROFILES } from '../grader';
 import { computeProgress, shouldBroadcast, clearProgressThrottle } from '../progress';
 import { writeKnowledge, relevantKnowledge, recordKnowledgeHits, isSafeForInjection, KNOWLEDGE_DATA_TAG_OPEN, KNOWLEDGE_DATA_TAG_CLOSE } from '../knowledge';
 import { writeDoc, checkDocs, buildTaskSpec, buildStatusReport, buildApiContract, docsSection, getDocRegistry } from '../ssot';
-import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, detectStackMismatch, MAX_FIX_ROUNDS, type ParsedTestOutput } from '../testloop';
+import { findTestFailure, parseTestOutput, buildFixPrompt, isTestCommand, detectStackMismatch, testFrameworkHint, MAX_FIX_ROUNDS, type ParsedTestOutput } from '../testloop';
 import { createSnapshot } from '../snapshot';
 import { buildAgentHarness, validateAgentResult, buildRepairMessage } from '../harness';
 import { TurnProgressGuard, EvidenceLedger, emptyObservation, readSignature, READ_ONLY_PROGRESS_TOOLS, type ProgressObservation } from '../progressGuard';
@@ -150,11 +150,17 @@ export const TOOLCLAIM_RE = /(未获得|无法获得|缺少|没有)[^\n]{0,20}(�
 /**
  * 假完成拦截·产物核查（2026-09-17）：从节点名提取规格点名的文件路径 token（至少含一个 '/'）。
  * 先剥 URL（避免把 https://host/path 抓成路径）；裸文件名不提取（误报面大）；上限 10 条防膨胀。
+ * 2026-09-23 pk0udn4p s2-3 实证：节点名里的 /ai/quiz、/ai/explain 是 HTTP 路由不是文件——
+ * 旧正则照收，核查却要求它们落盘，模型永远无法满足，单节点白烧 271 轮、整任务三次卡死。
+ * 收敛规则：末段必须带文件扩展名（.dart/.md/.txt/.yaml…）或整体就是目录型已知产物名
+ * （build/web 形态仍收，其余无扩展名的路由/术语一律不收）。
  */
 export function extractSpecPaths(name: string): string[] {
   const cleaned = String(name || '').replace(/\w+:\/\/\S+/g, ' ');
   const raw = cleaned.match(/[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+/g) || [];
-  return [...new Set(raw.map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()))].slice(0, 10);
+  return [...new Set(raw.map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()))]
+    .filter((p) => /\.[A-Za-z0-9]{1,8}$/.test(p) || /^build\/[a-z]+$/.test(p))
+    .slice(0, 10);
 }
 /** M3：429/503/rate limit 是容量信号不是能力失败——退避重试同模型，不记健康度不烧链 */
 export const CONTENT_FAIL_RE = /parse|schema violation|not valid JSON|failed to produce final output/i;
@@ -310,6 +316,10 @@ export class Orchestrator {
   /** M2 实时问答：正在执行 callAgent 的 agent 计数（key: `${taskId}:${agent}`）——
    *  同名 agent 可并发多 dispatch，收尾清扫只在最后一个 dispatch 结束时触发 */
   private activeAgents = new Map<string, number>();
+  /** 2026-09-23：在飞节点登记（key: `${taskId}:${nodeId}`）——graph.status=running 只是持久状态，
+   *  本表才是"此刻真有执行器"的真相。API 续跑/启动回收僵尸 running 节点前必须查它，
+   *  否则会把正在跑的节点重置成 pending 造成双跑（pk0udn4p s2-3 僵尸卡死 9 小时实证）。 */
+  private inflightNodes = new Set<string>();
   /** M4 滚动规划 */
   private planningMode: 'rolling' | 'static';
   private rollingMaxStages: number;
@@ -317,6 +327,10 @@ export class Orchestrator {
   /** 2026-09-16：任务级流打断——cancel API 经 abortTask 中止 in-flight LLM 流
    *  （此前取消只能等轮边界轮询，卡死的流无法打断）。execute 创建、收尾清理。 */
   private taskSignals = new Map<string, AbortController>();
+  /** 2026-09-23：任务级后台进程组（exec_background 起的 dev server 等）。
+   *  沙箱/工作树销毁后这些进程不会自己退——不登记就变僵尸占端口（launcher 的
+   *  历史残留源）。节点取消与 execute 收尾统一查杀。 */
+  private taskBgPids = new Map<string, Set<number>>();
   /** E5 软重试防浪费记忆（o3xmkraj 复盘）：本任务内已"降思考强度重试仍烧穿"的模型——
    *  同模型只软重试一次，命中记忆直接换模（网关不认 reasoning_effort 时避免双倍烧） */
   private thinkingBurned = new Map<string, Set<string>>();
@@ -999,9 +1013,28 @@ export class Orchestrator {
     return false;
   }
 
-  /** 取消打断：abort 本任务的 in-flight LLM 流（llm.ts externalSignal 消费分支接管）。 */
+  /** 取消打断：abort 本任务的 in-flight LLM 流（llm.ts externalSignal 消费分支接管）。
+   *  同时查杀本任务 exec_background 起的进程组——取消后服务没理由继续占端口。 */
   abortTask(taskId: string): void {
     this.taskSignals.get(taskId)?.abort();
+    this.killTaskProcesses(taskId);
+  }
+
+  /** 查杀任务的全部后台进程（exec_background 登记组）；成功与否都清表。 */
+  private killTaskProcesses(taskId: string): void {
+    const pids = this.taskBgPids.get(taskId);
+    if (!pids?.size) return;
+    for (const pid of pids) {
+      try {
+        if (process.platform === 'win32') {
+          spawn(`taskkill /PID ${pid} /T /F`, { shell: true, stdio: 'ignore' });
+        } else {
+          process.kill(pid);
+        }
+      } catch { /* 进程已退出——fine */ }
+    }
+    this.logger.info('task background processes killed', { taskId, count: pids.size });
+    this.taskBgPids.delete(taskId);
   }
 
   /** execute 包装：登记任务级 AbortController，收尾清理（流内可控性，2026-09-16）。 */
@@ -1012,6 +1045,8 @@ export class Orchestrator {
       return await this.executeInner(taskId, workspace);
     } finally {
       this.taskSignals.delete(taskId);
+      // 后台进程组收尾：正常结束也要杀掉（任务完成后 dev server 无理由继续占端口）
+      this.killTaskProcesses(taskId);
     }
   }
 
@@ -1727,9 +1762,12 @@ export class Orchestrator {
     };
 
     const launch = (node: TaskNode) => {
+      const inflightKey = `${taskId}:${node.id}`;
+      this.inflightNodes.add(inflightKey);
       const p: Promise<void> = this.executeNode(taskId, graph, node, sandbox, maxWorkers, policy)
         .catch(() => {}) // executeNode 安全包裹保证节点必落终态；此处仅防意外 reject 击穿 race
-        .then(() => onNodeSettled(node));
+        .then(() => onNodeSettled(node))
+        .finally(() => this.inflightNodes.delete(inflightKey));
       inflight.add(p);
       void p.finally(() => {
         inflight.delete(p);
@@ -2348,7 +2386,7 @@ export class Orchestrator {
         // triggers a targeted repair round instead of accepting broken code
         const testFail = findTestFailure(result.command_results);
         if (testFail && fixRound < this.maxFixRounds) {
-          const parsed = parseTestOutput(testFail.output);
+          const parsed = parseTestOutput(testFail.output, testFrameworkHint(testFail.command));
           // E9: a wrong-stack test run (pytest inside a Node workspace) never exercises
           // the project code — its "failures" are noise; escalate instead of repairing.
           if (detectStackMismatch(testFail.command, graph.workspace)) {
@@ -2401,7 +2439,7 @@ export class Orchestrator {
         }
         if (testFail) {
           // max fix rounds reached: produce a clear report and escalate to the main agent
-          const parsed = parseTestOutput(testFail.output);
+          const parsed = parseTestOutput(testFail.output, testFrameworkHint(testFail.command));
           result.status = 'failed';
           result.error = `测试修复循环达上限（${this.maxFixRounds} 轮）仍未通过: ${parsed.summary}`;
           result.errors = [...(result.errors || []), ...parsed.failures.map((f) => `${f.name}: ${f.message}`)];
@@ -3309,7 +3347,10 @@ export class Orchestrator {
     // 原生 function calling（opencode/ZCode 同款工具通道，2026-09-20）：工具轮走供应商
     // tool_calls 字段而非正文 JSON；llm.native_tools=false 时整体回退 JSON 文本契约
     const nativeTools = nativeToolsOn();
-    const orchTools = nativeTools ? buildOrchTools({ mcp: this.mcp ?? undefined, agent: plugin.name }) : undefined;
+    // level 联动（与协作会话 buildConvoTools 同语义）：plan_only/readonly 剔除会被权限
+    // 直接拒绝的工具（exec/exec_background/kill_process/write_file/edit_file），避免模型
+    // 反复尝试空转、白耗迭代预算。execTimeoutSec 用本任务的命令时间预算。
+    const orchTools = nativeTools ? buildOrchTools({ mcp: this.mcp ?? undefined, agent: plugin.name, level: policy.level, execTimeoutSec: policy.maxTimeSec }) : undefined;
     const systemMsg = buildAgentHarness({
       name: plugin.name,
       role: plugin.role,
@@ -3493,6 +3534,9 @@ export class Orchestrator {
       // 渐进落盘（o3xmkraj 复盘）：轮内 write_file/edit_file 落盘的文件，合并进最终
       // changes 申报——交付一致性检查以"申报 vs 实际"对账，漏了就被标 unreported
       const midRunWritten: string[] = [];
+      // 轮内 exec park 的待审批命令（白名单外/敏感/越界非开发命令）——同 midRunWritten
+      // 并道 finalizeNodeSuccess 的任务级队列（见 4028 附近汇入 pending_commands）
+      const midRunPendingCommands: string[] = [];
       // 缓存优先裁剪：断崖压缩每尝试至多一次（触发后重新 append-only，不逐轮重写历史）
       let foldedOnce = false;
       // 空正文快速失败计数（o3xmkraj 节点4 实测：连续 4 轮秒回 completion=0，
@@ -3733,8 +3777,13 @@ export class Orchestrator {
             forced_final: true,
           };
           content = stripCodeFence(finalResp.content);
-        // 原生 function calling：工具轮来自供应商 tool_calls；正文为最终 JSON（extractJson）
-        parsed = resp.toolCalls?.length ? { tool_calls: resp.toolCalls } : extractJson(content);
+        // 原生 function calling：末轮强制收身后的 finalResp 才是"要求直接输出 JSON"的那次
+        // 返回——必须解析它，不能用上一轮 resp（resp.toolCalls 非空正是进入本分支的原因，
+        // 旧代码取 resp 导致恒判"仍是工具调用"，每个烧完轮次预算的模型都必现
+        // agent failed to produce final output after tool calls，2026-09-23 全天刷屏根因）。
+        // finalResp 也无法解析出 JSON 且仍带 tool_calls 时，才按"无最终输出"失败。
+        parsed = extractJson(content);
+        if (!parsed && finalResp.toolCalls?.length) parsed = { tool_calls: finalResp.toolCalls };
           if (parsed && !parsed.tool_calls) {
             // last-resort output still goes through the schema gate; with no repair
             // rounds left, violations become a precise failure instead of a fake success
@@ -3789,10 +3838,13 @@ export class Orchestrator {
           // 且外部工具可能带副作用（写远程/改外部数据），重放语义必须由工具自己决定。
           // git_diff 也豁免（P0.6）：轮内 write_file/edit_file 后 diff 已变——把"写完再看 diff"
           // 的第二次调用指针化会喂给模型过期结果。
-          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file' || tName.startsWith('mcp__') || tName === 'git_diff';
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file' || tName === 'exec' || tName === 'exec_background' || tName === 'kill_process' || tName.startsWith('mcp__') || tName === 'git_diff';
           // P0.6 修复：dedupKey 补 line_start/line_end——同文件不同行段的续读（grep 定位后
           // 分段读正是系统教给模型的标准工作流）此前被误判"重复调用"喂回空指针。
-          const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || ''}|${t.name || ''}|${t.line_start ?? ''}|${t.line_end ?? ''}|${t.line_start2 ?? ''}|${t.line_end2 ?? ''}`;
+          // 2026-09-23 修复：补 t.command——否则 `exec "flutter analyze"` 与
+          // `exec "flutter test"` 的 key 同为 `exec||||||`，第二条会被判"结果从略"而
+          // 根本不执行（命令执行是验证节点唯一入口，不能让同形调用撞车）。
+          const dedupKey = `${tName}|${t.path || ''}|${t.pattern || t.query || t.command || ''}|${t.name || ''}|${t.line_start ?? ''}|${t.line_end ?? ''}|${t.line_start2 ?? ''}|${t.line_end2 ?? ''}`;
           if (!sideEffect && seenToolCalls.has(dedupKey)) {
             positioned[ti] = { tool: t.tool, ok: true, dedup: `与第 ${seenToolCalls.get(dedupKey)} 轮完全相同的调用，结果从略（可信任上轮结果）` };
             continue;
@@ -3883,6 +3935,20 @@ export class Orchestrator {
           if ((r?.tool === 'write_file' || r?.tool === 'edit_file') && r.ok && r.path) {
             midRunWritten.push(String(r.path));
           }
+          // exec 轮内 park 的命令（白名单外/敏感/越界非开发命令）：汇入 pending_commands，
+          // 节点成功后走 finalizeNodeSuccess 的任务级待审批队列，批准后整节点续跑。
+          // 这是"模型要跑 flutter analyze 但策略不放行"时的正确出口——不再逼它瞎编验证结论。
+          if (r && r.needs_approval && r.pending_command) {
+            const cmd = String(r.pending_command);
+            if (!midRunPendingCommands.includes(cmd)) midRunPendingCommands.push(cmd);
+          }
+          // exec_background 起的进程登记到任务级 pid 组：节点取消/收尾时统一查杀，
+          // 否则沙箱销毁后 dev server 会变僵尸占端口（launcher agent 的主要残留源）。
+          if (r && r.ok && typeof r.pid === 'number' && r.pid > 0) {
+            const pids = this.taskBgPids.get(taskId) || new Set<number>();
+            pids.add(r.pid);
+            this.taskBgPids.set(taskId, pids);
+          }
         }
         roundEntry.tool_results = results;
         record.rounds.push(roundEntry);
@@ -3898,7 +3964,7 @@ export class Orchestrator {
           : '';
         messages.push({ role: 'user', content: `工具执行结果：\n${resultsJson.slice(0, 24000)}\n${resultsNote}\n请基于以上信息给出最终 JSON 结果。（第 ${round + 1}/${maxRounds} 轮完成，剩余 ${maxRounds - 1 - round} 轮——还需要的侦查请合并：同一轮 tool_calls 数组里放多个 read_file/grep 调用一次拿全，大文件分段读尤其如此，别把轮次耗在单发读取上）` });
         record.rounds.push({ user: '（工具执行结果已提供，见上一轮 tool_results）', tool_results: results });
-        await appendJournal(taskId, plugin.name, { role: 'master', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
+        await appendJournal(taskId, plugin.name, { role: 'agent', kind: 'tool_results', text: '', ts: new Date().toISOString(), node_id: node.id, node_name: node.name, meta: { results } });
 
         // M2 实时问答：消费投递给本 agent 的提问（ask_agent 实时转交），注入并要求用 answer 工具回答
         const incomingAsks = await consumeAskQueue(taskId, plugin.name);
@@ -4003,6 +4069,12 @@ export class Orchestrator {
       // 渐进落盘：轮内 write_file/edit_file 的产物计入申报，交付一致性检查不再误报 unreported
       if (midRunWritten.length) {
         (result as Record<string, any>).changes = [...new Set([...((result as Record<string, any>).changes || []), ...midRunWritten])];
+      }
+      // 轮内 exec park 的待审批命令汇入申报——finalizeNodeSuccess 据此把节点挂到
+      // waiting_approval，批准后整节点续跑（命令结果回流），而不是带着"命令没跑"假完成
+      if (midRunPendingCommands.length) {
+        const declared = Array.isArray((result as Record<string, any>).commands) ? (result as Record<string, any>).commands.map(String) : [];
+        (result as Record<string, any>).pending_commands = [...new Set([...declared, ...midRunPendingCommands])];
       }
       result = plugin.handler.postRun ? plugin.handler.postRun(result) : result;
       delete (result as Record<string, any>).tool_calls;
@@ -4257,4 +4329,60 @@ export class Orchestrator {
       await emitProgress('node_cancelled', { task_id: graph.task_id, node_id: node.id, name: node.name });
     }
   }
+
+  /** 该节点当前是否真有执行器在跑（区别于持久状态 running）。僵尸识别、API 续跑前的安全检查。 */
+  isNodeExecuting(taskId: string, nodeId: string): boolean {
+    return this.inflightNodes.has(`${taskId}:${nodeId}`);
+  }
+}
+
+/**
+ * Server startup（leader 锁内调用）：修复"执行态只活在内存"造成的三类僵尸——
+ *  ① status=running/retrying 的节点：进程死后无人驱动，调度器永远跳过非 pending 节点；
+ *  ② 停在 interrupted 的任务：上一个进程标记后没来得及重新入队就死了（自动续跑链条断裂）。
+ * 2026-09-23 pk0udn4p 实证：s2-3 停在 running 9 小时（用户重启服务也没用，因为本巡检缺失）；
+ * 同日开始_yxt 后又因 infra_retries>3 被停靠 failed，而 retry 接口不认 interrupted，人工也无法救。
+ *
+ * 只做状态修复与候选收集，不自行入队——入队统一由 index.ts 的 leader 清扫流程决定
+ * （failed/cancelled 等终态绝不自动唤醒，那必须走人工 retry）。
+ * waiting_approval/waiting_clarify 是持久人工门，绝不回收。
+ */
+export async function reapStaleRunningNodes(
+  logger?: { warn(msg: string, meta?: unknown): void },
+): Promise<{ reEnqueue: string[]; reapedNodes: string[] }> {
+  const graphs = await listTaskGraphs();
+  const reEnqueue = new Set<string>();
+  const reapedNodes: string[] = [];
+  for (const graph of graphs) {
+    if (['failed', 'cancelled', 'completed'].includes(graph.status)) continue;
+    const zombie = graph.nodes.filter((n) => n.status === 'running' || n.status === 'retrying');
+    if (zombie.length) {
+      for (const node of zombie) {
+        node.status = 'pending';
+        node.error = '';
+        (node as { error_type?: string }).error_type = undefined;
+        node.needs_human = false;
+        node.finished_at = '';
+        reapedNodes.push(`${graph.task_id}/${node.id}`);
+      }
+      graph.updated_at = new Date().toISOString();
+      await persistGraph(graph);
+      await appendJournal(graph.task_id, 'orchestrator', {
+        role: 'master', kind: 'round',
+        text: `服务巡检回收中断节点：${zombie.map((n) => `「${n.name}」`).join('、')}（无执行属主，已重置为待跑并重新入队）`,
+        ts: new Date().toISOString(), node_id: zombie[0].id, node_name: zombie[0].name,
+      });
+      await emitProgress('node_retried', {
+        task_id: graph.task_id, node_id: zombie[0].id, name: zombie[0].name,
+        reset_nodes: zombie.map((n) => n.id),
+      });
+      reEnqueue.add(graph.task_id);
+    }
+    // 停在 interrupted 的任务：上个进程标记后没活到重新入队——这里补上
+    if (graph.status === 'interrupted') reEnqueue.add(graph.task_id);
+  }
+  if (reapedNodes.length) {
+    logger?.warn('Startup sweep: stale running task nodes reaped', { nodes: reapedNodes, tasks: [...reEnqueue] });
+  }
+  return { reEnqueue: [...reEnqueue], reapedNodes };
 }

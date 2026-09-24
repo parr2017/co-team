@@ -70,6 +70,22 @@ describe('sandbox & tools', () => {
     expect(ok.returncode).toBe(0);
   });
 
+  // 2026-09-23 回归（learn-english）：`tool\flutterw.bat analyze` 与 `npm.cmd test` 的
+  // basename 带扩展名，白名单按首词精确匹配会直接拒——包装器项目（Flutter/Java/Gradle
+  // 常见）等于永远跑不了测试。归一化扩展名与 commandGuard.firstWord 对齐。
+  it('command whitelist 归一化可执行文件后缀（.cmd/.bat/.exe）', () => {
+    const p = policyFromConfig({ level: 'whitelist_auto', whitelist_commands: ['flutter', 'flutterw', 'npm'] });
+    expect(canExecute(p, 'flutter analyze')).toBe(true);
+    expect(canExecute(p, 'tool\\flutterw.bat analyze --no-pub')).toBe(true);
+    expect(canExecute(p, 'flutterw.bat test')).toBe(true);
+    expect(canExecute(p, 'npm.cmd test')).toBe(true);
+    expect(canExecute(p, 'npm test')).toBe(true);
+    // 归一化只在白名单内生效：未知命令仍拒
+    expect(canExecute(p, 'ruby.exe -v')).toBe(false);
+    // 子路径里的 gradlew.bat 同理（gradlew 不在白名单）
+    expect(canExecute(p, 'gradlew.bat build')).toBe(false);
+  });
+
   it('readFile guards traversal', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-'));
     fs.writeFileSync(path.join(tmp, 'x.txt'), 'data');

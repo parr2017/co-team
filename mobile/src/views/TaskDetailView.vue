@@ -393,6 +393,8 @@ const POLICY_LEVELS = [
   { text: '改动需审批', value: 'approve_required' },
   { text: '白名单自动', value: 'whitelist_auto' },
   { text: '完全控制', value: 'full' },
+  // 2026-09-23：无边界对任务同样开放（解除命令/读取的目录监狱；写文件仍锁项目内）
+  { text: '无边界', value: 'unrestricted' },
 ];
 const COMMON_COMMANDS = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java'];
 const policyLevel = ref('');

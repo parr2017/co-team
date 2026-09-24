@@ -24,6 +24,30 @@ const whitelistInput = ref('');
 const showWhitelistPicker = ref(false);
 const COMMON_COMMANDS = ['python', 'pip', 'git', 'npm', 'node', 'flutter', 'dart', 'cargo', 'go', 'java'];
 const whitelistList = computed(() => whitelistText.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean));
+
+// 执行策略（2026-09-23 补齐移动端入口）：此前移动端只发白名单、不发 level——
+// 想开「无边界」只能在 web 操作。六档与 web PERMISSION_LEVELS 对齐，留空跟随全局。
+const policyLevel = ref('');
+const POLICY_LEVELS: { value: string; label: string; hint: string }[] = [
+  { value: '', label: '跟随全局设置', hint: '用全局配置的命令执行策略' },
+  { value: 'plan_only', label: '只出方案', hint: '不写代码、不执行命令，只给方案' },
+  { value: 'readonly', label: '只读', hint: '不写文件；命令只读侦查/验证类可跑' },
+  { value: 'approve_required', label: '改动需审批', hint: '白名单内命令自动执行，其余等你批准' },
+  { value: 'whitelist_auto', label: '白名单自动', hint: '仅白名单命令执行，非白名单直接拒绝' },
+  { value: 'full', label: '完全控制', hint: '项目目录内全部自动执行' },
+  { value: 'unrestricted', label: '无边界', hint: '解除命令与读取的目录监狱（写文件仍锁项目内）' },
+];
+const showPolicyPicker = ref(false);
+function openPolicyPicker() {
+  showPolicyPicker.value = true;
+}
+function onPolicyConfirm({ selectedOptions }: { selectedOptions: { value: string; text: string }[] }) {
+  policyLevel.value = selectedOptions[0]?.value ?? '';
+  showPolicyPicker.value = false;
+}
+const policyColumns = computed(() => POLICY_LEVELS.map((p) => ({ text: p.label, value: p.value })));
+const policyLabel = computed(() => POLICY_LEVELS.find((p) => p.value === policyLevel.value)?.label || '跟随全局设置');
+const policyHint = computed(() => POLICY_LEVELS.find((p) => p.value === policyLevel.value)?.hint || '');
 function openWhitelistPicker() {
   whitelistInput.value = whitelistText.value;
   showWhitelistPicker.value = true;
@@ -165,7 +189,9 @@ async function submit() {
       project_id: projectId.value || undefined,
       profile: simpleMode.value ? 'simple' : undefined,
       allow_self_ref: allowSelfRef.value || undefined,
-      execution_policy: whitelistList.value.length ? { whitelist_commands: whitelistList.value } : undefined,
+      execution_policy: (policyLevel.value || whitelistList.value.length)
+        ? { ...(policyLevel.value ? { level: policyLevel.value } : {}), whitelist_commands: whitelistList.value.length ? whitelistList.value : undefined }
+        : undefined,
     });
     if (r.status === 'needs_clarification') {
       showToast('需求需澄清');
@@ -243,6 +269,15 @@ async function submit() {
       </div>
       <div v-if="!simpleMode" class="lv-hint">{{ LEVELS.find((l) => l.value === level)?.hint || '' }}</div>
 
+      <!-- 执行策略（2026-09-23 补齐移动端入口）：命令/文件写入的自主程度，六级可调 -->
+      <div v-if="!simpleMode" class="wx-group">
+        <div class="wx-cell link" @click="openPolicyPicker">
+          <span class="cell-label">执行策略</span>
+          <span class="cell-value">{{ policyHint || policyLabel }}</span>
+          <van-icon name="arrow" size="14" color="var(--text-3)" />
+        </div>
+      </div>
+
       <!-- 白名单命令（高级模式）：按任务技术栈放行命令首词 -->
       <div v-if="!simpleMode" class="wx-group">
         <div class="wx-cell link" @click="openWhitelistPicker">
@@ -303,6 +338,17 @@ async function submit() {
         </div>
         <button class="wx-btn" @click="confirmWhitelist">确定</button>
       </div>
+    </van-popup>
+
+    <!-- 执行策略选择（六级：留空跟随全局） -->
+    <van-popup v-model:show="showPolicyPicker" position="bottom" round>
+      <van-picker
+        title="执行策略"
+        :columns="policyColumns"
+        :default-index="POLICY_LEVELS.findIndex((p) => p.value === policyLevel)"
+        @confirm="onPolicyConfirm"
+        @cancel="showPolicyPicker = false"
+      />
     </van-popup>
 
     <!-- 目录级联选择：共享组件 -->

@@ -146,7 +146,7 @@ export interface ProgressInfo {
 
 export interface JournalEntry {
   role: 'master' | 'agent';
-  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'message' | 'doc' | 'ask' | 'answer';
+  kind: 'brief' | 'tool_results' | 'round' | 'final' | 'error' | 'intervene' | 'deliverable' | 'message' | 'message_received' | 'handoff' | 'doc' | 'ask' | 'answer';
   text: string;
   ts: string;
   node_id: string;
