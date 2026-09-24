@@ -31,6 +31,8 @@ export interface HarnessBlocks {
   skillsBlock?: string;
   /** L3 外部 MCP 工具清单（McpManager.toolsIndex 确定性渲染；同 agent 同配置字节稳定） */
   mcpBlock?: string;
+  /** 外部 OpenCode 实例教学块（oc_* 接管工具；无绑定时不渲染） */
+  ocBlock?: string;
   /** L5 budget awareness */
   round?: number;
   maxRounds?: number;
@@ -72,6 +74,7 @@ export function buildAgentHarness(ctx: HarnessBlocks): string {
     ctx.docsBlock && `### SSOT 协作文档（单一事实来源，以此为准）\n${ctx.docsBlock}`,
     ctx.skillsBlock && `### 已装载技能（必须遵循其中步骤与规范）\n${ctx.skillsBlock}`,
     ctx.mcpBlock && `### 外部 MCP 工具（已绑定服务，可随 tool_calls 直接调用）\n${ctx.mcpBlock}`,
+    ctx.ocBlock && `### 外部 OpenCode 实例（可接管/派活的运行时；oc_* 工具可随 tool_calls 直接调用）\n${ctx.ocBlock}`,
     ctx.knowledgeBlock && `### 相关知识库条目\n${ctx.knowledgeBlock}`,
     ctx.memories?.length ? `### 你过往的经验记忆\n${ctx.memories.map((m: string) => '- ' + m).join('\n')}` : '',
   ].filter(Boolean).join('\n\n');

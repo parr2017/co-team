@@ -27,6 +27,8 @@ import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
 import { CAPACITY_RE } from './orchestrator/orchestrator';
 import type { McpManager } from './mcp/manager';
+import type { OpencodeBridge } from './opencode/types';
+import { isOcTool, runOpencodeTool } from './opencode/ocTools';
 import type { Logger } from './logger';
 import type { AgentPlugin } from './agents';
 import { applyToolCalls, estimateTokens } from './tools';
@@ -116,6 +118,8 @@ export interface ConvoDeps {
   logger: Logger;
   /** 外部 MCP 服务管理器（缺省=未接入，mcp__ 工具软错误拒绝） */
   mcp?: McpManager;
+  /** OpenCode 接管桥（缺省=未接入，oc_* 工具软错误拒绝） */
+  opencode?: OpencodeBridge;
 }
 
 export class ConvoError extends Error {
@@ -1248,6 +1252,7 @@ async function buildSystemPrompt(deps: ConvoDeps, convo: Convo, plugin?: AgentPl
   (convo as any).__availableSkills = availableSkills;
 
   const mcpBlock = deps.mcp ? deps.mcp.toolsIndex(convo.agent_id) : '';
+  const ocBlock = deps.opencode ? deps.opencode.toolsIndex(convo.agent_id) : '';
 
   // PH.6 回滚纠正账本（星瑶 turn_undo/prompt_context.py 同款语义）：历史消息不改字节，
   // 用纠正块向前宣告"旧结果已失效"——回滚后注入一次，turn 结束即清除。
@@ -1268,6 +1273,7 @@ ${scripts.length ? `\n## 项目脚本\n${scripts.join('\n')}` : ''}
 ${memories.length ? `\n## 本项目经验与规范\n${memories.map((m) => `- ${m.text}`).join('\n')}` : ''}
 ${skillsBlock ? `\n## 技能索引（正文按需 load_skill 拉取）\n${skillsBlock}` : ''}
 ${mcpBlock && !fc ? `\n## 外部 MCP 工具（参数放独立 arguments 字段）\n${mcpBlock}` : ''}
+${ocBlock ? `\n## 外部 OpenCode 实例（可接管/派活的运行时；模型归属见实例描述）\n${ocBlock}` : ''}
 ${policyLevel === 'plan_only'
   ? `\n## 当前权限：plan_only（只出方案）\n本会话**不能执行命令、不能写文件**（工具会被直接拒绝、白耗迭代）。请只做只读侦查与规划，把方案讲清楚；需要真正动手时，明确提示用户在会话设置把权限切到「目录内完全控制」或「改动需审批」。`
   : policyLevel === 'readonly'
@@ -1283,7 +1289,7 @@ ${fc ? `## 工具（原生工具通道：直接发起工具调用，参数按工
 视觉辅助：screenshot(url[,question]) | look_image(path[,question]) | 渲染验证 check_page(url, expect)
 阻塞提问 ask_user(question)（需要用户拍板才能继续时） | 知识沉淀 write_knowledge(category, title, content)
 反馈文件 share_file(path) | 调度子智能体 spawn_agent(agent, task)（并行 ≤3）
-步骤清单：write_plan(steps) | update_plan(index, status)` : `## 工具指南（全部相对路径基于工作区）
+步骤清单：write_plan(steps) | update_plan(index, status)${ocBlock ? `\nOpenCode 接管（把子任务外包给外部 opencode 执行或接管其会话；instance 用上面的实例 id）：oc_instances | oc_create_session | oc_send | oc_run_task(instance, prompt[, models 降级链]) | oc_read | oc_abort | oc_revert | oc_diff | oc_permission` : ''}` : `## 工具指南（全部相对路径基于工作区）
 只读侦查： {"tool":"list_files"} | {"tool":"read_file","path":"...","line_start":N,"line_end":M} | {"tool":"read_dir","path":"..."} | {"tool":"grep","pattern":"正则","path":"可选子路径"} | {"tool":"git_log"} | {"tool":"git_diff"} | {"tool":"load_skill","name":"技能名"}
 执行命令（同步等待 ≤${convoCfg.execTimeoutSec}s：装依赖、构建、测试、查端口）：
  {"tool":"exec","command":"npm test"}
@@ -1415,6 +1421,8 @@ async function runConvoToolCalls(
   const availableSkills: string[] = (convo as any).__availableSkills || [];
   const knowledgeCtx: KnowledgeToolContext = { agent: convo.agent_id, project_id: convo.project_id, availableSkills };
   const vision = { analyze: (prompt: string, images: { base64: string; mediaType: string }[]) => analyzeImages(deps.pool, prompt, images) };
+  const ocBridge = deps.opencode;
+  if (ocBridge) knowledgeCtx.opencode = ocBridge;
 
   const argsSummary = (c: Record<string, any>): string => {
     const v = c.command || c.path || c.pattern || c.url || c.name || c.question || '';
@@ -1454,6 +1462,16 @@ async function runConvoToolCalls(
         const r = await applyToolCalls(convo.workspace, [call as any], knowledgeCtx, policy);
         results.push(r[0]);
         records.push({ tool: name, args_summary: argsSummary(call), output_gist: gist(r[0]), ok: (r[0] as any)?.ok !== false });
+        continue;
+      }
+      if (isOcTool(name)) {
+        // OpenCode 接管工具（oc_*）：派活给外部 opencode 实例 / 接管其会话。
+        // 门控（实例白名单/档位/allow_shell）在 OpencodeManager 内，异常软收口。
+        const ocBridge = deps.opencode;
+        if (!ocBridge) { results.push({ tool: name, ok: false, error: '本会话未接入 OpenCode 实例（config.yaml 的 opencode.instances 未配置或本 agent 未绑定）' }); continue; }
+        const r = await runOpencodeTool(ocBridge, convo.agent_id, call);
+        results.push(r);
+        records.push({ tool: name, args_summary: argsSummary(call), output_gist: gist(r), ok: (r as any)?.ok !== false });
         continue;
       }
       if (name.startsWith('mcp__')) {
@@ -1589,6 +1607,7 @@ function activityLine(calls: Record<string, any>[], results: unknown[]): string 
     else if (t === 'write_plan') segs.push(`${!ok ? '✗ 规划失败' : `规划 ${r.steps || '?'} 步`}`);
     else if (t === 'update_plan') segs.push(`${!ok ? '✗ 打勾失败' : `进度 ${r.progress || '?'}`}`);
     else if (t.startsWith('mcp__')) segs.push(`${ok ? '✓' : '✗'} MCP ${t.slice(5)}${ok ? '' : ' 失败'}`);
+    else if (t.startsWith('oc_')) segs.push(`${ok ? '✓' : '✗'} OpenCode ${t.slice(3)}${c.session ? ` · ${String(c.session).slice(0, 8)}` : ''}${ok && r.session ? ` → ${String(r.session).slice(0, 8)}` : ''}${ok ? '' : ' 失败'}`);
     else segs.push(`${ok ? '✓' : '✗'} ${t}`);
   });
   return segs.join(' · ') || '（无工具调用）';
@@ -2200,6 +2219,7 @@ async function runSubToolCalls(
   const results: unknown[] = [];
   const records: { tool: string; args_summary?: string; output_gist?: string; ok?: boolean; mcp?: { server: string; tool: string } }[] = [];
   const knowledgeCtx: KnowledgeToolContext = { agent: plugin.name, project_id: convo.project_id, availableSkills: plugin.skills || [] };
+  if (deps.opencode) knowledgeCtx.opencode = deps.opencode;
   const roSet = new Set(['list_files', 'read_file', 'read_dir', 'grep', 'git_log', 'git_diff', 'write_knowledge', 'load_skill', 'check_page', 'screenshot', 'look_image']);
   const segs: string[] = [];
   const lines: string[] = [];
@@ -2213,6 +2233,15 @@ async function runSubToolCalls(
         records.push({ tool: name, args_summary: String(call.command || call.path || call.pattern || call.name || '').slice(0, 120), output_gist: gist(r[0]), ok: (r[0] as any)?.ok !== false });
         segs.push(`${(r[0] as any)?.ok !== false ? '✓' : '✗'} ${name}${call.path ? `(${String(call.path).slice(0, 30)})` : ''}`);
         lines.push(`${name} ${String(call.path || call.pattern || '').slice(0, 60)}`);
+        continue;
+      }
+      if (isOcTool(name)) {
+        // OpenCode 接管工具（oc_*）：子 agent 也可派活/接管；门控在 manager 内，异常软收口。
+        const ocBridge = deps.opencode;
+        if (!ocBridge) { results.push({ tool: name, ok: false, error: '本会话未接入 OpenCode 实例（未配置或本 agent 未绑定）' }); continue; }
+        const r = await runOpencodeTool(ocBridge, plugin.name, call);
+        results.push(r);
+        records.push({ tool: name, args_summary: String(call.prompt || call.instance || '').slice(0, 120), output_gist: gist(r), ok: (r as any)?.ok !== false });
         continue;
       }
       if (name.startsWith('mcp__')) {

@@ -224,6 +224,32 @@ redis:
 #       url: "http://127.0.0.1:8931/mcp"
 #       # headers: { Authorization: "Bearer ${COTEAM_MCP_GITHUB_TOKEN}" }
 #       # allow_tools: []             # 工具级白名单（小写），空=全部
+# OpenCode 接管接入：把外部 opencode 运行时纳入 co-team 管教（oc_* 工具，双端「外部运行时」面板）。
+# 两类实例：
+#   managed          —— co-team 拉起 `opencode serve` 并托管生命周期；模型由 co-team 模型池注入
+#                       （自动在 project_root 写 opencode.json，provider 指向模型池接入点，密钥走 env）
+#   attached-cli     —— 接管你自己启动的 opencode serve（启动时加 --port 固定端口，url 手填）
+#   attached-desktop —— 接管桌面版常驻 service（url 留空=自动解析桌面日志发现端口；
+#                       需手填 Basic 鉴权密码，env 占位，如 ${OPENCODE_DESKTOP_PASSWORD}）
+# agent 可见性在 agents/<name>/agent.yaml 的 opencode_instances 白名单（默认不可见；"*"=全部）。
+# 档位：attached 默认 readonly（只读+审批）；显式 mode: control 才允许发消息/打断/回退（全操作审计）。
+# opencode:
+#   instances:
+#     - id: main-exec                # 小写 kebab，agent.yaml 的 opencode_instances 用此名引用
+#       kind: managed
+#       label: 本机执行器
+#       command: opencode            # 缺省 opencode；可给绝对路径
+#       # port: 4196                 # 缺省自动挑选空闲端口
+#       # hostname: 127.0.0.1
+#       project_root: D:/pxx/projects/demo   # serve 的工作目录（= opencode 的项目根），必填
+#       model_injection: true        # 模型由 co-team 模型池注入（写 opencode.json + 逐 prompt model）
+#       auto_start: true             # 随 co-team 启动自动拉起
+#     - id: desktop
+#       kind: attached-desktop       # 接管正在跑的会话，用 opencode 自己的模型
+#       # url: http://127.0.0.1:49374 # 留空=自动发现（解析 %APPDATA%/ai.opencode.desktop/logs）
+#       auth: { username: opencode, password: "${OPENCODE_DESKTOP_PASSWORD}" }
+#       mode: control                # readonly（只读+审批）| control（发消息/打断/回退，记审计）
+#       # allow_shell: true          # 高危：允许经 oc_shell 在会话内执行任意命令（默认关）
 # 协作会话（convo）：单 agent 长对话直接操作项目工作区（/convo 页面）。
 # 全部可省——缺省权限继承全局 permissions，命令超时 180s，工具循环 ≤15 轮，提问等待 1h。
 # convo:

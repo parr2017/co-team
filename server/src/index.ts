@@ -7,6 +7,7 @@ import { createApi, attachWebSocket, ApiContext } from './api';
 import { initBus, closeBus } from './bus';
 import { loadConfig, PROJECT_ROOT } from './config';
 import type { McpManager } from './mcp/manager';
+import type { OpencodeManager } from './opencode/manager';
 import { Orchestrator } from './orchestrator/orchestrator';
 import { ModelPool } from './scheduler';
 import { TaskQueueManager } from './taskQueue';
@@ -200,6 +201,33 @@ async function main(): Promise<void> {
     logger.info('MCP not configured (no mcp.servers), skipping');
   }
 
+  // OpenCode 接管接入：managed 实例由 co-team 拉起 serve（模型注入）；attached 接管已在跑
+  // 实例（桌面/TUI）。无配置=零影响；单实例失败不影响启动与其余实例（同 MCP 降级先例）。
+  let opencode: OpencodeManager | undefined;
+  if (config.opencode?.enabled !== false && config.opencode?.instances?.length) {
+    const { OpencodeManager } = await import('./opencode/manager');
+    opencode = new OpencodeManager(config.opencode.instances, logger);
+    // W1 模型注入钩子：managed 启动前按模型池写实例的 opencode.json（providers 来自模型池）
+    try {
+      const { registerModelInjection } = await import('./opencode/modelInjection');
+      registerModelInjection(opencode, config.model_pool);
+    } catch (e) {
+      logger.warn('Opencode model injection hook unavailable', { error: String(e) });
+    }
+    // W1 模型名 → opencode model ref 的解析源（oc_send/oc_run_task 的 model 参数）
+    opencode.setModelPool(config.model_pool);
+    // W2 SSE 事件 → co-team WS 总线（双端面板 oc_event 频道；权限请求另走审批收件箱）
+    opencode.setEventForwarder((instanceId, event) => {
+      void emitProgress('oc_event', { instance: instanceId, event });
+    });
+    opencode.start();
+    logger.info('Opencode manager started', {
+      instances: config.opencode.instances.map((i) => `${i.id}(${i.kind}${i.enabled === false ? ',disabled' : ''})`),
+    });
+  } else {
+    logger.info('Opencode not configured (no opencode.instances), skipping');
+  }
+
   const orchestrator = new Orchestrator({
     agentsDir: config.agents_dir,
     modelPool,
@@ -221,6 +249,7 @@ async function main(): Promise<void> {
     outputTiers: config.llm?.output_tiers,
     context: config.context,
     mcp,
+    opencode,
   });
 
   await orchestrator.loadAgents();
@@ -339,12 +368,12 @@ async function main(): Promise<void> {
   });
 
   // 重启/崩溃打断在飞轮时，"最后一条是用户消息"的讨论重新驱动——用户的话不能石沉大海
-  await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger, mcp });
+  await resumeOrphanedDiscussions({ orchestrator, pool: modelPool, taskQueue, logger, mcp, opencode });
 
   // 协作会话（convo）：执行策略装配 + 孤儿会话恢复（"最后一条是用户消息"的会话重新驱动）
   const { configureConvo, resumeOrphanedConvos } = await import('./convo');
   configureConvo(config.convo);
-  await resumeOrphanedConvos({ orchestrator, pool: modelPool, logger, mcp });
+  await resumeOrphanedConvos({ orchestrator, pool: modelPool, logger, mcp, opencode });
 
   // improvement 5 (R5): periodic scan nudges tasks stuck in 'clarifying' (once per task)
   startClarifyTimeoutScanner({ timeoutHours: config.orchestrator.clarify_timeout_hours ?? 24 });
@@ -359,7 +388,7 @@ async function main(): Promise<void> {
   const stopDreamScanner = startDreamScanner(modelPool, logger, config.daily_report?.hour ?? 4);
   logger.info('Dream consolidation scanner started');
 
-  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue, dailyReportScanner, mcp, stopDreamScanner };
+  const ctx: ApiContext = { config, orchestrator, modelPool, taskQueue, dailyReportScanner, mcp, opencode, stopDreamScanner };
   const app = createApi(ctx);
 
   // browsers always probe /favicon.ico — answer 204 so it stops spamming the API log

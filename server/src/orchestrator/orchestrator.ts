@@ -11,6 +11,7 @@ import { runPostMergeAcceptance, runChecklistAudit, detectProjectProfile } from 
 import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens, gitDiffFull, listTestAssets } from '../tools';
 import type { AskBridge, KnowledgeToolContext } from '../tools';
 import type { McpManager } from '../mcp/manager';
+import type { OpencodeManager } from '../opencode/manager';
 import { analyzeImages, type VisionBridge } from '../vision';
 import { cancelAsks, consumeAskQueue, createAsk, flushAgentAsks, queueAskForAgent, resolveAsk, waitForAnswer, abandonAsk, settleTaskPendingAsks } from '../askGate';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
@@ -112,6 +113,8 @@ export interface OrchestratorOptions {
   rollingMaxStages?: number;
   /** 外部 MCP 服务管理器（缺省=未接入 MCP） */
   mcp?: McpManager;
+  /** OpenCode 接管管理器（缺省=未接入；oc_* 工具全软错误） */
+  opencode?: OpencodeManager;
 }
 
 const MERGE_NODE_NAME = '主 Agent 合并分支';
@@ -288,6 +291,8 @@ export class Orchestrator {
   plugins: Map<string, AgentPlugin>;
   /** 外部 MCP 服务管理器（MCP client）；缺省=未接入，mcp__ 工具全软错误 */
   mcp?: McpManager;
+  /** OpenCode 接管管理器；缺省=未接入，oc_* 工具全软错误 */
+  opencode?: OpencodeManager;
   router: Router;
   private pool: ModelPool | null;
   private policy: PermissionPolicy;
@@ -376,6 +381,9 @@ export class Orchestrator {
     this.mcp = opts.mcp;
     // MCP agent 白名单挂到插件表（agent.yaml 的 mcp_servers）；plugins 重载后 provider 读的是最新表
     this.mcp?.setAgentServersProvider((agent) => this.plugins.get(agent)?.mcpServers);
+    this.opencode = opts.opencode;
+    // OpenCode 同理：agent.yaml 的 opencode_instances 白名单（缺省=不可见，安全默认）
+    this.opencode?.setAgentProvider((agent) => this.plugins.get(agent)?.opencodeInstances);
     this.selfModGate = opts.selfModGate || {
       enabled: true,
       test_command: 'npm test',
@@ -3344,13 +3352,14 @@ export class Orchestrator {
     }
     // 外部 MCP 工具清单：按 agent 白名单确定性渲染（字节稳定，前缀缓存友好）；无绑定返回空
     const mcpBlock = this.mcp ? this.mcp.toolsIndex(plugin.name) : '';
+    const ocBlock = this.opencode ? this.opencode.toolsIndex(plugin.name) : '';
     // 原生 function calling（opencode/ZCode 同款工具通道，2026-09-20）：工具轮走供应商
     // tool_calls 字段而非正文 JSON；llm.native_tools=false 时整体回退 JSON 文本契约
     const nativeTools = nativeToolsOn();
     // level 联动（与协作会话 buildConvoTools 同语义）：plan_only/readonly 剔除会被权限
     // 直接拒绝的工具（exec/exec_background/kill_process/write_file/edit_file），避免模型
     // 反复尝试空转、白耗迭代预算。execTimeoutSec 用本任务的命令时间预算。
-    const orchTools = nativeTools ? buildOrchTools({ mcp: this.mcp ?? undefined, agent: plugin.name, level: policy.level, execTimeoutSec: policy.maxTimeSec }) : undefined;
+    const orchTools = nativeTools ? buildOrchTools({ mcp: this.mcp ?? undefined, opencode: this.opencode ?? undefined, agent: plugin.name, level: policy.level, execTimeoutSec: policy.maxTimeSec }) : undefined;
     const systemMsg = buildAgentHarness({
       name: plugin.name,
       role: plugin.role,
@@ -3363,6 +3372,7 @@ export class Orchestrator {
       memories,
       skillsBlock,
       mcpBlock: mcpBlock && !nativeTools ? mcpBlock : undefined,
+      ocBlock: ocBlock && !nativeTools ? ocBlock : undefined,
       round: 0,
       maxRounds,
       escalate,
@@ -3822,6 +3832,7 @@ export class Orchestrator {
           } satisfies AskBridge,
           ...(this.pool ? { vision: { analyze: (prompt: string, images: { base64: string; mediaType: string }[]) => analyzeImages(this.pool!, prompt, images) } satisfies VisionBridge } : {}),
           ...(this.mcp ? { mcp: this.mcp } : {}),
+          ...(this.opencode ? { opencode: this.opencode } : {}),
         };
         // 重复调用指针化（缓存优先裁剪）：同工具+同参数再次出现不再读盘回显全文——
         // 既省上下文增量，也让模型看到"结果同上轮"而不是被第二份大体积 JSON 挤爆窗口
@@ -3838,7 +3849,7 @@ export class Orchestrator {
           // 且外部工具可能带副作用（写远程/改外部数据），重放语义必须由工具自己决定。
           // git_diff 也豁免（P0.6）：轮内 write_file/edit_file 后 diff 已变——把"写完再看 diff"
           // 的第二次调用指针化会喂给模型过期结果。
-          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file' || tName === 'exec' || tName === 'exec_background' || tName === 'kill_process' || tName.startsWith('mcp__') || tName === 'git_diff';
+          const sideEffect = tName === 'write_doc' || tName === 'write_knowledge' || tName === 'send_message' || tName === 'ask_user' || tName === 'ask_agent' || tName === 'answer' || tName === 'screenshot' || tName === 'look_image' || tName === 'write_file' || tName === 'edit_file' || tName === 'exec' || tName === 'exec_background' || tName === 'kill_process' || tName.startsWith('mcp__') || tName.startsWith('oc_') || tName === 'git_diff';
           // P0.6 修复：dedupKey 补 line_start/line_end——同文件不同行段的续读（grep 定位后
           // 分段读正是系统教给模型的标准工作流）此前被误判"重复调用"喂回空指针。
           // 2026-09-23 修复：补 t.command——否则 `exec "flutter analyze"` 与

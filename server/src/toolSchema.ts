@@ -8,6 +8,8 @@
  */
 import type { LlmToolSpec } from './llm';
 import type { McpManager } from './mcp/manager';
+import type { OpencodeBridge } from './opencode/types';
+import { OC_TOOL_NAMES, type OcToolName } from './opencode/ocTools';
 
 type Params = Record<string, unknown>;
 
@@ -132,10 +134,83 @@ function mcpTools(mcp: McpManager | undefined, agent: string): LlmToolSpec[] {
   return specs;
 }
 
-/** convo 引擎工具声明（静态集 + MCP 动态集）。level 为 plan_only/readonly 时剔除会被
+// ---------- OpenCode 接管工具（oc_*；静态 schema，门控/可见性运行时由 OpencodeManager 决定） ----------
+
+const OC_INSTANCE_FIELD = { instance: s('opencode 实例 id（用 oc_instances 列出的）') };
+
+function opencodeStaticTools(): LlmToolSpec[] {
+  return [
+    { type: 'function', function: { name: 'oc_instances', description: `列出可接管的外部 OpenCode 实例（状态/控制档/能力/项目根）`, parameters: obj({}, []) } },
+    { type: 'function', function: { name: 'oc_create_session', description: `在指定 opencode 实例上创建会话`, parameters: obj({ ...OC_INSTANCE_FIELD, title: s('会话标题（可选）') }, ['instance']) } },
+    {
+      type: 'function',
+      function: {
+        name: 'oc_send',
+        description: `向 opencode 会话同步派活并等待返回（短任务；长任务用 oc_run_task）`,
+        parameters: obj({
+          ...OC_INSTANCE_FIELD,
+          session_id: s('会话 id'),
+          prompt: s('要它做的事（含验收标准）'),
+          model: s('模型名（可选；仅模型由 co-team 注入的实例生效）'),
+        }, ['instance', 'session_id', 'prompt']),
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'oc_run_task',
+        description: `复合派活：在 opencode 实例上建会话→发指令→等其跑完（session.idle）→回收终局文本与文件 diff。适合把完整子任务外包给 opencode 执行`,
+        parameters: obj({
+          ...OC_INSTANCE_FIELD,
+          prompt: s('要它做的事（写清楚目标与验收标准，≤8000字）'),
+          title: s('会话标题（可选）'),
+          model: s('首选模型名（可选）'),
+          models: strArr('模型降级链（可选，按序尝试，至多3个）'),
+          timeout_sec: n('等待其跑完的秒数上限（30~3600，缺省 1800）'),
+        }, ['instance', 'prompt']),
+      },
+    },
+    { type: 'function', function: { name: 'oc_read', description: `读取 opencode 会话消息（含终局文本与消息纪要）`, parameters: obj({ ...OC_INSTANCE_FIELD, session_id: s('会话 id') }, ['instance', 'session_id']) } },
+    { type: 'function', function: { name: 'oc_abort', description: `打断 opencode 会话正在执行的任务`, parameters: obj({ ...OC_INSTANCE_FIELD, session_id: s('会话 id') }, ['instance', 'session_id']) } },
+    { type: 'function', function: { name: 'oc_revert', description: `回退 opencode 会话中的一条消息（含其后的改动）`, parameters: obj({ ...OC_INSTANCE_FIELD, session_id: s('会话 id'), message_id: s('要回退的消息 id') }, ['instance', 'session_id', 'message_id']) } },
+    { type: 'function', function: { name: 'oc_diff', description: `查看 opencode 会话产生的文件变更（diff）`, parameters: obj({ ...OC_INSTANCE_FIELD, session_id: s('会话 id') }, ['instance', 'session_id']) } },
+    {
+      type: 'function',
+      function: {
+        name: 'oc_permission',
+        description: `回应 opencode 的权限请求（它要执行命令/改文件时弹出的审批）`,
+        parameters: obj({ ...OC_INSTANCE_FIELD, session_id: s('会话 id'), permission_id: s('权限请求 id'), response: s('once=仅本次允许 | always=总是允许 | reject=拒绝') }, ['instance', 'session_id', 'permission_id', 'response']),
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'oc_shell',
+        description: `高危：在 opencode 会话内执行 shell 命令（仅实例显式开启 allow_shell 时可用）`,
+        parameters: obj({ ...OC_INSTANCE_FIELD, session_id: s('会话 id'), command: s('要执行的命令') }, ['instance', 'session_id', 'command']),
+      },
+    },
+  ];
+}
+
+/** oc_ 工具集：无桥/无可用实例 → 空；oc_shell 仅在有 allow_shell 实例时出现 */
+function opencodeTools(opencode: OpencodeBridge | undefined, agent: string): LlmToolSpec[] {
+  if (!opencode) return [];
+  const list = opencode.listInstances(agent);
+  if (!list.length) return [];
+  const all = opencodeStaticTools();
+  const shellEnabled = !opencode.hasShellEnabled(agent);
+  return all.filter((t) => {
+    const n = String((t as { function?: { name?: string } }).function?.name || '');
+    if (n === 'oc_shell') return !shellEnabled;
+    return (OC_TOOL_NAMES as readonly string[]).includes(n as OcToolName);
+  });
+}
+
+/** convo 引擎工具声明（静态集 + MCP 动态集 + OpenCode 动态集）。level 为 plan_only/readonly 时剔除会被
  *  权限直接拒绝的工具（C：不暴露不可用工具，避免模型反复尝试空转、白耗迭代预算）。 */
-export function buildConvoTools(opts: { mcp?: McpManager; agentId: string; execTimeoutSec: number; level?: string }): LlmToolSpec[] {
-  const all = [...convoStaticTools(opts.execTimeoutSec), ...mcpTools(opts.mcp, opts.agentId)];
+export function buildConvoTools(opts: { mcp?: McpManager; opencode?: OpencodeBridge; agentId: string; execTimeoutSec: number; level?: string }): LlmToolSpec[] {
+  const all = [...convoStaticTools(opts.execTimeoutSec), ...mcpTools(opts.mcp, opts.agentId), ...opencodeTools(opts.opencode, opts.agentId)];
   const blocked = opts.level === 'plan_only'
     ? new Set(['exec', 'exec_background', 'kill_process', 'write_file', 'edit_file'])
     : opts.level === 'readonly'
@@ -145,10 +220,10 @@ export function buildConvoTools(opts: { mcp?: McpManager; agentId: string; execT
   return all.filter((t) => !blocked.has(String((t as { function?: { name?: string } }).function?.name || '')));
 }
 
-/** orchestrator 工具轮声明（静态集 + MCP 动态集）。level 为 plan_only/readonly 时剔除会被
+/** orchestrator 工具轮声明（静态集 + MCP 动态集 + OpenCode 动态集）。level 为 plan_only/readonly 时剔除会被
  *  权限直接拒绝的工具（同 buildConvoTools：不暴露不可用工具，避免模型反复尝试空转）。 */
-export function buildOrchTools(opts: { mcp?: McpManager; agent: string; level?: string; execTimeoutSec?: number }): LlmToolSpec[] {
-  const all = [...orchStaticTools(opts.execTimeoutSec ?? 300), ...mcpTools(opts.mcp, opts.agent)];
+export function buildOrchTools(opts: { mcp?: McpManager; opencode?: OpencodeBridge; agent: string; level?: string; execTimeoutSec?: number }): LlmToolSpec[] {
+  const all = [...orchStaticTools(opts.execTimeoutSec ?? 300), ...mcpTools(opts.mcp, opts.agent), ...opencodeTools(opts.opencode, opts.agent)];
   const blocked = opts.level === 'plan_only'
     ? new Set(['exec', 'exec_background', 'kill_process', 'write_file', 'edit_file'])
     : opts.level === 'readonly'
@@ -158,9 +233,12 @@ export function buildOrchTools(opts: { mcp?: McpManager; agent: string; level?: 
   return all.filter((t) => !blocked.has(String((t as { function?: { name?: string } }).function?.name || '')));
 }
 
-/** discussion 引擎声明（静态集 + MCP 动态集）。 */
-export function buildDiscussionTools(opts: { mcp?: McpManager; agent: string }): LlmToolSpec[] {
-  return [...discussionStaticTools(), ...mcpTools(opts.mcp, opts.agent)];
+/** discussion 引擎声明（静态集 + MCP 动态集 + OpenCode 只读动态集）。 */
+export function buildDiscussionTools(opts: { mcp?: McpManager; opencode?: OpencodeBridge; agent: string }): LlmToolSpec[] {
+  const all = [...discussionStaticTools(), ...mcpTools(opts.mcp, opts.agent), ...opencodeTools(opts.opencode, opts.agent)];
+  // 讨论室只读语义：剔除控制类 oc 工具（只留列实例/读消息/看 diff）
+  const blocked = new Set<string>(['oc_send', 'oc_run_task', 'oc_create_session', 'oc_abort', 'oc_revert', 'oc_shell', 'oc_permission']);
+  return all.filter((t) => !blocked.has(String((t as { function?: { name?: string } }).function?.name || '')));
 }
 
 /** 全局开关（config.yaml llm.native_tools，缺省开；关闭即整体回退 JSON 契约）。 */

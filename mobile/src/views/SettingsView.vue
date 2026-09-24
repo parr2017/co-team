@@ -37,6 +37,15 @@
         @cancel="showLevelPicker = false"
       />
     </van-popup>
+
+    <!-- 外部运行时 · OpenCode 接管面板入口（W4；tabbar 已满 7 项，入口落设置页） -->
+    <div class="section">
+      <div class="section-title">外部运行时</div>
+      <div class="section-desc">接管 opencode：托管实例由 co-team 拉起，attached 接管你已在跑的 CLI / 桌面版；可看会话、批权限，control 档可直接发号施令。</div>
+      <van-cell-group inset>
+        <van-cell title="OpenCode 实例与会话" is-link to="/opencode" />
+      </van-cell-group>
+    </div>
   </div>
 </template>
 

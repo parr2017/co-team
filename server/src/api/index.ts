@@ -25,9 +25,12 @@ import { PROJECT_ROOT } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
 import type { FeishuHandler } from '../feishu/webhook';
 import { registerConvoRoutes } from './convos';
+import { registerOpencodeRoutes } from './opencode';
+import { registerCoteamMcpRoutes } from '../mcpServer/server';
 import { getLogger } from '../logger';
 import type { McpManager } from '../mcp/manager';
 import type { McpServerConfig, McpServerStatus } from '../mcp/types';
+import type { OpencodeManager } from '../opencode/manager';
 
 export interface ApiContext {
   config: AppConfig;
@@ -40,6 +43,8 @@ export interface ApiContext {
   stopDreamScanner?: () => void;
   /** 外部 MCP 服务管理器（MCP client）；未配置=undefined，mcp 配置路由按空列表处理 */
   mcp?: McpManager;
+  /** OpenCode 接管管理器（managed 托管 + attached 接管）；未配置=undefined */
+  opencode?: OpencodeManager;
 }
 
 /** A4 简单模式: safe default whitelist for auto-exec when the user didn't pick a policy. */
@@ -1968,6 +1973,14 @@ export function createApi(ctx: ApiContext): Hono {
   // ---------- 协作会话（单 agent 长对话直接操作项目） ----------
 
   registerConvoRoutes(app, ctx);
+
+  // ---------- OpenCode 接管（外部运行时面板 / 服务端集成） ----------
+
+  registerOpencodeRoutes(app, ctx);
+
+  // ---------- co-team 作为 MCP server（opencode 等外部客户端反向调用） ----------
+
+  registerCoteamMcpRoutes(app, ctx);
 
   // ---------- feishu bot (event subscription mode) ----------
 

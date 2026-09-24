@@ -19,6 +19,7 @@ const router = createRouter({
     { path: '/project', name: 'project', component: PassThrough },
     { path: '/discuss', name: 'discuss', component: PassThrough },
     { path: '/convo', name: 'convo', component: PassThrough },
+    { path: '/opencode', name: 'opencode', component: PassThrough },
     { path: '/settings', name: 'settings', component: PassThrough },
     { path: '/approvals', name: 'approvals', component: () => import('./views/ApprovalInboxView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/workbench' },

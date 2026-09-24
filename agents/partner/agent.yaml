@@ -6,4 +6,5 @@ model_override: null
 timeout: 0
 skills: []
 mcp_servers: ["*"]
+opencode_instances: ["*"]
 version: 1.0.0

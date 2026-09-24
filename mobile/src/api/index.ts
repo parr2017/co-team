@@ -530,6 +530,29 @@ export const api = {
     put<{ status: string; project: unknown }>(`/api/projects/${id}`, payload),
   generateProjectBrief: (id: string) =>
     post<{ status: string; brief: string; project: unknown }>(`/api/projects/${id}/brief`, {}),
+
+  // ---------- 外部运行时 · OpenCode 接管（opencode.ts 的镜像；web 端契约同源） ----------
+  ocInstances: () => request<{ instances: OcInstance[] }>('/api/opencode/instances'),
+  ocConfig: () => request<{ instances: OcInstanceConfig[] }>('/api/opencode/config'),
+  ocSaveConfig: (instances: OcInstanceConfig[]) => put<{ ok: boolean }>('/api/opencode/config', { instances }),
+  ocStartInstance: (id: string) =>
+    post<{ ok: boolean; state: string }>(`/api/opencode/instances/${encodeURIComponent(id)}/start`),
+  ocStopInstance: (id: string) =>
+    post<{ ok: boolean }>(`/api/opencode/instances/${encodeURIComponent(id)}/stop`),
+  ocSessions: (instance: string) =>
+    request<{ sessions: OcSession[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`),
+  ocMessages: (instance: string, session: string) =>
+    request<{ messages: OcMessage[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages`),
+  ocPrompt: (instance: string, session: string, payload: { prompt: string; model?: string }) =>
+    post<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/prompt`, payload),
+  ocAbort: (instance: string, session: string) =>
+    post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/abort`),
+  ocRevert: (instance: string, session: string, message_id: string) =>
+    post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/revert`, { message_id }),
+  ocDiff: (instance: string, session: string) =>
+    request<{ ok: boolean; diff: OcDiffFile[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/diff`),
+  ocResolvePermission: (instance: string, session: string, permission_id: string, response: 'once' | 'always' | 'reject') =>
+    post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, { permission_id, response }),
   // 包 D：全局命令权限（级别 + 白名单）
   getPermissions: () =>
     request<{ permissions: { level: string; whitelist_commands: string[]; max_time_sec?: number }; levels: string[] }>('/api/config/permissions'),
@@ -630,4 +653,92 @@ export interface ConvoDetail extends ConvoSummary {
 export function statusLabel(s: string): string {
   // 状态中文唯一来源：utils/events.ts 的 STATUS_TEXT（此前两套映射各说各话）
   return statusText(s);
+}
+
+// ---------- 外部运行时 · OpenCode 接管（server/src/opencode 的移动端子集镜像；web 端契约同源） ----------
+
+/** 实例类型：managed=co-team 托管拉起；attached-cli/attached-desktop=接管用户已在跑的实例 */
+export type OcInstanceKind = 'managed' | 'attached-cli' | 'attached-desktop';
+/** stopped=未启动 starting=拉起中 running=进程在 connected=API 通 error=异常 */
+export type OcInstanceState = 'stopped' | 'starting' | 'running' | 'connected' | 'error';
+/** 控制档位：readonly=只读+审批响应；control=发消息/abort/revert/diff 全操作 */
+export type OcInstanceMode = 'readonly' | 'control';
+
+export interface OcInstance {
+  id: string;
+  kind: OcInstanceKind;
+  label?: string;
+  enabled: boolean;
+  state: OcInstanceState;
+  url: string;
+  mode: OcInstanceMode;
+  version: string;
+  capabilities?: {
+    healthy: boolean;
+    version: string;
+    sync_prompt: boolean;
+    async_prompt: boolean;
+    abort: boolean;
+    revert: boolean;
+    diff: boolean;
+    permissions: boolean;
+    events: boolean;
+    shell: boolean;
+    tui: boolean;
+  };
+  pid?: number;
+  project_root?: string;
+  model_injection: boolean;
+  error?: string;
+  last_checked_at?: string;
+}
+
+/** opencode 会话最小形态（title 缺省时 UI 回退展示 id 缩写） */
+export interface OcSession {
+  id: string;
+  title?: string;
+  [k: string]: unknown;
+}
+
+/** 消息 part：text=正文 / reasoning=思考 / tool=工具调用 / step-start、step-finish=步骤边界 */
+export interface OcPart {
+  type: string;
+  text?: string;
+  tool?: string;
+  [k: string]: unknown;
+}
+
+export interface OcMessage {
+  info: { id: string; role: string; model?: string; time?: string; [k: string]: unknown };
+  parts: OcPart[];
+}
+
+export interface OcDiffFile {
+  file: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+}
+
+/** 实例配置（config.yaml 的 opencode.instances[] 条目镜像；面板空态引导用户改配置文件） */
+export interface OcInstanceConfig {
+  id: string;
+  kind: OcInstanceKind;
+  label?: string;
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  port?: number;
+  hostname?: string;
+  project_root?: string;
+  env?: Record<string, string>;
+  model_injection?: boolean;
+  auto_start?: boolean;
+  url?: string;
+  mode?: OcInstanceMode;
+  auth?: { username?: string; password?: string };
+  timeout_sec?: number;
+  max_result_chars?: number;
+  agents?: string[];
+  allow_shell?: boolean;
 }

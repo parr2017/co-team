@@ -4,6 +4,8 @@ import * as yaml from 'js-yaml';
 import type { ModelConfig } from './types';
 import type { McpServerConfig } from './mcp/types';
 import { DEFAULT_MCP_MAX_RESULT_CHARS, DEFAULT_MCP_TIMEOUT_SEC } from './mcp/types';
+import type { OpencodeInstanceConfig, OpencodeInstanceKind, OpencodeInstanceMode } from './opencode/types';
+import { DEFAULT_OC_MAX_RESULT_CHARS, DEFAULT_OC_TIMEOUT_SEC } from './opencode/types';
 
 export interface OrchestrationConfig {
   max_retries: number;
@@ -115,6 +117,8 @@ export interface AppConfig {
   feishu?: FeishuConfig;
   /** 外部 MCP server 接入（MCP client）；server 级配置，agent 可见性走 agent.yaml 的 mcp_servers */
   mcp?: { servers: McpServerConfig[] };
+  /** OpenCode 接管接入：managed=co-team 拉起 serve（模型注入）；attached=接管已在跑实例（OC 原生模型） */
+  opencode?: { enabled?: boolean; instances: OpencodeInstanceConfig[] };
 }
 
 /** env/headers 等必须是 string→string 平对象；非法条目静默丢弃 */
@@ -341,7 +345,63 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
         }
       : undefined,
     mcp: parseMcpConfig(raw.mcp),
+    opencode: parseOpencodeConfig(raw.opencode),
   };
+}
+
+/**
+ * opencode.instances 解析：宽松容错——非法条目丢弃不炸启动（对齐 parseMcpConfig）；
+ * id 归一小写。enabled 缺省 true；顶层 enabled=false 整组停用。
+ */
+function parseOpencodeConfig(raw: any): { enabled?: boolean; instances: OpencodeInstanceConfig[] } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const list = Array.isArray(raw?.instances) ? raw.instances : Array.isArray(raw) ? raw : [];
+  const instances: OpencodeInstanceConfig[] = [];
+  for (const s of list) {
+    if (!s || typeof s !== 'object') continue;
+    const id = typeof s.id === 'string' ? s.id.trim().toLowerCase() : '';
+    if (!id || !/^[a-z0-9][a-z0-9_-]*$/.test(id)) continue;
+    const kindRaw = s.kind;
+    const kind: OpencodeInstanceKind | undefined =
+      kindRaw === 'managed' || kindRaw === 'attached-cli' || kindRaw === 'attached-desktop' ? kindRaw : undefined;
+    if (!kind) continue;
+    const env = stringRecord(s.env);
+    const mode: OpencodeInstanceMode = s.mode === 'control' ? 'control' : 'readonly';
+    instances.push({
+      id,
+      kind,
+      enabled: s.enabled !== false,
+      ...(typeof s.label === 'string' ? { label: s.label } : {}),
+      ...(kind === 'managed'
+        ? {
+            ...(typeof s.command === 'string' ? { command: s.command } : {}),
+            ...(Array.isArray(s.args) ? { args: s.args.map((a: unknown) => String(a)) } : {}),
+            ...(s.port !== undefined && Number.isFinite(Number(s.port)) ? { port: Math.floor(Number(s.port)) } : {}),
+            ...(typeof s.hostname === 'string' ? { hostname: s.hostname } : {}),
+            ...(typeof s.project_root === 'string' ? { project_root: s.project_root } : {}),
+            model_injection: s.model_injection === true,
+            auto_start: s.auto_start !== false,
+          }
+        : {
+            ...(typeof s.url === 'string' ? { url: s.url.trim() } : {}),
+            mode,
+            ...(s.auth && typeof s.auth === 'object'
+              ? {
+                  auth: {
+                    ...(s.auth.username !== undefined ? { username: String(s.auth.username) } : {}),
+                    ...(s.auth.password !== undefined ? { password: String(s.auth.password) } : {}),
+                  },
+                }
+              : {}),
+          }),
+      ...(env ? { env } : {}),
+      allow_shell: s.allow_shell === true,
+      timeout_sec: positiveOr(s.timeout_sec, DEFAULT_OC_TIMEOUT_SEC),
+      max_result_chars: positiveOr(s.max_result_chars, DEFAULT_OC_MAX_RESULT_CHARS),
+    });
+  }
+  if (!instances.length) return undefined;
+  return { ...(raw.enabled === false ? { enabled: false } : {}), instances };
 }
 
 /** mcp.servers 解析：宽松容错——非法条目丢弃不炸启动；名称归一小写（对齐工具名 lowerCase 纪律） */

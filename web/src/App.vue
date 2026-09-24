@@ -27,6 +27,10 @@
           <button class="nav-tab" :class="{ active: page === 'convo' }" @click="router.push('/convo')">
             <span class="nav-label">协作会话</span>
           </button>
+          <button class="nav-tab" :class="{ active: page === 'opencode' }" @click="router.push('/opencode')">
+            <el-icon class="nav-ic"><Monitor /></el-icon>
+            <span class="nav-label">外部运行时</span>
+          </button>
           <button class="nav-tab" :class="{ active: page === 'settings' }" @click="router.push('/settings')">设置</button>
         </nav>
         <div class="header-right">
@@ -116,6 +120,13 @@
         </main>
       </div>
 
+      <!-- 外部运行时 · OpenCode 接管面板（W4，与 ConvoView 同布局范式） -->
+      <div class="layout flush" v-else-if="page === 'opencode'">
+        <main class="main">
+          <OpenCodePanel />
+        </main>
+      </div>
+
       <!-- 设置：独立全页选项卡（左锚点导航 + 右内容，2026-09-20 自 SettingsDialog 弹窗迁移） -->
       <div class="layout flush" v-else-if="page === 'settings'">
         <main class="main">
@@ -161,6 +172,7 @@ import { computed, onMounted, ref, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showApiError } from './utils/apiError';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { Monitor } from '@element-plus/icons-vue';
 import { api, setApiToken, type StatusResponse } from './api';
 import { useDashboard, type AgentLiveState } from './composables/useDashboard';
 import { useTheme } from './composables/useTheme';
@@ -184,6 +196,7 @@ import LogViewerDialog from './components/LogViewerDialog.vue';
 import ProjectView from './components/ProjectView.vue';
 import GroupDiscussionView from './components/GroupDiscussionView.vue';
 import ConvoView from './components/ConvoView.vue';
+import OpenCodePanel from './components/OpenCodePanel.vue';
 import SettingsView from './views/SettingsView.vue';
 import { useDiscussion } from './composables/useDiscussion';
 
@@ -451,6 +464,7 @@ body { margin: 0; background: var(--bg-page); color: var(--text-1); font: var(--
   background: var(--accent); border-radius: 2px 2px 0 0;
 }
 .nav-tab:hover { color: var(--text-1); }
+.nav-ic { font-size: 14px; display: inline-flex; }
 .nav-badge {
   min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
   background: var(--accent); color: var(--accent-text);

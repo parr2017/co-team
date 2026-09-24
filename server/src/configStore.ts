@@ -4,6 +4,7 @@ import * as yaml from 'js-yaml';
 import { PROJECT_ROOT } from './config';
 import type { ModelConfig } from './types';
 import type { McpServerConfig } from './mcp/types';
+import type { OpencodeInstanceConfig } from './opencode/types';
 
 function configPath(root: string = PROJECT_ROOT): string {
   return path.join(root, 'config', 'config.yaml');
@@ -96,6 +97,14 @@ export function saveMcpServers(servers: McpServerConfig[], root: string = PROJEC
   const raw = readRaw(root);
   if (servers.length) raw.mcp = { servers };
   else delete raw.mcp;
+  writeRaw(raw, root);
+}
+
+/** 保存 OpenCode 接管实例列表（设置界面 → 外部运行时）；空列表=移除整个 opencode 节 */
+export function saveOpencodeInstances(instances: OpencodeInstanceConfig[], root: string = PROJECT_ROOT): void {
+  const raw = readRaw(root);
+  if (instances.length) raw.opencode = { instances };
+  else delete raw.opencode;
   writeRaw(raw, root);
 }
 

@@ -11,6 +11,8 @@ import { pushAgentMessage, MAX_MESSAGE_LENGTH, type AgentMessage } from './agent
 import { findSkillForAgent } from './skills';
 import { IMAGE_MEDIA_TYPES, MAX_IMAGE_BYTES, type VisionBridge } from './vision';
 import type { McpBridge } from './mcp/types';
+import type { OpencodeBridge } from './opencode/types';
+import { isOcTool, runOpencodeTool } from './opencode/ocTools';
 
 export interface KnowledgeToolContext {
   agent: string;
@@ -30,6 +32,8 @@ export interface KnowledgeToolContext {
   vision?: VisionBridge;
   /** 外部 MCP 服务桥：mcp__<server>__<tool> 分支的唯一执行通道（缺桥/未绑定即软错误门控） */
   mcp?: McpBridge;
+  /** OpenCode 接管桥：oc_* 工具分支的唯一执行通道（缺桥/未绑定即软错误门控） */
+  opencode?: OpencodeBridge;
 }
 
 /** 阻塞式问答桥：由 orchestrator 实现（journal/飞书/目标投递都在桥内完成），tools.ts 保持无状态。 */
@@ -840,6 +844,16 @@ export async function applyToolCalls(workspace: string, toolCalls: { tool: strin
           results.push({ tool: 'edit_file', ok: false, path: rel, error: failures[0] || 'edit failed' });
         }
       }
+    } else if (isOcTool(name)) {
+      // OpenCode 接管工具（oc_*）：把活派给外部 opencode 实例执行/接管其会话。
+      // 门控（实例白名单/档位/allow_shell）在 OpencodeManager 内，这里只做桥注入与软收口。
+      const bridge = knowledgeCtx?.opencode;
+      if (!bridge) {
+        results.push({ tool: name, ok: false, error: '当前上下文未接入 OpenCode 实例（config.yaml 的 opencode.instances 未配置或本 agent 未在 agent.yaml 绑定）' });
+        continue;
+      }
+      const r = await runOpencodeTool(bridge, knowledgeCtx!.agent, call as Record<string, any>);
+      results.push(r);
     } else if (name.startsWith('mcp__')) {
       // 外部 MCP 服务工具（mcp__<server>__<tool>）：参数放独立 arguments 字段——
       // name/path/pattern 等被既有工具占用；缺桥/未绑定/未连接都由桥内转软错误，绝不 throw

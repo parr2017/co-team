@@ -687,6 +687,94 @@ export interface ConvertDiscussionPayload {
   auto_run?: boolean;
 }
 
+// ---------- 外部运行时 · OpenCode 接管（server/src/opencode 的镜像；mobile 端契约同源） ----------
+
+/** 实例类型：managed=co-team 托管拉起；attached-cli/attached-desktop=接管用户已在跑的实例 */
+export type OcInstanceKind = 'managed' | 'attached-cli' | 'attached-desktop';
+/** stopped=未启动 starting=拉起中 running=进程在 connected=API 通 error=异常 */
+export type OcInstanceState = 'stopped' | 'starting' | 'running' | 'connected' | 'error';
+/** 控制档位：readonly=只读+审批响应；control=发消息/abort/revert/diff 全操作 */
+export type OcInstanceMode = 'readonly' | 'control';
+
+export interface OcInstance {
+  id: string;
+  kind: OcInstanceKind;
+  label?: string;
+  enabled: boolean;
+  state: OcInstanceState;
+  url: string;
+  mode: OcInstanceMode;
+  version: string;
+  capabilities?: {
+    healthy: boolean;
+    version: string;
+    sync_prompt: boolean;
+    async_prompt: boolean;
+    abort: boolean;
+    revert: boolean;
+    diff: boolean;
+    permissions: boolean;
+    events: boolean;
+    shell: boolean;
+    tui: boolean;
+  };
+  pid?: number;
+  project_root?: string;
+  model_injection: boolean;
+  error?: string;
+  last_checked_at?: string;
+}
+
+/** opencode 会话最小形态（title 缺省时 UI 回退展示 id 缩写） */
+export interface OcSession {
+  id: string;
+  title?: string;
+  [k: string]: unknown;
+}
+
+/** 消息 part：text=正文 / reasoning=思考 / tool=工具调用 / step-start、step-finish=步骤边界 */
+export interface OcPart {
+  type: string;
+  text?: string;
+  tool?: string;
+  [k: string]: unknown;
+}
+
+export interface OcMessage {
+  info: { id: string; role: string; model?: string; time?: string; [k: string]: unknown };
+  parts: OcPart[];
+}
+
+export interface OcDiffFile {
+  file: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+}
+
+/** 实例配置（config.yaml 的 opencode.instances[] 条目镜像；面板空态引导用户改配置文件） */
+export interface OcInstanceConfig {
+  id: string;
+  kind: OcInstanceKind;
+  label?: string;
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  port?: number;
+  hostname?: string;
+  project_root?: string;
+  env?: Record<string, string>;
+  model_injection?: boolean;
+  auto_start?: boolean;
+  url?: string;
+  mode?: OcInstanceMode;
+  auth?: { username?: string; password?: string };
+  timeout_sec?: number;
+  max_result_chars?: number;
+  agents?: string[];
+  allow_shell?: boolean;
+}
+
 export const api = {
   createTask: (
     description: string,
@@ -1030,4 +1118,34 @@ export const api = {
     }
     return res.json();
   },
+
+  // ---------- 外部运行时 · OpenCode 接管（opencode.ts 的镜像；mobile 端契约同源） ----------
+  ocInstances: () => request<{ instances: OcInstance[] }>('/api/opencode/instances'),
+  ocConfig: () => request<{ instances: OcInstanceConfig[] }>('/api/opencode/config'),
+  ocSaveConfig: (instances: OcInstanceConfig[]) =>
+    request<{ ok: boolean }>('/api/opencode/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instances }) }),
+  ocStartInstance: (id: string) =>
+    request<{ ok: boolean; state: string }>(`/api/opencode/instances/${encodeURIComponent(id)}/start`, { method: 'POST' }),
+  ocStopInstance: (id: string) =>
+    request<{ ok: boolean }>(`/api/opencode/instances/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+  ocSessions: (instance: string) =>
+    request<{ sessions: OcSession[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`),
+  ocMessages: (instance: string, session: string) =>
+    request<{ messages: OcMessage[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages`),
+  ocPrompt: (instance: string, session: string, payload: { prompt: string; model?: string }) =>
+    request<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/prompt`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    }),
+  ocAbort: (instance: string, session: string) =>
+    request<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/abort`, { method: 'POST' }),
+  ocRevert: (instance: string, session: string, messageId: string) =>
+    request<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/revert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message_id: messageId }),
+    }),
+  ocDiff: (instance: string, session: string) =>
+    request<{ ok: boolean; diff: OcDiffFile[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/diff`),
+  ocResolvePermission: (instance: string, session: string, permissionId: string, response: 'once' | 'always' | 'reject') =>
+    request<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permission_id: permissionId, response }),
+    }),
 };

@@ -32,6 +32,8 @@ import { nativeToolsOn, buildDiscussionTools } from './toolSchema';
 import type { ModelPool, ModelEntry } from './scheduler';
 import type { Orchestrator } from './orchestrator/orchestrator';
 import type { McpManager } from './mcp/manager';
+import type { OpencodeBridge } from './opencode/types';
+import { isOcTool, runOpencodeTool } from './opencode/ocTools';
 import type { TaskQueueManager } from './taskQueue';
 import type { Logger } from './logger';
 import { writeKnowledge, relevantKnowledge, listKnowledge, isSafeForInjection, KNOWLEDGE_DATA_TAG_OPEN, KNOWLEDGE_DATA_TAG_CLOSE } from './knowledge';
@@ -142,6 +144,8 @@ export interface DiscussionDeps {
   logger: Logger;
   /** 外部 MCP 服务管理器（缺省=未接入，mcp__ 工具软错误拒绝） */
   mcp?: McpManager;
+  /** OpenCode 接管桥（缺省=未接入，oc_ 只读工具软错误拒绝） */
+  opencode?: OpencodeBridge;
 }
 
 /** Error carrying an HTTP status so the API layer can map it 1:1. */
@@ -569,7 +573,7 @@ export async function buildProjectContextBlock(deps: DiscussionDeps, disc: Discu
 // ---------- prompts ----------
 
 /** 所有成员共享的 system 前缀：群规 + 真实性纪律 + 工具面 + 输出契约 */
-function speakerSystemPrompt(projectCtx: string, mcpBlock = ''): string {
+function speakerSystemPrompt(projectCtx: string, mcpBlock = '', ocBlock = ''): string {
   const fc = nativeToolsOn();
   return `# 场景：项目规划群组讨论
 你在一个项目规划群聊里，与用户（决策方）和其他专业 agent 共同讨论并动手解决问题。你不是轮流朗诵的嘉宾——像真实的工程同事那样：没新东西就不说话，能动手就直接动手，说完话要兑现。
@@ -598,7 +602,7 @@ ${fc ? `## 工具面（原生工具通道：直接发起工具调用，参数按
 小改直干：write_file(path, content) | edit_file(path, find, replace)——预算：单轮发言 ≤3 文件且合计 ≤80 行，写后自动落 diff 可一键回滚；超出预算或大改动一律 convert_to_project 转任务
 知识沉淀：write_knowledge(category, title, content)
 转项目开发：convert_to_project(auto_run)（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）
-${mcpBlock && !fc ? `外部 MCP 工具：\n${mcpBlock}\n` : ''}` : `## 工具面（可用动作，均限定在项目目录内；未绑定项目时全部不可用）
+${mcpBlock && !fc ? `外部 MCP 工具：\n${mcpBlock}\n` : ''}${ocBlock ? `外部 OpenCode 实例（只读接管：oc_instances 列实例 | oc_read 读会话消息 | oc_diff 看变更；控制类操作本室禁用）：\n${ocBlock}\n` : ''}` : `## 工具面（可用动作，均限定在项目目录内；未绑定项目时全部不可用）
 只读侦查：
  {"tool":"list_files"} | {"tool":"read_file","path":"相对路径"} | {"tool":"read_dir","path":"目录/"} | {"tool":"grep","pattern":"正则","path":"可选子路径"} | {"tool":"git_log"} | {"tool":"git_diff"}
 执行命令（同步等待 ≤${EXEC_TIMEOUT_SEC}s：装依赖、build、查端口、健康检查）：
@@ -613,7 +617,7 @@ ${mcpBlock && !fc ? `外部 MCP 工具：\n${mcpBlock}\n` : ''}` : `## 工具面
 小改直干（工作台）：修 bug/调文案/小改动直接 {"tool":"write_file","path":"相对路径","content":"文件全文"} 或 {"tool":"edit_file","path":"相对路径","find":"原文片段","replace":"新片段"}——预算：单轮发言 ≤3 文件且合计 ≤80 行，写后自动落 diff 可一键回滚；超出预算或大改动一律 {"tool":"convert_to_project"} 转任务（预算内的小修别推给任务管线）
 知识沉淀： {"tool":"write_knowledge","category":"general-tech|project|feedback|decision|reference","title":"标题","content":"内容"}
 转项目开发（用户已拍板的大改动；自动收敛方案、创建任务并入队，转换后讨论封存）： {"tool":"convert_to_project","auto_run":true}
-${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments 字段）：\n${mcpBlock}\n` : ''}`}
+${mcpBlock ? `外部 MCP 工具（已绑定服务，参数放独立 arguments 字段）：\n${mcpBlock}\n` : ''}${ocBlock ? `外部 OpenCode 实例（只读接管：oc_instances 列实例 | oc_read 读会话消息 | oc_diff 看变更；控制类操作本室禁用）：\n${ocBlock}\n` : ''}`}
 ${fc ? `## 输出方式
 - 需要动手时：直接发起工具调用（工具通道，不要把工具调用写进正文文字）；
 - 发言时：正文直接输出发言内容即可（≤300字），不要再包 JSON。
@@ -744,6 +748,27 @@ async function runSpeakerToolCalls(
     const name = String(call.tool || '').toLowerCase();
     if (roSet.has(name)) {
       results.push(roResults[roIdx++]);
+      continue;
+    }
+    if (isOcTool(name)) {
+      // OpenCode 接管只读子集（讨论室只观察不控制：oc_instances/oc_read/oc_diff；
+      // 控制类工具在 buildDiscussionTools 已被剔除，到这里就是模型幻觉——明确拒绝并提示）
+      const bridge = deps.opencode;
+      if (!bridge) {
+        results.push({ tool: name, ok: false, error: '本讨论未接入 OpenCode 实例（config.yaml 的 opencode.instances 未配置或本 agent 未绑定）' });
+        continue;
+      }
+      if (name !== 'oc_instances' && name !== 'oc_read' && name !== 'oc_diff') {
+        results.push({ tool: name, ok: false, error: `讨论室内只允许只读接管（oc_instances/oc_read/oc_diff）；${name} 属控制操作，请改用协作会话或任务执行` });
+        continue;
+      }
+      try {
+        const r = await runOpencodeTool(bridge, agent, call as Record<string, any>);
+        results.push(r);
+      } catch (e: any) {
+        // 软错误回喂纪律：一次工具异常绝不炸毁整次发言
+        results.push({ tool: name, ok: false, error: String(e?.message || e).slice(0, 200) });
+      }
       continue;
     }
     if (name.startsWith('mcp__')) {
@@ -919,7 +944,7 @@ function buildCallRecords(calls: Record<string, any>[], results: unknown[]): Too
       rec.mcp = { server: sep > 0 ? rest.slice(0, sep) : '', tool: sep > 0 ? rest.slice(sep + 2) : name };
     }
     const argParts: string[] = [];
-    for (const k of ['command', 'path', 'pattern', 'url', 'pid', 'question']) {
+    for (const k of ['command', 'path', 'pattern', 'url', 'pid', 'question', 'instance', 'session_id', 'prompt']) {
       const v = c[k];
       if (v !== undefined && v !== null && String(v).trim()) argParts.push(`${k}=${String(v).slice(0, 120)}`);
     }
@@ -997,7 +1022,8 @@ async function runSpeakerTurn(
     return { spoke: false, asked: false, silent: true, failed: '无可用模型', toolUsed: false };
   }
   const mcpBlock = deps.mcp ? deps.mcp.toolsIndex(agent) : '';
-  const sys = speakerSystemPrompt(projectCtx, mcpBlock);
+  const ocBlock = deps.opencode ? deps.opencode.toolsIndex(agent) : '';
+  const sys = speakerSystemPrompt(projectCtx, mcpBlock, ocBlock);
   const convo: { role: string; content: string }[] = [
     { role: 'system', content: sys },
     { role: 'user', content: identity },
@@ -1019,7 +1045,7 @@ async function runSpeakerTurn(
     // 原生 function calling（2026-09-20）：工具走供应商 tool_calls；正文即回复
     // （宽容双解析：正文是 JSON 契约时照常解析，纯散文时直接包装为发言）
     const fc = nativeToolsOn();
-    const tools = fc ? buildDiscussionTools({ mcp: deps.mcp as McpManager | undefined, agent }) : undefined;
+    const tools = fc ? buildDiscussionTools({ mcp: deps.mcp as McpManager | undefined, opencode: deps.opencode, agent }) : undefined;
     // streaming deltas for the final (non-tool) reply；每次重试用新 stream sid，旧片段以 discarded 清掉
     let stream = { acc: '', emitted: 0, lastAt: 0, sid: `${disc.id}:${agent}:r${round}#${iter}#0` };
     const onDelta = (d: string) => {
