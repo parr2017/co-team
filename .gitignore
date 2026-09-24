@@ -41,7 +41,6 @@ server/tsconfig.tsbuildinfo
 
 # agent tool & GUI scratch
 .playwright-mcp/
-.opencode/*
-!.opencode/plans/
+.opencode/
 e2e-*.png
 preview-*.png

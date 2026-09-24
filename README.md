@@ -19,6 +19,24 @@
 - **经验沉淀**：知识库（四类记忆）+ 任务终局 LLM 复盘 + Dream 每日整理线程 + 缺陷转修复任务，越用越懂你的项目
 - **通知与集成**：Webhook / 飞书（出站通知 + bot 入站命令）、外部 MCP 服务接入（stdio/HTTP，per-agent 白名单）
 
+## 界面预览
+
+### Web 端
+
+| 工作台 | 任务中心 |
+|---|---|
+| ![工作台](docs/screenshots/web-workbench-dark.png) | ![任务中心](docs/screenshots/web-tasks-dark.png) |
+
+| 作战室（工作会话卡） | 群组沟通 |
+|---|---|
+| ![作战室](docs/screenshots/web-warroom-dark.png) | ![群组沟通](docs/screenshots/web-discuss-dark.png) |
+
+### 移动端（挂载于 `/m/`）
+
+| 任务列表 | 作战室 | 群聊详情 |
+|---|---|---|
+| ![移动端任务列表](docs/screenshots/mobile-tasks-dark.png) | ![移动端作战室](docs/screenshots/mobile-warroom-dark.png) | ![移动端群聊](docs/screenshots/mobile-discussion-dark.png) |
+
 ## 快速开始
 
 ### 环境要求
@@ -106,6 +124,7 @@ co-team/
 ├── web/               # Web 仪表盘（Vue3 + Element Plus）
 ├── mobile/            # 独立移动端（Vue3 + Vant，挂载 /m/）
 ├── config/            # 配置示例
+├── docs/              # 设计/计划文档（plans/）与界面截图（screenshots/）
 ├── scripts/           # 运维脚本（e2e-demo 等）
 └── legacy-python/     # Python 早期版本存档（不参与运行）
 ```
