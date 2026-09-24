@@ -38,3 +38,10 @@ config/config.yaml.emptied-by-accident.bak
 .history/
 .zcode/
 server/tsconfig.tsbuildinfo
+
+# agent tool & GUI scratch
+.playwright-mcp/
+.opencode/*
+!.opencode/plans/
+e2e-*.png
+preview-*.png
