@@ -239,6 +239,18 @@ export class OpencodeClient {
     });
   }
 
+  // ---------- 提问应答（opencode 的 AskUserQuestion） ----------
+
+  /** 回答提问：answers 按问题顺序，每个答案是选中的 label 数组 */
+  answerQuestion(requestID: string, answers: string[][]): Promise<OcCallResult<boolean>> {
+    return this.req<boolean>('POST', `/question/${encodeURIComponent(requestID)}/reply`, { answers });
+  }
+
+  /** 拒绝/不回答提问（agent 会收到 QuestionRejected，自行继续） */
+  rejectQuestion(requestID: string): Promise<OcCallResult<boolean>> {
+    return this.req<boolean>('POST', `/question/${encodeURIComponent(requestID)}/reject`, {});
+  }
+
   // ---------- TUI 驱动（attached control 档） ----------
 
   appendPrompt(text: string): Promise<OcCallResult<boolean>> {

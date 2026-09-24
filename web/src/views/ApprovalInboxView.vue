@@ -13,11 +13,13 @@ const { tasks, connected } = useDashboard();
 
 interface ApprovalItem {
   key: string;
-  kind: 'node' | 'proposal' | 'command' | 'ask' | 'clarify';
+  kind: 'node' | 'proposal' | 'command' | 'ask' | 'clarify' | 'oc-permission' | 'oc-question';
   taskId: string;
   title: string;
   detail: string;
   act?: (decision: { approved: boolean; answer?: string }) => Promise<void>;
+  /** oc-question 专用：提问选项（收件箱内快速 label 作答） */
+  questionOptions?: { label: string; description?: string }[];
   rejectable?: boolean;
 }
 
@@ -112,6 +114,40 @@ async function load() {
         } catch { /* optional */ }
       })
     );
+    // OpenCode 待人工确认（W6）：文件权限审核 + AskUserQuestion 提问——co-team 审批收件箱
+    // 一个入口处理所有"等人拍板"（MTR 金标准的"处理人工确认"步）。服务端 SSE 事件驱动聚合。
+    try {
+      const pending = await api.ocPending();
+      for (const p of pending.permissions || []) {
+        const pattern = Array.isArray(p.pattern) ? p.pattern.join(' ') : String(p.pattern || '');
+        out.push({
+          key: `oc-perm:${p.instance}:${p.id}`,
+          kind: 'oc-permission',
+          taskId: '',
+          title: `OpenCode 权限申请 · ${p.title || '执行操作'}`,
+          detail: [p.instance_label || p.instance, p.sessionID ? String(p.sessionID).slice(0, 14) : '', pattern].filter(Boolean).join(' · '),
+          act: async ({ approved }) => {
+            await api.ocResolvePermission(String(p.instance), String(p.sessionID || ''), String(p.id), approved ? 'once' : 'reject');
+          },
+        });
+      }
+      for (const q of pending.questions || []) {
+        const first = (q.questions || [])[0] || {};
+        const opts = (first.options || []).map((o: any) => o.label).join(' / ');
+        out.push({
+          key: `oc-question:${q.instance}:${q.id}`,
+          kind: 'oc-question',
+          taskId: '',
+          title: `OpenCode 提问 · ${first.header || '征询'}`,
+          detail: [first.question, opts ? `选项：${opts}` : ''].filter(Boolean).join('\n'),
+          act: async ({ approved }) => {
+            if (!approved) await api.ocRejectQuestion(String(q.instance), String(q.id));
+          },
+          /** 提问的选项作答：收件箱里以"作答"输入 label（与 ask 同交互；复杂多选去接管面板） */
+          questionOptions: (first.options || []).map((o: any) => ({ label: o.label, description: o.description })),
+        });
+      }
+    } catch { /* opencode 未接入/未启动时静默跳过 */ }
     items.value = out;
   } finally {
     loading.value = false;
@@ -125,11 +161,25 @@ refresh();
 timer = setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 10_000);
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
-const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清' };
-const kindType: Record<string, string> = { node: 'warning', proposal: 'warning', command: 'warning', ask: 'warning', clarify: 'primary' };
+const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清', 'oc-permission': 'OpenCode 权限', 'oc-question': 'OpenCode 提问' };
+const kindType: Record<string, string> = { node: 'warning', proposal: 'warning', command: 'warning', ask: 'warning', clarify: 'primary', 'oc-permission': 'warning', 'oc-question': 'primary' };
 const busy = (key: string) => busyKey.value === key;
 
 async function decide(item: ApprovalItem, approved: boolean, answer?: string) {
+  if (item.kind === 'oc-question' && approved && answer) {
+    // 提问选项作答：answer=选中的 label → ocAnswerQuestion(instance, requestId, [[label]])
+    busyKey.value = item.key;
+    try {
+      const [instance, requestId] = item.key.replace('oc-question:', '').split(':');
+      await api.ocAnswerQuestion(instance, requestId, [[answer]]);
+      refresh();
+    } catch (e: any) {
+      showApiError(e);
+    } finally {
+      busyKey.value = '';
+    }
+    return;
+  }
   if (!item.act) return;
   busyKey.value = item.key;
   try {

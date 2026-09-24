@@ -164,6 +164,44 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
     return c.json((r as { ok: boolean }).ok ? { ok: true } : { ok: false, error: (r as { error?: string }).error }, (r as { ok: boolean }).ok ? 200 : 400);
   });
 
+  /**
+   * pending 聚合（审批收件箱数据源）：跨实例汇总 opencode 的权限申请与提问。
+   * 服务端 SSE 事件驱动维护（asked 入队/replied 出队）——co-team 审批收件箱一个入口处理
+   * 所有"等人拍板"的事：任务节点审批 + opencode 文件权限审核 + opencode 提问。
+   */
+  app.get('/api/opencode/pending', (c) => {
+    if (!ctx.opencode) return c.json({ permissions: [], questions: [] });
+    const all = oc().pendingAll();
+    const labels = new Map((ctx.config.opencode?.instances || []).map((i) => [i.id, i.label || i.id]));
+    const decorate = (x: Record<string, any>) => ({ ...x, instance_label: labels.get(String(x.instance)) || x.instance });
+    return c.json({
+      permissions: all.permissions.map(decorate),
+      questions: all.questions.map(decorate),
+    });
+  });
+
+  /**
+   * 回答 opencode 的提问（AskUserQuestion）：body {answers: string[][]}（按问题顺序，每题选中的 label 数组）。
+   * requestID 来自 question.asked 事件（QuestionRequest.id）——TUI 里的弹窗在这里也能答（需 control 档）。
+   */
+  app.post('/api/opencode/questions/:requestId/reply', async (c) => {
+    const body = await readJsonAuto<{ answers?: unknown }>(c);
+    const instance = String(new URL(c.req.url).searchParams.get('instance') || '');
+    const answers = Array.isArray(body.answers) ? (body.answers as unknown[]).map((a) => (Array.isArray(a) ? a.map(String) : [String(a)])) : [];
+    if (!instance) return c.json({ detail: '缺少 instance 查询参数' }, 400);
+    if (!answers.length) return c.json({ detail: 'answers 不能为空（按问题顺序的 label 数组）' }, 400);
+    const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), answers);
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  /** 拒绝/不回答提问（agent 收到 rejected 自行继续） */
+  app.post('/api/opencode/questions/:requestId/reject', async (c) => {
+    const instance = String(new URL(c.req.url).searchParams.get('instance') || '');
+    if (!instance) return c.json({ detail: '缺少 instance 查询参数' }, 400);
+    const r = await oc().rejectQuestion(undefined, instance, c.req.param('requestId'));
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
   // ---------- TUI 同构接管面（对话镜像的实时数据与驱动通道） ----------
 
   /** 接管当前对话：busy 优先否则最近更新（TUI 无 state API，启发式 + reason 可解释） */

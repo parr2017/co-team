@@ -169,6 +169,13 @@ export class OpencodeManager implements OpencodeBridge {
   private modelPool: ModelConfig[] = [];
   /** 会话消息缓存（翻页 + 完整原文；LRU，SSE 增量 patch） */
   private msgCache = new Map<string, { messages: Record<string, any>[]; loadedAt: number }>();
+  /**
+   * 服务端 pending 聚合态（审批收件箱数据源）：instance → id → 权限/提问请求。
+   * 由 SSE 事件驱动维护（asked 入队、replied/rejected 出队）——与前端 stream 各自维护
+   * 的面板内卡片互补：这张表给 co-team 审批收件箱跨实例聚合用。
+   */
+  private pendingPerms = new Map<string, Map<string, Record<string, any>>>();
+  private pendingQuestions = new Map<string, Map<string, Record<string, any>>>();
   private stopped = false;
 
   constructor(configs: OpencodeInstanceConfig[] = [], logger?: Logger) {
@@ -225,6 +232,8 @@ export class OpencodeManager implements OpencodeBridge {
   async stop(): Promise<void> {
     this.stopped = true;
     this.msgCache.clear();
+    this.pendingPerms.clear();
+    this.pendingQuestions.clear();
     for (const st of this.instances.values()) {
       if (st.healthTimer) clearInterval(st.healthTimer);
       if (st.restartTimer) clearTimeout(st.restartTimer);
@@ -473,6 +482,8 @@ export class OpencodeManager implements OpencodeBridge {
             if (isDroppedEvent(ev.type)) continue;
             // run_task 的 idle 等待器先行（本地唤醒，不依赖转发方接线）
             this.wakeIdleWaiters(st, ev);
+            // pending 聚合态（审批收件箱数据源）——先于缓存与转发
+            this.trackPending(st, ev);
             // 已加载会话的消息缓存增量维护（翻页/完整原文的数据源）
             this.patchCache(st, ev);
             batcher.push(ev);
@@ -697,6 +708,48 @@ export class OpencodeManager implements OpencodeBridge {
     return { ok: true, data: r.data };
   }
 
+  /**
+   * pending 聚合态维护（审批收件箱数据源）：permission/question 的 asked 入队、replied/rejected 出队。
+   * 与前端面板内的 stream 各自维护互补——这张表是跨实例的 server 侧事实源。
+   */
+  private trackPending(st: InstanceState, ev: OcEvent): void {
+    const p = (ev.properties || {}) as Record<string, any>;
+    try {
+      if (ev.type === 'permission.asked' || ev.type === 'permission.updated') {
+        const id = String(p.id || '');
+        if (!id) return;
+        const m = this.pendingPerms.get(st.cfg.id) || new Map();
+        m.set(id, p);
+        this.pendingPerms.set(st.cfg.id, m);
+      } else if (ev.type === 'permission.replied') {
+        const id = String(p.permissionID || p.id || '');
+        this.pendingPerms.get(st.cfg.id)?.delete(id);
+      } else if (ev.type === 'question.asked') {
+        const id = String(p.id || '');
+        if (!id) return;
+        const m = this.pendingQuestions.get(st.cfg.id) || new Map();
+        m.set(id, p);
+        this.pendingQuestions.set(st.cfg.id, m);
+      } else if (ev.type === 'question.replied' || ev.type === 'question.rejected') {
+        const id = String(p.requestID || p.id || '');
+        this.pendingQuestions.get(st.cfg.id)?.delete(id);
+      }
+    } catch { /* 聚合失败不影响主链 */ }
+  }
+
+  /** 跨实例 pending 聚合（审批收件箱）：权限申请 + 提问，按实例/会话归组 */
+  pendingAll(): { permissions: Record<string, any>[]; questions: Record<string, any>[] } {
+    const perms: Record<string, any>[] = [];
+    const questions: Record<string, any>[] = [];
+    for (const [instId, m] of this.pendingPerms) {
+      for (const [id, p] of m) perms.push({ instance: instId, id, ...p });
+    }
+    for (const [instId, m] of this.pendingQuestions) {
+      for (const [id, p] of m) questions.push({ instance: instId, id, ...p });
+    }
+    return { permissions: perms, questions };
+  }
+
   /** SSE 增量 patch 缓存（只维护已加载过的会话；delta 不 patch——part.updated 会带全量覆盖） */
   private patchCache(st: InstanceState, ev: OcEvent): void {
     const key = cacheKey(st.cfg.id, eventSessionId(ev));
@@ -779,6 +832,29 @@ export class OpencodeManager implements OpencodeBridge {
     if (err || !st) return { ok: false, error: err };
     this.audit('answer_permission', st, { session: sessionId, permission: permissionID, response });
     return st.client!.answerPermission(sessionId, permissionID, response);
+  }
+
+  /**
+   * 回答 opencode 的提问（AskUserQuestion）。需 control 档——替用户做决定不能发生在只读实例上。
+   * requestID 来自 question.asked 事件的 QuestionRequest.id；answers 按问题顺序（每题选中的 label 数组）。
+   */
+  async answerQuestion(agent: string | undefined, instance: string, requestID: string, answers: string[][]): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('answer_question', st, { request: requestID, answers });
+    return st.client!.answerQuestion(requestID, answers);
+  }
+
+  /** 拒绝/不回答提问（需 control 档；agent 收到 rejected 后自行继续） */
+  async rejectQuestion(agent: string | undefined, instance: string, requestID: string): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('reject_question', st, { request: requestID });
+    return st.client!.rejectQuestion(requestID);
   }
 
   async runShell(agent: string | undefined, instance: string, sessionId: string, command: string): Promise<OcCallResult<unknown>> {

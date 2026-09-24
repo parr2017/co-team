@@ -87,6 +87,21 @@ describe('SessionStream 流式状态机', () => {
     expect(s.snapshot().pendingPermissions.map((p) => p.id)).toEqual(['per_2']);
   });
 
+  it('question.asked/replied/rejected：待答提问进出队（AskUserQuestion）', () => {
+    const s = new SessionStream();
+    s.applyEvent({ type: 'question.asked', properties: { id: 'q1', sessionID: 's', questions: [{ question: '开始重构吗？', header: '开始实施', options: [{ label: '开始' }, { label: '先评审' }] }] } });
+    let snap = s.snapshot();
+    expect(snap.pendingQuestions.length).toBe(1);
+    expect(snap.pendingQuestions[0].questions[0].question).toBe('开始重构吗？');
+    expect(snap.pendingQuestions[0].questions[0].options.map((o) => o.label)).toEqual(['开始', '先评审']);
+    s.applyEvent({ type: 'question.asked', properties: { id: 'q2', sessionID: 's', questions: [{ question: '第二题' }] } });
+    expect(s.snapshot().pendingQuestions.length).toBe(2);
+    s.applyEvent({ type: 'question.replied', properties: { sessionID: 's', requestID: 'q1', answers: [['开始']] } });
+    expect(s.snapshot().pendingQuestions.map((q) => q.id)).toEqual(['q2']);
+    s.applyEvent({ type: 'question.rejected', properties: { sessionID: 's', requestID: 'q2' } });
+    expect(s.snapshot().pendingQuestions.length).toBe(0);
+  });
+
   it('todo.updated / session.updated.revert / pty 生命周期', () => {
     const s = new SessionStream();
     s.applyEvent(ev('todo.updated', { sessionID: 's', todos: [{ id: 't1', content: '修 bug', status: 'in_progress', priority: 'high' }] }));

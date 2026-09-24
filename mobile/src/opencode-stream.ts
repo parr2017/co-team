@@ -27,6 +27,14 @@ export interface StreamPermission {
   sessionID?: string;
 }
 
+/** 待答提问（opencode 的 AskUserQuestion：question.asked 事件载荷，结构同 QuestionRequest） */
+export interface StreamQuestion {
+  id: string;
+  questions: { question: string; header?: string; options?: { label: string; description?: string }[]; multiple?: boolean; custom?: boolean }[];
+  sessionID?: string;
+  tool?: { messageID?: string; callID?: string };
+}
+
 export interface StreamPty {
   id: string;
   title?: string;
@@ -47,6 +55,8 @@ export interface StreamSnapshot {
   revert?: Record<string, unknown> | null;
   ptys: StreamPty[];
   pendingPermissions: StreamPermission[];
+  /** 待答提问（TUI 的 AskUserQuestion；co-team 面板可代答） */
+  pendingQuestions: StreamQuestion[];
   error: string | null;
   title?: string;
   lastEventAt: number;
@@ -67,6 +77,7 @@ export class SessionStream {
   private revert: Record<string, unknown> | null = null;
   private ptys = new Map<string, StreamPty>();
   private perms = new Map<string, StreamPermission>();
+  private questions = new Map<string, StreamQuestion>();
   private error: string | null = null;
   private title: string | undefined;
   private lastEventAt = 0;
@@ -237,6 +248,18 @@ export class SessionStream {
           if (pid) this.perms.delete(pid);
           break;
         }
+        case 'question.asked': {
+          // 载荷即 QuestionRequest：{id, sessionID, questions:[QuestionInfo], tool}
+          const q = p as unknown as StreamQuestion;
+          if (q?.id) this.questions.set(String(q.id), { ...q, id: String(q.id) });
+          break;
+        }
+        case 'question.replied':
+        case 'question.rejected': {
+          const rid = String(p.requestID || p.id || '');
+          if (rid) this.questions.delete(rid);
+          break;
+        }
         case 'pty.created':
         case 'pty.updated': {
           const info = p.info || {};
@@ -266,6 +289,7 @@ export class SessionStream {
       revert: this.revert,
       ptys: [...this.ptys.values()],
       pendingPermissions: [...this.perms.values()],
+      pendingQuestions: [...this.questions.values()],
       error: this.error,
       ...(this.title ? { title: this.title } : {}),
       lastEventAt: this.lastEventAt,

@@ -16,7 +16,7 @@ const { tasks, connected } = useDashboard();
 
 interface ApprovalItem {
   key: string;
-  kind: 'node' | 'proposal' | 'command' | 'ask' | 'clarify';
+  kind: 'node' | 'proposal' | 'command' | 'ask' | 'clarify' | 'oc-permission' | 'oc-question';
   taskId: string;
   title: string;
   detail: string;
@@ -24,6 +24,8 @@ interface ApprovalItem {
   act?: (decision: { approved: boolean; answer?: string }) => Promise<void>;
   /** 服务端是否有真实拒绝语义（节点审批/ask 只能批准或答复，不显示假拒绝按钮） */
   rejectable?: boolean;
+  /** oc-question 专用：提问选项（label 一键作答） */
+  questionOptions?: { label: string; description?: string }[];
 }
 
 const items = ref<ApprovalItem[]>([]);
@@ -122,6 +124,36 @@ async function load() {
         } catch { /* optional */ }
       })
     );
+    // OpenCode 待人工确认（W6）：文件权限审核 + AskUserQuestion——与 web 收件箱同口径
+    try {
+      const pending = await api.ocPending();
+      for (const p of pending.permissions || []) {
+        const pattern = Array.isArray(p.pattern) ? p.pattern.join(' ') : String(p.pattern || '');
+        out.push({
+          key: `oc-perm:${p.instance}:${p.id}`,
+          kind: 'oc-permission',
+          taskId: '',
+          title: `OpenCode 权限申请 · ${p.title || '执行操作'}`,
+          detail: [p.instance_label || p.instance, pattern].filter(Boolean).join(' · '),
+          act: async ({ approved }) => {
+            await api.ocResolvePermission(String(p.instance), String(p.sessionID || ''), String(p.id), approved ? 'once' : 'reject');
+          },
+          rejectable: true,
+        });
+      }
+      for (const q of pending.questions || []) {
+        const first = (q.questions || [])[0] || {};
+        out.push({
+          key: `oc-question:${q.instance}:${q.id}`,
+          kind: 'oc-question',
+          taskId: '',
+          title: `OpenCode 提问 · ${first.header || '征询'}`,
+          detail: [first.question, ((first.options || []) as any[]).map((o) => o.label).join(' / ')].filter(Boolean).join('\n'),
+          act: async () => { /* 选项作答走 questionOptions 按钮，不落 act */ },
+          questionOptions: ((first.options || []) as any[]).map((o) => ({ label: String(o.label), description: o.description })),
+        });
+      }
+    } catch { /* opencode 未接入时静默 */ }
     items.value = out;
   } finally {
     loading.value = false;
@@ -142,14 +174,15 @@ timer = setInterval(() => { if (document.visibilityState === 'visible') void ref
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
 const presentKinds = computed(() => {
-  const order = ['node', 'proposal', 'command', 'ask', 'clarify'];
+  const order = ['node', 'proposal', 'command', 'ask', 'clarify', 'oc-permission', 'oc-question'];
   return order.filter((k) => items.value.some((x) => x.kind === k));
 });
-const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清' };
+const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清', 'oc-permission': 'OpenCode 权限', 'oc-question': 'OpenCode 提问' };
 /** kind 不在 StatusTag 语义表内，映射到相近的审批语义色 */
-const kindTone: Record<string, string> = { node: 'waiting_approval', proposal: 'waiting_approval', command: 'waiting_approval', ask: 'waiting_approval', clarify: 'waiting_clarify' };
+const kindTone: Record<string, string> = { node: 'waiting_approval', proposal: 'waiting_approval', command: 'waiting_approval', ask: 'waiting_approval', clarify: 'waiting_clarify', 'oc-permission': 'waiting_approval', 'oc-question': 'waiting_clarify' };
 const busy = (key: string) => busyKey.value === key;
 async function decide(item: ApprovalItem, approved: boolean) {
+  if (item.kind === 'oc-question') return; // 提问走选项按钮（answerOcQuestion），不落 decide
   if (!item.act) return;
   if (!approved && item.kind === 'command') {
     // 拒绝敏感命令需确认，防误触
@@ -167,6 +200,39 @@ async function decide(item: ApprovalItem, approved: boolean) {
     busyKey.value = '';
   }
 }
+
+/** 谢绝 opencode 提问（agent 自行继续） */
+async function rejectOcQuestion(item: ApprovalItem) {
+  const parts = item.key.replace('oc-question:', '').split(':');
+  busyKey.value = item.key;
+  try {
+    const r = await api.ocRejectQuestion(parts[0], parts.slice(1).join(':'));
+    if (r.ok) { showToast('已谢绝'); refresh(); }
+    else showToast(r.error || '操作失败');
+  } catch (e: any) {
+    showToast(e?.message || '操作失败');
+  } finally {
+    busyKey.value = '';
+  }
+}
+
+/** 回答 opencode 提问：label → ocAnswerQuestion(instance, requestId, [[label]]) */
+async function answerOcQuestion(item: ApprovalItem, label: string) {
+  const parts = item.key.replace('oc-question:', '').split(':');
+  const instance = parts[0];
+  const requestId = parts.slice(1).join(':');
+  busyKey.value = item.key;
+  try {
+    const r = await api.ocAnswerQuestion(instance, requestId, [[label]]);
+    if (r.ok) { showToast('已作答'); refresh(); }
+    else showToast(r.error || '作答失败');
+  } catch (e: any) {
+    showToast(e?.message || '作答失败');
+  } finally {
+    busyKey.value = '';
+  }
+}
+
 const goTask = (taskId: string) => router.push(`/task/${taskId}`);
 </script>
 
@@ -187,7 +253,19 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
         </div>
         <div class="ap-title">{{ it.title }}</div>
         <MdView v-if="it.detail" class="ap-detail" :source="it.detail" />
-        <div v-if="it.act" class="ap-actions">
+        <div v-if="it.kind === 'oc-question' && it.questionOptions?.length" class="ap-actions">
+          <van-button
+            v-for="o in it.questionOptions"
+            :key="o.label"
+            size="small"
+            type="primary"
+            plain
+            :loading="busy(it.key)"
+            @click="answerOcQuestion(it, o.label)"
+          >{{ o.label }}</van-button>
+          <van-button size="small" :loading="busy(it.key)" @click="rejectOcQuestion(it)">不回答</van-button>
+        </div>
+        <div v-else-if="it.act" class="ap-actions">
           <van-button size="small" type="primary" :loading="busy(it.key)" @click="decide(it, true)">批准</van-button>
           <van-button v-if="it.rejectable" size="small" class="reject-btn" :loading="busy(it.key)" @click="decide(it, false)">拒绝</van-button>
           <van-button size="small" plain @click="goTask(it.taskId)">详情</van-button>

@@ -1189,6 +1189,17 @@ export const api = {
     }),
   ocTuiOpenSessions: (instance: string) =>
     request<{ ok: boolean }>(`/api/opencode/tui/${encodeURIComponent(instance)}/open-sessions`, { method: 'POST' }),
+  /** opencode pending 聚合（审批收件箱数据源：跨实例权限申请 + 提问） */
+  ocPending: () =>
+    request<{ permissions: Record<string, any>[]; questions: Record<string, any>[] }>('/api/opencode/pending'),
+  /** 回答 opencode 提问（answers 按问题顺序的 label 数组；需 control 档） */
+  ocAnswerQuestion: (instance: string, requestId: string, answers: string[][]) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reply?instance=${encodeURIComponent(instance)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers }),
+    }),
+  /** 拒绝/不回答 opencode 提问 */
+  ocRejectQuestion: (instance: string, requestId: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reject?instance=${encodeURIComponent(instance)}`, { method: 'POST' }),
   ocTuiSelectSession: (instance: string, sessionId: string) =>
     request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/select-session`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId }),

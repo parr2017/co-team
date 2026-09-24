@@ -112,6 +112,35 @@ describe('/api/opencode 路由', () => {
     expect(body.messages.length).toBe(1);
   });
 
+  it('GET /pending 聚合 opencode 权限申请与提问（审批收件箱数据源）', async () => {
+    const ctxWithPending = {
+      config: { opencode: { instances: [{ id: 't1', kind: 'managed', label: '执行器' }] } },
+      opencode: {
+        listInstances: () => [],
+        pendingAll: () => ({ permissions: [{ instance: 't1', id: 'per_1', sessionID: 's1', title: '运行 ls', pattern: ['ls'] }], questions: [{ instance: 't1', id: 'q1', sessionID: 's1', questions: [{ question: '开始？', header: '确认', options: [{ label: '开始' }] }] }] }),
+        answerQuestion: async () => ({ ok: true }),
+        rejectQuestion: async () => ({ ok: true }),
+      },
+    } as unknown as ApiContext;
+    const a = new Hono();
+    registerOpencodeRoutes(a, ctxWithPending);
+    const body = (await (await a.request('/api/opencode/pending')).json()) as { permissions: Record<string, any>[]; questions: Record<string, any>[] };
+    expect(body.permissions.length).toBe(1);
+    expect(body.permissions[0].instance_label).toBe('执行器'); // 实例 label 装饰
+    expect(body.questions.length).toBe(1);
+  });
+
+  it('POST questions/reply 参数校验（缺 instance → 400；正常 → ok）', async () => {
+    const a = new Hono();
+    registerOpencodeRoutes(a, ctx); // 默认 ctx 无 answerQuestion——走 manager mock 的路由校验分支
+    // 缺 answers
+    const r1 = await a.request('/api/opencode/questions/q1/reply?instance=t1', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(r1.status).toBe(400);
+    // 缺 instance
+    const r2 = await a.request('/api/opencode/questions/q1/reply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answers: [['开始']] }) });
+    expect(r2.status).toBe(400);
+  });
+
   it('未配置 opencode 时优雅降级（instances 空 + error，不 500）', async () => {
     const noCtx = { config: {}, opencode: undefined } as unknown as ApiContext;
     const a = new Hono();

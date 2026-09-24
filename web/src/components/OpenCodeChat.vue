@@ -118,6 +118,29 @@
           </div>
         </template>
 
+        <!-- 行内提问卡：opencode 的 AskUserQuestion——TUI 里弹的题，这里也能答 -->
+        <div v-for="q in snap.pendingQuestions" :key="q.id" class="q-card">
+          <template v-for="(qi, qii) in q.questions || []" :key="qii">
+            <div class="q-l1">opencode 等你拍板 · {{ qi.header || '征询' }}</div>
+            <div class="q-text">{{ qi.question }}</div>
+            <div class="q-opts">
+              <el-button
+                v-for="o in qi.options || []"
+                :key="o.label"
+                size="small"
+                :title="o.description || ''"
+                @click="answerQuestion(q.id, [[o.label]])"
+              >{{ o.label }}</el-button>
+            </div>
+            <div v-if="qi.custom" class="q-custom">
+              <el-input v-model="qDraft[q.id + ':' + qii]" size="small" placeholder="或输入你的回答" @keydown.enter="answerQuestion(q.id, [[qDraft[q.id + ':' + qii] || '']])" />
+              <el-button size="small" type="primary" @click="answerQuestion(q.id, [[qDraft[q.id + ':' + qii] || '']])">提交</el-button>
+            </div>
+          </template>
+          <div class="q-acts">
+            <el-button size="small" text @click="rejectQuestion(q.id)">不回答，让它自己拿主意</el-button>
+          </div>
+        </div>
         <!-- 行内审批卡：opencode 等待放行 -->
         <div v-for="perm in snap.pendingPermissions" :key="perm.id" class="perm-card">
           <div class="perm-l1">权限请求 · opencode 等待审批</div>
@@ -320,6 +343,7 @@ const hasMore = ref(false);
 const nextBefore = ref('');
 const loadingMore = ref(false);
 /** 被服务端头尾裁剪的 part id（tool 卡角标 + 完整原文按钮） */
+const qDraft = ref<Record<string, string>>({});
 const trimmedParts = ref(new Set<string>());
 /** 已拉全文中消息 id → message（渲染时优先取全文 parts） */
 const fullMessages = ref(new Map<string, any>());
@@ -558,6 +582,35 @@ async function revertTo(m: Record<string, any>): Promise<void> {
   } catch (e: any) { showApiError(e); }
 }
 
+/** 回答提问：answerQuestion 走本地 stream 先移除（双保险），服务端事件随后确认 */
+async function answerQuestion(requestId: string, answers: string[][]): Promise<void> {
+  const cleaned = answers.map((a) => a.filter((x) => typeof x === 'string' && x.trim())).filter((a) => a.length);
+  if (!cleaned.length) { ElMessage.warning('回答不能为空'); return; }
+  try {
+    const r = await api.ocAnswerQuestion(props.instance.id, requestId, cleaned);
+    if (r.ok) {
+      stream.applyEvent({ type: 'question.replied', properties: { requestID: requestId } });
+      flush();
+      ElMessage.success('已作答');
+    } else {
+      ElMessage.warning(r.error || '作答失败');
+    }
+  } catch (e: any) { showApiError(e); }
+}
+
+async function rejectQuestion(requestId: string): Promise<void> {
+  try {
+    const r = await api.ocRejectQuestion(props.instance.id, requestId);
+    if (r.ok) {
+      stream.applyEvent({ type: 'question.rejected', properties: { requestID: requestId } });
+      flush();
+      ElMessage.success('已谢绝，opencode 将自行继续');
+    } else {
+      ElMessage.warning(r.error || '操作失败');
+    }
+  } catch (e: any) { showApiError(e); }
+}
+
 async function answerPerm(pid: string, response: 'once' | 'always' | 'reject'): Promise<void> {
   try {
     await api.ocResolvePermission(props.instance.id, props.sessionId, pid, response);
@@ -707,6 +760,12 @@ onBeforeUnmount(() => {
 .tc-lab { font-size: 11px; color: var(--el-text-color-secondary); margin-bottom: 2px; }
 .tc-pre { margin: 0 0 8px; font-size: 12px; background: var(--el-fill-color-light); border-radius: 6px; padding: 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .tc-sec.err { color: var(--el-color-danger); font-size: 12px; }
+.q-card { border: 1px solid var(--el-color-primary); border-radius: 8px; padding: 10px 12px; background: var(--el-color-primary-light-9); }
+.q-l1 { font-size: 12px; font-weight: 600; color: var(--el-color-primary-darken-2); }
+.q-text { font-size: 13px; margin: 4px 0 8px; }
+.q-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.q-custom { display: flex; gap: 8px; margin-top: 8px; }
+.q-acts { display: flex; justify-content: flex-end; margin-top: 6px; }
 .perm-card { border: 1px solid var(--el-color-warning); border-radius: 8px; padding: 10px 12px; background: var(--el-color-warning-light-9); }
 .perm-l1 { font-size: 12px; color: var(--el-color-warning-darken-2); font-weight: 600; }
 .perm-title { font-size: 13px; margin-top: 2px; }

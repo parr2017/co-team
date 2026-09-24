@@ -213,4 +213,8 @@ export interface OpencodeBridge {
   tuiOpenSessions(agent: string | undefined, instance: string): Promise<OcCallResult<boolean>>;
   /** TUI 驱动：把 TUI 导航到指定会话（"让位式接管"：co-team 独占前 TUI 切走） */
   tuiSelectSession(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<boolean>>;
+  /** 回答 opencode 的提问（AskUserQuestion；需 control 档，requestID 来自 question.asked 事件） */
+  answerQuestion(agent: string | undefined, instance: string, requestID: string, answers: string[][]): Promise<OcCallResult<boolean>>;
+  /** 拒绝/不回答提问（agent 自行继续） */
+  rejectQuestion(agent: string | undefined, instance: string, requestID: string): Promise<OcCallResult<boolean>>;
 }
