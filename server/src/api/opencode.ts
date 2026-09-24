@@ -18,6 +18,7 @@
  * 实例级 readonly/control 档位与 agent 白名单由 OpencodeManager 门控（agent=undefined=API 层）。
  */
 import { Hono } from 'hono';
+import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import type { ApiContext, HttpError } from './index';
 import { readJsonAuto } from './index';
 import { validateOpencodeInstanceConfigs } from '../opencode/manager';
@@ -86,17 +87,33 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
     return c.json(r.ok ? { sessions: r.data } : { sessions: [], error: r.error }, r.ok ? 200 : 400);
   });
 
+  /** 新建会话（control 档；"新建并接管"的安全路径——不碰 TUI 正在用的会话） */
+  app.post('/api/opencode/instances/:id/sessions', async (c) => {
+    const body = await readJsonAuto<{ title?: string }>(c).catch(() => ({}) as { title?: string });
+    const r = await oc().createSession(undefined, c.req.param('id'), body.title ? String(body.title) : undefined);
+    return c.json(r.ok ? { ok: true, session: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
   app.get('/api/opencode/sessions/:instance/:session/messages', async (c) => {
     const r = await oc().readMessages(undefined, c.req.param('instance'), c.req.param('session'));
     return c.json(r.ok ? { messages: r.data, ...(r.truncated ? { truncated: true } : {}) } : { error: r.error }, r.ok ? 200 : 400);
   });
 
   app.post('/api/opencode/sessions/:instance/:session/prompt', async (c) => {
-    const body = await readJsonAuto<{ prompt?: string; model?: string }>(c);
+    const body = await readJsonAuto<{ prompt?: string; model?: unknown; agent?: string }>(c);
     const prompt = String(body.prompt || '').trim();
     if (!prompt) return c.json({ detail: 'prompt 不能为空' }, 400);
-    const model = body.model ? oc().resolveModel(c.req.param('instance'), String(body.model)) : undefined;
-    const r = await oc().sendPrompt(undefined, c.req.param('instance'), c.req.param('session'), prompt, model);
+    // model 双轨：字符串=池名(manager 解析)或原生 provider/model；对象 {providerID,modelID} 直穿（attached 用 opencode 自己的模型）
+    let model: { providerID: string; modelID: string } | undefined;
+    if (typeof body.model === 'string' && body.model.trim()) {
+      model = oc().resolveModel(c.req.param('instance'), body.model.trim());
+      if (!model) return c.json({ ok: false, error: `模型 ${body.model} 无法解析（managed 用池内名；attached 用 provider/model 原生格式）` }, 400);
+    } else if (body.model && typeof body.model === 'object') {
+      const m = body.model as { providerID?: string; modelID?: string };
+      if (m.providerID && m.modelID) model = { providerID: m.providerID, modelID: m.modelID };
+    }
+    const agent = String(body.agent || '').trim() || undefined;
+    const r = await oc().sendPrompt(undefined, c.req.param('instance'), c.req.param('session'), prompt, model, agent);
     return c.json(r.ok ? { ok: true, result: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });
 
@@ -129,5 +146,130 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
       response: body.response,
     });
     return c.json((r as { ok: boolean }).ok ? { ok: true } : { ok: false, error: (r as { error?: string }).error }, (r as { ok: boolean }).ok ? 200 : 400);
+  });
+
+  // ---------- TUI 同构接管面（对话镜像的实时数据与驱动通道） ----------
+
+  /** 接管当前对话：busy 优先否则最近更新（TUI 无 state API，启发式 + reason 可解释） */
+  app.get('/api/opencode/instances/:id/active-session', async (c) => {
+    const r = await oc().activeSession(undefined, c.req.param('id'));
+    return c.json(r.ok ? { ok: true, ...r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  /** agent 清单（composer 的 agent 下拉；opencode 内置 + 自定义） */
+  app.get('/api/opencode/instances/:id/agents', async (c) => {
+    const r = await oc().listAgents(undefined, c.req.param('id'));
+    return c.json(r.ok ? { agents: r.data } : { agents: [], error: r.error }, 200);
+  });
+
+  /** providers + 默认模型（attached 实例的模型下拉；managed 用 co-team 模型池） */
+  app.get('/api/opencode/instances/:id/models', async (c) => {
+    const r = await oc().listProviders(undefined, c.req.param('id'));
+    return c.json(r.ok ? { ...r.data } : { providers: [], default: {}, error: r.error }, 200);
+  });
+
+  /** 会话状态表（busy/idle；composer 的忙碌指示） */
+  app.get('/api/opencode/sessions/:instance/:session/status', async (c) => {
+    const r = await oc().sessionStatus(undefined, c.req.param('instance'));
+    const s = r.ok ? r.data?.[c.req.param('session')] : undefined;
+    return c.json({ ok: true, status: s?.type || 'unknown' });
+  });
+
+  /** 会话 todos（TUI 顶部任务清单） */
+  app.get('/api/opencode/sessions/:instance/:session/todo', async (c) => {
+    const r = await oc().sessionTodos(undefined, c.req.param('instance'), c.req.param('session'));
+    return c.json(r.ok ? { todos: r.data } : { todos: [], error: r.error }, 200);
+  });
+
+  /** 斜杠命令（TUI 的 /命令，如 summarize） */
+  app.post('/api/opencode/sessions/:instance/:session/command', async (c) => {
+    const body = await readJsonAuto<{ command?: string }>(c);
+    const command = String(body.command || '').trim().replace(/^\//, '');
+    if (!command) return c.json({ detail: 'command 不能为空' }, 400);
+    const r = await oc().runCommand(undefined, c.req.param('instance'), c.req.param('session'), command);
+    return c.json(r.ok ? { ok: true, result: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  // ---------- TUI 驱动（遥控用户 TUI：塞字/提交/toast/开会话选择器） ----------
+
+  app.post('/api/opencode/tui/:id/append', async (c) => {
+    const body = await readJsonAuto<{ text?: string }>(c);
+    const text = String(body.text || '');
+    if (!text.trim()) return c.json({ detail: 'text 不能为空' }, 400);
+    const r = await oc().tuiAppend(undefined, c.req.param('id'), text);
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  app.post('/api/opencode/tui/:id/submit', async (c) => {
+    const r = await oc().tuiSubmit(undefined, c.req.param('id'));
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  app.post('/api/opencode/tui/:id/toast', async (c) => {
+    const body = await readJsonAuto<{ message?: string; variant?: string }>(c);
+    const message = String(body.message || '');
+    if (!message.trim()) return c.json({ detail: 'message 不能为空' }, 400);
+    const variant = ['info', 'success', 'warning', 'error'].includes(String(body.variant)) ? (body.variant as 'info') : 'info';
+    const r = await oc().tuiToast(undefined, c.req.param('id'), message, variant);
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  app.post('/api/opencode/tui/:id/open-sessions', async (c) => {
+    const r = await oc().tuiOpenSessions(undefined, c.req.param('id'));
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  /** 让位式接管：把 TUI 导航到指定会话（co-team 独占前让 TUI 切走——opencode 无踢客户端 API，
+   *  select-session 是 162 端点里唯一能让"原客户端让位"的手段） */
+  app.post('/api/opencode/tui/:id/select-session', async (c) => {
+    const body = await readJsonAuto<{ session_id?: string }>(c);
+    const sid = String(body.session_id || '').trim();
+    if (!sid) return c.json({ detail: 'session_id 不能为空' }, 400);
+    const r = await oc().tuiSelectSession(undefined, c.req.param('id'), sid);
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  // ---------- PTY（TUI 的实时终端：bash 工具跑在 PTY 里，浏览器持票直连） ----------
+
+  app.get('/api/opencode/instances/:id/ptys', async (c) => {
+    const r = await oc().ptyList(undefined, c.req.param('id'));
+    return c.json(r.ok ? { ptys: r.data } : { ptys: [], error: r.error }, 200);
+  });
+
+  app.post('/api/opencode/instances/:id/ptys/:ptyId/ticket', async (c) => {
+    const r = await oc().ptyTicket(undefined, c.req.param('id'), c.req.param('ptyId'));
+    return c.json(r.ok ? { ok: true, ...r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  /** managed 直连信息：无鉴权 + CORS 已放行 → 前端 EventSource/WS 直连 opencode（最真流式） */
+  app.get('/api/opencode/instances/:id/direct', (c) => {
+    const info = oc().directInfo(c.req.param('id'));
+    return c.json({ ...info, events_url: info.ok ? `${info.url}/event` : '' });
+  });
+
+  /**
+   * attached 实例的 SSE 代理：co-team 持 Basic 鉴权代收（EventSource 无法设请求头），
+   * 同源分帧给前端。帧型与 WS oc_event 一致：{event} 或 {events:[...]}（delta 微批）。
+   */
+  app.get('/api/opencode/instances/:id/events', async (c) => {
+    const manager = oc();
+    const direct = manager.directInfo(c.req.param('id'));
+    if (direct.ok) {
+      return c.json({ ok: true, direct: true, url: direct.url, events_url: `${direct.url}/event`, hint: 'managed 实例无鉴权，前端应直连' }, 200);
+    }
+    return streamSSE(c, async (stream: SSEStreamingApi) => {
+      const ac = new AbortController();
+      stream.onAbort(() => ac.abort());
+      const send = async (frame: { event?: unknown; events?: unknown[] }) => {
+        try {
+          await stream.writeSSE({ data: JSON.stringify(frame), event: 'oc' });
+        } catch { /* 前端断开 */ }
+      };
+      try {
+        await manager.proxyEvents(c.req.param('id'), (ev) => void send({ event: ev }), ac.signal);
+      } catch (e: any) {
+        try { await stream.writeSSE({ data: JSON.stringify({ error: String(e?.message || e).slice(0, 200) }), event: 'oc_error' }); } catch { /* 已断 */ }
+      }
+    });
   });
 }

@@ -10,7 +10,7 @@
  * - OpencodeBridge 门控：agent 可见性白名单（agent.yaml 的 opencode_instances，缺省不可见）、
  *   readonly/control 档位、allow_shell 高危开关；control 档写操作全部记审计日志。
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, exec, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
@@ -19,6 +19,7 @@ import { getLogger, type Logger } from '../logger';
 import type { ModelConfig } from '../types';
 import { resolveModelRef } from './modelInjection';
 import { OpencodeClient } from './client';
+import { EventBatcher, isDroppedEvent } from './events';
 import {
   DEFAULT_OC_COMMAND,
   DEFAULT_OC_HOSTNAME,
@@ -56,10 +57,16 @@ interface InstanceState {
   projectRoot?: string;
   /** sessionId → idle/error 等待器（run_task 复合工具；SSE session.idle/error 唤醒） */
   idleWaiters?: Map<string, { resolve: (v: 'idle' | 'error') => void; timer: NodeJS.Timeout }>;
+  /** delta 微批器（TUI 同构镜像：token 级事件 50ms 合并，防 WS burst 上限） */
+  batcher?: EventBatcher;
 }
 
 /** idle 等待的绝对值定义：run_task 的最坏等待预算（opencode 自主跑一个任务可能很久） */
 const IDLE_WAIT_MAX_MS = 30 * 60_000;
+/** serve 进程登记表（孤儿清理用）：co-team 每次重启后按"端口当前归属=登记 pid"校验后查杀 */
+function pidRegistryPath(): string {
+  return path.join(os.tmpdir(), 'coteam-opencode-logs', 'pids.json');
+}
 
 /** ${ENV_VAR} 占位展开（密钥只走环境变量，与 mcp/transports.ts 同语义） */
 function expandEnv(v: string): string {
@@ -132,6 +139,8 @@ export class OpencodeManager implements OpencodeBridge {
 
   /** 启动：managed auto_start 拉起；attached 进健康巡检 + SSE。单实例失败不影响其他实例与主链路。 */
   start(): void {
+    // 先清杀上个 co-team 会话遗留的孤儿 serve（重启不 = serve 消失——它们会占端口耗内存）
+    this.cleanupOrphanServes();
     for (const st of this.instances.values()) {
       if (st.cfg.enabled === false) continue;
       if (st.cfg.kind === 'managed') {
@@ -148,6 +157,7 @@ export class OpencodeManager implements OpencodeBridge {
       if (st.healthTimer) clearInterval(st.healthTimer);
       if (st.restartTimer) clearTimeout(st.restartTimer);
       st.eventAbort?.abort();
+      st.batcher?.dispose();
       if (st.proc) this.killTree(st);
     }
   }
@@ -162,6 +172,7 @@ export class OpencodeManager implements OpencodeBridge {
         if (st.healthTimer) clearInterval(st.healthTimer);
         if (st.restartTimer) clearTimeout(st.restartTimer);
         st.eventAbort?.abort();
+        st.batcher?.dispose();
         if (st.proc) this.killTree(st);
         this.instances.delete(id);
       }
@@ -194,7 +205,11 @@ export class OpencodeManager implements OpencodeBridge {
       const port = st.cfg.port && st.cfg.port > 0 ? st.cfg.port : await pickFreePort();
       const hostname = st.cfg.hostname || DEFAULT_OC_HOSTNAME;
       const command = st.cfg.command || DEFAULT_OC_COMMAND;
-      const args = [...(st.cfg.args || []), 'serve', '--port', String(port), '--hostname', hostname];
+      // 浏览器直连 SSE（managed 实例无鉴权）需要 CORS 放行前后端 dev 源；默认带常用本地源
+      const corsOrigins = st.cfg.cors_origins?.length
+        ? st.cfg.cors_origins
+        : ['http://localhost:8856', 'http://127.0.0.1:8856', 'http://localhost:8857', 'http://127.0.0.1:8857'];
+      const args = [...(st.cfg.args || []), 'serve', '--port', String(port), '--hostname', hostname, '--cors', corsOrigins.join(',')];
       if (!st.cfg.project_root) throw new Error('managed 实例必须配置 project_root');
       fs.mkdirSync(st.cfg.project_root, { recursive: true });
       const logDir = path.join(os.tmpdir(), 'coteam-opencode-logs');
@@ -213,12 +228,22 @@ export class OpencodeManager implements OpencodeBridge {
       st.proc = proc;
       st.pid = proc.pid;
       st.logPath = logPath;
+      // 登记 pid+port：co-team 意外重启后据此清理孤儿 serve（见 cleanupOrphanServes）
+      try {
+        const reg = pidRegistryPath();
+        const dir = path.dirname(reg);
+        fs.mkdirSync(dir, { recursive: true });
+        const cur = fs.existsSync(reg) ? (JSON.parse(fs.readFileSync(reg, 'utf-8')) as Record<string, unknown>) : {};
+        cur[st.cfg.id] = { pid: proc.pid, port };
+        fs.writeFileSync(reg, JSON.stringify(cur), 'utf-8');
+      } catch { /* 登记失败不阻塞拉起（代价仅是本会话重启后少清一个孤儿） */ }
       st.url = `http://${hostname}:${port}`;
       st.client = this.buildClient(st);
       proc.on('exit', (code) => {
         st.proc = undefined;
         st.pid = undefined;
         st.eventAbort?.abort();
+        st.batcher?.dispose();
         if (this.stopped) return;
         st.state = 'error';
         st.error = `serve 进程退出（code=${code}）`;
@@ -349,9 +374,23 @@ export class OpencodeManager implements OpencodeBridge {
     }
   }
 
-  /** SSE 订阅循环：断流按退避重订，直到 stop/applyConfig abort */
+  /** SSE 订阅循环：断流按退避重订，直到 stop/applyConfig abort。delta 走微批器。 */
   private subscribeEvents(st: InstanceState): void {
     st.eventAbort?.abort();
+    st.batcher?.dispose();
+    const batcher = new EventBatcher(
+      (instanceId, frame) => {
+        try {
+          if (frame.events) {
+            for (const ev of frame.events) this.eventForwarder?.(instanceId, ev);
+          } else if (frame.event) {
+            this.eventForwarder?.(instanceId, frame.event);
+          }
+        } catch { /* 转发方异常不杀流 */ }
+      },
+      st.cfg.id,
+    );
+    st.batcher = batcher;
     const ac = new AbortController();
     st.eventAbort = ac;
     void (async () => {
@@ -359,9 +398,10 @@ export class OpencodeManager implements OpencodeBridge {
         try {
           for await (const ev of st.client!.eventStream(ac.signal)) {
             if (ac.signal.aborted) break;
+            if (isDroppedEvent(ev.type)) continue;
             // run_task 的 idle 等待器先行（本地唤醒，不依赖转发方接线）
             this.wakeIdleWaiters(st, ev);
-            try { this.eventForwarder?.(st.cfg.id, ev); } catch { /* 转发方异常不杀流 */ }
+            batcher.push(ev);
           }
         } catch { /* 断流/被 abort——走退避 */ }
         if (ac.signal.aborted || this.stopped) break;
@@ -389,6 +429,33 @@ export class OpencodeManager implements OpencodeBridge {
       w.resolve(ev.type === 'session.error' ? 'error' : 'idle');
       st.idleWaiters.delete(sid);
     }
+  }
+
+  /**
+   * 孤儿 serve 清理：读 pid+port 登记表，逐条校验"该端口当前监听者仍是登记的 pid"
+   * （双条件防误杀——端口被回收或 pid 被复用都不杀），命中则 taskkill 进程树。
+   * 用户的桌面版 service / 手动 serve 的端口从不在表里，天然不碰。
+   */
+  private cleanupOrphanServes(): void {
+    try {
+      const reg = pidRegistryPath();
+      if (!fs.existsSync(reg)) return;
+      const entries = JSON.parse(fs.readFileSync(reg, 'utf-8')) as Record<string, { pid?: number; port?: number }>;
+      // 立即清表：本会话的 spawn 会重新登记；清理失败也不留旧条目误导下次
+      fs.writeFileSync(reg, '{}', 'utf-8');
+      const targets = Object.values(entries || {}).filter((e) => e && Number.isInteger(e.pid) && Number.isInteger(e.port));
+      if (!targets.length) return;
+      void (async () => {
+        for (const t of targets) {
+          try {
+            const owner = await portOwner(t.port as number);
+            if (owner !== t.pid) continue; // 端口易主——登记的是历史 pid，不动
+            spawn(`taskkill /PID ${t.pid} /T /F`, { shell: true, stdio: 'ignore' });
+            this.logger.info('Opencode orphan serve cleaned', { pid: t.pid, port: t.port });
+          } catch { /* 单条失败不影响其余 */ }
+        }
+      })();
+    } catch { /* 清理失败不阻塞启动 */ }
   }
 
   private killTree(st: InstanceState): void {
@@ -478,22 +545,22 @@ export class OpencodeManager implements OpencodeBridge {
     return st.client!.listMessages(sessionId);
   }
 
-  async sendPrompt(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }): Promise<OcCallResult<unknown>> {
+  async sendPrompt(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<unknown>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
-    this.audit('send_prompt', st, { session: sessionId, model, prompt_chars: prompt.length });
-    return st.client!.prompt(sessionId, prompt, model);
+    this.audit('send_prompt', st, { session: sessionId, model, ocAgent, prompt_chars: prompt.length });
+    return st.client!.prompt(sessionId, prompt, model, ocAgent);
   }
 
-  async sendPromptAsync(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }): Promise<OcCallResult<{ messageID?: string }>> {
+  async sendPromptAsync(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<{ messageID?: string }>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
-    this.audit('send_prompt_async', st, { session: sessionId, model, prompt_chars: prompt.length });
-    return st.client!.promptAsync(sessionId, prompt, model);
+    this.audit('send_prompt_async', st, { session: sessionId, model, ocAgent, prompt_chars: prompt.length });
+    return st.client!.promptAsync(sessionId, prompt, model, ocAgent);
   }
 
   async abortSession(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<boolean>> {
@@ -606,11 +673,164 @@ export class OpencodeManager implements OpencodeBridge {
     return false;
   }
 
-  /** 模型名 → opencode model ref（仅 model_injection 实例；attached 实例模型归 opencode，不解析） */
+  /** 模型名 → opencode model ref：managed 池内精确匹配；其余按 opencode 原生 'provider/model' 解析（attached 实例） */
   resolveModel(instance: string, modelName: string): { providerID: string; modelID: string } | undefined {
     const st = this.instances.get(instance);
-    if (!st || st.cfg.model_injection !== true || !this.modelPool.length) return undefined;
-    return resolveModelRef(this.modelPool, modelName);
+    if (!st) return undefined;
+    if (st.cfg.model_injection === true && this.modelPool.length) {
+      const hit = resolveModelRef(this.modelPool, modelName);
+      if (hit) return hit;
+    }
+    const slash = modelName.indexOf('/');
+    if (slash > 0 && slash < modelName.length - 1) return { providerID: modelName.slice(0, slash), modelID: modelName.slice(slash + 1) };
+    return undefined;
+  }
+
+  async sessionStatus(agent: string | undefined, instance: string): Promise<OcCallResult<Record<string, { type: string }>>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const r = await st.client!.sessionStatus();
+    if (!r.ok || !r.data) return { ok: false, error: r.error };
+    const out: Record<string, { type: string }> = {};
+    for (const [k, v] of Object.entries(r.data)) out[k] = { type: String((v as { type?: unknown })?.type ?? 'unknown') };
+    return { ok: true, data: out };
+  }
+
+  /**
+   * 接管当前对话：TUI 无 state API（tui.* 全是 POST），只能启发式——
+   * ① status 表里 busy 的会话（多个取最近更新）；② 否则 time.updated 最新的会话。
+   * reason 让 UI 明示"为什么是这个"，用户可手动改选。
+   */
+  async activeSession(agent: string | undefined, instance: string): Promise<OcCallResult<{ session: OcSession; reason: 'busy' | 'recent' }>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const [status, sessions] = await Promise.all([st.client!.sessionStatus(), st.client!.listSessions()]);
+    if (!sessions.ok || !Array.isArray(sessions.data) || !sessions.data.length) return { ok: false, error: sessions.error || '该实例没有任何会话' };
+    const ts = (s: OcSession): number => {
+      const t = (s as Record<string, any>).time || {};
+      return Number(t.updated || t.created || 0);
+    };
+    const sorted = [...sessions.data].sort((a, b) => ts(b) - ts(a));
+    if (status.ok && status.data) {
+      const busy = sorted.filter((s) => {
+        const v = status.data![s.id];
+        return v && String((v as { type?: string }).type || '') !== 'idle';
+      });
+      if (busy.length) return { ok: true, data: { session: busy[0], reason: 'busy' as const } };
+    }
+    return { ok: true, data: { session: sorted[0], reason: 'recent' as const } };
+  }
+
+  async listAgents(agent: string | undefined, instance: string): Promise<OcCallResult<{ name: string; description?: string; mode?: string }[]>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const r = await st.client!.listAgents();
+    if (!r.ok) return r;
+    return { ok: true, data: (r.data || []).map((a) => ({ name: a.name, ...(a.description ? { description: a.description } : {}), ...(a.mode ? { mode: a.mode } : {}) })) };
+  }
+
+  async listProviders(agent: string | undefined, instance: string): Promise<OcCallResult<{ providers?: unknown[]; default?: Record<string, string> }>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    return st.client!.listProviders();
+  }
+
+  async runCommand(agent: string | undefined, instance: string, sessionId: string, command: string, args = '', ocAgent?: string): Promise<OcCallResult<unknown>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('command', st, { session: sessionId, command: command.slice(0, 80) });
+    return st.client!.runCommand(sessionId, command, args, ocAgent);
+  }
+
+  async sessionTodos(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<{ content: string; status: string; priority: string }[]>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    return st.client!.sessionTodos(sessionId);
+  }
+
+  async tuiAppend(agent: string | undefined, instance: string, text: string): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('tui_append', st, { chars: text.length });
+    return st.client!.appendPrompt(text);
+  }
+
+  async tuiSubmit(agent: string | undefined, instance: string): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('tui_submit', st, {});
+    return st.client!.submitPrompt();
+  }
+
+  async tuiToast(agent: string | undefined, instance: string, message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info'): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    return st.client!.showToast(message, variant);
+  }
+
+  async tuiOpenSessions(agent: string | undefined, instance: string): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    return st.client!.openSessions();
+  }
+
+  /** 让位式接管：把 TUI 导航到指定会话（需 control 档；审计留痕） */
+  async tuiSelectSession(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('tui_select_session', st, { to: sessionId });
+    return st.client!.selectSession(sessionId);
+  }
+
+  /**
+   * attached 实例的浏览器侧代理 SSE：co-team 持 Basic 鉴权代收（EventSource 无法设请求头）。
+   * managed 实例无鉴权，前端走 /direct 拿地址直连，不占这里。
+   */
+  async proxyEvents(id: string, onEvent: (ev: OcEvent) => void, signal: AbortSignal): Promise<void> {
+    const st = this.instances.get(id);
+    if (!st?.client) throw new Error(`实例 ${id} 不存在或未连接`);
+    for await (const ev of st.client.eventStream(signal)) {
+      if (isDroppedEvent(ev.type)) continue;
+      onEvent(ev);
+    }
+  }
+
+  /** PTY 列表（TUI 的实时终端） */
+  async ptyList(agent: string | undefined, instance: string): Promise<OcCallResult<{ id: string; title?: string; command?: string; status?: string }[]>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    return st.client!.listPtys();
+  }
+
+  /** 签 PTY 连接票：浏览器持 ticket 直连 opencode 的 /pty/{id}/connect（WebSocket） */
+  async ptyTicket(agent: string | undefined, instance: string, ptyId: string): Promise<OcCallResult<{ ticket: string; expires_in: number; ws_url: string }>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const r = await st.client!.ptyConnectToken(ptyId);
+    if (!r.ok || !r.data) return { ok: false, error: r.error || '签票失败' };
+    const wsBase = st.url.replace(/^http/, 'ws');
+    return { ok: true, data: { ...r.data, ws_url: `${wsBase}/pty/${encodeURIComponent(ptyId)}/connect` } };
+  }
+
+  /** managed 实例的直连信息（无鉴权 + CORS 已放行 → 浏览器 EventSource/WS 直连） */
+  directInfo(id: string): { ok: boolean; url: string; direct: boolean; reason?: string } {
+    const st = this.instances.get(id);
+    if (!st || st.cfg.enabled === false) return { ok: false, url: '', direct: false, reason: '实例不存在或已禁用' };
+    if (st.cfg.kind !== 'managed') return { ok: false, url: st.url, direct: false, reason: 'attached 实例带鉴权，走 /events 代理' };
+    if (st.state !== 'connected') return { ok: false, url: st.url, direct: false, reason: `实例未连接：${st.error || '启动中'}` };
+    return { ok: true, url: st.url, direct: true };
   }
 
   // ---------- 运行时状态（/api/opencode、/api/status） ----------
@@ -656,11 +876,35 @@ export class OpencodeManager implements OpencodeBridge {
     if (st.healthTimer) clearInterval(st.healthTimer);
     if (st.restartTimer) clearTimeout(st.restartTimer);
     st.eventAbort?.abort();
+    st.batcher?.dispose();
     this.killTree(st);
+    // 摘掉登记条目：下次启动的孤儿清理不需要尝试这个已退的
+    try {
+      const reg = pidRegistryPath();
+      if (fs.existsSync(reg)) {
+        const cur = JSON.parse(fs.readFileSync(reg, 'utf-8')) as Record<string, unknown>;
+        delete cur[id];
+        fs.writeFileSync(reg, JSON.stringify(cur), 'utf-8');
+      }
+    } catch { /* 忽略 */ }
     st.state = 'stopped';
     st.error = undefined;
     return true;
   }
+}
+
+/** 查端口当前监听者 pid（孤儿清理的双条件校验之一；查不到返回 undefined） */
+function portOwner(port: number): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const cmd = process.platform === 'win32'
+      ? `powershell -NoProfile -Command "(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue).OwningProcess"`
+      : `lsof -ti :${port} -sTCP:LISTEN 2>/dev/null`;
+    exec(cmd, { timeout: 5000, windowsHide: true }, (err, stdout) => {
+      if (err) return resolve(undefined);
+      const pid = Number(String(stdout).trim().split(/\s+/)[0]);
+      resolve(Number.isInteger(pid) && pid > 0 ? pid : undefined);
+    });
+  });
 }
 
 /** 本机空闲端口挑选（managed 未配 port 时用） */

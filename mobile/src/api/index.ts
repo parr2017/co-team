@@ -8,6 +8,8 @@ import { openTokenGate } from '../tokenGate';
 import { statusText } from '../utils/events';
 
 const BASE = import.meta.env.VITE_API_BASE ?? '';
+/** SSE 订阅等无法走 request() 的场景复用同一 base（app 打包时指向外部服务） */
+export const API_BASE = BASE;
 
 // SEC-P0 API Token：localStorage 持久化；401 时清掉失效凭据并弹全局输入层（存后自动重试）
 export function getApiToken(): string {
@@ -543,7 +545,7 @@ export const api = {
     request<{ sessions: OcSession[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`),
   ocMessages: (instance: string, session: string) =>
     request<{ messages: OcMessage[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages`),
-  ocPrompt: (instance: string, session: string, payload: { prompt: string; model?: string }) =>
+  ocPrompt: (instance: string, session: string, payload: { prompt: string; model?: string; agent?: string }) =>
     post<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/prompt`, payload),
   ocAbort: (instance: string, session: string) =>
     post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/abort`),
@@ -553,6 +555,49 @@ export const api = {
     request<{ ok: boolean; diff: OcDiffFile[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/diff`),
   ocResolvePermission: (instance: string, session: string, permission_id: string, response: 'once' | 'always' | 'reject') =>
     post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, { permission_id, response }),
+  // ---------- TUI 同构会话页（active/direct/agents/models/status/todo/command/pty） ----------
+  /** 接管当前对话：busy 会话优先，否则最近更新（reason 说明命中原因） */
+  ocActiveSession: (instance: string) =>
+    request<OcActiveSession>(`/api/opencode/instances/${encodeURIComponent(instance)}/active-session`),
+  /** 新建会话（让位式接管给 TUI 建承接会话用） */
+  ocCreateSession: (instance: string, title?: string) =>
+    request<{ ok: boolean; session?: { id: string; title?: string }; error?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(title ? { title } : {}) }),
+    }),
+  /** 向 TUI 弹 toast（接管透明化：让对方知道 co-team 在看/管这条对话） */
+  ocTuiToast: (instance: string, message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info') =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/toast`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, variant }),
+    }),
+  /** 把 TUI 导航到指定会话（让位式接管：co-team 独占前 TUI 切走） */
+  ocTuiSelectSession: (instance: string, sessionId: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/select-session`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId }),
+    }),
+  /** managed 直连信息（ok+url → 浏览器直连 opencode SSE；否则走同源 /events 代理） */
+  ocDirect: (instance: string) =>
+    request<OcDirectInfo>(`/api/opencode/instances/${encodeURIComponent(instance)}/direct`),
+  /** opencode 内置 + 自定义 agent 清单（composer 的 agent 下拉） */
+  ocAgents: (instance: string) =>
+    request<{ agents: OcAgentInfo[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/agents`),
+  /** providers + 默认模型（attached 实例的模型下拉；managed 用注入模型池） */
+  ocModels: (instance: string) =>
+    request<OcModelsInfo>(`/api/opencode/instances/${encodeURIComponent(instance)}/models`),
+  /** 会话状态（busy/idle；composer 忙碌指示与断线校正） */
+  ocSessionStatus: (instance: string, session: string) =>
+    request<{ ok: boolean; status: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/status`),
+  /** 会话 todos（TUI 顶部任务清单；打开时播种一次，后续 todo.updated 事件驱动） */
+  ocTodos: (instance: string, session: string) =>
+    request<{ todos: OcTodo[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/todo`),
+  /** 斜杠命令（TUI 的 /命令，command 不带前导 /） */
+  ocCommand: (instance: string, session: string, command: string) =>
+    post<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/command`, { command }),
+  /** PTY 列表（TUI 的实时终端） */
+  ocPtys: (instance: string) =>
+    request<{ ptys: OcPty[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/ptys`),
+  /** 签 PTY 连接票：浏览器持 ticket 直连 opencode 的 ws_url（WebSocket） */
+  ocPtyTicket: (instance: string, ptyId: string) =>
+    post<{ ok: boolean; ticket: string; expires_in: number; ws_url: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/ptys/${encodeURIComponent(ptyId)}/ticket`, {}),
   // 包 D：全局命令权限（级别 + 白名单）
   getPermissions: () =>
     request<{ permissions: { level: string; whitelist_commands: string[]; max_time_sec?: number }; levels: string[] }>('/api/config/permissions'),
@@ -697,6 +742,8 @@ export interface OcInstance {
 export interface OcSession {
   id: string;
   title?: string;
+  /** opencode 全局会话库按 directory 归属项目（面板分组/徽标用） */
+  directory?: string;
   [k: string]: unknown;
 }
 
@@ -718,6 +765,53 @@ export interface OcDiffFile {
   additions: number;
   deletions: number;
   patch?: string;
+}
+
+/** 接管当前对话返回：session=目标会话；reason=busy（执行中优先）/recent（最近更新兜底） */
+export interface OcActiveSession {
+  ok: boolean;
+  session?: OcSession;
+  reason?: 'busy' | 'recent';
+  error?: string;
+}
+
+/** managed 直连信息：ok+direct → 前端直连 url/event（无鉴权 CORS 已放行）；attached 走同源 /events 代理 */
+export interface OcDirectInfo {
+  ok: boolean;
+  direct: boolean;
+  url: string;
+  events_url?: string;
+  reason?: string;
+}
+
+/** opencode agent 清单项（composer 的 agent 下拉；mode=primary/subagent 等） */
+export interface OcAgentInfo {
+  name: string;
+  description?: string;
+  mode?: string;
+}
+
+/** providers + 默认模型（attached 模型下拉；providers 为 opencode /config/providers 原样透传） */
+export interface OcModelsInfo {
+  providers?: Record<string, any>[];
+  default?: Record<string, string>;
+}
+
+/** 会话 todo（TUI 顶部任务清单；status=pending/in_progress/completed） */
+export interface OcTodo {
+  content: string;
+  status: string;
+  priority?: string;
+  id?: string;
+}
+
+/** PTY（TUI 的实时终端：bash 工具跑在 PTY 里；exitCode 仅 exited 后有） */
+export interface OcPty {
+  id: string;
+  title?: string;
+  command?: string;
+  status?: string;
+  exitCode?: number;
 }
 
 /** 实例配置（config.yaml 的 opencode.instances[] 条目镜像；面板空态引导用户改配置文件） */

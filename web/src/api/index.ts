@@ -729,6 +729,11 @@ export interface OcInstance {
 export interface OcSession {
   id: string;
   title?: string;
+  /** opencode 全局会话库按 directory 归属项目（面板分组/徽标用） */
+  directory?: string;
+  agent?: string;
+  model?: Record<string, unknown>;
+  time?: { created: number; updated: number };
   [k: string]: unknown;
 }
 
@@ -1132,7 +1137,7 @@ export const api = {
     request<{ sessions: OcSession[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`),
   ocMessages: (instance: string, session: string) =>
     request<{ messages: OcMessage[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages`),
-  ocPrompt: (instance: string, session: string, payload: { prompt: string; model?: string }) =>
+  ocPrompt: (instance: string, session: string, payload: { prompt: string; model?: string | { providerID: string; modelID: string }; agent?: string }) =>
     request<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/prompt`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     }),
@@ -1147,5 +1152,40 @@ export const api = {
   ocResolvePermission: (instance: string, session: string, permissionId: string, response: 'once' | 'always' | 'reject') =>
     request<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permission_id: permissionId, response }),
+    }),
+  // ---- TUI 同构接管面 ----
+  ocActiveSession: (instance: string) =>
+    request<{ ok: boolean; session?: OcSession; reason?: 'busy' | 'recent'; error?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/active-session`),
+  ocDirect: (instance: string) =>
+    request<{ ok: boolean; direct: boolean; url: string; events_url?: string; reason?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/direct`),
+  ocAgents: (instance: string) =>
+    request<{ agents: { name: string; description?: string; mode?: string }[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/agents`),
+  ocModels: (instance: string) =>
+    request<{ providers?: { id?: string; models?: Record<string, unknown> }[]; default?: Record<string, string> }>(`/api/opencode/instances/${encodeURIComponent(instance)}/models`),
+  ocSessionStatus: (instance: string, session: string) =>
+    request<{ status: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/status`),
+  ocTodos: (instance: string, session: string) =>
+    request<{ todos: { id?: string; content: string; status: string; priority?: string }[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/todo`),
+  ocCommand: (instance: string, session: string, command: string) =>
+    request<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/command`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command }),
+    }),
+  ocPtys: (instance: string) =>
+    request<{ ptys: { id: string; title?: string; command?: string; status?: string }[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/ptys`),
+  ocPtyTicket: (instance: string, ptyId: string) =>
+    request<{ ok: boolean; ticket: string; expires_in: number; ws_url: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/ptys/${encodeURIComponent(ptyId)}/ticket`, { method: 'POST' }),
+  ocTuiToast: (instance: string, message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info') =>
+    request<{ ok: boolean }>(`/api/opencode/tui/${encodeURIComponent(instance)}/toast`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, variant }),
+    }),
+  ocTuiOpenSessions: (instance: string) =>
+    request<{ ok: boolean }>(`/api/opencode/tui/${encodeURIComponent(instance)}/open-sessions`, { method: 'POST' }),
+  ocTuiSelectSession: (instance: string, sessionId: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/select-session`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId }),
+    }),
+  ocCreateSession: (instance: string, title?: string) =>
+    request<{ ok: boolean; session?: OcSession }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(title ? { title } : {}) }),
     }),
 };

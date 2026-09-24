@@ -55,6 +55,8 @@ export interface OpencodeInstanceConfig {
   agents?: string[];
   /** 高危：允许通过 /session/:id/shell 执行任意命令（默认 false，且需 control 档） */
   allow_shell?: boolean;
+  /** 浏览器直连 SSE 的 CORS 放行源；缺省 = 本地 web(8856)/mobile(8857) dev 源 */
+  cors_origins?: string[];
 }
 
 export const DEFAULT_OC_TIMEOUT_SEC = 60;
@@ -163,9 +165,9 @@ export interface OpencodeBridge {
   /** 读会话消息（{info, parts}[]） */
   readMessages(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<unknown[]>>;
   /** 同步发送：等待 opencode 返回助手消息（run_task 复合工具用） */
-  sendPrompt(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }): Promise<OcCallResult<unknown>>;
+  sendPrompt(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<unknown>>;
   /** 异步发送：不等结果，靠 SSE 跟踪 */
-  sendPromptAsync(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }): Promise<OcCallResult<{ messageID?: string }>>;
+  sendPromptAsync(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<{ messageID?: string }>>;
   /** 打断运行中的会话 */
   abortSession(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<boolean>>;
   /** 回退一条消息（含其后） */
@@ -186,4 +188,26 @@ export interface OpencodeBridge {
   resolveModel(instance: string, modelName: string): { providerID: string; modelID: string } | undefined;
   /** 是否存在 allow_shell 实例（决定 oc_shell 是否进工具声明） */
   hasShellEnabled(agent?: string): boolean;
+  /** 会话状态表（busy/idle；TUI 同构的忙碌指示与接管发现） */
+  sessionStatus(agent: string | undefined, instance: string): Promise<OcCallResult<Record<string, { type: string }>>>;
+  /** 接管当前对话：busy 会话优先，否则最近更新；reason 说明命中原因 */
+  activeSession(agent: string | undefined, instance: string): Promise<OcCallResult<{ session: OcSession; reason: 'busy' | 'recent' }>>;
+  /** opencode agent 清单（composer 的 agent 下拉） */
+  listAgents(agent: string | undefined, instance: string): Promise<OcCallResult<{ name: string; description?: string; mode?: string }[]>>;
+  /** providers + 默认模型（attached 实例的模型下拉） */
+  listProviders(agent: string | undefined, instance: string): Promise<OcCallResult<{ providers?: unknown[]; default?: Record<string, string> }>>;
+  /** 斜杠命令（TUI 的 /命令） */
+  runCommand(agent: string | undefined, instance: string, sessionId: string, command: string, args?: string, ocAgent?: string): Promise<OcCallResult<unknown>>;
+  /** 会话 todos */
+  sessionTodos(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<{ content: string; status: string; priority: string }[]>>;
+  /** TUI 驱动：往 TUI 输入框追加文本（control 档） */
+  tuiAppend(agent: string | undefined, instance: string, text: string): Promise<OcCallResult<boolean>>;
+  /** TUI 驱动：提交 TUI 输入框当前内容（control 档） */
+  tuiSubmit(agent: string | undefined, instance: string): Promise<OcCallResult<boolean>>;
+  /** TUI 驱动：在 TUI 弹 toast（如"co-team 已接管此对话"） */
+  tuiToast(agent: string | undefined, instance: string, message: string, variant?: 'info' | 'success' | 'warning' | 'error'): Promise<OcCallResult<boolean>>;
+  /** TUI 驱动：在 TUI 端打开会话选择器 */
+  tuiOpenSessions(agent: string | undefined, instance: string): Promise<OcCallResult<boolean>>;
+  /** TUI 驱动：把 TUI 导航到指定会话（"让位式接管"：co-team 独占前 TUI 切走） */
+  tuiSelectSession(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<boolean>>;
 }

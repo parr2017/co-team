@@ -180,21 +180,23 @@ export class OpencodeClient {
     return this.truncate(this.req<unknown[]>('GET', `/session/${encodeURIComponent(id)}/message`));
   }
 
-  /** 同步 prompt：等 opencode 跑完返回 {info,parts} */
-  prompt(id: string, prompt: string, model?: { providerID: string; modelID: string }): Promise<OcCallResult<unknown>> {
+  /** 同步 prompt：等 opencode 跑完返回 {info,parts}。model 为 {providerID,modelID} 或池内模型名（由 manager 解析） */
+  prompt(id: string, prompt: string, model?: { providerID: string; modelID: string }, agent?: string): Promise<OcCallResult<unknown>> {
     return this.truncate(
       this.req<unknown>('POST', `/session/${encodeURIComponent(id)}/message`, {
         parts: [{ type: 'text', text: prompt }],
         ...(model ? { model } : {}),
+        ...(agent ? { agent } : {}),
       }),
     );
   }
 
   /** 异步 prompt：立即返回，进展靠 SSE /event 跟踪 */
-  promptAsync(id: string, prompt: string, model?: { providerID: string; modelID: string }): Promise<OcCallResult<{ messageID?: string }>> {
+  promptAsync(id: string, prompt: string, model?: { providerID: string; modelID: string }, agent?: string): Promise<OcCallResult<{ messageID?: string }>> {
     return this.req<{ messageID?: string }>('POST', `/session/${encodeURIComponent(id)}/prompt_async`, {
       parts: [{ type: 'text', text: prompt }],
       ...(model ? { model } : {}),
+      ...(agent ? { agent } : {}),
     });
   }
 
@@ -234,8 +236,65 @@ export class OpencodeClient {
     return this.req<boolean>('POST', '/tui/submit-prompt');
   }
 
+  clearPrompt(): Promise<OcCallResult<boolean>> {
+    return this.req<boolean>('POST', '/tui/clear-prompt');
+  }
+
   showToast(message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info'): Promise<OcCallResult<boolean>> {
     return this.req<boolean>('POST', '/tui/show-toast', { message, variant });
+  }
+
+  openSessions(): Promise<OcCallResult<boolean>> {
+    return this.req<boolean>('POST', '/tui/open-sessions');
+  }
+
+  /** 指挥 TUI 导航到指定会话——"让位式接管"：co-team 独占前把 TUI 切到别处 */
+  selectSession(sessionId: string): Promise<OcCallResult<boolean>> {
+    return this.req<boolean>('POST', '/tui/select-session', { sessionID: sessionId });
+  }
+
+  // ---------- agents / models / 命令 / todos ----------
+
+  /** opencode 内置 agent 清单（TUI 同构 composer 的 agent 下拉数据源） */
+  listAgents(): Promise<OcCallResult<{ name: string; description?: string; mode?: string }[]>> {
+    return this.req<{ name: string; description?: string; mode?: string }[]>('GET', '/agent');
+  }
+
+  /** providers + 各 provider 默认模型（attached 实例的模型下拉数据源） */
+  listProviders(): Promise<OcCallResult<{ providers?: unknown[]; default?: Record<string, string> }>> {
+    return this.req<{ providers?: unknown[]; default?: Record<string, string> }>('GET', '/config/providers');
+  }
+
+  /** 斜杠命令（TUI 的 /命令；command 形如 'summarize'。opencode 要求 arguments 为字符串——缺字段 400） */
+  runCommand(id: string, command: string, args = '', agent?: string): Promise<OcCallResult<unknown>> {
+    return this.truncate(
+      this.req<unknown>('POST', `/session/${encodeURIComponent(id)}/command`, {
+        command,
+        arguments: args,
+        ...(agent ? { agent } : {}),
+      }),
+    );
+  }
+
+  /** 会话 todos（TUI 顶部的任务清单；GET 直取，不依赖事件拼装） */
+  sessionTodos(id: string): Promise<OcCallResult<{ content: string; status: string; priority: string }[]>> {
+    return this.req<{ content: string; status: string; priority: string }[]>('GET', `/session/${encodeURIComponent(id)}/todo`);
+  }
+
+  /** 单条消息详情（TUI 的消息定位/revert 预览） */
+  getMessage(id: string, messageID: string): Promise<OcCallResult<unknown>> {
+    return this.req<unknown>('GET', `/session/${encodeURIComponent(id)}/message/${encodeURIComponent(messageID)}`);
+  }
+
+  // ---------- PTY（TUI 的实时终端：bash 工具跑在 PTY 里） ----------
+
+  listPtys(): Promise<OcCallResult<{ id: string; title?: string; command?: string; status?: string }[]>> {
+    return this.req<{ id: string; title?: string; command?: string; status?: string }[]>('GET', '/pty');
+  }
+
+  /** PTY 连接票：浏览器持 ticket 直连 /pty/{id}/connect（WebSocket）——managed 免鉴可直接签 */
+  ptyConnectToken(ptyId: string): Promise<OcCallResult<{ ticket: string; expires_in: number }>> {
+    return this.req<{ ticket: string; expires_in: number }>('POST', `/pty/${encodeURIComponent(ptyId)}/connect-token`, {});
   }
 
   // ---------- project ----------

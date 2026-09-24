@@ -111,3 +111,20 @@ opencode:
 - Windows 裸命令（`opencode`）直接 spawn 报 ENOENT——CreateProcess 不做 PATHEXT 解析；manager 对 win32 裸命令自动加 `shell: true`（真实参数无 cmd 元字符，安全）。
 - 测试里 `node -e <JS>` 走 shell:true 会被 cmd 的 `>` 重定向语法吃掉——假 serve 落 .cjs 文件绕过。
 - SSE `reader.cancel()` 在已出错流上返回 rejected promise——必须 `.catch()` 接住，否则 stop/重连时冒未处理拒绝。
+
+## 11. 追加实施：TUI 同构接管面（2026-09-24 下午）
+
+在四层基础上按“和 TUI 同构、实时双向同步”的要求升级：
+
+- **流式内核** `server/src/opencode/stream.ts`（web/mobile 字节级同步副本）：`message.part.delta {messageID,partID,field,delta}` token 级追加 + `message.part.updated` 全量校正 + 乱序保护；busy/retry/todos/revert/ptys/permissions/question 全事件投影。9 单测（含 delta 先于 updated 到达的骨架消息自建）。
+- **事件面** `events.ts`：delta 50ms 微批（防 WS 1600 burst 上限）+ 基础设施噪音丢弃（实测 plugin.added 单会话能刷 45 帧）。
+- **数据面**：active-session（busy>recent 启发式）、session-status/todo、command（**实测 opencode 1.18.32 要求 arguments 字符串，缺字段 400**——已修）、agents/models（attach 实例用 opencode 自己的 provider/config.providers）、tui 驱动（append/submit/toast/**select-session**）、PTY 签票（pty.connect-token → 浏览器 WS 直连终端）、create-session。
+- **双直连/代理**：managed 实例无鉴权 + CORS 放本地源 → 浏览器 EventSource 直连；attached 带 Basic → co-team 同源 SSE 代理（proxy 识别 JSON direct 提示改直连——修了“把 JSON 当 SSE 解析静默无事件”的坑）。
+- **双端 UI**：web `OpenCodeChat.vue`（全 parts 渲染/流式/composer/行内审批/question/todo/PTY 终端弹层/diff/回退）、mobile 同构页。
+
+### 事故与复盘（2026-09-24）
+- **事故**：排障时「接管当前对话」选中用户 TUI 正在使用的 QMS 会话（1000+ 消息），测试指令（3 条只读 ls）发进真实会话。无文件副作用。
+- **修复（产品层）**：busy 会话接管前三选一征询（共享接管 / 让 TUI 切走我独占 / 放弃）+ 对话页常驻接管横幅 + busy 会话首次发送二次确认 + 「新建并接管」安全路径 + 接管即 toast 通知 TUI（透明优先）。
+- **结论：opencode “断不开”原会话**——162 端点无 kick/独占/lock API（session 是服务端共享、多客户端平权）。唯一可用的“让原客户端让位”手段是 `tui.select-session`（把 TUI 导航到别处），已实现为“让位式接管”。
+- **测试纪律**：真机验证一律走「新建并接管」自建会话，严禁往 heuristic 选中的真实会话发消息。
+- **顺手修复**：co-team 重启后孤儿 serve 残留（占端口耗内存）——pid+port 双登记，启动时按“端口当前归属=登记 pid”校验后查杀（双条件防误杀用户自己的实例）。

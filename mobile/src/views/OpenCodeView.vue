@@ -28,29 +28,48 @@
             <span v-if="inst.project_root" class="mono root" :title="inst.project_root">{{ inst.project_root }}</span>
           </div>
           <div v-if="inst.error" class="err">⚠ {{ inst.error }}</div>
-          <div v-if="inst.kind === 'managed' && inst.enabled" class="ops">
+          <!-- managed 启停 + 接管当前对话 -->
+          <div v-if="inst.kind === 'managed' && inst.enabled || canTakeOver(inst)" class="ops">
+            <template v-if="inst.kind === 'managed' && inst.enabled">
+              <van-button
+                size="small"
+                :loading="busyId === inst.id && busyAct === 'start'"
+                :disabled="busyId === inst.id || inst.state === 'starting' || inst.state === 'running' || inst.state === 'connected'"
+                @click.stop="start(inst)"
+              >启动</van-button>
+              <van-button
+                size="small"
+                :loading="busyId === inst.id && busyAct === 'stop'"
+                :disabled="busyId === inst.id || inst.state === 'stopped'"
+                @click.stop="stop(inst)"
+              >停止</van-button>
+            </template>
             <van-button
+              v-if="canTakeOver(inst)"
               size="small"
-              :loading="busyId === inst.id && busyAct === 'start'"
-              :disabled="busyId === inst.id || inst.state === 'starting' || inst.state === 'running' || inst.state === 'connected'"
-              @click.stop="start(inst)"
-            >启动</van-button>
-            <van-button
-              size="small"
-              :loading="busyId === inst.id && busyAct === 'stop'"
-              :disabled="busyId === inst.id || inst.state === 'stopped'"
-              @click.stop="stop(inst)"
-            >停止</van-button>
+              type="primary"
+              :loading="takingOver === inst.id"
+              :disabled="!!busyId"
+              @click.stop="takeOver(inst)"
+            >接管当前对话</van-button>
           </div>
-          <!-- 会话列表：点实例卡展开 -->
+          <!-- 会话列表：点实例卡展开；按 directory 分组（本项目 / 其他项目） -->
           <div v-if="expandedId === inst.id" class="sess" @click.stop>
             <div class="sess-head">
               <span class="sess-lab">会话</span>
               <span class="refresh" @click.stop="loadSessions(inst)">{{ loadingSessions ? '加载中…' : '刷新' }}</span>
             </div>
+            <div v-if="sessions.length" class="sess-switch">
+              <span :class="{ cur: sessFilter === 'project' }" @click.stop="sessFilter = 'project'">本项目({{ projectSessions.length }})</span>
+              <span :class="{ cur: sessFilter === 'all' }" @click.stop="sessFilter = 'all'">全部({{ sessions.length }})</span>
+            </div>
             <div v-if="!sessions.length && !loadingSessions" class="sess-empty">该实例暂无会话</div>
-            <div v-for="s in sessions" :key="s.id" class="sess-item" @click.stop="openSession(inst.id, s.id)">
+            <div v-else-if="!visibleSessions.length && !loadingSessions" class="sess-empty">
+              本项目暂无会话——在 opencode 里发一条消息即会出现在这里，或切换到「全部」看其他项目
+            </div>
+            <div v-for="s in visibleSessions" :key="s.id" class="sess-item" @click.stop="openSession(inst.id, s.id)">
               <span class="st">{{ s.title || '（未命名会话）' }}</span>
+              <span v-if="showDirBadge(s)" class="dir-badge mono" :title="String(s.directory || '')">{{ dirBase(String(s.directory || '')) }}</span>
               <span class="sid mono">{{ shortId(s.id) }}</span>
               <van-icon name="arrow" />
             </div>
@@ -74,9 +93,9 @@
 </template>
 
 <script setup lang="ts">
-import { onActivated, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onActivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { showFailToast, showSuccessToast } from 'vant';
+import { showFailToast, showSuccessToast, showDialog } from 'vant';
 import { api, type OcInstance, type OcSession } from '../api';
 
 const router = useRouter();
@@ -92,10 +111,43 @@ const sessions = ref<OcSession[]>([]);
 const loadingSessions = ref(false);
 const busyId = ref('');
 const busyAct = ref('');
+const takingOver = ref('');
+/** 会话列表过滤器：本项目（实例 project_root 匹配）/ 全部 */
+const sessFilter = ref<'project' | 'all'>('project');
 let poll: number | undefined;
 
 function shortId(id: string): string {
   return id.length > 12 ? id.slice(0, 8) + '…' : id;
+}
+
+/** 归一化目录（反斜杠→正斜杠、去尾部斜杠、小写）后与实例 project_root 比较
+ *  （opencode 的 session.directory 在 Windows 下是 D:\x\y，project_root 配置常写 D:/x/y） */
+function normDir(d: string): string {
+  return d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+function isThisProject(s: OcSession): boolean {
+  const inst = instances.value.find((x) => x.id === expandedId.value);
+  const root = normDir(String(inst?.project_root || ''));
+  if (!root) return false;
+  return normDir(String(s.directory || '')) === root;
+}
+function dirBase(d: string): string {
+  const seg = d.split(/[\\/]/).filter(Boolean);
+  return seg.length ? seg[seg.length - 1] : d;
+}
+/** 实例没有 project_root（attached 未探测到）时不做分组，全部展示且不带徽标 */
+const canGroup = computed(() => {
+  const inst = instances.value.find((x) => x.id === expandedId.value);
+  return !!String(inst?.project_root || '');
+});
+const projectSessions = computed(() => sessions.value.filter(isThisProject));
+const visibleSessions = computed(() => (canGroup.value && sessFilter.value === 'project' ? projectSessions.value : sessions.value));
+function showDirBadge(s: OcSession): boolean {
+  return canGroup.value && !isThisProject(s);
+}
+
+function canTakeOver(inst: OcInstance): boolean {
+  return inst.enabled && (inst.state === 'connected' || inst.state === 'running');
 }
 
 async function load() {
@@ -134,6 +186,60 @@ function toggle(inst: OcInstance) {
 
 function openSession(instId: string, sessId: string) {
   router.push(`/opencode/session/${instId}/${sessId}`);
+}
+
+/** 接管当前对话：busy 会话优先否则最近更新。busy=可能正被 TUI 使用——
+ *  弹征询（共享接管 / 让 TUI 切走我独占 / 放弃），杜绝"接管即污染"（2026-09-24 事故复盘）。 */
+async function takeOver(inst: OcInstance) {
+  takingOver.value = inst.id;
+  try {
+    const d = await api.ocActiveSession(inst.id);
+    if (!d.ok || !d.session?.id) {
+      showFailToast(d.error || '没有可接管的会话');
+      return;
+    }
+    if (d.reason === 'busy') {
+      const choice = await showBusyDialog(d.session.title || d.session.id, d.session.directory || inst.project_root || '（未标记项目）');
+      if (choice === 'share') {
+        openSession(inst.id, d.session.id);
+      } else if (choice === 'yield') {
+        // 让位式接管：TUI 切到新会话，我独占原会话
+        const created = await api.ocCreateSession(inst.id, 'TUI 让位后的新会话').catch(() => null);
+        if (!created?.ok || !created.session) { showFailToast('让位失败：无法创建承接会话'); return; }
+        const r = await api.ocTuiSelectSession(inst.id, created.session.id).catch(() => null);
+        if (!r?.ok) { showFailToast(`TUI 切换失败：${r?.error || '未知'}（仍可共享接管）`); return; }
+        await api.ocTuiToast(inst.id, 'co-team 已接管原会话，TUI 已切换到新会话', 'info').catch(() => {});
+        openSession(inst.id, d.session.id);
+      }
+      // cancel：放弃
+    } else {
+      openSession(inst.id, d.session.id);
+      void api.ocTuiToast(inst.id, 'co-team 正在查看此对话', 'info').catch(() => {});
+    }
+  } catch (e: any) {
+    showFailToast(e?.message || '接管失败');
+  } finally {
+    takingOver.value = '';
+  }
+}
+
+/** busy 接管征询：共享接管 / 让位独占 / 取消（beforeClose 精确分流三态：
+ *  confirm=共享、cancel 按钮=让位、overlay/ESC 关闭=放弃） */
+function showBusyDialog(title: string, dir: string): Promise<'share' | 'yield' | 'cancel'> {
+  return new Promise((resolve) => {
+    showDialog({
+      title: '接管确认 · 该会话可能正被他人使用',
+      message: `「${title}」正在 TUI 中使用（busy）\n项目：${dir}\n\nopencode 的会话是服务端共享的——没有"踢掉 TUI"的接口。选择接管方式：`,
+      showCancelButton: true,
+      confirmButtonText: '共享接管',
+      cancelButtonText: '让 TUI 切走，我独占',
+      closeOnClickOverlay: true,
+      beforeClose: (action: 'confirm' | 'cancel', done: () => void) => {
+        done();
+        resolve(action === 'confirm' ? 'share' : 'yield');
+      },
+    }).catch(() => resolve('cancel'));
+  });
 }
 
 async function start(inst: OcInstance) {
@@ -216,19 +322,23 @@ onBeforeUnmount(() => {
 .dim { color: var(--text-3); }
 .root { color: var(--text-3); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .err { margin-top: 7px; font-size: 11px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 6px; padding: 6px 9px; line-height: 1.5; }
-.ops { display: flex; gap: 8px; margin-top: 9px; }
+.ops { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
 
 /* 会话列表（实例卡内展开） */
 .sess { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
 .sess-head { display: flex; align-items: center; justify-content: space-between; }
 .sess-lab { font-size: 11px; color: var(--text-3); }
 .refresh { font-size: 11px; color: var(--accent); padding: 2px 6px; }
-.sess-empty { font-size: 11px; color: var(--text-3); padding: 8px 2px; }
+.sess-switch { display: flex; gap: 6px; margin: 6px 0 4px; }
+.sess-switch span { font-size: 11px; color: var(--text-3); border: 1px solid var(--line); border-radius: 99px; padding: 2px 10px; }
+.sess-switch span.cur { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.sess-empty { font-size: 11px; color: var(--text-3); padding: 8px 2px; line-height: 1.7; }
 .sess-item { display: flex; align-items: center; gap: 8px; padding: 9px 6px; border-radius: 6px; font-size: 12.5px; }
 .sess-item:active { background: var(--bg-raised); }
 .sess-item .st { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-1); }
 .sess-item .sid { font-size: 10px; color: var(--text-3); flex: none; }
 .sess-item .van-icon { color: var(--text-3); flex: none; }
+.dir-badge { flex: none; font-size: 9.5px; color: var(--text-3); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; max-width: 26vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .empty-desc { font-size: 12px; color: var(--text-3); line-height: 1.9; text-align: center; padding: 0 12px; }
 .empty-desc b { color: var(--text-2); }

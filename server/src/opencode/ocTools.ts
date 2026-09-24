@@ -120,8 +120,10 @@ export async function runOpencodeTool(bridge: OpencodeBridge, agent: string | un
         if (!instance || !sessionId) return { tool: name, ok: false, error: 'instance 与 session_id 均不能为空' };
         const prompt = str(call.prompt ?? call.text, MAX_PROMPT_CHARS).trim();
         if (!prompt) return { tool: name, ok: false, error: 'prompt 不能为空' };
-        const model = parseModelRef(call.model);
-        const r = await bridge.sendPrompt(agent, instance, sessionId, prompt, model);
+        const model = resolveModelArg(bridge, instance, call.model);
+        if (model.error) return { tool: name, ok: false, error: model.error };
+        const ocAgent = str(call.agent, 60) || undefined;
+        const r = await bridge.sendPrompt(agent, instance, sessionId, prompt, model.ref, ocAgent);
         return {
           tool: name, ok: r.ok, instance, session: sessionId,
           ...(r.ok ? { final_text: extractLastAssistantText(Array.isArray(r.data) ? [] : r.data && typeof r.data === 'object' && 'parts' in (r.data as object) ? [r.data] : []) } : { error: r.error }),
@@ -137,20 +139,17 @@ export async function runOpencodeTool(bridge: OpencodeBridge, agent: string | un
         const created = await bridge.createSession(agent, instance, str(call.title, 200) || `co-team 派活 ${new Date().toISOString().slice(5, 16)}`);
         if (!created.ok || !created.data) return { tool: name, ok: false, instance, error: `建会话失败：${created.error || '未知'}` };
         const sid = String(created.data.id || '');
-        // 2) 模型链：model（单值）或 models（降级链）；attached 实例不解析（模型归 opencode）
-        const chain: string[] = Array.isArray(call.models)
-          ? call.models.map((m: unknown) => String(m)).filter(Boolean).slice(0, 3)
-          : call.model ? [String(call.model)] : [];
+        // 2) 模型链：model（单值）或 models（降级链）；字符串=池名/原生 provider/model，对象直穿
+        const chain: unknown[] = Array.isArray(call.models)
+          ? call.models.slice(0, 3)
+          : call.model !== undefined ? [call.model] : [];
+        const ocAgent = str(call.agent, 60) || undefined;
         let lastErr = '';
-        for (const modelName of chain.length ? chain : ['']) {
-          const ref = modelName ? undefined : undefined; // attached/未指定：不带 model
-          const model = modelName ? bridge.resolveModel?.(instance, modelName) : ref;
-          if (modelName && !model) {
-            lastErr = `模型 ${modelName} 不在可注入列表（该实例未开 model_injection 或池内无此模型）`;
-            continue;
-          }
+        for (const modelArg of chain.length ? chain : [undefined]) {
+          const resolved = resolveModelArg(bridge, instance, modelArg);
+          if (resolved.error) { lastErr = resolved.error; continue; }
           // 3) 异步发 + 等 idle
-          const sent = await bridge.sendPromptAsync(agent, instance, sid, prompt, model);
+          const sent = await bridge.sendPromptAsync(agent, instance, sid, prompt, resolved.ref, ocAgent);
           if (!sent.ok) { lastErr = sent.error || '发送失败'; continue; }
           const idle = await bridge.waitSessionIdle(agent, instance, sid, timeoutSec * 1000);
           if (!idle.ok) { lastErr = idle.error || '等待超时'; continue; }
@@ -227,6 +226,30 @@ export async function runOpencodeTool(bridge: OpencodeBridge, agent: string | un
   } catch (e: any) {
     return { tool: name, ok: false, error: String(e?.message || e).slice(0, 200) };
   }
+}
+
+/** model 参数兼容三种写法：{providerID,modelID} 直穿 / 池内模型名（managed）/ opencode 原生 'provider/model'（attached）。
+ *  返回 error 时调用方应软拒绝并提示可用模型。 */
+function resolveModelArg(bridge: OpencodeBridge, instance: string, v: unknown): { ref?: { providerID: string; modelID: string }; error?: string } {
+  if (!v) return {};
+  if (typeof v === 'string') {
+    const name = v.trim();
+    if (!name) return {};
+    const ref = bridge.resolveModel(instance, name);
+    if (!ref) {
+      const avail = bridge.listModelsForAgent().find((m) => m.instance === instance);
+      const hint = avail?.models.length ? `managed 实例可注入模型：${avail.models.slice(0, 12).join(', ')}` : 'attached 实例请用 opencode 原生格式 provider/model（如 deepseek/deepseek-v4-flash）';
+      return { error: `模型 ${name} 无法解析：${hint}` };
+    }
+    return { ref };
+  }
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    const providerID = String(o.providerID ?? o.provider ?? '');
+    const modelID = String(o.modelID ?? o.model ?? '');
+    if (providerID && modelID) return { ref: { providerID, modelID } };
+  }
+  return { error: 'model 参数必须是模型名字符串或 {providerID, modelID}' };
 }
 
 /** model 参数兼容三种写法：字符串池内模型名 / {providerID,modelID} / {provider,model} */
