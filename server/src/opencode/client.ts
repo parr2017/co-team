@@ -176,8 +176,21 @@ export class OpencodeClient {
     return this.req<boolean>('POST', `/session/${encodeURIComponent(id)}/abort`);
   }
 
-  listMessages(id: string): Promise<OcCallResult<unknown[]>> {
-    return this.truncate(this.req<unknown[]>('GET', `/session/${encodeURIComponent(id)}/message`));
+  /**
+   * 会话消息列表。opencode 1.18.32 的 `limit` 是**尾优先**（返回最新 N 条，实测确认），
+   * `before` 参数在此版本不论消息 id 还是时间戳均 BadRequest（v2 才有）——翻页由
+   * manager 的内存缓存切片承担，client 只透传 limit。
+   * **不做累积截断**：历史截断曾把最新消息整段丢掉（2026-09-24“看不全”事故），
+   * 体积控制上移到 manager 的按需裁剪。
+   */
+  listMessages(id: string, limit?: number): Promise<OcCallResult<unknown[]>> {
+    const q = limit && limit > 0 ? `?limit=${Math.floor(limit)}` : '';
+    return this.req<unknown[]>('GET', `/session/${encodeURIComponent(id)}/message${q}`);
+  }
+
+  /** 单条消息全文（「查看完整原文」；绕过 manager 响应路径的裁剪） */
+  getMessage(id: string, messageID: string): Promise<OcCallResult<{ info: unknown; parts: unknown[] }>> {
+    return this.req<{ info: unknown; parts: unknown[] }>('GET', `/session/${encodeURIComponent(id)}/message/${encodeURIComponent(messageID)}`);
   }
 
   /** 同步 prompt：等 opencode 跑完返回 {info,parts}。model 为 {providerID,modelID} 或池内模型名（由 manager 解析） */
@@ -279,11 +292,6 @@ export class OpencodeClient {
   /** 会话 todos（TUI 顶部的任务清单；GET 直取，不依赖事件拼装） */
   sessionTodos(id: string): Promise<OcCallResult<{ content: string; status: string; priority: string }[]>> {
     return this.req<{ content: string; status: string; priority: string }[]>('GET', `/session/${encodeURIComponent(id)}/todo`);
-  }
-
-  /** 单条消息详情（TUI 的消息定位/revert 预览） */
-  getMessage(id: string, messageID: string): Promise<OcCallResult<unknown>> {
-    return this.req<unknown>('GET', `/session/${encodeURIComponent(id)}/message/${encodeURIComponent(messageID)}`);
   }
 
   // ---------- PTY（TUI 的实时终端：bash 工具跑在 PTY 里） ----------

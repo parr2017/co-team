@@ -83,6 +83,7 @@
                   <span class="tname">{{ p.tool || 'tool' }}</span>
                   <span class="targs" :title="toolArgs(p)">{{ p.state?.title || toolArgs(p) }}</span>
                   <span class="tstate mono mini">{{ p.state?.status || '' }}</span>
+                  <span v-if="trimmedParts.has(String(p.id))" class="ttrim" @click.stop="openFullMessage(m.id)">已裁剪·原文</span>
                   <span class="tcar">{{ p.__open ? '▾' : '▸' }}</span>
                 </div>
                 <div v-if="p.__open" class="tc-body">
@@ -270,7 +271,7 @@ function toggleTool(p: Record<string, any>): void {
   flush();
 }
 function isLastPart(m: Record<string, any>, p: Record<string, any>): boolean {
-  const parts = m.parts || [];
+  const parts = partsOf(m);
   return parts[parts.length - 1] === p;
 }
 function lineClass(l: string): string {
@@ -313,11 +314,25 @@ function flush(): void {
 
 // ---------- 数据加载 ----------
 
+/** 分页常量与前端 page 状态（尾优先：初始拉最近 PAGE 条，上滑 Load more earlier messages） */
+const PAGE = 50;
+const hasMore = ref(false);
+const nextBefore = ref('');
+const loadingMore = ref(false);
+/** 被服务端头尾裁剪的 part id（tool 卡角标 + 完整原文按钮） */
+const trimmedParts = ref(new Set<string>());
+/** 已拉全文中消息 id → message（渲染时优先取全文 parts） */
+const fullMessages = ref(new Map<string, any>());
+
 async function reloadAll(): Promise<void> {
   loading.value = true;
   try {
-    const d = await api.ocMessages(props.instance.id, props.sessionId);
+    const d = await api.ocMessages(props.instance.id, props.sessionId, { limit: PAGE });
     stream.reset(d.messages || []);
+    hasMore.value = !!d.has_more;
+    nextBefore.value = d.next_before || '';
+    trimmedParts.value = new Set(d.trimmed || []);
+    fullMessages.value = new Map();
     const todos = await api.ocTodos(props.instance.id, props.sessionId).catch(() => null);
     if (todos?.todos) stream.applyEvent({ type: 'todo.updated', properties: { todos: todos.todos } });
     flush();
@@ -327,6 +342,55 @@ async function reloadAll(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+/** Load more earlier messages：上游 before 翻页 + prepend + 滚动位置补偿（不跳动） */
+async function loadMore(): Promise<void> {
+  if (!hasMore.value || !nextBefore.value || loadingMore.value) return;
+  loadingMore.value = true;
+  const el = streamEl.value;
+  const prevHeight = el?.scrollHeight || 0;
+  const prevTop = el?.scrollTop || 0;
+  try {
+    const d = await api.ocMessages(props.instance.id, props.sessionId, { limit: PAGE, before: nextBefore.value });
+    if (d.messages?.length) {
+      stream.prepend(d.messages);
+      for (const id of d.trimmed || []) trimmedParts.value.add(id);
+      flush();
+      await nextTick();
+      // 位置补偿：把新插入内容的高度差补回 scrollTop，视觉上原地不动
+      if (el) el.scrollTop = prevTop + (el.scrollHeight - prevHeight);
+    }
+    hasMore.value = !!d.has_more;
+    nextBefore.value = d.next_before || '';
+  } catch (e: any) {
+    showApiError(e);
+  } finally {
+    loadingMore.value = false;
+  }
+}
+
+/** 完整原文：tool 卡/裁剪提示的按钮 → 拉单条全文，渲染时优先取全文 parts */
+async function openFullMessage(messageId: string): Promise<void> {
+  if (!messageId) return;
+  try {
+    const r = await api.ocMessageFull(props.instance.id, props.sessionId, messageId);
+    if (r.ok && r.message) {
+      fullMessages.value = new Map(fullMessages.value).set(messageId, r.message);
+      ElMessage.success('已加载完整原文');
+    } else {
+      ElMessage.warning(r.error || '完整原文加载失败');
+    }
+  } catch (e: any) {
+    showApiError(e);
+  }
+}
+
+/** 渲染取 parts：有全文缓存用全文，否则用（可能已裁剪的）流内版本 */
+function partsOf(m: Record<string, any>): any[] {
+  const full = fullMessages.value.get(String(m.id));
+  if (full?.parts?.length) return full.parts;
+  return m.parts || [];
 }
 
 async function loadSelectors(): Promise<void> {
@@ -605,6 +669,9 @@ onBeforeUnmount(() => {
 .stream { flex: 1; overflow-y: auto; min-height: 0; }
 .col { max-width: 860px; margin: 0 auto; padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 14px; }
 .stream-empty { text-align: center; color: var(--el-text-color-secondary); padding: 40px 0; font-size: 13px; }
+.page-head { text-align: center; padding: 4px 0 10px; }
+.ttrim { font-size: 10px; color: var(--el-color-warning); border: 1px solid var(--el-color-warning-light-5); border-radius: 4px; padding: 0 5px; cursor: pointer; flex: none; }
+.ttrim:hover { background: var(--el-color-warning-light-9); }
 .user-row { display: flex; justify-content: flex-end; }
 .user-msg { max-width: 78%; background: var(--el-color-primary-light-9); border: 1px solid var(--el-color-primary-light-7); border-radius: 10px 10px 2px 10px; padding: 8px 12px; }
 .user-msg .plain { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.65; }

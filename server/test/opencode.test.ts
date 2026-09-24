@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { OpencodeClient } from '../src/opencode/client';
-import { OpencodeManager, discoverDesktopPort, validateOpencodeInstanceConfigs } from '../src/opencode/manager';
+import { OpencodeManager, discoverDesktopPort, trimMessageForUi, validateOpencodeInstanceConfigs } from '../src/opencode/manager';
 import { buildOpencodeJson, resolveModelRef, writeInstanceConfig } from '../src/opencode/modelInjection';
 import { extractLastAssistantText, isOcTool, runOpencodeTool } from '../src/opencode/ocTools';
 import { applyToolCalls } from '../src/tools';
@@ -368,9 +368,10 @@ class FakeBridge implements OpencodeBridge {
   }
   async listSessions() { this.calls.push('listSessions'); return { ok: true, data: [{ id: 's1' }] }; }
   async createSession() { this.calls.push('createSession'); return { ok: true, data: { id: 'sess-new' } }; }
-  async readMessages() {
-    this.calls.push('readMessages');
-    return { ok: true, data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: '任务完成：测试全绿' }] }] };
+  async readMessages(_a: unknown, _i: string, _s: string, opts?: { limit?: number; before?: string }) {
+    this.calls.push(`readMessages:${opts?.before ? 'page' : 'tail'}`);
+    const msg = { info: { id: 'm1', role: 'assistant' }, parts: [{ type: 'text', text: '任务完成：测试全绿' }] };
+    return { ok: true, data: { messages: [msg], has_more: !!opts?.before, trimmed: [] } };
   }
   async sendPrompt() { this.calls.push('sendPrompt'); return { ok: true, data: { info: { role: 'assistant' }, parts: [{ type: 'text', text: 'ok' }] } }; }
   async sendPromptAsync() {
@@ -415,7 +416,7 @@ describe('oc_* 工具层', () => {
     expect(r.session).toBe('sess-new');
     expect(r.final_text).toBe('任务完成：测试全绿');
     expect(r.diff).toEqual([{ file: 'a.ts', additions: 2, deletions: 0 }]);
-    expect(bridge.calls).toEqual(['createSession', 'sendPromptAsync', 'waitIdle', 'readMessages', 'diff']);
+    expect(bridge.calls).toEqual(['createSession', 'sendPromptAsync', 'waitIdle', 'readMessages:tail', 'diff']);
   });
 
   it('oc_run_task 模型降级链：首选失败自动换下一个', async () => {
@@ -470,5 +471,52 @@ describe('applyToolCalls oc_ 分发', () => {
     const results = await applyToolCalls(process.cwd(), [{ tool: 'oc_read', instance: 't1', session_id: 's1' }] as any, { agent: 'dev' });
     expect((results[0] as any).ok).toBe(false);
     expect(String((results[0] as any).error)).toContain('opencode.instances');
+  });
+});
+
+// ---------- 消息分页与裁剪（"看不全"修复） ----------
+
+describe('trimMessageForUi（消息 UI 裁剪）', () => {
+  it('剥掉 info.system（UserMessage 的 system prompt，UI 不用）', () => {
+    const r = trimMessageForUi({ info: { id: 'm1', role: 'user', system: 'you are a helpful assistant '.repeat(1000) }, parts: [{ id: 'p1', type: 'text', text: 'hi' }] });
+    expect((r.msg.info as any).system).toBeUndefined();
+    expect((r.msg.info as any).id).toBe('m1');
+    expect(r.trimmed).toEqual([]);
+  });
+
+  it('超大 tool 输出头尾裁剪并标记 part id', () => {
+    const big = 'x'.repeat(300 * 1024);
+    const r = trimMessageForUi({ info: { id: 'm2', role: 'assistant' }, parts: [{ id: 'pt1', type: 'tool', tool: 'bash', state: { status: 'completed', input: {}, output: big } }] });
+    const out = (r.msg.parts as any)[0].state.output as string;
+    expect(out.length).toBeLessThan(12 * 1024);
+    expect(out.startsWith('xxxx')).toBe(true);
+    expect(out).toContain('中间省略');
+    expect(out.endsWith('x'.repeat(8192))).toBe(true);
+    expect(r.trimmed).toEqual(['pt1']);
+  });
+
+  it('超大 input（图片 base64/长 diff）折叠为占位——裁剪不能形同虚设', () => {
+    const bigInput = { image: 'data:image/png;base64,' + 'A'.repeat(400 * 1024), prompt: '看图' };
+    const r = trimMessageForUi({ info: { id: 'm4', role: 'assistant' }, parts: [{ id: 'pt4', type: 'tool', tool: 'read', state: { status: 'completed', input: bigInput, output: 'ok' } }] });
+    const p = (r.msg.parts as any)[0];
+    expect(p.state.input.__trimmed).toContain('输入参数过大');
+    expect(JSON.stringify(p).length).toBeLessThan(4 * 1024);
+    expect(p.state.output).toBe('ok'); // 短 output 不动
+    expect(r.trimmed).toEqual(['pt4']);
+  });
+
+  it('超大 attachments（read 图片的 base64，实测 291KB）折叠为文件名摘要', () => {
+    const attachments = [{ filename: 'shot.png', mime: 'image/png', url: 'data:image/png;base64,' + 'B'.repeat(290 * 1024) }];
+    const r = trimMessageForUi({ info: { id: 'm5', role: 'assistant' }, parts: [{ id: 'pt5', type: 'tool', tool: 'read', state: { status: 'completed', input: { file: 'a.png' }, attachments, output: 'Image read successfully' } }] });
+    const p = (r.msg.parts as any)[0];
+    expect(JSON.stringify(p).length).toBeLessThan(4 * 1024);
+    expect(p.state.attachments).toEqual([{ filename: 'shot.png' }]); // 只留文件名
+    expect(p.state.__attachmentsTrimmed).toContain('附件内容过大已折叠');
+    expect(r.trimmed).toEqual(['pt5']);
+  });
+
+  it('小消息原样不动', () => {
+    const msg = { info: { id: 'm3', role: 'assistant' }, parts: [{ id: 'p', type: 'text', text: '短' }] };
+    expect(trimMessageForUi(msg).msg).toEqual(msg);
   });
 });

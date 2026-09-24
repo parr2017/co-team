@@ -16,6 +16,23 @@ describe('SessionStream 流式状态机', () => {
     expect(snap.messages[0].parts[0].text).toBe('问题');
   });
 
+  it('prepend：历史翻页插头，幂等且顺序保持', () => {
+    const s = new SessionStream();
+    s.reset([{ info: { id: 'm3', role: 'assistant' }, parts: [] }]);
+    s.prepend([
+      { info: { id: 'm1', role: 'user' }, parts: [{ id: 'p1', type: 'text', text: '旧1' }] },
+      { info: { id: 'm2', role: 'assistant' }, parts: [] },
+      { info: { id: 'm3', role: 'assistant' }, parts: [] }, // 已存在：跳过
+    ]);
+    expect(s.snapshot().messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+    // 幂等：反复 prepend 不重复
+    s.prepend([{ info: { id: 'm1', role: 'user' }, parts: [] }]);
+    expect(s.snapshot().messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+    // prepend 后 delta 仍能命中旧消息的 part
+    s.applyEvent({ type: 'message.part.delta', properties: { messageID: 'm1', partID: 'p1', field: 'text', delta: '!' } });
+    expect(s.snapshot().messages[0].parts[0].text).toBe('旧1!');
+  });
+
   it('message.part.delta：token 级追加到正确 part（真实载荷形状）', () => {
     const s = new SessionStream();
     s.applyEvent(ev('message.updated', { info: { id: 'm2', role: 'assistant' } }));

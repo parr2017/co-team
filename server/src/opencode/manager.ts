@@ -19,7 +19,7 @@ import { getLogger, type Logger } from '../logger';
 import type { ModelConfig } from '../types';
 import { resolveModelRef } from './modelInjection';
 import { OpencodeClient } from './client';
-import { EventBatcher, isDroppedEvent } from './events';
+import { EventBatcher, isDroppedEvent, eventSessionId } from './events';
 import {
   DEFAULT_OC_COMMAND,
   DEFAULT_OC_HOSTNAME,
@@ -63,9 +63,78 @@ interface InstanceState {
 
 /** idle 等待的绝对值定义：run_task 的最坏等待预算（opencode 自主跑一个任务可能很久） */
 const IDLE_WAIT_MAX_MS = 30 * 60_000;
+/** 消息分页：默认尾部条数 / 上限；单条 JSON 超此值触发头尾裁剪（256KB） */
+const MSG_PAGE_DEFAULT = 50;
+const MSG_PAGE_MAX = 100;
+const MSG_TRIM_THRESHOLD = 256 * 1024;
+/** 会话消息缓存上限（LRU）：8MB 级会话 ×3 以内可接受 */
+const MSG_CACHE_MAX = 3;
 /** serve 进程登记表（孤儿清理用）：co-team 每次重启后按"端口当前归属=登记 pid"校验后查杀 */
 function pidRegistryPath(): string {
   return path.join(os.tmpdir(), 'coteam-opencode-logs', 'pids.json');
+}
+
+/** 消息 id 提取：opencode 消息元素是 {info, parts} 包装，id 在 info.id（兼容平铺形态） */
+function msgId(m: unknown): string {
+  const o = m as Record<string, any>;
+  return String(o?.info?.id || o?.id || '');
+}
+
+/** 缓存键：实例 + 会话 */
+function cacheKey(instance: string, sessionId: string): string {
+  return instance + '::' + sessionId;
+}
+
+/** 单条消息的 UI 裁剪：剥 info.system（UserMessage 的 system prompt，几百 KB，UI 不用）；
+ *  超大 part 的 output/text 保留头 2KB + 尾 8KB（尾部通常是 exit code/错误摘要）；
+ *  超大 input（>32KB，常见于图片 base64/长 diff）折叠为可读占位——否则裁剪形同虚设。
+ *  返回被裁剪的 part id。 */
+export function trimMessageForUi(msg: unknown): { msg: Record<string, any>; trimmed: string[] } {
+  const m = { ...(msg as Record<string, any>) };
+  const info = { ...(m.info || {}) } as Record<string, any>;
+  delete info.system;
+  m.info = info;
+  const trimmed: string[] = [];
+  const parts = Array.isArray(m.parts) ? m.parts : [];
+  m.parts = parts.map((p: Record<string, any>) => {
+    if (!p || typeof p !== 'object') return p;
+    if (JSON.stringify(p).length <= MSG_TRIM_THRESHOLD) return p;
+    if (p.id) trimmed.push(String(p.id));
+    const clipped: Record<string, any> = { ...p };
+    const clipTail = (field: 'output' | 'text') => {
+      const v = (clipped.state && clipped.state[field]) || clipped[field];
+      if (typeof v !== 'string' || v.length <= 10 * 1024) return;
+      const head = v.slice(0, 2048);
+      const tail = v.slice(-8192);
+      const marked = `${head}\n\n…（中间省略 ${v.length - 10240} 字符，点"完整原文"查看）…\n\n${tail}`;
+      if (clipped.state && typeof clipped.state === 'object' && field in (clipped.state || {})) clipped.state = { ...clipped.state, [field]: marked };
+      else clipped[field] = marked;
+    };
+    clipTail('output');
+    clipTail('text');
+    // input 巨块（图片 base64 / 长 diff）：折叠为占位，避免裁剪失效前端仍收几百 KB。
+    // input 可能是对象/数组/字符串（base64 直塞）——按 JSON 长度判断，不挑形态
+    const st = clipped.state;
+    if (st && typeof st === 'object' && st.input !== undefined && st.input !== null) {
+      const inputJson = JSON.stringify(st.input);
+      if (inputJson.length > 32 * 1024) {
+        clipped.state = { ...st, input: { __trimmed: `输入参数过大（${inputJson.length} 字符，含图片/长文本），已折叠——点"完整原文"查看` } };
+      }
+    }
+    // attachments 巨块（实测：read 图片的 tool part 把 base64 全塞 attachments，单条 291KB）
+    const att = st?.attachments;
+    if (Array.isArray(att) && JSON.stringify(att).length > 32 * 1024) {
+      const names = att.map((a: Record<string, any>) => a?.filename || a?.path || a?.id || 'file').slice(0, 8);
+      clipped.state = { ...st, attachments: names.map((n) => ({ filename: n })), __attachmentsTrimmed: `${att.length} 个附件内容过大已折叠（${JSON.stringify(att).length} 字符）——点"完整原文"查看` };
+    }
+    // metadata 巨块（个别工具把结果塞 metadata）同样折叠
+    const md = clipped.metadata;
+    if (md && typeof md === 'object' && JSON.stringify(md).length > 32 * 1024) {
+      clipped.metadata = { __trimmed: `元数据过大（${JSON.stringify(md).length} 字符），已折叠——点"完整原文"查看` };
+    }
+    return clipped;
+  });
+  return { msg: m, trimmed };
 }
 
 /** ${ENV_VAR} 占位展开（密钥只走环境变量，与 mcp/transports.ts 同语义） */
@@ -98,6 +167,8 @@ export class OpencodeManager implements OpencodeBridge {
   private eventForwarder?: (instanceId: string, event: OcEvent) => void;
   /** co-team 模型池（setModelPool 注入；W1 的模型名 → opencode model ref） */
   private modelPool: ModelConfig[] = [];
+  /** 会话消息缓存（翻页 + 完整原文；LRU，SSE 增量 patch） */
+  private msgCache = new Map<string, { messages: Record<string, any>[]; loadedAt: number }>();
   private stopped = false;
 
   constructor(configs: OpencodeInstanceConfig[] = [], logger?: Logger) {
@@ -153,6 +224,7 @@ export class OpencodeManager implements OpencodeBridge {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.msgCache.clear();
     for (const st of this.instances.values()) {
       if (st.healthTimer) clearInterval(st.healthTimer);
       if (st.restartTimer) clearTimeout(st.restartTimer);
@@ -401,6 +473,8 @@ export class OpencodeManager implements OpencodeBridge {
             if (isDroppedEvent(ev.type)) continue;
             // run_task 的 idle 等待器先行（本地唤醒，不依赖转发方接线）
             this.wakeIdleWaiters(st, ev);
+            // 已加载会话的消息缓存增量维护（翻页/完整原文的数据源）
+            this.patchCache(st, ev);
             batcher.push(ev);
           }
         } catch { /* 断流/被 abort——走退避 */ }
@@ -539,10 +613,123 @@ export class OpencodeManager implements OpencodeBridge {
     return st.client!.createSession(title);
   }
 
-  async readMessages(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<unknown[]>> {
+  /**
+   * 读会话消息（尾优先分页）。
+   * - 不带 before：从缓存取尾 limit 条；无缓存则拉上游 limit 条（opencode 1.18.32 原生尾优先）
+   *   并后台建缓存（翻页与"完整原文"都依赖它）
+   * - 带 before：本地缓存切片（上游 before 参数该版本 BadRequest，翻页只能缓存切）
+   * - 响应路径统一裁剪（system 剥离/巨块头尾），trimmed 回传被裁 part id；full=true 跳过
+   */
+  async readMessages(agent: string | undefined, instance: string, sessionId: string, opts?: { limit?: number; before?: string; full?: boolean }): Promise<OcCallResult<{ messages: unknown[]; has_more: boolean; next_before?: string; trimmed: string[] }>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
-    return st.client!.listMessages(sessionId);
+    const limit = Math.min(MSG_PAGE_MAX, Math.max(1, Math.floor(Number(opts?.limit || MSG_PAGE_DEFAULT))));
+    const full = opts?.full === true;
+    try {
+      let page: Record<string, any>[] = [];
+      let hasMore = false;
+      let nextBefore: string | undefined;
+      const cached = this.msgCache.get(cacheKey(instance, sessionId));
+      if (opts?.before) {
+        const cache = (await this.ensureCache(st, instance, sessionId)) || [];
+        const idx = cache.findIndex((m) => msgId(m) === String(opts!.before));
+        if (idx < 0) return { ok: false, error: `翻页游标 ${String(opts!.before).slice(0, 16)} 不在消息列表（可能已被压缩/删除）` };
+        const from = Math.max(0, idx - limit);
+        page = cache.slice(from, idx);
+        hasMore = from > 0;
+        nextBefore = page.length ? msgId(page[0]) : undefined;
+      } else if (cached) {
+        page = cached.messages.slice(-limit);
+        hasMore = cached.messages.length > limit;
+        nextBefore = page.length ? msgId(page[0]) : undefined;
+      } else {
+        const r = await st.client!.listMessages(sessionId, limit);
+        if (!r.ok || !Array.isArray(r.data)) return { ok: false, error: r.error || '消息读取失败' };
+        page = r.data as Record<string, any>[];
+        hasMore = page.length >= limit;
+        nextBefore = page.length ? msgId(page[0]) : undefined;
+        void this.ensureCache(st, instance, sessionId); // 后台建缓存，翻页/原文零延迟
+      }
+      const trimmed: string[] = [];
+      const messages = page.map((m) => {
+        if (full) return m;
+        const t = trimMessageForUi(m);
+        trimmed.push(...t.trimmed);
+        return t.msg;
+      });
+      return { ok: true, data: { messages, has_more: hasMore, ...(nextBefore ? { next_before: nextBefore } : {}), trimmed: [...new Set(trimmed)] } };
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message || e).slice(0, 300) };
+    }
+  }
+
+  /** 确保会话消息缓存（拉全量；loopback 8MB 级实测可接受）。LRU 淘汰 + SSE patch 增量维护。 */
+  private async ensureCache(st: InstanceState, instance: string, sessionId: string): Promise<Record<string, any>[] | null> {
+    const key = cacheKey(instance, sessionId);
+    const hit = this.msgCache.get(key);
+    if (hit) {
+      // LRU 触碰：移至队尾
+      this.msgCache.delete(key);
+      this.msgCache.set(key, hit);
+      return hit.messages;
+    }
+    const r = await st.client!.listMessages(sessionId);
+    if (!r.ok || !Array.isArray(r.data)) return null;
+    const entry = { messages: r.data as Record<string, any>[], loadedAt: Date.now() };
+    this.msgCache.set(key, entry);
+    while (this.msgCache.size > MSG_CACHE_MAX) {
+      const oldest = this.msgCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.msgCache.delete(oldest);
+    }
+    return entry.messages;
+  }
+
+  /** 单条消息全文：优先缓存原文（未经 UI 裁剪），未命中走上游单条端点（透传 {info, parts}） */
+  async readMessageFull(agent: string | undefined, instance: string, sessionId: string, messageID: string): Promise<OcCallResult<unknown>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const cache = this.msgCache.get(cacheKey(instance, sessionId));
+    const hit = cache?.messages.find((m) => msgId(m) === messageID);
+    if (hit) return { ok: true, data: hit };
+    const r = await st.client!.getMessage(sessionId, messageID);
+    if (!r.ok || !r.data) return { ok: false, error: r.error || '消息不存在' };
+    return { ok: true, data: r.data };
+  }
+
+  /** SSE 增量 patch 缓存（只维护已加载过的会话；delta 不 patch——part.updated 会带全量覆盖） */
+  private patchCache(st: InstanceState, ev: OcEvent): void {
+    const key = cacheKey(st.cfg.id, eventSessionId(ev));
+    if (!eventSessionId(ev)) return;
+    const entry = this.msgCache.get(key);
+    if (!entry) return;
+    const p = (ev.properties || {}) as Record<string, any>;
+    try {
+      if (ev.type === 'message.updated') {
+        const info = p.info || {};
+        const id = String(info.id || '');
+        const idx = entry.messages.findIndex((m) => msgId(m) === id);
+        if (idx >= 0) entry.messages[idx] = { ...entry.messages[idx], ...info, parts: entry.messages[idx].parts };
+        else entry.messages.push({ info, parts: [] });
+      } else if (ev.type === 'message.part.updated') {
+        const part = p.part || {};
+        const mid = String(part.messageID || '');
+        const pid = String(part.id || '');
+        const m = entry.messages.find((x) => msgId(x) === mid);
+        if (!m) return;
+        const parts = Array.isArray(m.parts) ? [...m.parts] : [];
+        const pi = parts.findIndex((x) => String(x.id) === pid);
+        if (pi >= 0) parts[pi] = part; else parts.push(part);
+        m.parts = parts;
+      } else if (ev.type === 'message.removed') {
+        const mid = String(p.messageID || '');
+        const idx = entry.messages.findIndex((m) => msgId(m) === mid);
+        if (idx >= 0) entry.messages.splice(idx, 1);
+      } else if (ev.type === 'message.part.removed') {
+        const m = entry.messages.find((x) => msgId(x) === String(p.messageID || ''));
+        if (m && Array.isArray(m.parts)) m.parts = m.parts.filter((x) => String(x.id) !== String(p.partID || ''));
+      }
+    } catch { /* patch 失败不影响主链 */ }
   }
 
   async sendPrompt(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<unknown>> {

@@ -158,12 +158,14 @@ export async function runOpencodeTool(bridge: OpencodeBridge, agent: string | un
             bridge.readMessages(agent, instance, sid),
             bridge.sessionDiff(agent, instance, sid),
           ]);
+          const msgsArr = msgs.ok ? ((msgs.data as { messages: unknown[] })?.messages || []) : [];
           return {
             tool: name, ok: true, instance, session: sid,
-            final_text: msgs.ok ? extractLastAssistantText(msgs.data as unknown[]) : '',
-            message_outline: msgs.ok ? summarizeMessages(msgs.data as unknown[]) : '',
+            final_text: extractLastAssistantText(msgsArr),
+            message_outline: summarizeMessages(msgsArr),
             diff: diff.ok ? diff.data : [],
             ...(diff.ok && diff.truncated ? { diff_truncated: true } : {}),
+            ...(msgs.ok && ((msgs.data as { trimmed: string[] })?.trimmed || []).length ? { trimmed_parts: (msgs.data as { trimmed: string[] }).trimmed } : {}),
             ...(idle.data === 'error' ? { warning: '会话以 session.error 收场，final_text 可能不完整' } : {}),
           };
         }
@@ -172,11 +174,18 @@ export async function runOpencodeTool(bridge: OpencodeBridge, agent: string | un
 
       case 'oc_read': {
         if (!instance || !sessionId) return { tool: name, ok: false, error: 'instance 与 session_id 均不能为空' };
-        const r = await bridge.readMessages(agent, instance, sessionId);
+        const r = await bridge.readMessages(agent, instance, sessionId, { limit: 30 });
+        const msgs = r.ok ? (r.data as { messages: unknown[] }).messages || [] : [];
         return {
           tool: name, ok: r.ok, instance, session: sessionId,
-          ...(r.ok ? { messages: r.data, final_text: extractLastAssistantText(r.data as unknown[]), outline: summarizeMessages(r.data as unknown[]) } : { error: r.error }),
-          ...(r.ok && r.truncated ? { truncated: true } : {}),
+          ...(r.ok
+            ? {
+                final_text: extractLastAssistantText(msgs),
+                outline: summarizeMessages(msgs),
+                has_more: (r.data as { has_more: boolean }).has_more,
+                ...(((r.data as { trimmed: string[] }).trimmed || []).length ? { trimmed_parts: (r.data as { trimmed: string[] }).trimmed } : {}),
+              }
+            : { error: r.error }),
         };
       }
 

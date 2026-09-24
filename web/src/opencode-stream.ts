@@ -89,6 +89,20 @@ export class SessionStream {
     }
   }
 
+  /** 历史翻页：更早的消息整批插到头部（幂等——已存在的 id 跳过），批次内顺序保持 */
+  prepend(messages: { info: Msg; parts: Part[] }[]): void {
+    const fresh: string[] = [];
+    for (const m of messages || []) {
+      const info = m?.info || {};
+      const id = String(info.id || '');
+      if (!id || this.msgs.has(id)) continue;
+      const parts = Array.isArray(m.parts) ? m.parts.map((p) => this.adoptPart(id, p)) : [];
+      this.msgs.set(id, { ...info, parts });
+      fresh.push(id);
+    }
+    if (fresh.length) this.order.unshift(...fresh);
+  }
+
   /** 采纳一个 part：建立 partID → (messageID, partID) 索引，返回对象引用 */
   private adoptPart(messageID: string, part: Part): Part {
     const pid = String(part?.id || '');

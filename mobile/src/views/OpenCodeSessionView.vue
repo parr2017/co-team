@@ -36,12 +36,17 @@
     <div ref="streamEl" class="stream" @scroll="onStreamScroll">
       <div v-if="loadingMessages && !snap.messages.length" class="notice"><span class="spin" />加载消息中…</div>
       <div v-else-if="!snap.messages.length" class="notice">该会话暂无消息——在下方输入框发第一条指令开始</div>
+      <div v-if="hasMore || loadingMore" class="page-more" @click="loadMore">
+        <span v-if="loadingMore">加载更早消息…</span>
+        <span v-else>↑ 加载更早消息</span>
+      </div>
+      <div v-else-if="snap.messages.length > 1" class="page-more dim">已到最早消息</div>
 
       <template v-for="(m, mi) in snap.messages" :key="m.id || mi">
         <!-- 用户消息：右侧气泡，长按回退 -->
         <div v-if="m.role === 'user'" class="u-row">
           <div class="u-bub" @touchstart="lpStart(m)" @touchend="lpCancel" @touchmove="lpCancel" @contextmenu.prevent="lpStart(m)">
-            <template v-for="(p, pi) in m.parts" :key="pi">
+            <template v-for="(p, pi) in partsOf(m)" :key="pi">
               <div v-if="p.type === 'text' && p.text" class="plain">{{ p.text }}</div>
               <div v-else-if="p.type === 'file'" class="dim mini">📎 {{ p.filename || p.path || '文件' }}</div>
               <div v-else-if="p.type === 'image'" class="dim mini">🖼 图片</div>
@@ -58,7 +63,7 @@
             <span v-if="m.finish && m.finish !== 'stop'" class="a-fin mono">{{ m.finish }}</span>
           </div>
           <div v-if="m.error" class="a-err">⚠ {{ errText(m.error) }}</div>
-          <template v-for="(p, pi) in m.parts" :key="p.id || pi">
+          <template v-for="(p, pi) in partsOf(m)" :key="p.id || pi">
             <!-- 正文 -->
             <div v-if="p.type === 'text' && p.text" class="a-text"><MdView :source="p.text" /></div>
             <!-- 思考：默认折叠 -->
@@ -74,6 +79,7 @@
                 <span v-else-if="toolStateOf(p).status === 'error'" class="dot err" />
                 <span v-else class="dot ok" />
                 <span class="tool-name mono">{{ toolStateOf(p).title }}</span>
+                <span v-if="trimmedParts.has(String(p.id))" class="tool-trim" @click.stop="openFullMessage(m.id)">已裁剪·原文</span>
                 <span class="car">{{ toolOpen.has(pk(m, p, pi)) ? '▾' : '▸' }}</span>
               </div>
               <div v-if="toolOpen.has(pk(m, p, pi))" class="tool-body">
@@ -279,6 +285,14 @@ let stream = new SessionStream();
 const snap = ref<StreamSnapshot>(stream.snapshot());
 /** 已知消息 id（reset 播种 + 已受理事件累积）——message.part.delta 无 sessionID，据此防他会话幽灵消息 */
 const knownMsgIds = new Set<string>();
+/** 历史分页状态（尾优先：初始 PAGE 条，上滑/点按钮拉更早） */
+const PAGE = 50;
+const hasMore = ref(false);
+const nextBefore = ref('');
+const loadingMore = ref(false);
+/** 被服务端头尾裁剪的 part id（角标）+ 已拉全文中消息 id（渲染优先全文） */
+const trimmedParts = ref(new Set<string>());
+const fullMessages = ref(new Map<string, any>());
 /** 本地已决权限（服务端 permission.replied 事件到达前先移除，双保险） */
 const resolvedPerms = reactive(new Set<string>());
 const livePermissions = computed(() => snap.value.pendingPermissions.filter((p) => !resolvedPerms.has(String(p.id))));
@@ -415,9 +429,13 @@ async function loadMessages() {
   const my = gen;
   loadingMessages.value = true;
   try {
-    const d = await api.ocMessages(instanceId.value, sessionId.value);
+    const d = await api.ocMessages(instanceId.value, sessionId.value, { limit: PAGE });
     if (my !== gen) return;
     stream.reset(d.messages || []);
+    hasMore.value = !!d.has_more;
+    nextBefore.value = d.next_before || '';
+    trimmedParts.value = new Set(d.trimmed || []);
+    fullMessages.value = new Map();
     knownMsgIds.clear();
     for (const m of d.messages || []) {
       const id = String((m as any)?.info?.id || (m as any)?.id || '');
@@ -430,6 +448,53 @@ async function loadMessages() {
   } finally {
     if (my === gen) loadingMessages.value = false;
   }
+}
+
+/** 上滑/点按钮加载更早消息（尾优先分页） */
+async function loadMore() {
+  if (!hasMore.value || !nextBefore.value || loadingMore.value) return;
+  loadingMore.value = true;
+  const el = streamEl.value;
+  const prevH = el?.scrollHeight || 0;
+  const prevT = el?.scrollTop || 0;
+  try {
+    const d = await api.ocMessages(instanceId.value, sessionId.value, { limit: PAGE, before: nextBefore.value });
+    if (d.messages?.length) {
+      stream.prepend(d.messages);
+      for (const id of d.trimmed || []) trimmedParts.value.add(id);
+      flushNow();
+      await nextTick();
+      if (el) el.scrollTop = prevT + (el.scrollHeight - prevH);
+    }
+    hasMore.value = !!d.has_more;
+    nextBefore.value = d.next_before || '';
+  } catch (e: any) {
+    showFailToast(e?.message || '加载更早消息失败');
+  } finally {
+    loadingMore.value = false;
+  }
+}
+
+/** 完整原文：裁剪块点"原文" → 拉单条全文，渲染优先取全文 */
+async function openFullMessage(messageId: string) {
+  if (!messageId) return;
+  try {
+    const r = await api.ocMessageFull(instanceId.value, sessionId.value, messageId);
+    if (r.ok && r.message) {
+      fullMessages.value = new Map(fullMessages.value).set(messageId, r.message);
+    } else {
+      showFailToast(r.error || '完整原文加载失败');
+    }
+  } catch (e: any) {
+    showFailToast(e?.message || '完整原文加载失败');
+  }
+}
+
+/** 渲染取 parts：全文缓存优先于（可能已裁剪的）流内版本 */
+function partsOf(m: any): any[] {
+  const full = fullMessages.value.get(String(m.id));
+  if (full?.parts?.length) return full.parts;
+  return m.parts || [];
 }
 
 async function loadStatus() {
@@ -780,6 +845,8 @@ function scrollEnd() {
 function onStreamScroll() {
   stickBottom = isNearEnd();
   showToBottom.value = !stickBottom;
+  const el = streamEl.value;
+  if (el && el.scrollTop < 80) void loadMore();
 }
 function toBottom() {
   scrollEnd();

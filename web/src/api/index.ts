@@ -1135,8 +1135,17 @@ export const api = {
     request<{ ok: boolean }>(`/api/opencode/instances/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   ocSessions: (instance: string) =>
     request<{ sessions: OcSession[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`),
-  ocMessages: (instance: string, session: string) =>
-    request<{ messages: OcMessage[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages`),
+  ocMessages: (instance: string, session: string, opts?: { limit?: number; before?: string }) => {
+    const q = new URLSearchParams();
+    if (opts?.limit) q.set('limit', String(opts.limit));
+    if (opts?.before) q.set('before', opts.before);
+    const qs = q.toString();
+    return request<{ messages: OcMessage[]; has_more: boolean; next_before?: string; trimmed: string[] }>(
+      `/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages${qs ? '?' + qs : ''}`,
+    );
+  },
+  ocMessageFull: (instance: string, session: string, messageId: string) =>
+    request<{ ok: boolean; message?: OcMessage; error?: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/message/${encodeURIComponent(messageId)}`),
   ocPrompt: (instance: string, session: string, payload: { prompt: string; model?: string | { providerID: string; modelID: string }; agent?: string }) =>
     request<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/prompt`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

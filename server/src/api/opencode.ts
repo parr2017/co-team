@@ -94,9 +94,25 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
     return c.json(r.ok ? { ok: true, session: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });
 
+  /**
+   * 会话消息（尾优先分页）：?limit=50&before=msg_xxx。
+   * 不带 before=最新一页；带 before=更早一页（游标为上页首条 id）。响应：
+   * {messages, has_more, next_before, trimmed}——trimmed 为被头尾裁剪的 part id 列表。
+   */
   app.get('/api/opencode/sessions/:instance/:session/messages', async (c) => {
-    const r = await oc().readMessages(undefined, c.req.param('instance'), c.req.param('session'));
-    return c.json(r.ok ? { messages: r.data, ...(r.truncated ? { truncated: true } : {}) } : { error: r.error }, r.ok ? 200 : 400);
+    const limitRaw = Number(c.req.query('limit') || '');
+    const before = String(c.req.query('before') || '').trim();
+    const r = await oc().readMessages(undefined, c.req.param('instance'), c.req.param('session'), {
+      ...(Number.isFinite(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
+      ...(before ? { before } : {}),
+    });
+    return c.json(r.ok ? r.data : { error: r.error, messages: [], has_more: false, trimmed: [] }, r.ok ? 200 : 400);
+  });
+
+  /** 单条消息全文（「查看完整原文」；绕过 UI 裁剪，优先服务缓存原文） */
+  app.get('/api/opencode/sessions/:instance/:session/message/:messageId', async (c) => {
+    const r = await oc().readMessageFull(undefined, c.req.param('instance'), c.req.param('session'), c.req.param('messageId'));
+    return c.json(r.ok ? { ok: true, message: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });
 
   app.post('/api/opencode/sessions/:instance/:session/prompt', async (c) => {

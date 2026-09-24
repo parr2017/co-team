@@ -52,6 +52,14 @@
               :disabled="!!busyId"
               @click.stop="takeOver(inst)"
             >接管当前对话</van-button>
+            <!-- 新建并接管：不碰 heuristic 选中的会话，从全新会话开始（co-team 派活的安全路径，与 web 对齐） -->
+            <van-button
+              v-if="canTakeOver(inst)"
+              size="small"
+              :loading="creatingSession === inst.id"
+              :disabled="!!busyId"
+              @click.stop="createAndTakeOver(inst)"
+            >新建并接管</van-button>
           </div>
           <!-- 会话列表：点实例卡展开；按 directory 分组（本项目 / 其他项目） -->
           <div v-if="expandedId === inst.id" class="sess" @click.stop>
@@ -112,6 +120,7 @@ const loadingSessions = ref(false);
 const busyId = ref('');
 const busyAct = ref('');
 const takingOver = ref('');
+const creatingSession = ref('');
 /** 会话列表过滤器：本项目（实例 project_root 匹配）/ 全部 */
 const sessFilter = ref<'project' | 'all'>('project');
 let poll: number | undefined;
@@ -220,6 +229,28 @@ async function takeOver(inst: OcInstance) {
     showFailToast(e?.message || '接管失败');
   } finally {
     takingOver.value = '';
+  }
+}
+
+/** 新建并接管：不碰 heuristic 选中的会话，从全新会话开始（与 web 对齐的安全路径） */
+async function createAndTakeOver(inst: OcInstance) {
+  creatingSession.value = inst.id;
+  try {
+    const created = await api.ocCreateSession(inst.id, 'co-team 接管 ' + new Date().toISOString().slice(5, 16));
+    if (!created.ok || !created.session) {
+      showFailToast((created as any).error || '创建会话失败');
+      return;
+    }
+    openSession(inst.id, created.session.id);
+    if (expandedId.value !== inst.id) {
+      expandedId.value = inst.id;
+      void loadSessions(inst);
+    }
+    showSuccessToast('已创建新会话并接管');
+  } catch (e: any) {
+    showFailToast(e?.message || '创建失败');
+  } finally {
+    creatingSession.value = '';
   }
 }
 

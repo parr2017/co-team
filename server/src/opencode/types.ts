@@ -162,8 +162,11 @@ export interface OpencodeBridge {
   listSessions(agent: string | undefined, instance: string): Promise<OcCallResult<OcSession[]>>;
   /** 建会话（managed 可在 prompt 时指定 model） */
   createSession(agent: string | undefined, instance: string, title?: string): Promise<OcCallResult<OcSession>>;
-  /** 读会话消息（{info, parts}[]） */
-  readMessages(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<unknown[]>>;
+  /** 读会话消息：limit 尾优先分页（1~100，缺 50）；before=翻页游标（更早一页）。
+   *  返回 {messages, has_more, next_before, trimmed}：trimmed 列出被头尾裁剪的 part id。 */
+  readMessages(agent: string | undefined, instance: string, sessionId: string, opts?: { limit?: number; before?: string; full?: boolean }): Promise<OcCallResult<{ messages: unknown[]; has_more: boolean; next_before?: string; trimmed: string[] }>>;
+  /** 单条消息全文（「查看完整原文」；优先内存缓存原文，未命中走上游单条端点） */
+  readMessageFull(agent: string | undefined, instance: string, sessionId: string, messageID: string): Promise<OcCallResult<unknown>>;
   /** 同步发送：等待 opencode 返回助手消息（run_task 复合工具用） */
   sendPrompt(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<unknown>>;
   /** 异步发送：不等结果，靠 SSE 跟踪 */

@@ -13,7 +13,7 @@ const fakeBridge: OpencodeBridge = {
   instanceCapabilities: () => undefined,
   listSessions: async (_a, instance) => (instance === 't1' ? { ok: true, data: [{ id: 's1', title: '会话一' }] } : { ok: false, error: `实例 ${instance} 未连接` }),
   createSession: async (_a, instance) => ({ ok: instance === 't1', data: instance === 't1' ? { id: 's-new' } : undefined, error: instance === 't1' ? undefined : 'readonly 档拒绝建会话' }),
-  readMessages: async () => ({ ok: true, data: [{ info: { id: 'm1', role: 'assistant' }, parts: [{ type: 'text', text: '结果' }] }] }),
+  readMessages: async (_a: unknown, _i: string, _s: string, opts?: { limit?: number; before?: string }) => ({ ok: true, data: { messages: [{ info: { id: 'm1', role: 'assistant' }, parts: [{ type: 'text', text: '结果' }] }], has_more: !!opts?.before, next_before: opts?.before ? 'm1' : undefined, trimmed: [] } }),
   sendPrompt: async () => ({ ok: true, data: { info: {} } }),
   sendPromptAsync: async () => ({ ok: true, data: { messageID: 'm-x' } }),
   abortSession: async () => ({ ok: true, data: true }),
@@ -37,7 +37,7 @@ const ctx = {
     stopInstance: async () => true,
     resolveModel: () => undefined,
     listSessions: (a: string | undefined, i: string) => fakeBridge.listSessions(a, i),
-    readMessages: (a: string | undefined, i: string, s: string) => fakeBridge.readMessages(a, i, s),
+    readMessages: (a: string | undefined, i: string, s: string, opts?: { limit?: number; before?: string }) => fakeBridge.readMessages(a, i, s, opts),
     sendPrompt: (a: string | undefined, i: string, s: string, p: string, m?: { providerID: string; modelID: string }) => fakeBridge.sendPrompt(a, i, s, p, m),
     abortSession: (a: string | undefined, i: string, s: string) => fakeBridge.abortSession(a, i, s),
     revertMessage: (a: string | undefined, i: string, s: string, m: string) => fakeBridge.revertMessage(a, i, s, m),
@@ -97,6 +97,19 @@ describe('/api/opencode 路由', () => {
     expect((await app().request('/api/opencode/sessions/t1/s1/abort', { method: 'POST' })).status).toBe(200);
     expect((await app().request('/api/opencode/sessions/t1/s1/revert', json({ message_id: 'm1' }))).status).toBe(200);
     expect((await app().request('/api/opencode/sessions/t1/s1/revert', json({}))).status).toBe(400);
+  });
+
+  it('GET messages 尾优先分页：默认 50 条 + has_more/trimmed 透传', async () => {
+    const body = (await (await app().request('/api/opencode/sessions/t1/s1/messages')).json()) as { messages: unknown[]; has_more: boolean; trimmed: unknown[] };
+    expect(body.messages.length).toBe(1);
+    expect(body.has_more).toBe(false);
+    expect(body.trimmed).toEqual([]);
+  });
+
+  it('GET messages?before= 走翻页游标（has_more=true 透传）', async () => {
+    const body = (await (await app().request('/api/opencode/sessions/t1/s1/messages?before=m0')).json()) as { has_more: boolean; messages: unknown[] };
+    expect(body.has_more).toBe(true);
+    expect(body.messages.length).toBe(1);
   });
 
   it('未配置 opencode 时优雅降级（instances 空 + error，不 500）', async () => {
