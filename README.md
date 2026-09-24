@@ -1,345 +1,171 @@
 # Co-Team
 
-[English](README.md) | [中文](README_CN.md)
+> 面向个人开发者的多智能体协作开发助手
 
-> 🤖 面向个人开发者的多智能体协作开发助手
+提一个需求，Co-Team 自动拆解任务、分发给专业 Agent 团队执行，全过程实时可见，产出自动交付。单机自托管，接入任意 OpenAI 兼容模型即可运行。
 
-Co-Team 是一个开源的多智能体协作框架，通过 AI 驱动的专业化 Agent 团队，将开发任务自动拆解、分配、执行，让个人开发者也能拥有一个高效的 AI 开发团队。
+## 核心特点
 
-## ✨ 核心特点
+- **完整任务管线**：需求澄清 → 滚动阶段规划（DAG）→ 连续调度并行执行 → 节点交付成果 → 测试失败自动修复闭环 → Git 分支提交 → 合并后机器验收（平台探测 + 清单机审），失败可派生修复任务
+- **9 个专业 Agent**：dev（后端/通用）、front-dev（前端）、test、review、refactor、docs、deploy、launcher（后台启动项目供访问）、partner（协作会话主 Agent「搭档」），亦可自定义
+- **三种协作形态**：
+  - **任务编排**：多 Agent 按 DAG 协同，支持插话介入、实时问答（ask/answer）、监督者催办与提案
+  - **群组讨论**：多 Agent 自由讨论打磨方案，支持 @ 点名、群内工具执行与小改代码，一键转项目开发任务（两段式确认）
+  - **协作会话**：与「搭档」1 对 1 结对开发，直接读写工作区、执行命令、收发图片，可召唤项目内其他 Agent 协同，消息排队/打断、快照回滚
+- **模型池**：按服务接入点分组管理多模型，降级链、健康冷却、限流容量退避、按复杂度成本选型、原生 function calling 工具通道
+- **上下文引擎**：token 估算校准、四级水位线裁剪（snip/elide/折叠/413 分型）、任务便签 scratchpad、RAG 知识混合检索、SKILL.md 技能系统（索引 + 按需加载）
+- **安全可控**：任务级沙箱 + Git 分支工作流、目录监狱、六级命令权限（plan_only → unrestricted）、假完成三重闸（幻觉阻塞证据门 / 产物核查 / 合并验收）、自指任务克隆隔离
+- **实时可视化**：Web 仪表盘 + 独立移动端（挂载 `/m/`），生成打字机直播、节点心跳卡（模型/token/限流退避可见）、审批收件箱、交付成果卡片、项目进度成果表
+- **经验沉淀**：知识库（四类记忆）+ 任务终局 LLM 复盘 + Dream 每日整理线程 + 缺陷转修复任务，越用越懂你的项目
+- **通知与集成**：Webhook / 飞书（出站通知 + bot 入站命令）、外部 MCP 服务接入（stdio/HTTP，per-agent 白名单）
 
-- **🎯 智能任务拆解**：用户提需求 → 自动拆解为 DAG → 分发给专业 Agent
-- **👥 6 大专业 Agent**：开发、测试、审查、部署、文档、重构，各司其职
-- **⚡ 并行执行**：LangGraph 驱动，无依赖节点自动并行处理
-- **🚦 项目任务队列**：同项目任务串行排队执行，跨项目并行；模型池容量不足自动顺延，任务失败阻塞队列等待用户恢复（`GET /api/queues`、`POST /api/queues/:key/resume`）
-- **🔒 安全沙箱**：任务级隔离，文件操作受控，命令白名单执行
-- **📊 实时可视化**：Web Dashboard 实时展示每个 Agent 的工作状态
-- **🔌 插件化架构**：Agent、模型、通知渠道均可扩展
-
-## 📸 效果预览
-
-<!-- TODO: 添加截图 -->
-
-## 🚀 快速开始
+## 快速开始
 
 ### 环境要求
 
-- Node.js >= 18
-- npm >= 9
-- Redis（可选，用于持久化）
+- Node.js >= 18、npm
+- Redis（可选，用于跨重启持久化；缺失时自动使用落盘内存总线）
+- 至少一个 OpenAI 兼容的模型服务（本地 vLLM / Ollama 或云端 API 均可）
 
-### 安装
+### 安装与启动
 
 ```bash
-# 克隆仓库
 git clone https://github.com/parr2017/co-team.git
 cd co-team
-
-# 安装依赖
 npm install
-
-# 构建项目
 npm run build
+npm start          # 服务端，默认端口 8855
 ```
+
+访问 http://localhost:8855 使用 Web 仪表盘；手机与电脑同 WiFi 时访问 `http://<局域网IP>:8855/m/` 使用移动端。
 
 ### 配置
 
-1. 复制环境变量文件并填入你的 API Key：
+```bash
+cp .env.example .env                        # 填入模型服务的 API Key
+cp config/config.example.yaml config/config.yaml   # 配置模型池与其他参数
+```
+
+`config.yaml` 核心配置节：`dashboard`（端口/Token 门禁）、`model_pool`（模型与服务接入点）、`orchestrator`、`llm`、`context`、`discussion`、`knowledge`、`permissions`、`mcp`、`feishu`——每项均有中文注释。
+
+开发模式（热重载）：
 
 ```bash
-cp .env.example .env
-# 编辑 .env 文件，填入 API Key
+npm run dev:server   # 服务端 8855
+npm run dev:web      # Web 开发服务器 8856
+npm run dev:mobile   # 移动端开发服务器 8857
 ```
 
-2. 配置模型池（可选）：
+### CLI
 
 ```bash
-cp config/config.example.yaml config/config.yaml
-# 编辑 config/config.yaml，配置可用的 LLM 模型
-```
-
-### 启动
-
-```bash
-# 启动服务（默认端口 8855）
-npm start
-
-# 或分别启动服务端和前端开发模式
-npm run dev:server
-npm run dev:web
-```
-
-访问 http://localhost:8855 即可使用 Dashboard。
-
-> **Dev mode**: `npm run dev:server` starts the backend on port 8855, `npm run dev:web` starts the frontend dev server on port **8856** (with hot reload, proxying `/api` and `/ws` to 8855). Visit http://localhost:8856 during development. `npm run dev:mobile` starts the mobile dev server on port **8857**.
-
-### 📱 手机访问（移动端）
-
-`npm run build` 后，服务端会将**独立移动端前端**（与桌面端完全解耦的 Vue3 + Vant 工程）挂载到 `/m/` 路径。手机与电脑连同一 WiFi，访问：
-
-```
-http://<电脑局域网IP>:8855/m/
-```
-
-- 覆盖场景：任务列表/搜索/进度、作战室微信式聊天（成员头像条 + 绿色气泡 + 底部介入输入条）、审批/取消、澄清问答、计划确认、发起任务（含目录级联选择）、Agent 状态总览
-- 首次访问如失败，请放行 Windows 防火墙的 8855 入站端口
-- 可"添加到主屏幕"（manifest 已配置）；深色模式跟随系统
-- WS 断线自动指数退避重连，切后台回前台立即恢复并补拉数据
-
-### 🧩 Agent 技能（SKILL.md）
-
-给 Agent 注入可复用技能：在 `skills/<技能名>/SKILL.md` 放 frontmatter（name/description/tags）+ 正文指令，即全局生效；`agents/<agent>/skills/` 为 Agent 专属。管理入口：设置 → 技能库（新建/编辑/删除/重扫）。Agent 每次执行时装载：显式绑定（agent.yaml `skills:` 字段）全量注入，未绑定的按标签/关键词自动匹配（最多 2 个）。
-
-### 📋 节点交付成果与项目进度成果表
-
-每个节点（成功/失败）自动产出统一模板的交付报告：做了什么/全局目标贡献/变更清单/验证方式与结果/遇到的问题。作战室聊天流出现「📄 交付成果」卡片，点击阅读；API：`GET /api/tasks/:id/deliverables`。项目维度：OfficeView「进度成果表」（或移动端项目页「成果表」）展示每任务×每节点完整记录与交付成果阅读入口，API：`GET /api/projects/:id/report`。
-
-### 🖥️ CLI 内置命令
-
-```bash
-# 初始化一个标准项目脚手架（目录结构 + 三文档 + git 仓库）
 npx coteam-cli init ./my-project --name "My Project" --description "项目描述"
 ```
 
-### 🧪 端到端演示（真实 LLM）
+生成标准项目脚手架（目录结构 + README/CONTRIBUTING/ARCHITECTURE 三文档 + git 初始提交）。
 
-```bash
-# 前置：npm start 且 config/config.yaml 配置了真实 API key
-bash scripts/e2e-demo.sh [http://localhost:8855] [模型名]
-```
+## 功能导览
 
-完整走通：脚手架建项目 → 建任务（锁定主模型）→ 轮询至完成 → 输出快照/知识库复盘/作战室摘要。
+| 形态 | 入口 | 说明 |
+|------|------|------|
+| 任务编排 | 任务中心 → 发起任务 | 支持任务分级（轻量/标准/重量）、需求澄清、计划审核、执行中插话、作战室实时跟踪、审批/取消/续跑 |
+| 群组讨论 | 群组沟通 | 勾选 Agent 发起讨论，@ 点名、方案收敛、一键转项目开发任务 |
+| 协作会话 | 协作 | 与「搭档」结对开发，支持模型钉选、排队/打断、发图、diff 查看、快照回滚 |
+| 审批收件箱 | 审批 | 聚合并一键处理：节点审批、监督者提案、待批命令、提问待答 |
+| 项目管理 | 项目 | 脚手架建项目、进度监控、项目简报（AI 生成+人工编辑）、进度成果表 |
+| 设置 | 设置 | 模型池（服务分组编辑/上游拉取）、命令权限、技能库、MCP 服务、Agent 管理 |
 
-## 🏗️ 项目结构
+## 技术栈
+
+- **服务端**：Node.js + TypeScript · [Hono](https://hono.dev/) · OpenAI SDK · ws（WebSocket）· ioredis（可选）· simple-git · Model Context Protocol SDK
+- **Web 前端**：Vue 3 · Element Plus · Vue Router · ECharts · marked · highlight.js · Vite
+- **移动端**：Vue 3 · Vant · Vue Router · Vite（与桌面端零代码共享，仅共用后端 API）
+- **测试**：Vitest（92 个测试文件 / 683 用例）
+- 运行期无 Python 依赖（`legacy-python/` 仅为早期版本存档）
+
+## 项目结构
 
 ```
 co-team/
-├── agents/                    # 智能体定义
-│   ├── dev/                   # 开发 Agent
-│   ├── test/                  # 测试 Agent
-│   ├── review/                # 代码审查 Agent
-│   ├── deploy/                # 部署 Agent
-│   ├── docs/                  # 文档 Agent
-│   └── refactor/              # 重构 Agent
-├── server/                    # 后端服务（Node.js + Hono）
+├── agents/            # Agent 定义（agent.yaml + prompt.md + handler + skills）
+├── skills/            # 全局技能库（SKILL.md：frontmatter + 正文）
+├── server/            # 后端服务
 │   └── src/
-│       ├── orchestrator.ts    # 任务编排引擎
-│       ├── router.ts          # 智能路由
-│       ├── scheduler.ts       # 并行调度器
-│       ├── model-pool.ts      # 模型池管理
-│       ├── sandbox.ts         # 沙箱隔离
-│       ├── git.ts             # Git 集成
-│       ├── tools/             # 工具系统
-│       └── notify/            # 通知模块
-├── web/                       # 桌面前端界面（Vue3 + Element Plus）
-│   └── src/
-├── mobile/                    # 独立移动端前端（Vue3 + Vant，挂载于 /m/）
-│   └── src/
-│       ├── views/             # 任务列表/详情作战室/发起/澄清/计划/Agent总览
-│       └── composables/       # 单例 store + WS（指数退避+回前台补拉）
-├── config/                    # 配置文件
-├── scripts/                   # e2e-demo.sh 等运维脚本
-├── legacy-python/             # Python 遗留代码（存档）
-└── package.json
+│       ├── orchestrator/   # 编排引擎（调度/规划/监督者/验收）
+│       ├── api/            # REST API
+│       ├── convo.ts        # 协作会话引擎
+│       ├── discussion.ts   # 群组讨论引擎
+│       ├── llm.ts          # LLM 传输层（流式/watchdog/超时语义）
+│       ├── scheduler.ts    # 模型池调度（降级/冷却/容量退避）
+│       ├── sandbox.ts      # 沙箱与权限（目录监狱/命令白名单）
+│       ├── tools.ts        # Agent 工具系统（文件/命令/检查点/视觉/MCP）
+│       ├── knowledge.ts    # 知识库与记忆
+│       ├── skills.ts       # 技能装载
+│       ├── mcp/            # 外部 MCP 客户端
+│       └── feishu/         # 飞书 bot
+├── web/               # Web 仪表盘（Vue3 + Element Plus）
+├── mobile/            # 独立移动端（Vue3 + Vant，挂载 /m/）
+├── config/            # 配置示例
+├── scripts/           # 运维脚本（e2e-demo 等）
+└── legacy-python/     # Python 早期版本存档（不参与运行）
 ```
 
-## 🎯 使用场景
+## 环境变量
 
-### 提交开发任务
+在 `.env` 中配置（不要提交真实值；`config/config.yaml` 含密钥，已被 .gitignore 覆盖）：
 
-在 Dashboard 中输入你的需求：
-
-```
-创建一个 Python 计算器，支持加减乘除，并编写单元测试
-```
-
-Co-Team 会自动：
-1. 拆解任务为 DAG（dev → test）
-2. 分配给专业 Agent 执行
-3. 在沙箱中安全执行
-4. 自动创建 Git 分支并提交
-5. 在 Dashboard 中实时展示进度
-
-### 使用 CLI
-
-```bash
-# 交互式配置
-npx coteam setup
-
-# 提交任务
-npx coteam chat
-```
-
-## 🧩 技术架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Web Dashboard                          │
-│                   (Vue3 + Element Plus)                      │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ WebSocket + REST API
-┌──────────────────────────▼──────────────────────────────────┐
-│                      Server (Hono)                           │
-├─────────────────────────────────────────────────────────────┤
-│  Orchestrator    │  LangGraph StateGraph 编排引擎            │
-├─────────────────────────────────────────────────────────────┤
-│  Router          │  规则 → LLM 语义 → 关键词 三级回退        │
-├─────────────────────────────────────────────────────────────┤
-│  Scheduler       │  无依赖节点并行执行 + 线程驱动兜底        │
-├─────────────────────────────────────────────────────────────┤
-│  Model Pool      │  多模型调度 + 降级 + 成本优化             │
-├─────────────────────────────────────────────────────────────┤
-│  Sandbox         │  任务级隔离 + 路径逃逸防护                │
-├─────────────────────────────────────────────────────────────┤
-│  Tool System     │  文件读写 + 命令执行 + 白名单控制         │
-└─────────────────────────────────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                    Agent Team                                │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐     │
-│  │ dev  │ │ test │ │review│ │deploy│ │ docs │ │refact│     │
-│  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## ⚙️ 配置说明
-
-### 模型池配置
-
-在 `config/config.yaml` 中配置可用的 LLM 模型：
-
-```yaml
-model_pool:
-  - name: deepseek-v4-flash
-    provider: openai
-    api_key: sk_xxx
-    base_url: https://api.openai.com/v1
-    concurrency: 4
-    priority: 6
-    cost_per_1k: 0.005
-    tags: [code, logic]
-```
-
-### 环境变量
-
-| 变量 | 说明 |
+| 变量 | 用途 |
 |------|------|
-| `DEEPSEEK_API_KEY` | DeepSeek API Key |
-| `SENSENOVA_API_KEY` | SenseNova API Key |
-| `LMSTUDIO_API_KEY` | LM Studio API Key |
-| `COTEAM_WEBHOOK` | Webhook 通知地址 |
-| `COTEAM_FEISHU_WEBHOOK` | 飞书 Webhook 地址 |
-| `COTEAM_STATE_FILE` | 状态持久化文件路径 |
+| `DEEPSEEK_API_KEY` 等模型服务 Key | 按实际接入的模型服务填写，与 `model_pool` 条目对应 |
+| `COTEAM_WEBHOOK` | 任务事件通知 Webhook 地址 |
+| `COTEAM_FEISHU_WEBHOOK` | 飞书群机器人 Webhook（出站通知） |
+| `COTEAM_FEISHU_APP_ID` / `COTEAM_FEISHU_APP_SECRET` | 飞书自建应用凭据（bot 入站） |
+| `COTEAM_FEISHU_ENCRYPT_KEY` / `COTEAM_FEISHU_VERIFICATION_TOKEN` | 飞书事件订阅校验 |
+| `COTEAM_STATE_FILE` | 内存总线持久化文件路径（无 Redis 时） |
+| `COTEAM_LOG_DIR` / `COTEAM_LOG_LEVEL` | 日志目录与级别 |
+| `COTEAM_MOBILE_DIST` / `COTEAM_WEB_DIST` | 前端构建产物目录（默认自动探测） |
+| `COTEAM_LLM_NATIVE_TOOLS` / `COTEAM_LLM_STREAM` / `COTEAM_LLM_TIMEOUT_MS` | LLM 传输层进阶开关（默认值见 config 注释） |
 
-## 🛡️ 安全特性
+完整变量说明见 `.env.example` 与 `config/config.example.yaml` 中的注释。
 
-- **沙箱隔离**：每个任务在独立目录中执行，防止污染主工作区
-- **路径逃逸防护**：文件操作限制在工作目录内
-- **命令白名单**：仅允许执行预定义的安全命令
-- **审批机制**：敏感操作（如部署）需要人工审批
+## 安全说明
 
-> ⚠️ **实验特性说明**：当前沙箱为进程级隔离（任务级目录副本 + 路径逃逸防护 + 命令白名单），尚未提供 CPU/内存/网络等系统资源级的强隔离（如 Docker/gVisor 容器沙箱）。请勿在宿主机敏感环境中运行不可信的生成代码，强隔离沙箱将在后续版本提供。
+- 沙箱为**目录级隔离**（任务副本 / git worktree + 分支工作流），不含 CPU/内存/网络的容器级强隔离，请勿在敏感环境运行不可信代码
+- 目录监狱：命令中的越界绝对路径一律拒绝；文件读写限制在项目目录内
+- 命令权限六级：`plan_only` / `readonly` / `approve_required` / `whitelist_auto` / `full` / `unrestricted`
+- 对外暴露服务前，建议在 `config.yaml` 的 `dashboard.token` 配置 API Token 门禁（启用后所有 `/api` 请求需 Bearer Token）
+- 自指任务（用 Co-Team 开发 Co-Team）强制隔离到独立克隆执行，主仓库零触碰
 
-## 📊 API 接口
+## API
 
-- `GET /api/status` - 服务状态
-- `GET /api/agents` - Agent 列表
-- `GET /api/tasks` - 任务列表
-- `GET /api/metrics` - 性能指标
-- `POST /api/tasks` - 创建任务
-- `POST /api/tasks/{id}/execute` - 执行任务
-- `POST /api/tasks/{id}/cancel` - 取消任务
-- `POST /api/tasks/{id}/approve/{node}` - 审批节点
-- `WS /ws` - 实时事件推送
+REST + WebSocket 事件推送（`/ws/events`）双通道，核心端点：
 
-完整 API 文档：启动服务后访问 http://localhost:8855/docs
+```
+POST /api/tasks                创建任务       GET  /api/tasks?q=           任务搜索
+POST /api/tasks/:id/execute    执行任务       POST /api/tasks/:id/intervene 执行中介入
+POST /api/convos               协作会话       POST /api/discussions        群组讨论
+GET  /api/metrics              运行指标       GET  /api/projects/:id/report 项目成果表
+PUT  /api/config/model-pool    模型池管理     POST /api/config/mcp/test    MCP 连通性探测
+```
 
-## 🧪 测试
+## 测试
 
 ```bash
-# 运行所有测试
-npm test
-
-# 开发模式（监听文件变化）
-cd server && npx vitest
+npm test        # server 全量 vitest
 ```
 
-## 🤝 贡献
+## 路线图
 
-欢迎贡献代码！请遵循以下步骤：
+- [x] 多 Agent 任务编排 / 滚动规划 / 并行调度
+- [x] 群组讨论引擎 / 协作会话 / 监督者 / 实时问答
+- [x] 上下文引擎 / RAG 知识库 / 技能系统 / 经验沉淀
+- [x] Web 仪表盘 / 独立移动端 / 飞书 bot / MCP 接入
+- [ ] 插件市场
+- [ ] 容器级强隔离沙箱（Docker/gVisor）
+- [ ] npm / PyPI 正式发布
+- [ ] iOS / Android 原生打包
+- [ ] 多人共享任务视图
 
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/awesome-feature`)
-3. 提交更改 (`git commit -m 'Add awesome feature'`)
-4. 推送到分支 (`git push origin feature/awesome-feature`)
-5. 创建 Pull Request
+## 许可证
 
-### 开发指南
-
-```bash
-# 开发模式（热重载）
-npm run dev:server  # 后端
-npm run dev:web     # 前端
-
-# 构建
-npm run build
-
-# 测试
-npm test
-```
-
-## 📝 创建自定义 Agent
-
-1. 在 `agents/` 目录下创建新文件夹
-2. 添加 `agent.yaml` 配置文件：
-
-```yaml
-name: my-agent
-version: 1.0.0
-description: 我的自定义 Agent
-model_preference: deepseek-v4-flash
-timeout: 120
-```
-
-3. 添加 `prompt.md` 提示词文件
-4. 添加 `handler.js` 处理逻辑（可选）
-
-## 🗺️ 路线图
-
-- [x] 基础任务编排
-- [x] 6 大专业 Agent
-- [x] 沙箱隔离执行
-- [x] Git 自动提交
-- [x] Web Dashboard
-- [x] WebSocket 实时推送
-- [ ] 多人协作模式
-- [ ] Agent 插件市场
-- [ ] 更多通知渠道（钉钉、Slack）
-- [ ] 任务模板库
-
-## 🔍 竞品对比
-
-| 项目 | 定位 | Co-Team 差异 |
-|------|------|-------------|
-| Devin | 全自主 AI 工程师 | 更轻量，个人开发者友好 |
-| OpenHands | 单 Agent 开发 | 多 Agent 协作，专业分工 |
-| AutoGen | 多 Agent 框架 | 开箱即用，非框架 |
-| Cursor | AI 编辑器 | 独立运行，跨 IDE |
-
-## 📄 许可证
-
-MIT License - 详见 [LICENSE](LICENSE)
-
-## 🙏 致谢
-
-- [Hono](https://hono.dev/) - 轻量级 Web 框架
-- [Vue3](https://vuejs.org/) - 渐进式前端框架
-- [Element Plus](https://element-plus.org/) - Vue3 UI 组件库
-- [LangGraph](https://langchain-ai.github.io/langgraph/) - 编排引擎
-- [ECharts](https://echarts.apache.org/) - 可视化图表
-
----
-
-<p align="center">
-  如果觉得有用，请给个 ⭐ Star 支持一下！
-</p>
+[MIT](LICENSE)
