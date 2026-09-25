@@ -18,7 +18,6 @@
  * 实例级 readonly/control 档位与 agent 白名单由 OpencodeManager 门控（agent=undefined=API 层）。
  */
 import { Hono } from 'hono';
-import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import type { ApiContext, HttpError } from './index';
 import { readJsonAuto } from './index';
 import { validateOpencodeInstanceConfigs } from '../opencode/manager';
@@ -102,11 +101,14 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
   app.get('/api/opencode/sessions/:instance/:session/messages', async (c) => {
     const limitRaw = Number(c.req.query('limit') || '');
     const before = String(c.req.query('before') || '').trim();
+    // full=1：不做头尾裁剪（TUI 同款完整内容；前端聊天页默认带 full，渲染层自行折叠超长输出）
+    const full = c.req.query('full') === '1' || c.req.query('full') === 'true';
     const r = await oc().readMessages(undefined, c.req.param('instance'), c.req.param('session'), {
       ...(Number.isFinite(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
       ...(before ? { before } : {}),
+      ...(full ? { full: true } : {}),
     });
-    return c.json(r.ok ? r.data : { error: r.error, messages: [], has_more: false, trimmed: [] }, r.ok ? 200 : 400);
+    return c.json(r.ok ? { ...r.data, event_id: oc().latestEventId(c.req.param('instance')) } : { error: r.error, messages: [], has_more: false, trimmed: [], event_id: null }, r.ok ? 200 : 400);
   });
 
   /** 单条消息全文（「查看完整原文」；绕过 UI 裁剪，优先服务缓存原文） */
@@ -135,6 +137,37 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
 
   app.post('/api/opencode/sessions/:instance/:session/abort', async (c) => {
     const r = await oc().abortSession(undefined, c.req.param('instance'), c.req.param('session'));
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  /** 即时切换会话执行模式（agent）——选中即生效，不等下一次发送 */
+  app.post('/api/opencode/sessions/:instance/:session/agent', async (c) => {
+    const body = await readJsonAuto<{ agent?: string }>(c);
+    const ocAgent = String(body.agent || '').trim();
+    if (!ocAgent) return c.json({ detail: 'agent 不能为空' }, 400);
+    const r = await oc().switchSessionAgent(undefined, c.req.param('instance'), c.req.param('session'), ocAgent);
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  /** 即时切换会话模型——字符串=原生 provider/model（attached），对象={providerID,modelID} 直穿 */
+  app.post('/api/opencode/sessions/:instance/:session/model', async (c) => {
+    const body = await readJsonAuto<{ model?: unknown }>(c);
+    let model: { providerID: string; modelID: string } | undefined;
+    if (typeof body.model === 'string' && body.model.trim()) {
+      model = oc().resolveModel(c.req.param('instance'), body.model.trim());
+      if (!model) return c.json({ ok: false, error: `模型 ${body.model} 无法解析（attached 用 provider/model 原生格式）` }, 400);
+    } else if (body.model && typeof body.model === 'object') {
+      const m = body.model as { providerID?: string; modelID?: string };
+      if (m.providerID && m.modelID) model = { providerID: m.providerID, modelID: m.modelID };
+    }
+    if (!model) return c.json({ detail: 'model 不能为空' }, 400);
+    const r = await oc().switchSessionModel(undefined, c.req.param('instance'), c.req.param('session'), model);
+    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
+  /** 删除会话 */
+  app.delete('/api/opencode/sessions/:instance/:session', async (c) => {
+    const r = await oc().deleteSession(undefined, c.req.param('instance'), c.req.param('session'));
     return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });
 
@@ -295,35 +328,18 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
     return c.json(r.ok ? { ok: true, ...r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });
 
-  /** managed 直连信息：无鉴权 + CORS 已放行 → 前端 EventSource/WS 直连 opencode（最真流式） */
-  app.get('/api/opencode/instances/:id/direct', (c) => {
-    const info = oc().directInfo(c.req.param('id'));
-    return c.json({ ...info, events_url: info.ok ? `${info.url}/event` : '' });
+  app.get('/api/opencode/instances/:id/events/replay', (c) => {
+    const after = String(c.req.query('after') || '').trim();
+    if (!after) return c.json({ ok: false, error: 'after 不能为空' }, 400);
+    const events = oc().replayEvents(c.req.param('id'), after);
+    return c.json({
+      ok: events !== null,
+      events: events || [],
+      latest_event_id: oc().latestEventId(c.req.param('id')) || null,
+      resync: events === null,
+    }, events === null ? 409 : 200);
   });
 
-  /**
-   * attached 实例的 SSE 代理：co-team 持 Basic 鉴权代收（EventSource 无法设请求头），
-   * 同源分帧给前端。帧型与 WS oc_event 一致：{event} 或 {events:[...]}（delta 微批）。
-   */
-  app.get('/api/opencode/instances/:id/events', async (c) => {
-    const manager = oc();
-    const direct = manager.directInfo(c.req.param('id'));
-    if (direct.ok) {
-      return c.json({ ok: true, direct: true, url: direct.url, events_url: `${direct.url}/event`, hint: 'managed 实例无鉴权，前端应直连' }, 200);
-    }
-    return streamSSE(c, async (stream: SSEStreamingApi) => {
-      const ac = new AbortController();
-      stream.onAbort(() => ac.abort());
-      const send = async (frame: { event?: unknown; events?: unknown[] }) => {
-        try {
-          await stream.writeSSE({ data: JSON.stringify(frame), event: 'oc' });
-        } catch { /* 前端断开 */ }
-      };
-      try {
-        await manager.proxyEvents(c.req.param('id'), (ev) => void send({ event: ev }), ac.signal);
-      } catch (e: any) {
-        try { await stream.writeSSE({ data: JSON.stringify({ error: String(e?.message || e).slice(0, 200) }), event: 'oc_error' }); } catch { /* 已断 */ }
-      }
-    });
-  });
+  app.get('/api/opencode/instances/:id/direct', (c) => c.json({ ok: false, error: '浏览器事件统一经 co-team WebSocket' }, 410));
+  app.get('/api/opencode/instances/:id/events', (c) => c.json({ ok: false, error: '浏览器事件统一经 co-team WebSocket' }, 410));
 }

@@ -1135,12 +1135,13 @@ export const api = {
     request<{ ok: boolean }>(`/api/opencode/instances/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   ocSessions: (instance: string) =>
     request<{ sessions: OcSession[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`),
-  ocMessages: (instance: string, session: string, opts?: { limit?: number; before?: string }) => {
+  ocMessages: (instance: string, session: string, opts?: { limit?: number; before?: string; full?: boolean }) => {
     const q = new URLSearchParams();
     if (opts?.limit) q.set('limit', String(opts.limit));
     if (opts?.before) q.set('before', opts.before);
+    if (opts?.full) q.set('full', '1');
     const qs = q.toString();
-    return request<{ messages: OcMessage[]; has_more: boolean; next_before?: string; trimmed: string[] }>(
+    return request<{ messages: OcMessage[]; has_more: boolean; next_before?: string; trimmed: string[]; event_id?: string | null }>(
       `/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages${qs ? '?' + qs : ''}`,
     );
   },
@@ -1152,6 +1153,16 @@ export const api = {
     }),
   ocAbort: (instance: string, session: string) =>
     request<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/abort`, { method: 'POST' }),
+  ocSwitchAgent: (instance: string, session: string, agent: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/agent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }),
+    }),
+  ocSwitchModel: (instance: string, session: string, model: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/model`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }),
+    }),
+  ocDeleteSession: (instance: string, session: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}`, { method: 'DELETE' }),
   ocRevert: (instance: string, session: string, messageId: string) =>
     request<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/revert`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message_id: messageId }),
@@ -1163,10 +1174,8 @@ export const api = {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permission_id: permissionId, response }),
     }),
   // ---- TUI 同构接管面 ----
-  ocActiveSession: (instance: string) =>
-    request<{ ok: boolean; session?: OcSession; reason?: 'busy' | 'recent'; error?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/active-session`),
-  ocDirect: (instance: string) =>
-    request<{ ok: boolean; direct: boolean; url: string; events_url?: string; reason?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/direct`),
+  ocReplay: (instance: string, after: string) =>
+    request<{ ok: boolean; events: Record<string, any>[]; latest_event_id?: string | null; resync: boolean; error?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/events/replay?after=${encodeURIComponent(after)}`),
   ocAgents: (instance: string) =>
     request<{ agents: { name: string; description?: string; mode?: string }[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/agents`),
   ocModels: (instance: string) =>

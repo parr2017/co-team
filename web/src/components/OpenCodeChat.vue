@@ -26,12 +26,6 @@
       </div>
     </div>
 
-    <!-- 接管横幅：显式告知正在看/管的是哪条会话（busy=可能正被 TUI 使用，禁盲发） -->
-    <div v-if="props.takeoverHint" class="takeover-banner" :class="{ warn: props.takeoverHint.busy }">
-      <span v-if="props.takeoverHint.busy">⚠ 正在接管 <b>TUI 正在使用</b> 的会话：「{{ props.takeoverHint.title }}」 · {{ props.takeoverHint.project }}——你发的消息会进入该会话，TUI 实时可见</span>
-      <span v-else>接管中：「{{ props.takeoverHint.title }}」 · {{ props.takeoverHint.project }}</span>
-    </div>
-
     <!-- 状态条：重试 / 错误 / 已回退 -->
     <div v-if="snap.retry" class="ribbon warn">第 {{ snap.retry.attempt }} 次重试：{{ snap.retry.message }}</div>
     <div v-if="snap.error" class="ribbon err">{{ snap.error }}</div>
@@ -73,7 +67,7 @@
             </div>
             <template v-for="(p, pi) in m.parts" :key="p.id || pi">
               <div v-if="p.type === 'text' && p.text" class="a-text"><MdView :source="p.text" /></div>
-              <details v-else-if="p.type === 'reasoning' && p.text" class="a-think" :open="snap.busy && isLastPart(m, p)">
+              <details v-else-if="p.type === 'reasoning' && p.text" class="a-think" open>
                 <summary><span class="car">▶</span><span class="tt">思考过程</span></summary>
                 <div class="think-body">{{ p.text }}</div>
               </details>
@@ -91,9 +85,19 @@
                     <div class="tc-lab">输入</div>
                     <pre class="tc-pre">{{ fmtJson(p.state.input) }}</pre>
                   </div>
-                  <div v-if="p.state?.output" class="tc-sec">
+                  <div v-if="toolText(p)" class="tc-sec">
                     <div class="tc-lab">输出</div>
-                    <pre class="tc-pre">{{ String(p.state.output).slice(0, 6000) }}</pre>
+                    <pre class="tc-pre">{{ toolText(p) }}</pre>
+                  </div>
+                  <div v-if="taskChildMap.get(String(p.id))" class="tc-sec">
+                    <div class="tc-lab">子代理运行过程（{{ childMessages(taskChildMap.get(String(p.id))).length }} 条）</div>
+                    <div class="child-flow">
+                      <div v-for="cm in childMessages(taskChildMap.get(String(p.id)))" :key="cm.id" class="c-msg" :class="cm.role">
+                        <span class="c-role">{{ cm.role === 'user' ? '派单' : cm.role === 'assistant' ? '子代理' : cm.role }}</span>
+                        <span class="c-text">{{ childMsgText(cm) || '…' }}</span>
+                      </div>
+                      <div v-if="!childMessages(taskChildMap.get(String(p.id))).length" class="dim mini">子会话消息加载中…</div>
+                    </div>
                   </div>
                   <div v-if="p.state?.error" class="tc-sec err">{{ p.state.error }}</div>
                   <div v-if="p.state?.attachments?.length" class="tc-sec dim mini">
@@ -155,6 +159,12 @@
       </div>
     </div>
 
+    <!-- 滚动跳转：离顶/离底超过一屏出现 -->
+    <div v-if="showJumpTop || showJumpBottom" class="jump-btns">
+      <button v-if="showJumpTop" class="jump-btn" title="到顶部" @click="jumpTop">↑</button>
+      <button v-if="showJumpBottom" class="jump-btn" title="到底部" @click="jumpBottom">↓</button>
+    </div>
+
     <!-- PTY：TUI 的实时终端 -->
     <div v-if="snap.ptys.length" class="pty-strip">
       <span v-for="p in snap.ptys" :key="p.id" class="pty-chip" @click="openPty(p)">
@@ -167,10 +177,10 @@
     <!-- composer -->
     <div v-if="canControl" class="composer">
       <div class="comp-r1">
-        <el-select v-model="agent" size="small" class="sel" clearable placeholder="agent（缺省 build）">
-          <el-option v-for="a in agents" :key="a.name" :label="a.name + (a.description ? ' · ' + a.description : '')" :value="a.name" />
+        <el-select v-model="agent" size="small" class="sel" clearable placeholder="agent（缺省 build）" @change="onAgentChange">
+          <el-option v-for="a in agents" :key="a.name" :label="(a.display || a.name) + (a.description ? ' · ' + a.description : '')" :value="a.name" />
         </el-select>
-        <el-select v-model="model" size="small" class="sel" clearable filterable placeholder="模型（缺省实例默认）">
+        <el-select v-model="model" size="small" class="sel" clearable filterable placeholder="模型（缺省实例默认）" @change="onModelChange">
           <el-option v-for="m in modelOptions" :key="m.value" :label="m.label" :value="m.value" />
         </el-select>
         <span v-if="snap.busy" class="dim mini">发送将排队等当前回合结束</span>
@@ -217,25 +227,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, getApiToken, type OcInstance, type OcDiffFile } from '../api';
+import { api, type OcInstance, type OcDiffFile } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { showApiError } from '../utils/apiError';
-import { SessionStream } from '../opencode-stream';
+import { SessionStream, toolOutputText as toolOutputOf } from '../opencode-stream';
 import MdView from './MdView.vue';
 
-const props = defineProps<{ instance: OcInstance; sessionId: string; takeoverHint?: { title: string; project: string; busy: boolean } | null }>();
-const { onEvent } = useDashboard();
+const props = defineProps<{ instance: OcInstance; sessionId: string }>();
+const { onEvent, connected } = useDashboard();
 const canControl = computed(() => props.instance.mode === 'control');
 
 const stream = new SessionStream();
 const snap = ref(stream.snapshot());
-let busyAck = false; // busy 接管会话的首次发送确认（同会话只问一次）
 const loading = ref(false);
 const sending = ref(false);
 const draft = ref('');
 const agent = ref('');
 const model = ref('');
-const agents = ref<{ name: string; description?: string; mode?: string }[]>([]);
+const agents = ref<{ name: string; display?: string; description?: string; mode?: string }[]>([]);
 const modelOptions = ref<{ label: string; value: string }[]>([]);
 const streamEl = ref<HTMLElement>();
 
@@ -250,12 +259,7 @@ const ptyInput = ref('');
 const ptyOut = ref<HTMLElement>();
 let ptyWs: WebSocket | null = null;
 
-// 事件订阅：managed 直连（无鉴权+CORS 已放行）；attached 走同源代理。断线重连内置。
-let es: EventSource | null = null;
-let proxyReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-let proxyAbort: AbortController | null = null;
-let directKind: 'direct' | 'proxy' | '' = '';
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let lastEventId: string | undefined;
 let renderRaf = 0;
 
 const sessionMeta = computed(() => {
@@ -317,7 +321,20 @@ function applyEvents(frames: ({ event?: any; events?: any[] } | any)[]): void {
   for (const f of frames) {
     const list = f?.events ? f.events : f?.event ? [f.event] : f?.type ? [f] : [];
     for (const ev of list) {
-      if (!ev?.type || !belongsToSession(ev)) continue;
+      if (!ev?.type) continue;
+      // 子会话事件 → 对应的内嵌子流（TUI 同款：子代理活动实时内嵌在父会话里）
+      const sid = evSessionId(ev);
+      if (sid && sid !== props.sessionId) {
+        const cs = childStreams.get(sid);
+        if (cs) {
+          cs.applyEvent(ev);
+          childSnaps.value = new Map(childSnaps.value).set(sid, cs.snapshot());
+          touched = true;
+        }
+        continue;
+      }
+      if (!belongsToSession(ev)) continue;
+      if (typeof ev.id === 'string' && ev.id) lastEventId = ev.id;
       stream.applyEvent(ev);
       touched = true;
     }
@@ -331,6 +348,7 @@ function flush(): void {
   renderRaf = requestAnimationFrame(() => {
     renderRaf = 0;
     snap.value = stream.snapshot();
+    onScroll();
     if (snap.value.busy && isNearEnd()) void nextTick(() => scrollEnd());
   });
 }
@@ -351,15 +369,21 @@ const fullMessages = ref(new Map<string, any>());
 async function reloadAll(): Promise<void> {
   loading.value = true;
   try {
-    const d = await api.ocMessages(props.instance.id, props.sessionId, { limit: PAGE });
+    const d = await api.ocMessages(props.instance.id, props.sessionId, { limit: PAGE, full: true });
     stream.reset(d.messages || []);
+    lastEventId = d.event_id || undefined;
     hasMore.value = !!d.has_more;
     nextBefore.value = d.next_before || '';
     trimmedParts.value = new Set(d.trimmed || []);
     fullMessages.value = new Map();
+    childStreams.clear();
+    childSnaps.value = new Map();
+    taskChildMap.value = new Map();
+    childSessions.value = [];
     const todos = await api.ocTodos(props.instance.id, props.sessionId).catch(() => null);
     if (todos?.todos) stream.applyEvent({ type: 'todo.updated', properties: { todos: todos.todos } });
     flush();
+    void loadChildren();
     if (isNearEnd()) await nextTick(() => scrollEnd());
   } catch (e: any) {
     showApiError(e);
@@ -376,7 +400,7 @@ async function loadMore(): Promise<void> {
   const prevHeight = el?.scrollHeight || 0;
   const prevTop = el?.scrollTop || 0;
   try {
-    const d = await api.ocMessages(props.instance.id, props.sessionId, { limit: PAGE, before: nextBefore.value });
+    const d = await api.ocMessages(props.instance.id, props.sessionId, { limit: PAGE, before: nextBefore.value, full: true });
     if (d.messages?.length) {
       stream.prepend(d.messages);
       for (const id of d.trimmed || []) trimmedParts.value.add(id);
@@ -417,6 +441,100 @@ function partsOf(m: Record<string, any>): any[] {
   return m.parts || [];
 }
 
+/** 工具输出文本（v2 内容块数组解包；50k 上限防 DOM 爆炸，更长仍可走完整原文） */
+function toolText(p: any): string {
+  return toolOutputOf(p, 50_000);
+}
+
+// ---------- 即时切换（TUI 同款：选中即生效，不等发送） ----------
+
+async function onAgentChange(v: string | undefined): Promise<void> {
+  if (!v) return; // 清空=恢复会话默认，随下一次发送缺省生效
+  try {
+    const r = await api.ocSwitchAgent(props.instance.id, props.sessionId, v);
+    if (r.ok) ElMessage.success(`执行模式已切换：${v}`);
+    else ElMessage.error(r.error || '切换失败');
+  } catch (e: any) {
+    showApiError(e);
+  }
+}
+
+async function onModelChange(v: string | undefined): Promise<void> {
+  if (!v) return;
+  try {
+    const r = await api.ocSwitchModel(props.instance.id, props.sessionId, v);
+    if (r.ok) ElMessage.success(`模型已切换：${v}`);
+    else ElMessage.error(r.error || '切换失败');
+  } catch (e: any) {
+    showApiError(e);
+  }
+}
+
+// ---------- 子代理内嵌：task 工具派生的子会话，TUI 同款一层展示 ----------
+
+const childSessions = ref<any[]>([]);
+const taskChildMap = ref(new Map<string, string>());
+const childStreams = new Map<string, SessionStream>();
+const childSnaps = ref(new Map<string, any>());
+
+/** 事件归属的会话 id（oc_event 已统一带 properties.sessionID） */
+function evSessionId(ev: any): string {
+  return String(ev?.properties?.sessionID || ev?.properties?.info?.sessionID || '');
+}
+
+async function loadChildren(): Promise<void> {
+  try {
+    const d = await api.ocSessions(props.instance.id);
+    childSessions.value = (d.sessions || []).filter((s: any) => s.parentID === props.sessionId);
+    pairChildren();
+  } catch { /* 会话列表失败不影响主聊天 */ }
+}
+
+/** task 工具分片 ↔ 子会话配对：子会话创建时间落在工具执行窗口内（opencode 在 task 启动时建子会话） */
+function pairChildren(): void {
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  const kids = [...childSessions.value].sort((a, b) => Number(a.time?.created || 0) - Number(b.time?.created || 0));
+  for (const m of snap.value.messages) {
+    for (const p of m.parts || []) {
+      if (p.type !== 'tool' || !/^(task|agent|subtask)$/i.test(String(p.tool || ''))) continue;
+      const t = (p.time || {}) as Record<string, number>;
+      const lo = Number(t.created || 0) - 1000;
+      const hi = Number(t.completed || Number.MAX_SAFE_INTEGER) + 1000;
+      const kid = kids.find((k) => !used.has(k.id) && Number(k.time?.created || 0) >= lo && Number(k.time?.created || 0) <= hi);
+      if (kid) {
+        map.set(String(p.id), kid.id);
+        used.add(kid.id);
+        ensureChildStream(kid.id);
+      }
+    }
+  }
+  taskChildMap.value = map;
+}
+
+function ensureChildStream(sessionId: string): void {
+  if (childStreams.has(sessionId)) return;
+  const cs = new SessionStream();
+  childStreams.set(sessionId, cs);
+  void (async () => {
+    try {
+      const d = await api.ocMessages(props.instance.id, sessionId, { limit: 40, full: true });
+      cs.reset(d.messages || []);
+      childSnaps.value = new Map(childSnaps.value).set(sessionId, cs.snapshot());
+    } catch { /* 子会话消息失败不阻塞主流程 */ }
+  })();
+}
+
+function childMessages(sessionId: string | undefined): any[] {
+  if (!sessionId) return [];
+  return childSnaps.value.get(sessionId)?.messages || [];
+}
+
+function childMsgText(m: any): string {
+  const text = (m.parts || []).filter((p: any) => p.type === 'text' && p.text).map((p: any) => String(p.text)).join(' ');
+  return text.length > 400 ? text.slice(0, 400) + '…' : text;
+}
+
 async function loadSelectors(): Promise<void> {
   try {
     const [ag, md] = await Promise.all([
@@ -436,86 +554,20 @@ async function loadSelectors(): Promise<void> {
 
 // ---------- 事件订阅 ----------
 
-async function subscribe(): Promise<void> {
-  unsubscribe();
-  let direct: { ok: boolean; direct: boolean; url: string } = { ok: false, direct: false, url: '' };
+async function replayFromHub(): Promise<void> {
+  if (!lastEventId) return;
   try {
-    direct = await api.ocDirect(props.instance.id);
-  } catch { /* 走代理 */ }
-  directKind = direct.ok && direct.direct ? 'direct' : 'proxy';
-  if (directKind === 'direct' && direct.url) {
-    // managed 实例无鉴权且 CORS 已放本地源：浏览器直连 opencode SSE（少一跳，最真流式）
-    es = new EventSource(`${direct.url}/event`);
-    es.onmessage = (e) => {
-      try { applyEvents([JSON.parse(e.data)]); } catch { /* 单帧坏 */ }
-    };
-    es.onerror = () => scheduleReconnect();
-    return;
-  }
-  // 代理：fetch + Authorization（EventSource 无法带 token）
-  proxyAbort = new AbortController();
-  try {
-    const token = getApiToken();
-    const res = await fetch(`/api/opencode/instances/${encodeURIComponent(props.instance.id)}/events`, {
-      headers: { accept: 'text/event-stream', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      signal: proxyAbort.signal,
-    });
-    // managed 实例代理路由会返回 JSON 直连提示（{direct:true,url}）——识别后改走直连，
-    // 否则会把 JSON 当 SSE 解析、静默无事件（2026-09-24 排障）
-    const ct = String(res.headers.get('content-type') || '');
-    if (ct.includes('application/json')) {
-      const hint = (await res.json().catch(() => null)) as { direct?: boolean; url?: string } | null;
-      if (hint?.direct && hint.url) {
-        directKind = 'direct';
-        es = new EventSource(`${hint.url}/event`);
-        es.onmessage = (e) => {
-          try { applyEvents([JSON.parse(e.data)]); } catch { /* 单帧坏 */ }
-        };
-        es.onerror = () => scheduleReconnect();
-        return;
-      }
-      throw new Error('实例不可代理（未连接或 attached 无凭据）');
+    const result = await api.ocReplay(props.instance.id, lastEventId);
+    if (result.resync) {
+      await reloadAll();
+      return;
     }
-    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-    proxyReader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { done, value } = await proxyReader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (line.startsWith('data:')) {
-          try { applyEvents([JSON.parse(line.slice(5).trim())]); } catch { /* 帧坏 */ }
-        }
-      }
-    }
-  } catch (e: any) {
-    if (!proxyAbort?.signal.aborted) scheduleReconnect();
+    applyEvents(result.events || []);
+  } catch {
+    await reloadAll();
   }
 }
 
-function scheduleReconnect(): void {
-  if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    void subscribe();
-  }, 3000);
-}
-
-function unsubscribe(): void {
-  es?.close();
-  es = null;
-  proxyAbort?.abort();
-  proxyAbort = null;
-  proxyReader = null;
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-}
-
-// WS oc_event 兜底（manager→WS 通道；direct/proxy 之一挂了也有事件）
 const offWs = onEvent((env: { type: string; payload?: any }) => {
   if (env.type !== 'oc_event' || env.payload?.instance !== props.instance.id) return;
   applyEvents([env.payload]);
@@ -526,19 +578,6 @@ const offWs = onEvent((env: { type: string; payload?: any }) => {
 async function send(): Promise<void> {
   const text = draft.value.trim();
   if (!text || sending.value) return;
-  // busy 接管会话的首次发送需显式确认（接管横幅已警示，这里是最后一道闸）
-  if (props.takeoverHint?.busy && !busyAck) {
-    try {
-      await ElMessageBox.confirm(
-        `该会话正被 TUI 使用。确认把这条消息发进去？\n\n「${text.slice(0, 80)}${text.length > 80 ? '…' : ''}」`,
-        '发送确认 · 消息将进入他人正在使用的会话',
-        { confirmButtonText: '发送', cancelButtonText: '取消', type: 'warning', autofocus: false },
-      );
-      busyAck = true;
-    } catch {
-      return; // 取消发送
-    }
-  }
   sending.value = true;
   try {
     const m = model.value || undefined;
@@ -677,21 +716,41 @@ function scrollEnd(): void {
   const el = streamEl.value;
   if (el) el.scrollTop = el.scrollHeight;
 }
-function onScroll(): void { /* 预留：向上懒加载 */ }
+/** 浮动跳转按钮：离顶/离底超过一屏出现 */
+const showJumpTop = ref(false);
+const showJumpBottom = ref(false);
+function onScroll(): void {
+  const el = streamEl.value;
+  if (!el) return;
+  showJumpTop.value = el.scrollTop > 480;
+  showJumpBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight > 480;
+}
+function jumpTop(): void {
+  const el = streamEl.value;
+  if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function jumpBottom(): void {
+  scrollEnd();
+}
 
 watch(() => props.sessionId, () => {
+  lastEventId = undefined;
   void reloadAll();
-  void subscribe();
+});
+// 流内出现新 task 工具分片时重配对（busy 中实时派生子代理的场景）
+watch(() => snap.value.messages.length, () => {
+  if (childSessions.value.length) pairChildren();
+});
+watch(connected, (value) => {
+  if (value) void replayFromHub();
 });
 watch(diffDlg, (v) => { if (v && !diffFiles.value.length) void loadDiff(); });
 
 onMounted(() => {
   void reloadAll();
-  void subscribe();
   void loadSelectors();
 });
 onBeforeUnmount(() => {
-  unsubscribe();
   offWs();
   closePty();
   if (renderRaf) cancelAnimationFrame(renderRaf);
@@ -699,7 +758,10 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.occ { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.occ { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
+.jump-btns { position: absolute; right: 18px; bottom: 118px; display: flex; flex-direction: column; gap: 8px; z-index: 8; }
+.jump-btn { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--bg-panel); color: var(--text-1); cursor: pointer; font-size: 15px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); }
+.jump-btn:hover { color: var(--accent); border-color: var(--accent-line); }
 .occ-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .h-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .s-title { font-weight: 600; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -709,8 +771,6 @@ onBeforeUnmount(() => {
 .dot.pulse { animation: ocpulse 1s ease-in-out infinite; }
 @keyframes ocpulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 .ribbon { padding: 6px 12px; font-size: 12px; }
-.takeover-banner { padding: 7px 12px; font-size: 12px; background: var(--el-color-primary-light-9); color: var(--el-color-primary-darken-2); border-bottom: 1px solid var(--el-border-color-lighter); }
-.takeover-banner.warn { background: var(--el-color-warning-light-9); color: var(--el-color-warning-darken-2); }
 .ribbon.warn { background: var(--el-color-warning-light-9); color: var(--el-color-warning-darken-2); }
 .ribbon.err { background: var(--el-color-danger-light-9); color: var(--el-color-danger); }
 .todos { display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; border-bottom: 1px solid var(--el-border-color-lighter); }
@@ -758,6 +818,11 @@ onBeforeUnmount(() => {
 .tcar { color: var(--el-text-color-disabled); }
 .tc-body { padding: 8px 10px; border-top: 1px solid var(--el-border-color-lighter); }
 .tc-lab { font-size: 11px; color: var(--el-text-color-secondary); margin-bottom: 2px; }
+.child-flow { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+.c-msg { display: flex; gap: 8px; align-items: baseline; font-size: 12px; line-height: 1.6; }
+.c-role { flex: none; font-size: 10px; padding: 0 5px; border-radius: 4px; background: var(--bg-inset); color: var(--text-2); }
+.c-msg.assistant .c-role { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.c-text { min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
 .tc-pre { margin: 0 0 8px; font-size: 12px; background: var(--el-fill-color-light); border-radius: 6px; padding: 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .tc-sec.err { color: var(--el-color-danger); font-size: 12px; }
 .q-card { border: 1px solid var(--el-color-primary); border-radius: 8px; padding: 10px 12px; background: var(--el-color-primary-light-9); }

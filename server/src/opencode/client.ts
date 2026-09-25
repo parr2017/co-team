@@ -1,13 +1,3 @@
-/**
- * OpencodeClient —— opencode server 的 HTTP+SSE 客户端（纯 fetch，不引 SDK）。
- *
- * 设计取舍：官方 @opencode-ai/sdk 与 opencode CLI 版本强耦合，而本机 CLI（1.x）与
- * 桌面版（2.x）并存、API 世代可能有差异；自研客户端按 OpenAPI 端点直连，配合
- * capabilities 探测（/doc + /global/health）做兼容兜底，版本升级只影响探测表。
- *
- * 纪律（对齐 mcp/manager.ts）：任何异常都在方法内转 {ok:false,error}，绝不 throw 穿透；
- * 结果按 maxResultChars 截断。
- */
 import {
   DEFAULT_OC_MAX_RESULT_CHARS,
   DEFAULT_OC_TIMEOUT_SEC,
@@ -25,352 +15,684 @@ export interface OpencodeClientOptions {
   maxResultChars?: number;
 }
 
-/** v2 /doc 端点探测不到时的保守兜底（按本地 v1 CLI 实测端点集） */
-const V1_FALLBACK_PATHS = new Set([
-  '/global/health',
-  '/session',
-  '/session/{id}',
-  '/session/{id}/message',
-  '/session/{id}/prompt_async',
-  '/session/{id}/abort',
-  '/session/{id}/revert',
-  '/session/{id}/diff',
-  '/session/{id}/permissions/{permissionID}',
-  '/event',
-  '/tui/append-prompt',
-]);
+const MIN_VERSION = { major: 2, minor: 0, patch: 15 } as const;
+const UNSUPPORTED_ERROR = 'OpenCode 2.0.15 官方客户端不提供该能力';
+
+type OfficialClient = any;
+type RequestOptions = { signal?: AbortSignal };
+type OfficialEvent = { id: string; type: string; created?: number; location?: unknown; data: Record<string, unknown> };
+type OpenCodeFactory = { make(options: { baseUrl: string; headers: Record<string, string> }): OfficialClient };
+
+const loadOpenCode = require('./officialClientLoader.cjs') as () => Promise<{ OpenCode: OpenCodeFactory }>;
+
+function versionParts(version: string): { major: number; minor: number; patch: number } | undefined {
+  const match = /^[v=\s]*(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\s*$/.exec(version);
+  if (!match) return undefined;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+}
+
+function isSupportedVersion(version: string): boolean {
+  const parts = versionParts(version);
+  if (!parts || parts.major !== MIN_VERSION.major) return false;
+  if (parts.minor !== MIN_VERSION.minor) return parts.minor > MIN_VERSION.minor;
+  return parts.patch >= MIN_VERSION.patch;
+}
 
 export class OpencodeClient {
   readonly baseUrl: string;
-  private auth?: { username?: string; password?: string };
-  private timeoutMs: number;
-  private maxResultChars: number;
+  private readonly clientPromise: Promise<OfficialClient>;
+  private readonly password?: string;
+  private readonly timeoutMs: number;
+  private readonly maxResultChars: number;
 
   constructor(opts: OpencodeClientOptions) {
-    this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
-    this.auth = opts.auth;
+    this.baseUrl = new URL(opts.baseUrl).origin;
+    this.password = opts.auth?.password;
     this.timeoutMs = (opts.timeoutSec ?? DEFAULT_OC_TIMEOUT_SEC) * 1000;
     this.maxResultChars = opts.maxResultChars ?? DEFAULT_OC_MAX_RESULT_CHARS;
-  }
-
-  // ---------- 传输原语 ----------
-
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    const h: Record<string, string> = { accept: 'application/json', ...extra };
-    if (this.auth?.password) {
-      const user = this.auth.username || 'opencode';
-      h.authorization = `Basic ${Buffer.from(`${user}:${this.auth.password}`).toString('base64')}`;
+    const headers: Record<string, string> = {};
+    if (opts.auth?.password) {
+      const username = opts.auth.username || 'opencode';
+      headers.authorization = `Basic ${Buffer.from(`${username}:${opts.auth.password}`).toString('base64')}`;
     }
-    return h;
+    this.clientPromise = loadOpenCode().then(({ OpenCode }) => OpenCode.make({ baseUrl: this.baseUrl, headers }));
   }
 
-  private async req<T>(method: string, path: string, body?: unknown): Promise<OcCallResult<T>> {
+  private requestOptions(): RequestOptions {
+    return { signal: AbortSignal.timeout(this.timeoutMs) };
+  }
+
+  private errorText(error: unknown): string {
+    const value = error as {
+      message?: unknown;
+      status?: unknown;
+      cause?: { status?: unknown; message?: unknown };
+    };
+    const cause = value?.cause;
+    const statusValue = value?.status ?? cause?.status;
+    const status = Number.isInteger(statusValue) ? `HTTP ${statusValue}: ` : '';
+    const raw = String(value?.message || cause?.message || error || 'OpenCode 请求失败');
+    const withoutBasic = raw.replace(/Basic\s+[^\s,;]+/gi, 'Basic [redacted]');
+    const withoutAuthorization = withoutBasic.replace(/(authorization\s*[:=]\s*)[^\s,;]+/gi, '$1[redacted]');
+    const withoutPassword = this.password ? withoutAuthorization.split(this.password).join('[redacted]') : withoutAuthorization;
+    return `${status}${withoutPassword}`.slice(0, 300);
+  }
+
+  private async call<T>(request: (client: OfficialClient, options: RequestOptions) => Promise<T>): Promise<OcCallResult<T>> {
     try {
-      const res = await fetch(`${this.baseUrl}${path}`, {
-        method,
-        headers: this.headers(body !== undefined ? { 'content-type': 'application/json' } : {}),
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-      if (res.status === 204) return { ok: true, data: true as unknown as T };
-      const text = await res.text();
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 300) || res.statusText}` };
-      if (!text) return { ok: true, data: true as unknown as T };
-      return { ok: true, data: (JSON.parse(text) as T) };
-    } catch (e: any) {
-      return { ok: false, error: String(e?.message || e).slice(0, 300) };
+      const client = await this.clientPromise;
+      return { ok: true, data: await request(client, this.requestOptions()) };
+    } catch (error) {
+      return { ok: false, error: this.errorText(error) };
     }
   }
 
-  /**
-   * 结果按预算截断：数组按元素累积（保持数组类型，超预算截到最后一项并标 truncated）；
-   * 非数组超预算才降级为截断字符串。调用方据 truncated 决定是否换更精确的参数重取。
-   */
-  private async truncate<T>(p: Promise<OcCallResult<T>>): Promise<OcCallResult<T>> {
-    const r = await p;
-    if (!r.ok || r.data === undefined) return r;
-    if (Array.isArray(r.data)) {
-      const out: unknown[] = [];
+  private async callTrue(request: (client: OfficialClient, options: RequestOptions) => Promise<unknown>): Promise<OcCallResult<boolean>> {
+    const result = await this.call(request);
+    return result.ok ? { ok: true, data: true } : { ok: false, error: result.error };
+  }
+
+  private async truncate<T>(promise: Promise<OcCallResult<T>>): Promise<OcCallResult<T>> {
+    const result = await promise;
+    if (!result.ok || result.data === undefined) return result;
+    if (Array.isArray(result.data)) {
+      const output: unknown[] = [];
       let used = 2;
-      for (const item of r.data) {
+      for (const item of result.data) {
         const size = JSON.stringify(item).length + 1;
         if (used + size > this.maxResultChars) {
-          return { ok: true, data: out as unknown as T, truncated: true };
+          return { ok: true, data: output as unknown as T, truncated: true };
         }
-        out.push(item);
+        output.push(item);
         used += size;
       }
-      return r;
+      return result;
     }
-    const s = JSON.stringify(r.data);
-    if (s.length <= this.maxResultChars) return r;
-    return { ok: true, data: s.slice(0, this.maxResultChars) as unknown as T, truncated: true };
+    const serialized = JSON.stringify(result.data);
+    if (serialized.length <= this.maxResultChars) return result;
+    return { ok: true, data: serialized.slice(0, this.maxResultChars) as unknown as T, truncated: true };
   }
-
-  // ---------- 探针 ----------
 
   async health(): Promise<OcCallResult<{ version: string }>> {
-    const r = await this.req<{ healthy?: boolean; version?: string }>('GET', '/global/health');
-    if (!r.ok) return { ok: false, error: r.error };
-    return { ok: true, data: { version: String(r.data?.version || '') } };
+    const result = await this.call<{ version: string }>((client, options) => client.server.info(options));
+    if (!result.ok) return result;
+    const version = String(result.data?.version || '');
+    if (!isSupportedVersion(version)) {
+      return {
+        ok: false,
+        data: { version },
+        error: `OpenCode 版本不兼容：需要 >=2.0.15 且主版本为 2，实际为 ${version || 'unknown'}`,
+      };
+    }
+    return { ok: true, data: { version } };
   }
 
-  /**
-   * 能力探测：/global/health 定性存活；/doc 拉 OpenAPI spec 按端点存在性打标。
-   * spec 拉不到/解析不了（v2 可能返回 HTML）→ 回退 V1_FALLBACK_PATHS 保守集。
-   */
   async probe(): Promise<OcCapabilities> {
-    const caps: OcCapabilities = { ...EMPTY_CAPABILITIES };
-    const h = await this.health();
-    caps.healthy = h.ok;
-    caps.version = h.ok ? h.data!.version : '';
-    const doc = await this.req<{ paths?: Record<string, unknown> }>('GET', '/doc');
-    const paths = doc.ok && doc.data?.paths ? new Set(Object.keys(doc.data.paths)) : V1_FALLBACK_PATHS;
-    const has = (p: string): boolean => {
-      if (paths.has(p)) return true;
-      if (p.includes('{')) {
-        const re = new RegExp('^' + p.replace(/\//g, '\\/').replace(/\{[^}]+\}/g, '[^/]+') + '$');
-        for (const k of paths) if (re.test(k)) return true;
-      }
-      return false;
-    };
-    caps.sync_prompt = has('/session/{id}/message');
-    caps.async_prompt = has('/session/{id}/prompt_async');
-    caps.abort = has('/session/{id}/abort');
-    caps.revert = has('/session/{id}/revert');
-    caps.diff = has('/session/{id}/diff');
-    caps.permissions = has('/session/{id}/permissions/{permissionID}');
-    caps.events = has('/event') || has('/global/event');
-    caps.shell = has('/session/{id}/shell');
-    caps.tui = has('/tui/append-prompt') || has('/tui/submit-prompt');
-    return caps;
+    const capabilities: OcCapabilities = { ...EMPTY_CAPABILITIES };
+    const health = await this.health();
+    capabilities.healthy = health.ok;
+    capabilities.version = health.data?.version || '';
+    if (!health.ok) return capabilities;
+    capabilities.async_prompt = true;
+    capabilities.abort = true;
+    capabilities.revert = true;
+    capabilities.diff = true;
+    capabilities.permissions = true;
+    capabilities.events = true;
+    capabilities.shell = true;
+    return capabilities;
   }
-
-  // ---------- sessions ----------
 
   listSessions(): Promise<OcCallResult<OcSession[]>> {
-    return this.truncate(this.req<OcSession[]>('GET', '/session'));
+    return this.truncate(this.call(async (client, options) => {
+      const response = await client.session.list(undefined, options);
+      return response.data as OcSession[];
+    }));
   }
 
   sessionStatus(): Promise<OcCallResult<Record<string, unknown>>> {
-    return this.req<Record<string, unknown>>('GET', '/session/status');
+    return this.call((client, options) => client.session.active(options));
   }
 
   getSession(id: string): Promise<OcCallResult<OcSession>> {
-    return this.req<OcSession>('GET', `/session/${encodeURIComponent(id)}`);
+    return this.call(async (client, options) => client.session.get({ sessionID: id }, options) as unknown as OcSession);
   }
 
-  createSession(title?: string): Promise<OcCallResult<OcSession>> {
-    return this.req<OcSession>('POST', '/session', { ...(title ? { title } : {}) });
+  createSession(title?: string, directory?: string): Promise<OcCallResult<OcSession>> {
+    return this.call(async (client, options) => {
+      // 不带目录时 opencode 会把会话登记到全局项目（用户主目录）——agent 工作目录会跑错项目
+      const input: Record<string, unknown> = {
+        ...(title ? { title } : {}),
+        ...(directory ? { location: { directory } } : {}),
+      };
+      return client.session.create(input, options) as unknown as OcSession;
+    });
   }
 
   deleteSession(id: string): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('DELETE', `/session/${encodeURIComponent(id)}`);
+    return this.callTrue((client, options) => client.session.remove({ sessionID: id }, options));
   }
 
   forkSession(id: string, messageID?: string): Promise<OcCallResult<OcSession>> {
-    return this.req<OcSession>('POST', `/session/${encodeURIComponent(id)}/fork`, { ...(messageID ? { messageID } : {}) });
+    return this.call(async (client, options) => client.session.fork({
+      sessionID: id,
+      ...(messageID ? { before: messageID } : {}),
+    }, options) as unknown as OcSession);
   }
 
   abortSession(id: string): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', `/session/${encodeURIComponent(id)}/abort`);
+    return this.callTrue((client, options) => client.session.interrupt({ sessionID: id }, options));
   }
 
-  /**
-   * 会话消息列表。opencode 1.18.32 的 `limit` 是**尾优先**（返回最新 N 条，实测确认），
-   * `before` 参数在此版本不论消息 id 还是时间戳均 BadRequest（v2 才有）——翻页由
-   * manager 的内存缓存切片承担，client 只透传 limit。
-   * **不做累积截断**：历史截断曾把最新消息整段丢掉（2026-09-24“看不全”事故），
-   * 体积控制上移到 manager 的按需裁剪。
-   */
+  private projectMessages(messages: unknown): { info: Record<string, unknown>; parts: Record<string, unknown>[] }[] {
+    if (!Array.isArray(messages)) return [];
+    return messages
+      .filter((message): message is Record<string, unknown> => Boolean(message && typeof message === 'object'))
+      .map((message) => this.projectMessage(message));
+  }
+
+  private projectMessage(message: Record<string, unknown>): { info: Record<string, unknown>; parts: Record<string, unknown>[] } {
+    const id = String(message.id || '');
+    const type = String(message.type || 'assistant');
+    const model = message.model && typeof message.model === 'object' ? message.model as Record<string, unknown> : undefined;
+    const info: Record<string, unknown> = {
+      ...message,
+      id,
+      role: type,
+      ...(model?.providerID ? { providerID: model.providerID } : {}),
+      ...(model?.id ? { modelID: model.id } : {}),
+    };
+    if (type === 'user') {
+      return {
+        info,
+        parts: id ? [{ id: `${id}:text`, messageID: id, type: 'text', text: String(message.text || '') }] : [],
+      };
+    }
+    if (type !== 'assistant' || !Array.isArray(message.content)) return { info, parts: [] };
+    const parts: Record<string, unknown>[] = [];
+    message.content.forEach((value, index) => {
+      if (!value || typeof value !== 'object') return;
+      const content = value as Record<string, unknown>;
+      const contentType = String(content.type || 'text');
+      if (contentType === 'text' || contentType === 'reasoning') {
+        parts.push({
+          id: `${id}:${contentType}:${index}`,
+          messageID: id,
+          type: contentType,
+          text: String(content.text || ''),
+          ...(content.time && typeof content.time === 'object' ? { time: content.time } : {}),
+        });
+        return;
+      }
+      if (contentType !== 'tool') return;
+      const state = content.state && typeof content.state === 'object' ? content.state as Record<string, unknown> : {};
+      const output = Array.isArray(state.content) ? state.content : state.output;
+      parts.push({
+        id: String(content.id || `${id}:tool:${index}`),
+        messageID: id,
+        callID: String(content.id || `${id}:tool:${index}`),
+        type: 'tool',
+        tool: String(content.name || 'tool'),
+        time: content.time || {},
+        state: {
+          status: String(state.status || contentType),
+          ...(state.input && typeof state.input === 'object' ? { input: state.input } : {}),
+          ...(output !== undefined ? { output } : {}),
+          ...(state.error !== undefined ? { error: state.error } : {}),
+          ...(state.metadata && typeof state.metadata === 'object' ? { metadata: state.metadata } : {}),
+        },
+      });
+    });
+    return { info, parts };
+  }
+
   listMessages(id: string, limit?: number): Promise<OcCallResult<unknown[]>> {
-    const q = limit && limit > 0 ? `?limit=${Math.floor(limit)}` : '';
-    return this.req<unknown[]>('GET', `/session/${encodeURIComponent(id)}/message${q}`);
-  }
-
-  /** 单条消息全文（「查看完整原文」；绕过 manager 响应路径的裁剪） */
-  getMessage(id: string, messageID: string): Promise<OcCallResult<{ info: unknown; parts: unknown[] }>> {
-    return this.req<{ info: unknown; parts: unknown[] }>('GET', `/session/${encodeURIComponent(id)}/message/${encodeURIComponent(messageID)}`);
-  }
-
-  /** 同步 prompt：等 opencode 跑完返回 {info,parts}。model 为 {providerID,modelID} 或池内模型名（由 manager 解析） */
-  prompt(id: string, prompt: string, model?: { providerID: string; modelID: string }, agent?: string): Promise<OcCallResult<unknown>> {
-    return this.truncate(
-      this.req<unknown>('POST', `/session/${encodeURIComponent(id)}/message`, {
-        parts: [{ type: 'text', text: prompt }],
-        ...(model ? { model } : {}),
-        ...(agent ? { agent } : {}),
-      }),
-    );
-  }
-
-  /** 异步 prompt：立即返回，进展靠 SSE /event 跟踪 */
-  promptAsync(id: string, prompt: string, model?: { providerID: string; modelID: string }, agent?: string): Promise<OcCallResult<{ messageID?: string }>> {
-    return this.req<{ messageID?: string }>('POST', `/session/${encodeURIComponent(id)}/prompt_async`, {
-      parts: [{ type: 'text', text: prompt }],
-      ...(model ? { model } : {}),
-      ...(agent ? { agent } : {}),
+    return this.call(async (client, options) => {
+      const response = await client.message.list({
+        sessionID: id,
+        ...(limit && limit > 0 ? { limit: Math.floor(limit) } : {}),
+      }, options);
+      // message.list 返回最新在前——归一化为时间正序：聊天流从上到下 = 从旧到新（TUI 同款）
+      const messages = this.projectMessages(response.data);
+      const createdOf = (m: { info: unknown }): number => {
+        const info = (m.info || {}) as Record<string, any>;
+        return Number(info.time?.created || 0);
+      };
+      messages.sort((a, b) => createdOf(a) - createdOf(b));
+      return messages;
     });
   }
 
-  /** 高危：在会话内执行任意 shell 命令（默认禁用，由 manager 门控） */
-  shell(id: string, command: string, agent?: string): Promise<OcCallResult<unknown>> {
-    return this.truncate(
-      this.req<unknown>('POST', `/session/${encodeURIComponent(id)}/shell`, { agent: agent || 'general', command }),
-    );
+  getMessage(id: string, messageID: string): Promise<OcCallResult<{ info: unknown; parts: unknown[] }>> {
+    return this.call(async (client, options) => {
+      const message = await client.session.message.get({ sessionID: id, messageID }, options);
+      return this.projectMessage(message as unknown as Record<string, unknown>);
+    });
+  }
+
+  prompt(id: string, prompt: string, model?: { providerID: string; modelID: string }, agent?: string): Promise<OcCallResult<unknown>> {
+    return this.truncate(this.call(async (client, options) => {
+      if (model) {
+        await client.session.switchModel({
+          sessionID: id,
+          model: { id: model.modelID, providerID: model.providerID },
+        }, options);
+      }
+      if (agent) await client.session.switchAgent({ sessionID: id, agent }, options);
+      return client.session.prompt({ sessionID: id, text: prompt }, options);
+    }));
+  }
+
+  promptAsync(id: string, prompt: string, model?: { providerID: string; modelID: string }, agent?: string): Promise<OcCallResult<{ messageID?: string }>> {
+    return this.call(async (client, options) => {
+      if (model) {
+        await client.session.switchModel({
+          sessionID: id,
+          model: { id: model.modelID, providerID: model.providerID },
+        }, options);
+      }
+      if (agent) await client.session.switchAgent({ sessionID: id, agent }, options);
+      const message = await client.session.prompt({ sessionID: id, text: prompt }, options);
+      return { messageID: message.id };
+    });
+  }
+
+  /** 即时切换会话执行模式（TUI 同款：选中即生效，不等下一次发送） */
+  switchAgent(id: string, agent: string): Promise<OcCallResult<boolean>> {
+    return this.callTrue((client, options) => client.session.switchAgent({ sessionID: id, agent }, options));
+  }
+
+  /** 即时切换会话模型 */
+  switchModel(id: string, model: { providerID: string; modelID: string }): Promise<OcCallResult<boolean>> {
+    return this.callTrue((client, options) => client.session.switchModel({
+      sessionID: id,
+      model: { id: model.modelID, providerID: model.providerID },
+    }, options));
+  }
+
+  shell(id: string, command: string, _agent?: string): Promise<OcCallResult<unknown>> {
+    return this.callTrue((client, options) => client.session.shell({ sessionID: id, command }, options));
   }
 
   revert(id: string, messageID: string): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', `/session/${encodeURIComponent(id)}/revert`, { messageID });
-  }
-
-  unrevert(id: string): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', `/session/${encodeURIComponent(id)}/unrevert`);
-  }
-
-  diff(id: string): Promise<OcCallResult<unknown[]>> {
-    return this.truncate(this.req<unknown[]>('GET', `/session/${encodeURIComponent(id)}/diff`));
-  }
-
-  answerPermission(id: string, permissionID: string, response: 'once' | 'always' | 'reject'): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', `/session/${encodeURIComponent(id)}/permissions/${encodeURIComponent(permissionID)}`, {
-      response,
-      remember: response === 'always',
+    return this.callTrue(async (client, options) => {
+      await client.session.revert.stage({ sessionID: id, messageID }, options);
+      await client.session.revert.commit({ sessionID: id }, options);
     });
   }
 
-  // ---------- 提问应答（opencode 的 AskUserQuestion） ----------
-
-  /** 回答提问：answers 按问题顺序，每个答案是选中的 label 数组 */
-  answerQuestion(requestID: string, answers: string[][]): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', `/question/${encodeURIComponent(requestID)}/reply`, { answers });
+  unrevert(id: string): Promise<OcCallResult<boolean>> {
+    return this.callTrue((client, options) => client.session.revert.clear({ sessionID: id }, options));
   }
 
-  /** 拒绝/不回答提问（agent 会收到 QuestionRejected，自行继续） */
-  rejectQuestion(requestID: string): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', `/question/${encodeURIComponent(requestID)}/reject`, {});
+  diff(id: string): Promise<OcCallResult<unknown[]>> {
+    return this.truncate(this.call(async (client, options) => client.session.diff({ sessionID: id }, options) as unknown as unknown[]));
   }
 
-  // ---------- TUI 驱动（attached control 档） ----------
+  answerPermission(id: string, permissionID: string, response: 'once' | 'always' | 'reject'): Promise<OcCallResult<boolean>> {
+    return this.callTrue((client, options) => client.permission.reply({
+      sessionID: id,
+      requestID: permissionID,
+      decision: response,
+    }, options));
+  }
 
-  appendPrompt(text: string): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', '/tui/append-prompt', { text });
+  replyForm(sessionID: string, formID: string, answer: Record<string, string | number | boolean | string[]>): Promise<OcCallResult<boolean>> {
+    return this.callTrue((client, options) => client.session.form.reply({ sessionID, formID, answer }, options));
+  }
+
+  cancelForm(sessionID: string, formID: string): Promise<OcCallResult<boolean>> {
+    return this.callTrue((client, options) => client.session.form.cancel({ sessionID, formID }, options));
+  }
+
+  async answerQuestion(requestID: string, answers: string[][]): Promise<OcCallResult<boolean>> {
+    try {
+      const listed = await this.call((client, options) => client.form.list(undefined, options));
+      if (!listed.ok || !listed.data) return { ok: false, error: listed.error || '读取 form 失败' };
+      const form = (listed.data as { data: Array<{ id: string; sessionID: string }> }).data.find((item) => item.id === requestID);
+      if (!form) return { ok: false, error: `未找到 form：${requestID}` };
+      const detail = await this.call((client, options) => client.session.form.get({
+        sessionID: form.sessionID,
+        formID: form.id,
+      }, options));
+      if (!detail.ok || !detail.data) return { ok: false, error: detail.error || '读取 form 失败' };
+      const flat = answers.flat();
+      const answer: Record<string, string | number | boolean | string[]> = {};
+      ((detail.data as { fields: Array<{ key: string; type: string }> }).fields).forEach((field, index) => {
+        const selected = answers[index]?.length ? answers[index] : flat[index] !== undefined ? [flat[index]] : [];
+        answer[field.key] = field.type === 'multiselect' ? selected : selected[0] ?? '';
+      });
+      return this.replyForm(form.sessionID, form.id, answer);
+    } catch (error) {
+      return { ok: false, error: this.errorText(error) };
+    }
+  }
+
+  async rejectQuestion(requestID: string): Promise<OcCallResult<boolean>> {
+    try {
+      const listed = await this.call((client, options) => client.form.list(undefined, options));
+      if (!listed.ok || !listed.data) return { ok: false, error: listed.error || '读取 form 失败' };
+      const form = (listed.data as { data: Array<{ id: string; sessionID: string }> }).data.find((item) => item.id === requestID);
+      if (!form) return { ok: false, error: `未找到 form：${requestID}` };
+      return this.cancelForm(form.sessionID, form.id);
+    } catch (error) {
+      return { ok: false, error: this.errorText(error) };
+    }
+  }
+
+  appendPrompt(_text: string): Promise<OcCallResult<boolean>> {
+    return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
 
   submitPrompt(): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', '/tui/submit-prompt');
+    return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
 
   clearPrompt(): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', '/tui/clear-prompt');
+    return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
 
-  showToast(message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info'): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', '/tui/show-toast', { message, variant });
+  showToast(_message: string, _variant: 'info' | 'success' | 'warning' | 'error' = 'info'): Promise<OcCallResult<boolean>> {
+    return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
 
   openSessions(): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', '/tui/open-sessions');
+    return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
 
-  /** 指挥 TUI 导航到指定会话——"让位式接管"：co-team 独占前把 TUI 切到别处 */
-  selectSession(sessionId: string): Promise<OcCallResult<boolean>> {
-    return this.req<boolean>('POST', '/tui/select-session', { sessionID: sessionId });
+  selectSession(_sessionId: string): Promise<OcCallResult<boolean>> {
+    return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
 
-  // ---------- agents / models / 命令 / todos ----------
-
-  /** opencode 内置 agent 清单（TUI 同构 composer 的 agent 下拉数据源） */
-  listAgents(): Promise<OcCallResult<{ name: string; description?: string; mode?: string }[]>> {
-    return this.req<{ name: string; description?: string; mode?: string }[]>('GET', '/agent');
+  listAgents(): Promise<OcCallResult<{ name: string; display?: string; description?: string; mode?: string }[]>> {
+    return this.call(async (client, options) => {
+      const response = await client.agent.list(undefined, options);
+      // v2：id 才是执行名（switchAgent 只认小写 id），name 是显示名；hidden（title/summary/compaction）
+      // 与 subagent（general/explore）不能做会话执行模式，不进选择列表。
+      // 教训：曾把大写 name 传给 switchAgent——入队成功、执行时 AgentNotFoundError 静默吞消息。
+      return ((response.data || []) as Array<{ id?: string; name?: string; description?: string; mode?: string; hidden?: boolean }>)
+        .filter((agent) => agent.hidden !== true && agent.mode !== 'subagent' && Boolean(agent.id))
+        .map((agent) => ({
+          name: String(agent.id),
+          ...(agent.name && agent.name !== agent.id ? { display: agent.name } : {}),
+          ...(agent.description ? { description: agent.description } : {}),
+          ...(agent.mode ? { mode: agent.mode } : {}),
+        }));
+    });
   }
 
-  /** providers + 各 provider 默认模型（attached 实例的模型下拉数据源） */
+  listModels(): Promise<OcCallResult<{ providerID: string; modelID: string; name: string }[]>> {
+    return this.call(async (client, options) => {
+      const response = await client.model.list(undefined, options);
+      return (response.data as Array<{ providerID: string; modelID: string; name: string }>).map((model) => ({
+        providerID: model.providerID,
+        modelID: model.modelID,
+        name: model.name,
+      }));
+    });
+  }
+
   listProviders(): Promise<OcCallResult<{ providers?: unknown[]; default?: Record<string, string> }>> {
-    return this.req<{ providers?: unknown[]; default?: Record<string, string> }>('GET', '/config/providers');
+    return this.call(async (client, options) => {
+      // v2 的 provider.list 不再内嵌 models（1.x 结构）——模型挪到了独立的 model.list 平铺端点；
+      // 这里按 providerID 分组重建 `models: {modelID: {...}}`，保持双端下拉的既有消费结构
+      const [providers, defaultModel, models] = await Promise.all([
+        client.provider.list(undefined, options),
+        client.model.default(undefined, options),
+        client.model.list(undefined, options).catch(() => ({ data: [] as Array<{ providerID: string; modelID: string; name?: string }> })),
+      ]);
+      const grouped = new Map<string, Record<string, unknown>>();
+      for (const m of (models.data || []) as Array<{ providerID: string; modelID: string; name?: string }>) {
+        if (!m?.providerID || !m?.modelID) continue;
+        const bucket = grouped.get(m.providerID) || {};
+        bucket[m.modelID] = { name: m.name || m.modelID };
+        grouped.set(m.providerID, bucket);
+      }
+      return {
+        providers: ((providers.data || []) as Array<Record<string, unknown>>).map((p) => ({
+          ...p,
+          models: grouped.get(String(p.id)) || {},
+        })),
+        default: defaultModel.data ? { [defaultModel.data.providerID]: defaultModel.data.modelID } : {},
+      };
+    });
   }
 
-  /** 斜杠命令（TUI 的 /命令；command 形如 'summarize'。opencode 要求 arguments 为字符串——缺字段 400） */
-  runCommand(id: string, command: string, args = '', agent?: string): Promise<OcCallResult<unknown>> {
-    return this.truncate(
-      this.req<unknown>('POST', `/session/${encodeURIComponent(id)}/command`, {
-        command,
-        arguments: args,
-        ...(agent ? { agent } : {}),
-      }),
-    );
+  runCommand(id: string, command: string, args = '', _agent?: string): Promise<OcCallResult<unknown>> {
+    return this.callTrue((client, options) => client.session.command({
+      sessionID: id,
+      name: command,
+      text: args,
+    }, options));
   }
 
-  /** 会话 todos（TUI 顶部的任务清单；GET 直取，不依赖事件拼装） */
-  sessionTodos(id: string): Promise<OcCallResult<{ content: string; status: string; priority: string }[]>> {
-    return this.req<{ content: string; status: string; priority: string }[]>('GET', `/session/${encodeURIComponent(id)}/todo`);
+  sessionTodos(_id: string): Promise<OcCallResult<{ content: string; status: string; priority: string }[]>> {
+    return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
-
-  // ---------- PTY（TUI 的实时终端：bash 工具跑在 PTY 里） ----------
 
   listPtys(): Promise<OcCallResult<{ id: string; title?: string; command?: string; status?: string }[]>> {
-    return this.req<{ id: string; title?: string; command?: string; status?: string }[]>('GET', '/pty');
+    return this.call(async (client, options) => {
+      const response = await client.pty.list(undefined, options);
+      return response.data;
+    });
   }
 
-  /** PTY 连接票：浏览器持 ticket 直连 /pty/{id}/connect（WebSocket）——managed 免鉴可直接签 */
   ptyConnectToken(ptyId: string): Promise<OcCallResult<{ ticket: string; expires_in: number }>> {
-    return this.req<{ ticket: string; expires_in: number }>('POST', `/pty/${encodeURIComponent(ptyId)}/connect-token`, {});
+    return this.call(async (client, options) => {
+      const response = await client.pty.connect.token({ ptyID: ptyId }, options);
+      return response.data;
+    });
   }
-
-  // ---------- project ----------
 
   currentProject(): Promise<OcCallResult<{ id?: string; worktree?: string }>> {
-    return this.req<{ id?: string; worktree?: string }>('GET', '/project/current');
+    return this.call(async (client, options) => {
+      const location = await client.location.get(undefined, options);
+      return { id: location.project.id, worktree: location.directory };
+    });
   }
 
-  // ---------- SSE 事件流 ----------
-
-  /**
-   * 订阅 /event（SSE）。按行解析 `data:` 帧，JSON.parse 失败跳过。
-   * 返回的 abort 供 manager 控制退避重连；网络断流由本方法 reject 表达。
-   */
   async *eventStream(signal?: AbortSignal): AsyncGenerator<OcEvent> {
-    let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/event`, { headers: this.headers({ accept: 'text/event-stream' }), signal });
-    } catch (e) {
-      // 主动退订（manager stop/重连）静默结束；真实网络错误才向上抛给重连逻辑
-      if (signal?.aborted) return;
-      throw e;
-    }
-    if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`);
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
-          try {
-            const ev = JSON.parse(payload) as OcEvent;
-            if (ev && typeof ev.type === 'string') yield ev;
-          } catch { /* 单帧畸形不影响流 */ }
-        }
+      const client = await this.clientPromise;
+      for await (const event of client.event.subscribe({ signal })) {
+        for (const projected of this.convertEvents(event)) yield projected;
       }
-    } finally {
-      // cancel() 在已出错（如 abort）的流上返回 rejected promise——必须接住，
-      // 否则 stop/重连时冒出一串未处理拒绝（vitest 记为 unhandled error）
-      try {
-        void Promise.resolve(reader.cancel()).catch(() => {});
-      } catch { /* 已断 */ }
+    } catch (error) {
+      if (signal?.aborted) return;
+      throw error;
+    }
+  }
+
+  private eventEnvelope(event: OfficialEvent, type: string, properties: Record<string, unknown>): OcEvent {
+    return {
+      type,
+      properties,
+      id: event.id,
+      location: event.location,
+      raw: event,
+    };
+  }
+
+  /** 一条官方事件 → 0..n 条 OcEvent。v2 事件流没有全量 message.updated：用户消息只能从 inbox.enqueued 自建，
+   *  interrupted（shutdown 以外）要等价于 idle 结算，否则 run_task 的空闲等待会干等到超时。 */
+  private convertEvents(event: OfficialEvent): OcEvent[] {
+    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {};
+    const sid = String(data.sessionID || '');
+    switch (event.type) {
+      case 'session.inbox.enqueued': {
+        const item = (data.item && typeof data.item === 'object' ? data.item : {}) as Record<string, any>;
+        const inboxID = String(data.inboxID || '');
+        const role = item.type === 'user' ? 'user' : item.type === 'synthetic' ? 'synthetic' : '';
+        if (!sid || !inboxID || !role) return [];
+        const payload = (item.payload && typeof item.payload === 'object' ? item.payload : {}) as Record<string, any>;
+        return [
+          this.eventEnvelope(event, 'message.updated', {
+            sessionID: sid,
+            info: { id: inboxID, sessionID: sid, role, time: { created: event.created } },
+          }),
+          this.eventEnvelope(event, 'message.part.updated', {
+            sessionID: sid,
+            part: { id: `${inboxID}:text`, messageID: inboxID, sessionID: sid, type: 'text', text: String(payload.text ?? '') },
+          }),
+        ];
+      }
+      case 'session.execution.interrupted':
+        // shutdown 是 opencode 自身重启续跑：会话并未结束，不结算，重连后的权威快照说了算
+        if (data.reason === 'shutdown') return [];
+        return [this.eventEnvelope(event, 'session.idle', { sessionID: sid })];
+      default: {
+        const single = this.convertEvent(event);
+        if (sid) {
+          const props = (single.properties || {}) as Record<string, unknown>;
+          if (!props.sessionID) {
+            (single.properties ||= {}).sessionID = sid;
+          }
+        }
+        return [single];
+      }
+    }
+  }
+
+  private convertEvent(event: OfficialEvent): OcEvent {
+    if (!event) return { type: '' };
+    const data = event.data && typeof event.data === 'object' ? event.data : {};
+    const messageID = String(data.assistantMessageID || data.messageID || '');
+    const ordinal = Number(data.ordinal || 0);
+    const textPartId = `${messageID}:text:${ordinal}`;
+    const reasoningPartId = `${messageID}:reasoning:${ordinal}`;
+    const toolPartId = String(data.id || '');
+    switch (event.type) {
+      case 'session.text.started':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: textPartId, messageID, type: 'text', text: '' },
+        });
+      case 'session.text.delta':
+        return this.eventEnvelope(event, 'message.part.delta', {
+          messageID,
+          partID: textPartId,
+          field: 'text',
+          delta: String(data.delta || ''),
+        });
+      case 'session.text.ended':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: textPartId, messageID, type: 'text', text: String(data.text || '') },
+        });
+      case 'session.reasoning.started':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: reasoningPartId, messageID, type: 'reasoning', text: '' },
+        });
+      case 'session.reasoning.delta':
+        return this.eventEnvelope(event, 'message.part.delta', {
+          messageID,
+          partID: reasoningPartId,
+          field: 'text',
+          delta: String(data.delta || ''),
+        });
+      case 'session.reasoning.ended':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: reasoningPartId, messageID, type: 'reasoning', text: String(data.text || '') },
+        });
+      case 'session.tool.input.started':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'pending', input: {} } },
+        });
+      case 'session.tool.input.ended': {
+        let input: unknown = data.text;
+        try { input = JSON.parse(String(data.text || '{}')); } catch { input = { text: String(data.text || '') }; }
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'pending', input } },
+        });
+      }
+      case 'session.tool.called':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'running', input: data.input || {} } },
+        });
+      case 'session.tool.progress':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'running', metadata: data.metadata || {} } },
+        });
+      case 'session.tool.success':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'completed', output: data.content || '' } },
+        });
+      case 'session.tool.failed':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'error', error: data.error || '工具执行失败' } },
+        });
+      case 'session.execution.started':
+        return this.eventEnvelope(event, 'session.status', {
+          ...data,
+          status: { type: 'busy' },
+        });
+      case 'session.execution.succeeded':
+        return this.eventEnvelope(event, 'session.idle', data);
+      case 'session.execution.failed':
+        return this.eventEnvelope(event, 'session.error', {
+          ...data,
+          error: data.error || { message: 'OpenCode 会话执行失败' },
+        });
+      case 'session.step.started':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: `${messageID}:step-start`, messageID, type: 'step-start' },
+        });
+      case 'session.step.ended':
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: { id: `${messageID}:step-finish`, messageID, type: 'step-finish', finish: data.finish, cost: data.cost, tokens: data.tokens, files: data.files || [] },
+        });
+      case 'session.step.failed':
+        return this.eventEnvelope(event, 'session.error', { ...data, error: data.error || {} });
+      case 'session.synthetic': {
+        const id = String(event.id || '');
+        return this.eventEnvelope(event, 'message.updated', {
+          info: { id, role: 'assistant', time: { created: event.created || Date.now() } },
+          parts: [{ id: `${id}:text`, messageID: id, type: 'text', text: String(data.text || '') }],
+        });
+      }
+      case 'session.message.content.updated': {
+        const projected = this.projectMessage({ id: messageID, type: 'assistant', content: data.content || [] });
+        return this.eventEnvelope(event, 'message.updated', projected);
+      }
+      case 'session.compaction.ended':
+        return this.eventEnvelope(event, 'session.compacted', data);
+      case 'form.created': {
+        const form = data.form && typeof data.form === 'object' ? data.form as Record<string, unknown> : {};
+        const fields = Array.isArray(form.fields) ? form.fields : [];
+        return this.eventEnvelope(event, 'question.asked', {
+          id: String(form.id || event.id),
+          sessionID: String(form.sessionID || ''),
+          questions: fields.map((value) => {
+            const field = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+            const options = Array.isArray(field.options) ? field.options : [];
+            return {
+              question: String(field.title || field.description || field.key || ''),
+              custom: field.type === 'text' || field.type === 'string',
+              options: options.map((option) => {
+                const entry = option && typeof option === 'object' ? option as Record<string, unknown> : {};
+                return { label: String(entry.label || entry.value || ''), description: String(entry.description || '') };
+              }),
+            };
+          }),
+        });
+      }
+      case 'form.replied':
+      case 'form.cancelled':
+        return this.eventEnvelope(event, event.type === 'form.replied' ? 'question.replied' : 'question.rejected', data);
+      case 'session.idle':
+      case 'session.status':
+      case 'permission.asked':
+      case 'permission.replied':
+      case 'pty.created':
+      case 'pty.updated':
+      case 'pty.exited':
+      case 'pty.deleted':
+        return this.eventEnvelope(event, event.type, data);
+      default:
+        if (event.type.startsWith('session.')) return this.eventEnvelope(event, event.type, data);
+        return this.eventEnvelope(event, event.type, data);
     }
   }
 }
 
-/** 一次性能力探测（UI「测试连接」/manager 装配前预检，不建注册表） */
 export async function probeOpencodeInstance(opts: OpencodeClientOptions): Promise<OcCapabilities> {
   return new OpencodeClient(opts).probe();
 }

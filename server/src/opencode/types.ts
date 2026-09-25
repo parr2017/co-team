@@ -55,7 +55,7 @@ export interface OpencodeInstanceConfig {
   agents?: string[];
   /** 高危：允许通过 /session/:id/shell 执行任意命令（默认 false，且需 control 档） */
   allow_shell?: boolean;
-  /** 浏览器直连 SSE 的 CORS 放行源；缺省 = 本地 web(8856)/mobile(8857) dev 源 */
+  /** 2.x 事件流由 co-team 统一转发，浏览器不再直连 OpenCode。 */
   cors_origins?: string[];
 }
 
@@ -83,13 +83,13 @@ export interface OcCallResult<T = unknown> {
   truncated?: boolean;
 }
 
-/** 能力探测结果：连接时拉 /doc + /global/health，按端点存在性打标 */
+/** 能力探测结果：官方 2.x server.info + 固定端点契约 */
 export interface OcCapabilities {
   healthy: boolean;
   version: string;
   /** POST /session/:id/message（同步 prompt） */
   sync_prompt: boolean;
-  /** POST /session/:id/prompt_async */
+  /** 官方 session.prompt 入队接口 */
   async_prompt: boolean;
   /** POST /session/:id/abort */
   abort: boolean;
@@ -143,10 +143,13 @@ export interface OpencodeInstanceStatus {
   last_checked_at?: string;
 }
 
-/** SSE 事件（GET /event 的单条；type 如 session.idle / message.part.updated / permission.asked） */
+/** 官方事件投影（保留 id/location，服务端转换为既有 UI 事件） */
 export interface OcEvent {
   type: string;
   properties?: Record<string, unknown>;
+  id?: string;
+  location?: unknown;
+  raw?: unknown;
 }
 
 /**

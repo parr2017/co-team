@@ -37,7 +37,6 @@
           <div class="inst-ops" @click.stop>
             <el-button v-if="inst.kind === 'managed' && inst.state !== 'connected'" size="small" :loading="busyInstance === inst.id && busyAction === 'start'" @click="startInstance(inst)">启动</el-button>
             <el-button v-if="inst.kind === 'managed' && inst.state === 'connected'" size="small" :loading="busyInstance === inst.id && busyAction === 'stop'" @click="stopInstance(inst)">停止</el-button>
-            <el-button v-if="inst.state === 'connected'" size="small" :loading="takingOver === inst.id" @click="takeover(inst)">接管当前对话</el-button>
             <el-button v-if="inst.state === 'connected'" size="small" text :loading="creatingSession === inst.id" @click="createAndTakeover(inst)">新建并接管</el-button>
           </div>
 
@@ -61,8 +60,10 @@
               @click="openSession(inst, s)"
             >
               <span class="sess-title" :title="s.title || s.id">{{ s.title || '（未命名会话）' }}</span>
+              <span v-if="s.parentID" class="child-tag" title="子会话（任务/子代理派生）">子</span>
               <span v-if="scope === 'all' && projectOf(inst, s)" class="proj-tag" :title="projectOf(inst, s)">{{ basename(projectOf(inst, s)) }}</span>
               <span class="sess-id mono">{{ shortId(s.id) }}</span>
+              <span class="sess-time" :title="fullTime(s)">{{ relTime(s) }}</span>
             </div>
           </div>
         </div>
@@ -76,11 +77,10 @@
         :key="activeInstanceId + ':' + activeSessionId"
         :instance="activeInstance"
         :session-id="activeSessionId"
-        :takeover-hint="takeoverHint"
       />
       <div v-else class="chat-empty">
         <div class="big">接管一个 opencode 对话</div>
-        <div class="sm">「接管当前对话」自动定位 TUI 正在跑的会话（busy 会话会先征询你的接管方式）；或「新建并接管」开一条全新的。消息流与 TUI 实时双向同步。</div>
+        <div class="sm">从会话列表明确选择一个会话，或点击「新建并接管」创建全新会话。co-team 不再自动猜测当前对话。</div>
       </div>
     </section>
   </div>
@@ -88,7 +88,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { api, type OcInstance, type OcSession } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { showApiError } from '../utils/apiError';
@@ -108,9 +108,7 @@ const loadingSessions = ref(false);
 const scope = ref<'current' | 'all'>('current');
 const busyInstance = ref('');
 const busyAction = ref<'start' | 'stop' | ''>('');
-const takingOver = ref('');
 const creatingSession = ref('');
-const takeoverHint = ref<{ title: string; project: string; busy: boolean } | null>(null);
 const activeInstanceId = ref('');
 const activeSessionId = ref('');
 
@@ -141,6 +139,26 @@ function setScope(v: 'current' | 'all'): void {
 }
 function shortId(id: string): string {
   return id.length > 12 ? id.slice(0, 8) + '…' : id;
+}
+/** 会话最近更新时间（v2 SessionInfo.time.updated；兜底 created） */
+function sessionTs(s: OcSession): number {
+  const t = s.time as Record<string, unknown> | undefined;
+  return Number(t?.updated || t?.created || 0);
+}
+function relTime(s: OcSession): string {
+  const ts = sessionTs(s);
+  if (!ts) return '';
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分钟前';
+  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + ' 小时前';
+  if (diff < 7 * 86_400_000) return Math.floor(diff / 86_400_000) + ' 天前';
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+function fullTime(s: OcSession): string {
+  const ts = sessionTs(s);
+  return ts ? new Date(ts).toLocaleString() : '';
 }
 function shortRoot(p: string): string {
   const segs = p.replace(/\\/g, '/').split('/').filter(Boolean);
@@ -185,76 +203,6 @@ function toggleInstance(inst: OcInstance) {
 function openSession(inst: OcInstance, s: OcSession) {
   activeInstanceId.value = inst.id;
   activeSessionId.value = s.id;
-  takeoverHint.value = null; // 手动选择不挂接管警示
-}
-
-/** 接管当前对话：busy 优先否则最近更新（服务端启发式 + reason 可解释）。
- *  busy 会话 = 用户极可能正在 TUI 用：三选一确认，杜绝"接管即污染"（2026-09-24 事故复盘）。 */
-async function takeover(inst: OcInstance) {
-  takingOver.value = inst.id;
-  try {
-    const r = await api.ocActiveSession(inst.id);
-    if (!r.ok || !r.session) {
-      ElMessage.warning(r.error || '没有可接管的会话');
-      return;
-    }
-    const s = r.session;
-    const dir = s.directory || inst.project_root || '（未标记项目）';
-    const busy = r.reason === 'busy';
-    if (busy) {
-      const choice = await confirmBusyTakeover(s.title || s.id, dir);
-      if (choice === 'cancel') return; // 关闭对话框=放弃
-      if (choice === 'yield') {
-        const ok = await yieldToTui(inst, s.id);
-        if (!ok) return;
-      }
-      // choice === 'share'：共享接管，消息进同一会话
-    }
-    enterSession(inst, s, busy);
-    ElMessage.success(busy ? '已接管 TUI 正在进行的对话' : '已接管最近活跃的对话（当前无 busy 会话）');
-    // 通知 TUI：让用户知道 co-team 在看/管这条对话（透明优先）
-    void api.ocTuiToast(inst.id, busy ? 'co-team 已接管此对话' : 'co-team 正在查看此对话', 'info').catch(() => {});
-  } catch (e: any) {
-    showApiError(e);
-  } finally {
-    takingOver.value = '';
-  }
-}
-
-/** busy 会话接管方式征询：共享接管 / 让 TUI 切走（我独占）/ 放弃 */
-async function confirmBusyTakeover(title: string, dir: string): Promise<'share' | 'yield' | 'cancel'> {
-  try {
-    await ElMessageBox.confirm(
-      `该会话正在 TUI 中使用（busy）：\n「${title}」\n项目目录：${dir}\n\nopencode 的会话是服务端共享的——没有"踢掉 TUI"的接口。请选择接管方式：`,
-      '接管确认 · 该会话可能正被他人使用',
-      {
-        distinguishCancelAndClose: true,
-        confirmButtonText: '共享接管（消息进同一会话，TUI 实时可见）',
-        cancelButtonText: '让 TUI 切走，我独占',
-        type: 'warning',
-        autofocus: false,
-      },
-    );
-    return 'share';
-  } catch (e: any) {
-    return e === 'cancel' ? 'yield' : 'cancel';
-  }
-}
-
-/** 让位式接管：给 TUI 建承接会话并导航过去，原会话归 co-team 独占 */
-async function yieldToTui(inst: OcInstance, originalSessionId: string): Promise<boolean> {
-  const created = await api.ocCreateSession(inst.id, 'TUI 让位后的新会话').catch(() => null);
-  if (!created?.ok || !created.session) {
-    ElMessage.warning('让位失败：无法创建承接会话');
-    return false;
-  }
-  const r = await api.ocTuiSelectSession(inst.id, created.session.id).catch(() => null);
-  if (!r?.ok) {
-    ElMessage.warning(`TUI 切换失败：${r?.error || '未知'}（仍可共享接管）`);
-    return false;
-  }
-  await api.ocTuiToast(inst.id, 'co-team 已接管原会话，TUI 已切换到新会话', 'info').catch(() => {});
-  return true;
 }
 
 /** 新建并接管：不碰 heuristic 选中的会话，从全新会话开始（co-team 派活的安全路径） */
@@ -266,7 +214,7 @@ async function createAndTakeover(inst: OcInstance) {
       ElMessage.warning((created as any).error || '创建会话失败');
       return;
     }
-    enterSession(inst, created.session, false);
+    openSession(inst, created.session);
     if (!expandedId.value || expandedId.value !== inst.id) {
       expandedId.value = inst.id;
       void loadSessions(inst);
@@ -276,20 +224,6 @@ async function createAndTakeover(inst: OcInstance) {
     showApiError(e);
   } finally {
     creatingSession.value = '';
-  }
-}
-
-function enterSession(inst: OcInstance, s: OcSession, busy: boolean) {
-  activeInstanceId.value = inst.id;
-  activeSessionId.value = s.id;
-  takeoverHint.value = {
-    title: s.title || s.id,
-    project: s.directory || inst.project_root || '（未标记项目）',
-    busy,
-  };
-  if (!expandedId.value || expandedId.value !== inst.id) {
-    expandedId.value = inst.id;
-    void loadSessions(inst);
   }
 }
 
@@ -398,6 +332,8 @@ onBeforeUnmount(() => {
 .sess-title { flex: 1; min-width: 0; font-size: var(--fs-aux); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .proj-tag { font-family: var(--font-mono); font-size: 10px; padding: 0 6px; border-radius: 4px; background: var(--bg-inset); border: 1px solid var(--line); color: var(--text-2); flex: none; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-id { font-size: 10px; color: var(--text-3); flex: none; }
+.sess-time { font-size: 10px; color: var(--text-3); flex: none; white-space: nowrap; }
+.child-tag { flex: none; font-size: 10px; padding: 0 5px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
 .oc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .chat-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-3); }
 .chat-empty .big { font-size: var(--fs-title, 16px); font-weight: 600; color: var(--text-2); }

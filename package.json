@@ -3,17 +3,19 @@
   "version": "0.2.0",
   "description": "Multi-agent development assistant",
   "private": true,
-  "workspaces": ["server", "web", "mobile"],
+  "workspaces": ["server", "web", "mobile", "packages/*"],
   "bin": { "coteam": "server/dist/index.js" },
   "files": ["server/dist", "web/dist", "mobile/dist", "agents", "config"],
   "engines": { "node": ">=18" },
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build:shared && npm run build -w server && npm run build -w web && npm run build -w mobile",
+    "build:shared": "npm run build -w @co-team/opencode-sync",
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:mobile\"",
     "dev:server": "npm run dev -w server",
     "dev:web": "npm run dev -w web",
     "dev:mobile": "npm run dev -w mobile",
     "build:mobile": "npm run build -w mobile",
-    "test": "npm run test -w server",
+    "test": "npm run build:shared && npm run test -w server",
     "start": "node server/dist/index.js"
   }
 }

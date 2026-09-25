@@ -543,12 +543,13 @@ export const api = {
     post<{ ok: boolean }>(`/api/opencode/instances/${encodeURIComponent(id)}/stop`),
   ocSessions: (instance: string) =>
     request<{ sessions: OcSession[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`),
-  ocMessages: (instance: string, session: string, opts?: { limit?: number; before?: string }) => {
+  ocMessages: (instance: string, session: string, opts?: { limit?: number; before?: string; full?: boolean }) => {
     const q = new URLSearchParams();
     if (opts?.limit) q.set('limit', String(opts.limit));
     if (opts?.before) q.set('before', opts.before);
+    if (opts?.full) q.set('full', '1');
     const qs = q.toString();
-    return request<{ messages: OcMessage[]; has_more: boolean; next_before?: string; trimmed: string[] }>(
+    return request<{ messages: OcMessage[]; has_more: boolean; next_before?: string; trimmed: string[]; event_id?: string | null }>(
       `/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/messages${qs ? '?' + qs : ''}`,
     );
   },
@@ -558,16 +559,19 @@ export const api = {
     post<{ ok: boolean; result?: unknown }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/prompt`, payload),
   ocAbort: (instance: string, session: string) =>
     post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/abort`),
+  ocSwitchAgent: (instance: string, session: string, agent: string) =>
+    post<{ ok: boolean; error?: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/agent`, { agent }),
+  ocSwitchModel: (instance: string, session: string, model: string) =>
+    post<{ ok: boolean; error?: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/model`, { model }),
+  ocDeleteSession: (instance: string, session: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}`, { method: 'DELETE' }),
   ocRevert: (instance: string, session: string, message_id: string) =>
     post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/revert`, { message_id }),
   ocDiff: (instance: string, session: string) =>
     request<{ ok: boolean; diff: OcDiffFile[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/diff`),
   ocResolvePermission: (instance: string, session: string, permission_id: string, response: 'once' | 'always' | 'reject') =>
     post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, { permission_id, response }),
-  // ---------- TUI 同构会话页（active/direct/agents/models/status/todo/command/pty） ----------
-  /** 接管当前对话：busy 会话优先，否则最近更新（reason 说明命中原因） */
-  ocActiveSession: (instance: string) =>
-    request<OcActiveSession>(`/api/opencode/instances/${encodeURIComponent(instance)}/active-session`),
+  // ---------- TUI 同构会话页（agents/models/status/todo/command/pty） ----------
   /** 新建会话（让位式接管给 TUI 建承接会话用） */
   ocCreateSession: (instance: string, title?: string) =>
     request<{ ok: boolean; session?: { id: string; title?: string }; error?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`, {
@@ -594,9 +598,8 @@ export const api = {
     request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/select-session`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId }),
     }),
-  /** managed 直连信息（ok+url → 浏览器直连 opencode SSE；否则走同源 /events 代理） */
-  ocDirect: (instance: string) =>
-    request<OcDirectInfo>(`/api/opencode/instances/${encodeURIComponent(instance)}/direct`),
+  ocReplay: (instance: string, after: string) =>
+    request<{ ok: boolean; events: Record<string, any>[]; latest_event_id?: string | null; resync: boolean; error?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/events/replay?after=${encodeURIComponent(after)}`),
   /** opencode 内置 + 自定义 agent 清单（composer 的 agent 下拉） */
   ocAgents: (instance: string) =>
     request<{ agents: OcAgentInfo[] }>(`/api/opencode/instances/${encodeURIComponent(instance)}/agents`),
@@ -787,26 +790,10 @@ export interface OcDiffFile {
   patch?: string;
 }
 
-/** 接管当前对话返回：session=目标会话；reason=busy（执行中优先）/recent（最近更新兜底） */
-export interface OcActiveSession {
-  ok: boolean;
-  session?: OcSession;
-  reason?: 'busy' | 'recent';
-  error?: string;
-}
-
-/** managed 直连信息：ok+direct → 前端直连 url/event（无鉴权 CORS 已放行）；attached 走同源 /events 代理 */
-export interface OcDirectInfo {
-  ok: boolean;
-  direct: boolean;
-  url: string;
-  events_url?: string;
-  reason?: string;
-}
-
 /** opencode agent 清单项（composer 的 agent 下拉；mode=primary/subagent 等） */
 export interface OcAgentInfo {
   name: string;
+  display?: string;
   description?: string;
   mode?: string;
 }

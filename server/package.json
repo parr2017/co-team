@@ -6,14 +6,17 @@
     "coteam-cli": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch src/index.ts",
-    "cli": "tsx src/cli.ts",
-    "test": "vitest run"
+    "build": "npm --prefix .. run build:shared && tsc -p tsconfig.json && node -e \"require('fs').copyFileSync('src/opencode/officialClientLoader.cjs','dist/opencode/officialClientLoader.cjs')\"",
+    "dev": "npm --prefix .. run build:shared && tsx watch src/index.ts",
+    "cli": "npm --prefix .. run build:shared && tsx src/cli.ts",
+    "test": "npm --prefix .. run build:shared && vitest run"
   },
   "dependencies": {
+    "@co-team/opencode-sync": "*",
     "@hono/node-server": "^1.13.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opencode/client": "2.0.15",
+    "@opencode/schema": "2.0.15",
     "hono": "^4.6.0",
     "ioredis": "^5.4.0",
     "js-yaml": "^4.1.0",

@@ -66,10 +66,10 @@
           <template v-for="(p, pi) in partsOf(m)" :key="p.id || pi">
             <!-- 正文 -->
             <div v-if="p.type === 'text' && p.text" class="a-text"><MdView :source="p.text" /></div>
-            <!-- 思考：默认折叠 -->
+            <!-- 思考：默认展开（TUI 同款），点击折叠 -->
             <div v-else-if="p.type === 'reasoning' && p.text" class="thinking" @click="toggleThink(pk(m, p, pi))">
-              <span class="lab">思考过程 {{ thinkOpen === pk(m, p, pi) ? '▾' : '▸' }}</span>
-              <span v-if="thinkOpen === pk(m, p, pi)" class="tb">{{ p.text }}</span>
+              <span class="lab">思考过程 {{ thinkClosed.has(pk(m, p, pi)) ? '▸' : '▾' }}</span>
+              <span v-if="!thinkClosed.has(pk(m, p, pi))" class="tb">{{ p.text }}</span>
               <span v-else class="tb short">{{ p.text.slice(0, 80) }}…</span>
             </div>
             <!-- 工具四态卡 -->
@@ -91,6 +91,14 @@
                     {{ toolOutFull.has(pk(m, p, pi)) ? '收起' : `展开全部（${toolOutputText(p).length} 字符）` }}
                   </span>
                 </template>
+                <div v-if="taskChildMap.get(String(p.id))" class="child-flow">
+                  <div class="child-lab">子代理运行过程（{{ childMessages(taskChildMap.get(String(p.id))).length }} 条）</div>
+                  <div v-for="cm in childMessages(taskChildMap.get(String(p.id)))" :key="cm.id" class="c-msg" :class="cm.role">
+                    <span class="c-role">{{ cm.role === 'user' ? '派单' : cm.role === 'assistant' ? '子代理' : cm.role }}</span>
+                    <span class="c-text">{{ childMsgText(cm) || '…' }}</span>
+                  </div>
+                  <div v-if="!childMessages(taskChildMap.get(String(p.id))).length" class="child-empty">子会话消息加载中…</div>
+                </div>
                 <div v-if="toolStateOf(p).attachments.length" class="tool-files">
                   <span v-for="(a, ai) in toolStateOf(p).attachments" :key="ai" class="fchip mono">{{ attName(a) }}</span>
                 </div>
@@ -132,6 +140,7 @@
       </div>
     </div>
 
+    <div v-if="showToTop" class="to-top" @click="toTop">↑</div>
     <div v-if="showToBottom" class="to-bottom" @click="toBottom">↓</div>
 
     <!-- busy 脉冲条 -->
@@ -217,7 +226,7 @@
       <div class="sheet">
         <div class="sh-h"><span>选择模型</span><span class="x" @click="modelSheet = false">✕</span></div>
         <div class="si" :class="{ cur: !selectedModel }" @click="selectedModel = ''; modelSheet = false">opencode 默认</div>
-        <div v-for="mo in models" :key="mo.value" class="si" :class="{ cur: selectedModel === mo.value }" @click="selectedModel = mo.value; modelSheet = false">
+        <div v-for="mo in models" :key="mo.value" class="si" :class="{ cur: selectedModel === mo.value }" @click="pickModel(mo.value)">
           <span class="si-nm">{{ mo.label }}</span>
           <span class="si-tg mono">{{ mo.provider }}</span>
         </div>
@@ -230,8 +239,8 @@
       <div class="sheet">
         <div class="sh-h"><span>选择 agent</span><span class="x" @click="agentSheet = false">✕</span></div>
         <div class="si" :class="{ cur: !selectedAgent }" @click="selectedAgent = ''; agentSheet = false">默认 agent</div>
-        <div v-for="a in agents" :key="a.name" class="si" :class="{ cur: selectedAgent === a.name }" @click="selectedAgent = a.name; agentSheet = false">
-          <span class="si-nm">{{ a.name }}</span>
+        <div v-for="a in agents" :key="a.name" class="si" :class="{ cur: selectedAgent === a.name }" @click="pickAgent(a.name)">
+          <span class="si-nm">{{ a.display || a.name }}</span>
           <span class="si-tg">{{ a.description || a.mode || '' }}</span>
         </div>
         <div v-if="!agents.length" class="sh">未获取到 agent 列表</div>
@@ -262,16 +271,21 @@ import { useRoute, useRouter } from 'vue-router';
 import { showFailToast, showSuccessToast, showToast } from 'vant';
 import {
   api,
-  API_BASE,
   type OcAgentInfo,
   type OcDiffFile,
   type OcInstance,
   type OcModelsInfo,
   type OcPty,
 } from '../api';
-import { SessionStream, type StreamSnapshot } from '../opencode-stream';
-import { subscribeOcEvents, type OcEventLike, type OcSubHandle } from '../opencode-events';
+import { SessionStream, toolOutputText as toolOutputOf, type StreamSnapshot } from '../opencode-stream';
+import { useWs } from '../composables/useWs';
 import MdView from '../components/MdView.vue';
+
+interface OcEventLike {
+  type: string;
+  properties?: Record<string, any>;
+  id?: string;
+}
 
 const route = useRoute();
 const router = useRouter();
@@ -298,10 +312,10 @@ const resolvedPerms = reactive(new Set<string>());
 const livePermissions = computed(() => snap.value.pendingPermissions.filter((p) => !resolvedPerms.has(String(p.id))));
 
 let gen = 0;
-let sub: OcSubHandle | null = null;
-let streamReady = false;
-const pendingBuf: OcEventLike[] = [];
-const sseState = ref<'connecting' | 'open' | 'closed'>('connecting');
+let lastEventId: string | undefined;
+const { connected, ensureStarted, onEvent, onResync } = useWs();
+ensureStarted();
+const sseState = computed<'connecting' | 'open' | 'closed'>(() => connected.value ? 'open' : 'closed');
 
 // ---------- 页面状态 ----------
 const instance = ref<OcInstance | null>(null);
@@ -313,12 +327,13 @@ const draft = ref('');
 const moreSheet = ref(false);
 const streamEl = ref<HTMLElement>();
 const showToBottom = ref(false);
+const showToTop = ref(false);
 let stickBottom = true;
 
 // 展开态（按 part key 持久化：part.updated 全量校正换对象引用不丢展开）
 const toolOpen = reactive(new Set<string>());
 const toolOutFull = reactive(new Set<string>());
-const thinkOpen = ref('');
+const thinkClosed = ref(new Set<string>());
 
 // diff / patch
 const diffDlg = ref(false);
@@ -388,13 +403,51 @@ function rememberIds(ev: OcEventLike) {
 function applyEvents(events: OcEventLike[]) {
   let applied = 0;
   for (const ev of events) {
+    // 子会话事件 → 内嵌子流（TUI 同款：子代理活动实时嵌在父会话里）
+    const evOwner = evSid(ev);
+    if (evOwner && evOwner !== sessionId.value) {
+      const cs = childStreams.get(evOwner);
+      if (cs) {
+        cs.applyEvent(ev);
+        childSnaps.value = new Map(childSnaps.value).set(evOwner, cs.snapshot());
+        applied += 1;
+      }
+      continue;
+    }
     if (!belongsToSession(ev)) continue;
     rememberIds(ev);
+    if (typeof ev.id === 'string' && ev.id) lastEventId = ev.id;
     stream.applyEvent(ev);
     applied += 1;
   }
   if (applied) scheduleFlush();
 }
+
+async function replayFromHub(): Promise<void> {
+  if (!lastEventId) return;
+  try {
+    const result = await api.ocReplay(instanceId.value, lastEventId);
+    if (result.resync) {
+      await reloadAll();
+      return;
+    }
+    applyEvents((result.events || []) as OcEventLike[]);
+  } catch {
+    await reloadAll();
+  }
+}
+
+const offWs = onEvent((message) => {
+  if (message.type !== 'oc_event' || message.payload?.instance !== instanceId.value) return;
+  const frame = message.payload?.event;
+  applyEvents(frame?.events ? frame.events : frame ? [frame] : []);
+});
+const offResync = onResync(() => { void replayFromHub(); });
+watch(connected, (value) => { if (value) void replayFromHub(); });
+// 流内出现新 task 工具分片时重配对（busy 中实时派生子代理的场景）
+watch(() => snap.value.messages.length, () => {
+  if (childSessions.value.length) pairChildren();
+});
 
 // 渲染合并：delta 洪峰（几十/s）时 80ms 一拍取 snapshot，避免每 token 全量重建
 let flushTimer: number | undefined;
@@ -429,19 +482,25 @@ async function loadMessages() {
   const my = gen;
   loadingMessages.value = true;
   try {
-    const d = await api.ocMessages(instanceId.value, sessionId.value, { limit: PAGE });
+    const d = await api.ocMessages(instanceId.value, sessionId.value, { limit: PAGE, full: true });
     if (my !== gen) return;
     stream.reset(d.messages || []);
+    lastEventId = d.event_id || undefined;
     hasMore.value = !!d.has_more;
     nextBefore.value = d.next_before || '';
     trimmedParts.value = new Set(d.trimmed || []);
     fullMessages.value = new Map();
+    childStreams.clear();
+    childSnaps.value = new Map();
+    taskChildMap.value = new Map();
+    childSessions.value = [];
     knownMsgIds.clear();
     for (const m of d.messages || []) {
       const id = String((m as any)?.info?.id || (m as any)?.id || '');
       if (id) knownMsgIds.add(id);
     }
     flushNow();
+    void loadChildren();
   } catch (e: any) {
     if (my !== gen) return;
     showFailToast(e?.message || '消息加载失败');
@@ -458,7 +517,7 @@ async function loadMore() {
   const prevH = el?.scrollHeight || 0;
   const prevT = el?.scrollTop || 0;
   try {
-    const d = await api.ocMessages(instanceId.value, sessionId.value, { limit: PAGE, before: nextBefore.value });
+    const d = await api.ocMessages(instanceId.value, sessionId.value, { limit: PAGE, before: nextBefore.value, full: true });
     if (d.messages?.length) {
       stream.prepend(d.messages);
       for (const id of d.trimmed || []) trimmedParts.value.add(id);
@@ -538,45 +597,20 @@ async function reloadAll() {
 /** 进入（或切换）会话：新状态机 + 权威快照 + 事件订阅（先缓存后重放，窗口不漏帧） */
 async function enterSession() {
   const my = ++gen;
-  sub?.close();
-  sub = null;
+  lastEventId = undefined;
   stream = new SessionStream();
   knownMsgIds.clear();
   resolvedPerms.clear();
-  pendingBuf.length = 0;
-  streamReady = false;
   toolOpen.clear();
   toolOutFull.clear();
-  thinkOpen.value = '';
+  thinkClosed.value = new Set();
   snap.value = stream.snapshot();
-  sseState.value = 'connecting';
   stickBottom = true;
   loadingMessages.value = true;
 
   void loadInstanceAndTitle();
-  // 1) 权威快照
   await loadMessages();
   if (my !== gen) return;
-  // 2) 事件订阅（缓冲开启：resolve 与快照之间的事件先入队）
-  sub = subscribeOcEvents({
-    resolveUrl: async () => {
-      try {
-        const d = await api.ocDirect(instanceId.value);
-        if (d.ok && d.url) return { url: d.url.replace(/\/+$/, '') + '/event', direct: true };
-      } catch { /* 回落同源代理 */ }
-      return { url: `${API_BASE}/api/opencode/instances/${encodeURIComponent(instanceId.value)}/events`, direct: false };
-    },
-    onEvents: (events) => {
-      if (!streamReady) pendingBuf.push(...events);
-      else applyEvents(events);
-    },
-    onError: (msg) => showFailToast(`事件流：${msg}`),
-    onState: (st) => { if (my === gen) sseState.value = st; },
-  });
-  // 3) 缓冲重放 + 服务端真值播种（status/todos/ptys 打开即见）
-  streamReady = true;
-  const buf = pendingBuf.splice(0, pendingBuf.length);
-  applyEvents(buf);
   await Promise.all([loadStatus(), loadTodos(), loadPtys()]);
   if (my !== gen) return;
   flushNow();
@@ -846,7 +880,12 @@ function onStreamScroll() {
   stickBottom = isNearEnd();
   showToBottom.value = !stickBottom;
   const el = streamEl.value;
+  showToTop.value = !!el && el.scrollTop > 480;
   if (el && el.scrollTop < 80) void loadMore();
+}
+function toTop() {
+  const el = streamEl.value;
+  if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
 }
 function toBottom() {
   scrollEnd();
@@ -922,7 +961,8 @@ function toolInputText(p: any): string {
   return t ? clipText(t.replace(/\s+/g, ' '), 300) : '';
 }
 function toolOutputText(p: any): string {
-  return toText(toolStateOf(p).output);
+  // 共享包版本：解包 v2 state.output 内容块数组 + metadata 回退（与 web/TUI 同源取值）
+  return toolOutputOf(p, 30_000);
 }
 function attName(a: any): string {
   return String(a?.filename || a?.name || a?.path || a?.id || '附件');
@@ -934,7 +974,95 @@ function toggleOutFull(k: string) {
   if (toolOutFull.has(k)) toolOutFull.delete(k); else toolOutFull.add(k);
 }
 function toggleThink(k: string) {
-  thinkOpen.value = thinkOpen.value === k ? '' : k;
+  const next = new Set(thinkClosed.value);
+  if (next.has(k)) next.delete(k); else next.add(k);
+  thinkClosed.value = next;
+}
+
+// ---------- 即时切换（TUI 同款：选中即生效，不等发送） ----------
+
+async function pickAgent(name: string) {
+  selectedAgent.value = name;
+  agentSheet.value = false;
+  try {
+    const r = await api.ocSwitchAgent(instanceId.value, sessionId.value, name);
+    if (r.ok) showSuccessToast(`执行模式已切换：${name}`);
+    else showFailToast(r.error || '切换失败');
+  } catch (e: any) {
+    showFailToast(e?.message || '切换失败');
+  }
+}
+
+async function pickModel(value: string) {
+  selectedModel.value = value;
+  modelSheet.value = false;
+  try {
+    const r = await api.ocSwitchModel(instanceId.value, sessionId.value, value);
+    if (r.ok) showSuccessToast(`模型已切换：${value}`);
+    else showFailToast(r.error || '切换失败');
+  } catch (e: any) {
+    showFailToast(e?.message || '切换失败');
+  }
+}
+
+// ---------- 子代理内嵌：task 工具派生的子会话，TUI 同款一层展示 ----------
+
+const childSessions = ref<any[]>([]);
+const taskChildMap = ref(new Map<string, string>());
+const childStreams = new Map<string, SessionStream>();
+const childSnaps = ref(new Map<string, any>());
+
+async function loadChildren() {
+  try {
+    const d = await api.ocSessions(instanceId.value);
+    childSessions.value = (d.sessions || []).filter((s: any) => s.parentID === sessionId.value);
+    pairChildren();
+  } catch { /* 会话列表失败不影响主聊天 */ }
+}
+
+/** task 工具分片 ↔ 子会话配对：子会话创建时间落在工具执行窗口内 */
+function pairChildren() {
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  const kids = [...childSessions.value].sort((a, b) => Number(a.time?.created || 0) - Number(b.time?.created || 0));
+  for (const m of snap.value.messages) {
+    for (const p of m.parts || []) {
+      if (p.type !== 'tool' || !/^(task|agent|subtask)$/i.test(String(p.tool || ''))) continue;
+      const t = (p.time || {}) as Record<string, number>;
+      const lo = Number(t.created || 0) - 1000;
+      const hi = Number(t.completed || Number.MAX_SAFE_INTEGER) + 1000;
+      const kid = kids.find((k) => !used.has(k.id) && Number(k.time?.created || 0) >= lo && Number(k.time?.created || 0) <= hi);
+      if (kid) {
+        map.set(String(p.id), kid.id);
+        used.add(kid.id);
+        ensureChildStream(kid.id);
+      }
+    }
+  }
+  taskChildMap.value = map;
+}
+
+function ensureChildStream(sid: string) {
+  if (childStreams.has(sid)) return;
+  const cs = new SessionStream();
+  childStreams.set(sid, cs);
+  void (async () => {
+    try {
+      const d = await api.ocMessages(instanceId.value, sid, { limit: 40, full: true });
+      cs.reset(d.messages || []);
+      childSnaps.value = new Map(childSnaps.value).set(sid, cs.snapshot());
+    } catch { /* 子会话消息失败不阻塞主流程 */ }
+  })();
+}
+
+function childMessages(sid: string | undefined): any[] {
+  if (!sid) return [];
+  return childSnaps.value.get(sid)?.messages || [];
+}
+
+function childMsgText(m: any): string {
+  const text = (m.parts || []).filter((p: any) => p.type === 'text' && p.text).map((p: any) => String(p.text)).join(' ');
+  return text.length > 300 ? text.slice(0, 300) + '…' : text;
 }
 
 function chipTextOf(p: any): string {
@@ -972,7 +1100,7 @@ let pollTimer: number | undefined;
 
 function onVisibility() {
   if (document.visibilityState !== 'visible') return;
-  sub?.reconnect(); // 手机切后台流被杀：回前台立即重连 + 全量校正
+  void replayFromHub();
   void reloadAll();
 }
 
@@ -1002,11 +1130,11 @@ onMounted(() => {
 // 同组件切换会话（路由参数变化）：整体重入
 watch([instanceId, sessionId], () => { void enterSession(); });
 
-onActivated(() => { if (streamReady) void reloadAll(); });
+onActivated(() => { void replayFromHub(); void reloadAll(); });
 
 onBeforeUnmount(() => {
-  sub?.close();
-  sub = null;
+  offWs();
+  offResync();
   if (pollTimer !== undefined) {
     window.clearInterval(pollTimer);
     pollTimer = undefined;
@@ -1022,7 +1150,9 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.page { min-height: 100vh; display: flex; flex-direction: column; }
+/* 填满 app-root 的动态视口（100dvh），不要用 100vh——手机浏览器 100vh 含地址栏高度，
+   会把底部输入栏推出屏幕外（实测输入不了）；flex:1 + min-height:0 让流内滚动、输入栏常驻可视区 */
+.page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .nav-title { font-size: 15px; font-weight: 600; }
 .nav-badge { font-size: 10px; color: var(--text-3); border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px; margin-right: 4px; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-abort { font-size: 12px; color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); border-radius: 99px; padding: 2px 9px; margin-right: 6px; }
@@ -1088,6 +1218,13 @@ onBeforeUnmount(() => {
 .tool-out { font-family: var(--font-mono, monospace); font-size: 11px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; word-break: break-all; margin: 6px 0 0; max-height: 260px; overflow-y: auto; }
 .tool-err { font-size: 11px; color: var(--danger); line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 .tool-more { display: inline-block; margin-top: 6px; font-size: 11px; color: var(--accent); }
+.child-flow { margin-top: 8px; padding: 6px 8px; background: var(--bg-inset, rgba(127, 127, 127, 0.08)); border-radius: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow: auto; }
+.child-lab { font-size: 10.5px; color: var(--text-3); }
+.c-msg { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px; line-height: 1.55; }
+.c-role { flex: none; font-size: 9.5px; padding: 0 4px; border-radius: 4px; background: var(--bg-panel, rgba(127, 127, 127, 0.15)); color: var(--text-2); }
+.c-msg.assistant .c-role { color: var(--accent); }
+.c-text { min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
+.child-empty { font-size: 10.5px; color: var(--text-3); }
 .tool-files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .fchip { font-size: 10px; color: var(--text-2); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 2px 7px; max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -1126,6 +1263,7 @@ onBeforeUnmount(() => {
 .perm-card .acts button.p { border: none; background: var(--accent); color: var(--accent-text); }
 
 .to-bottom { position: fixed; right: 14px; bottom: 148px; width: 34px; height: 34px; border-radius: 50%; background: var(--bg-panel); border: 1px solid var(--line-strong); color: var(--text-2); display: grid; place-items: center; box-shadow: var(--shadow-float, 0 2px 8px rgba(0,0,0,.2)); z-index: 10; }
+.to-top { position: fixed; right: 14px; bottom: 190px; width: 34px; height: 34px; border-radius: 50%; background: var(--bg-panel); border: 1px solid var(--line-strong); color: var(--text-2); display: grid; place-items: center; box-shadow: var(--shadow-float, 0 2px 8px rgba(0,0,0,.2)); z-index: 10; }
 
 /* busy 脉冲条 */
 .busy-strip { display: flex; align-items: center; gap: 8px; padding: 7px 14px; font-size: 11.5px; color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); border-top: 1px solid color-mix(in srgb, var(--warn) 22%, transparent); }
@@ -1142,7 +1280,7 @@ onBeforeUnmount(() => {
 .pty-chip.exited { opacity: .55; }
 
 /* 输入栏 */
-.composer { border-top: 1px solid var(--line); background: var(--bg-panel); padding: 8px 10px 10px; }
+.composer { border-top: 1px solid var(--line); background: var(--bg-panel); padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
 .composer.readonly { color: var(--text-3); font-size: 11px; text-align: center; padding: 13px; }
 .comp-row { display: flex; align-items: center; gap: 6px; padding-bottom: 6px; }
 .comp-row .hint { flex: 1; min-width: 0; font-size: 10.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

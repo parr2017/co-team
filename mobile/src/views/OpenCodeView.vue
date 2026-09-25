@@ -44,15 +44,7 @@
                 @click.stop="stop(inst)"
               >停止</van-button>
             </template>
-            <van-button
-              v-if="canTakeOver(inst)"
-              size="small"
-              type="primary"
-              :loading="takingOver === inst.id"
-              :disabled="!!busyId"
-              @click.stop="takeOver(inst)"
-            >接管当前对话</van-button>
-            <!-- 新建并接管：不碰 heuristic 选中的会话，从全新会话开始（co-team 派活的安全路径，与 web 对齐） -->
+            <!-- 新建并接管 -->
             <van-button
               v-if="canTakeOver(inst)"
               size="small"
@@ -77,8 +69,10 @@
             </div>
             <div v-for="s in visibleSessions" :key="s.id" class="sess-item" @click.stop="openSession(inst.id, s.id)">
               <span class="st">{{ s.title || '（未命名会话）' }}</span>
+              <span v-if="s.parentID" class="child-tag" title="子会话（任务/子代理派生）">子</span>
               <span v-if="showDirBadge(s)" class="dir-badge mono" :title="String(s.directory || '')">{{ dirBase(String(s.directory || '')) }}</span>
               <span class="sid mono">{{ shortId(s.id) }}</span>
+              <span class="sess-time" :title="fullTime(s)">{{ relTime(s) }}</span>
               <van-icon name="arrow" />
             </div>
           </div>
@@ -103,7 +97,7 @@
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { showFailToast, showSuccessToast, showDialog } from 'vant';
+import { showFailToast, showSuccessToast } from 'vant';
 import { api, type OcInstance, type OcSession } from '../api';
 
 const router = useRouter();
@@ -119,7 +113,6 @@ const sessions = ref<OcSession[]>([]);
 const loadingSessions = ref(false);
 const busyId = ref('');
 const busyAct = ref('');
-const takingOver = ref('');
 const creatingSession = ref('');
 /** 会话列表过滤器：本项目（实例 project_root 匹配）/ 全部 */
 const sessFilter = ref<'project' | 'all'>('project');
@@ -143,6 +136,26 @@ function isThisProject(s: OcSession): boolean {
 function dirBase(d: string): string {
   const seg = d.split(/[\\/]/).filter(Boolean);
   return seg.length ? seg[seg.length - 1] : d;
+}
+/** 会话最近更新时间（v2 SessionInfo.time.updated；兜底 created） */
+function sessionTs(s: OcSession): number {
+  const t = s.time as Record<string, unknown> | undefined;
+  return Number(t?.updated || t?.created || 0);
+}
+function relTime(s: OcSession): string {
+  const ts = sessionTs(s);
+  if (!ts) return '';
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分钟前';
+  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + ' 小时前';
+  if (diff < 7 * 86_400_000) return Math.floor(diff / 86_400_000) + ' 天前';
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+function fullTime(s: OcSession): string {
+  const ts = sessionTs(s);
+  return ts ? new Date(ts).toLocaleString() : '';
 }
 /** 实例没有 project_root（attached 未探测到）时不做分组，全部展示且不带徽标 */
 const canGroup = computed(() => {
@@ -197,41 +210,6 @@ function openSession(instId: string, sessId: string) {
   router.push(`/opencode/session/${instId}/${sessId}`);
 }
 
-/** 接管当前对话：busy 会话优先否则最近更新。busy=可能正被 TUI 使用——
- *  弹征询（共享接管 / 让 TUI 切走我独占 / 放弃），杜绝"接管即污染"（2026-09-24 事故复盘）。 */
-async function takeOver(inst: OcInstance) {
-  takingOver.value = inst.id;
-  try {
-    const d = await api.ocActiveSession(inst.id);
-    if (!d.ok || !d.session?.id) {
-      showFailToast(d.error || '没有可接管的会话');
-      return;
-    }
-    if (d.reason === 'busy') {
-      const choice = await showBusyDialog(d.session.title || d.session.id, d.session.directory || inst.project_root || '（未标记项目）');
-      if (choice === 'share') {
-        openSession(inst.id, d.session.id);
-      } else if (choice === 'yield') {
-        // 让位式接管：TUI 切到新会话，我独占原会话
-        const created = await api.ocCreateSession(inst.id, 'TUI 让位后的新会话').catch(() => null);
-        if (!created?.ok || !created.session) { showFailToast('让位失败：无法创建承接会话'); return; }
-        const r = await api.ocTuiSelectSession(inst.id, created.session.id).catch(() => null);
-        if (!r?.ok) { showFailToast(`TUI 切换失败：${r?.error || '未知'}（仍可共享接管）`); return; }
-        await api.ocTuiToast(inst.id, 'co-team 已接管原会话，TUI 已切换到新会话', 'info').catch(() => {});
-        openSession(inst.id, d.session.id);
-      }
-      // cancel：放弃
-    } else {
-      openSession(inst.id, d.session.id);
-      void api.ocTuiToast(inst.id, 'co-team 正在查看此对话', 'info').catch(() => {});
-    }
-  } catch (e: any) {
-    showFailToast(e?.message || '接管失败');
-  } finally {
-    takingOver.value = '';
-  }
-}
-
 /** 新建并接管：不碰 heuristic 选中的会话，从全新会话开始（与 web 对齐的安全路径） */
 async function createAndTakeOver(inst: OcInstance) {
   creatingSession.value = inst.id;
@@ -252,25 +230,6 @@ async function createAndTakeOver(inst: OcInstance) {
   } finally {
     creatingSession.value = '';
   }
-}
-
-/** busy 接管征询：共享接管 / 让位独占 / 取消（beforeClose 精确分流三态：
- *  confirm=共享、cancel 按钮=让位、overlay/ESC 关闭=放弃） */
-function showBusyDialog(title: string, dir: string): Promise<'share' | 'yield' | 'cancel'> {
-  return new Promise((resolve) => {
-    showDialog({
-      title: '接管确认 · 该会话可能正被他人使用',
-      message: `「${title}」正在 TUI 中使用（busy）\n项目：${dir}\n\nopencode 的会话是服务端共享的——没有"踢掉 TUI"的接口。选择接管方式：`,
-      showCancelButton: true,
-      confirmButtonText: '共享接管',
-      cancelButtonText: '让 TUI 切走，我独占',
-      closeOnClickOverlay: true,
-      beforeClose: (action: 'confirm' | 'cancel', done: () => void) => {
-        done();
-        resolve(action === 'confirm' ? 'share' : 'yield');
-      },
-    }).catch(() => resolve('cancel'));
-  });
 }
 
 async function start(inst: OcInstance) {
@@ -370,6 +329,8 @@ onBeforeUnmount(() => {
 .sess-item .sid { font-size: 10px; color: var(--text-3); flex: none; }
 .sess-item .van-icon { color: var(--text-3); flex: none; }
 .dir-badge { flex: none; font-size: 9.5px; color: var(--text-3); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; max-width: 26vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-item .sess-time { flex: none; font-size: 10px; color: var(--text-3); white-space: nowrap; }
+.sess-item .child-tag { flex: none; font-size: 9.5px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 4px; padding: 1px 5px; }
 
 .empty-desc { font-size: 12px; color: var(--text-3); line-height: 1.9; text-align: center; padding: 0 12px; }
 .empty-desc b { color: var(--text-2); }

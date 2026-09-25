@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -20,33 +20,50 @@ const silent = { debug() {}, info() {}, warn() {}, error() {} } as any;
 const FAKE_OC = `
 const http = require('http');
 const port = Number(process.argv[process.argv.indexOf('--port') + 1] || 0);
+let sseRes = null;
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://127.0.0.1');
   const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
-  if (req.method === 'GET' && u.pathname === '/global/health') return json(200, { healthy: true, version: '1.18.32-fake' });
-  if (req.method === 'GET' && u.pathname === '/doc') return json(200, { paths: { '/session': {}, '/session/{id}/message': {}, '/session/{id}/abort': {}, '/session/{id}/diff': {}, '/session/{id}/permissions/{permissionID}': {}, '/event': {}, '/tui/append-prompt': {} } });
-  if (req.method === 'GET' && u.pathname === '/session') return json(200, [{ id: 's1', title: 'first' }, { id: 's2', title: 'second' }]);
-  if (req.method === 'GET' && u.pathname === '/session/status') return json(200, { s1: { type: 'idle' } });
-  if (req.method === 'POST' && u.pathname === '/session') return json(200, { id: 'new-s', title: 'created' });
-  if (req.method === 'GET' && u.pathname === '/session/s1/message') return json(200, [{ info: { id: 'm1' }, parts: [{ type: 'text', text: 'hello from fake' }] }]);
-  if (req.method === 'POST' && u.pathname === '/session/s1/message') return json(200, { info: { id: 'm2' }, parts: [{ type: 'text', text: 'done' }] });
-  if (req.method === 'POST' && u.pathname === '/session/s1/abort') return json(200, true);
-  if (req.method === 'POST' && u.pathname === '/session/s1/revert') return json(200, true);
-  if (req.method === 'GET' && u.pathname === '/session/s1/diff') return json(200, [{ file: 'a.ts', additions: 3, deletions: 1 }]);
-  if (req.method === 'POST' && u.pathname === '/session/s1/permissions/p1') return json(200, true);
-  if (req.method === 'POST' && u.pathname === '/tui/append-prompt') return json(200, true);
-  if (req.method === 'GET' && u.pathname === '/event') {
+  const empty = (code) => { res.writeHead(code); res.end(); };
+  if (req.method === 'GET' && u.pathname === '/api/info') {
+    // FAKE_REQUIRE_AUTH=1 时模拟真实 opencode 2.x：无 Basic 凭据返回 401 空 content-type（官方客户端会抛 UnsupportedContentType）
+    if (process.env.FAKE_REQUIRE_AUTH && req.headers.authorization !== 'Basic ' + Buffer.from('opencode:fake-password-0123').toString('base64')) { res.writeHead(401); return res.end(); }
+    return json(200, { version: '2.0.15-fake', pid: process.pid, urls: [], paths: { tmp: '' } });
+  }
+  if (req.method === 'GET' && u.pathname === '/api/session') return json(200, { data: [{ id: 's1', title: 'first', location: { directory: 'C:/fake-project' }, time: { created: 1, updated: 100 } }, { id: 's2', title: 'second', location: { directory: 'C:/other' }, time: { created: 2, updated: 200 } }], cursor: {} });
+  if (req.method === 'GET' && u.pathname === '/api/session/active') return json(200, { s1: { type: 'idle' } });
+  if (req.method === 'POST' && u.pathname === '/api/session') return json(200, { data: { id: 'new-s', title: 'created' } });
+  if (req.method === 'GET' && u.pathname === '/api/session/s1/message') return json(200, { data: [{ id: 'm1', type: 'user', time: { created: 1 }, text: 'hello from fake' }], cursor: {} });
+  if (req.method === 'GET' && u.pathname === '/api/session/s1/message/m1') return json(200, { data: { id: 'm1', type: 'user', time: { created: 1 }, text: 'hello from fake' } });
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/model') return empty(204);
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/prompt') return json(200, { data: { id: 'm2', sessionID: 's1', type: 'user', time: { created: 1 }, payload: { text: '' }, delivery: 'queue' } });
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/interrupt') return json(200, { interrupted: true });
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/revert/stage') return json(200, { data: { messageID: 'm1' } });
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/revert/commit') return empty(204);
+  if (req.method === 'GET' && u.pathname === '/api/session/s1/diff') return json(200, { data: [{ file: 'a.ts', additions: 3, deletions: 1 }] });
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/permission/p1/reply') return empty(204);
+  if (req.method === 'GET' && u.pathname === '/api/location') return json(200, { directory: 'C:/fake-project', project: { id: 'p1', directory: 'C:/fake-project', canonical: 'C:/fake-project' } });
+  if (req.method === 'GET' && u.pathname === '/api/event') {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
-    res.write('data: ' + JSON.stringify({ type: 'server.connected', properties: {} }) + '\\n\\n');
-    res.write('data: ' + JSON.stringify({ type: 'session.idle', properties: { sessionID: 's1' } }) + '\\n\\n');
+    res.write('data: ' + JSON.stringify({ id: 'e0', type: 'server.connected', data: {} }) + '\\n\\n');
+    res.write('data: ' + JSON.stringify({ id: 'e1', type: 'session.idle', data: { sessionID: 's1' } }) + '\\n\\n');
+    sseRes = res;
     const t = setInterval(() => res.write(': ping\\n\\n'), 1000);
-    req.on('close', () => clearInterval(t));
+    req.on('close', () => { clearInterval(t); if (sseRes === res) sseRes = null; });
     return;
   }
+  if (req.method === 'POST' && u.pathname === '/api/test/emit-parts') {
+    // 模拟 v2 真实行为：新消息只有 part 级事件（无 message.updated），验证缓存骨架自建
+    if (sseRes) {
+      sseRes.write('data: ' + JSON.stringify({ id: 'e2', type: 'session.text.started', data: { sessionID: 's1', assistantMessageID: 'm-new', ordinal: 0 } }) + '\\n\\n');
+      sseRes.write('data: ' + JSON.stringify({ id: 'e3', type: 'session.text.ended', data: { sessionID: 's1', assistantMessageID: 'm-new', ordinal: 0, text: 'PATCHED_NEW_MSG' } }) + '\\n\\n');
+    }
+    return json(200, { ok: true });
+  }
   if (req.method === 'GET' && u.pathname === '/notfound') return json(404, { error: 'nope' });
-  json(200, true);
+  empty(204);
 });
-server.listen(port, '127.0.0.1', () => console.log('fake-oc listening ' + port));
+server.listen(port, '127.0.0.1', () => { console.log('fake-oc listening ' + port); console.log('server password fake-password-0123'); });
 `;
 
 async function waitFor(fn: () => boolean | Promise<boolean>, timeoutMs = 15000): Promise<boolean> {
@@ -61,109 +78,264 @@ async function waitFor(fn: () => boolean | Promise<boolean>, timeoutMs = 15000):
 // ---------- client（mock fetch，不打真服务） ----------
 
 function mockFetch(routes: Record<string, { status?: number; body?: unknown; text?: string }>): void {
-  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
-    const u = new URL(url);
+  vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(url));
     const route = routes[`${(init?.method || 'GET') as string} ${u.pathname}`] || routes[`* ${u.pathname}`];
-    if (!route) return new Response('not found', { status: 404 });
+    if (!route) return new Response(JSON.stringify({ message: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
     const body = route.text ?? (route.body !== undefined ? JSON.stringify(route.body) : '');
     return new Response(body, { status: route.status ?? 200, headers: { 'content-type': 'application/json' } });
   });
 }
 
 describe('OpencodeClient', () => {
+  afterEach(() => vi.unstubAllGlobals());
   afterAll(() => vi.unstubAllGlobals());
 
-  it('health / probe：/doc 路径存在性打标 capabilities', async () => {
-    mockFetch({
-      'GET /global/health': { body: { healthy: true, version: '1.18.32' } },
-      'GET /doc': { body: { paths: { '/session': {}, '/session/{id}/message': {}, '/event': {} } } },
-    });
-    const c = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999/' });
-    const h = await c.health();
-    expect(h.ok).toBe(true);
-    expect(h.data?.version).toBe('1.18.32');
-    const caps = await c.probe();
-    expect(caps.healthy).toBe(true);
-    expect(caps.sync_prompt).toBe(true);
-    expect(caps.async_prompt).toBe(false);
-    expect(caps.events).toBe(true);
-    expect(caps.tui).toBe(false);
-  });
-
-  it('probe：/doc 解析失败回退 v1 保守端点集', async () => {
-    mockFetch({
-      'GET /global/health': { body: { healthy: true, version: 'x' } },
-      'GET /doc': { text: '<html>swagger page</html>' },
-    });
-    const caps = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).probe();
-    expect(caps.sync_prompt).toBe(true);
-    expect(caps.shell).toBe(false); // v1 fallback 不含 shell
-    expect(caps.tui).toBe(true);
+  it('health / probe：仅接受 2.x 且不低于 2.0.15', async () => {
+    for (const [version, accepted] of [['1.18.32', false], ['2.0.15', true], ['3.0.0', false]] as const) {
+      mockFetch({ 'GET /api/info': { body: { version, pid: 1, urls: [], paths: { tmp: '' } } } });
+      const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
+      const health = await client.health();
+      expect(health.data?.version).toBe(version);
+      expect(health.ok).toBe(accepted);
+      const capabilities = await client.probe();
+      expect(capabilities.healthy).toBe(accepted);
+      expect(capabilities.version).toBe(version);
+      if (accepted) {
+        expect(capabilities.sync_prompt).toBe(false);
+        expect(capabilities.async_prompt).toBe(true);
+        expect(capabilities.abort).toBe(true);
+        expect(capabilities.revert).toBe(true);
+        expect(capabilities.diff).toBe(true);
+        expect(capabilities.permissions).toBe(true);
+        expect(capabilities.events).toBe(true);
+        expect(capabilities.shell).toBe(true);
+        expect(capabilities.tui).toBe(false);
+      }
+    }
   });
 
   it('HTTP 错误与网络异常全部软收口 {ok:false}', async () => {
-    mockFetch({ 'GET /session': { status: 500, text: 'boom' } });
-    const r = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).listSessions();
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain('500');
+    mockFetch({ 'GET /api/session': { status: 500, text: 'boom' } });
+    const result = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).listSessions();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('500');
     vi.unstubAllGlobals();
     vi.stubGlobal('fetch', async () => { throw new Error('ECONNREFUSED'); });
-    const r2 = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).listSessions();
-    expect(r2).toEqual({ ok: false, error: 'ECONNREFUSED' });
+    const network = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).listSessions();
+    expect(network.ok).toBe(false);
+    expect(network.error).toContain('Transport');
   });
 
-  it('Basic 鉴权头注入（桌面版 service 401 场景）', async () => {
-    let seen = '';
-    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
-      seen = String((init?.headers as Record<string, string>)?.authorization || '');
-      return new Response(JSON.stringify({ healthy: true, version: 'v' }), { status: 200 });
+  it('构造器注入 Basic auth，错误消息不泄露凭据', async () => {
+    let authorization = '';
+    let signal: AbortSignal | null | undefined;
+    vi.stubGlobal('fetch', async (_url: string | URL | Request, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get('authorization') || '';
+      signal = init?.signal;
+      if (authorization !== `Basic ${Buffer.from('opencode:secret').toString('base64')}`) {
+        return new Response(JSON.stringify({ message: 'Authorization: Basic leaked secret' }), { status: 401, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ version: '2.0.15', pid: 1, urls: [], paths: { tmp: '' } }), { status: 200, headers: { 'content-type': 'application/json' } });
     });
-    await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999', auth: { username: 'opencode', password: 'pw' } }).health();
-    expect(seen).toBe(`Basic ${Buffer.from('opencode:pw').toString('base64')}`);
+    const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999', auth: { username: 'opencode', password: 'secret' } });
+    expect((await client.health()).ok).toBe(true);
+    expect(authorization).toBe(`Basic ${Buffer.from('opencode:secret').toString('base64')}`);
+    expect(signal).toBeInstanceOf(AbortSignal);
+    vi.stubGlobal('fetch', async () => { throw new Error('Authorization: secret'); });
+    const error = (await client.listSessions()).error || '';
+    expect(error).not.toContain('secret');
   });
 
-  it('prompt 带 model 注入（场景 B 逐条选型）', async () => {
-    let sent: any;
-    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
-      sent = { method: init?.method, body: JSON.parse(String(init?.body || '{}')) };
-      return new Response(JSON.stringify({ info: { id: 'm' }, parts: [] }), { status: 200 });
+  it('session list 使用官方 v2 envelope 并按元素截断', async () => {
+    const data = Array.from({ length: 40 }, (_, index) => ({ id: `s${index}`, title: 'x'.repeat(100) }));
+    mockFetch({ 'GET /api/session': { body: { data, cursor: {} } } });
+    const result = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999', maxResultChars: 500 }).listSessions();
+    expect(result.ok).toBe(true);
+    expect(Array.isArray(result.data)).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect((result.data as unknown[]).length).toBeLessThan(40);
+  });
+
+  it('prompt 先用官方 switchModel，再以 session.prompt 入队并返回 inbox message', async () => {
+    const requests: { method: string; path: string; body?: any }[] = [];
+    vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      requests.push({ method: init?.method || 'GET', path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (path === '/api/session/s1/model') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ data: { id: 'inbox-1', sessionID: 's1', type: 'user', time: { created: 1 }, payload: { text: 'do it' }, delivery: 'queue' } }), { status: 200, headers: { 'content-type': 'application/json' } });
     });
-    await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).prompt('s1', 'do it', { providerID: 'deepseek', modelID: 'ds-v4' });
-    expect(sent.method).toBe('POST');
-    expect(sent.body.parts[0]).toEqual({ type: 'text', text: 'do it' });
-    expect(sent.body.model).toEqual({ providerID: 'deepseek', modelID: 'ds-v4' });
+    const result = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).prompt('s1', 'do it', { providerID: 'deepseek', modelID: 'ds-v4' });
+    expect(result.ok).toBe(true);
+    expect((result.data as { id: string }).id).toBe('inbox-1');
+    expect(requests.map((request) => request.path)).toEqual(['/api/session/s1/model', '/api/session/s1/prompt']);
+    expect(requests[0]?.body).toEqual({ model: { id: 'ds-v4', providerID: 'deepseek' } });
+    expect(requests[1]?.body).toMatchObject({ text: 'do it' });
   });
 
-  it('列表结果按元素截断且保持数组类型', async () => {
-    const big = Array.from({ length: 40 }, (_, i) => ({ id: `s${i}`, title: 'x'.repeat(100) }));
-    mockFetch({ 'GET /session': { body: big } });
-    const r = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999', maxResultChars: 500 }).listSessions();
-    expect(r.ok).toBe(true);
-    expect(Array.isArray(r.data)).toBe(true);
-    expect(r.truncated).toBe(true);
-    expect((r.data as unknown[]).length).toBeLessThan(40);
+  it('messages list/get 与 interrupt 使用官方 v2 方法', async () => {
+    const requests: string[] = [];
+    mockFetch({
+      'GET /api/session/s1/message': { body: { data: [{ id: 'm1', type: 'user', time: { created: 1 }, text: 'hello' }], cursor: {} } },
+      'GET /api/session/s1/message/m1': { body: { id: 'm1', type: 'user', time: { created: 1 }, text: 'hello' } },
+      'POST /api/session/s1/interrupt': { body: { interrupted: true } },
+    });
+    vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      requests.push(`${init?.method || 'GET'} ${path}`);
+      if (path.endsWith('/interrupt')) return new Response(JSON.stringify({ interrupted: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (path.endsWith('/message/m1')) return new Response(JSON.stringify({ data: { id: 'm1', type: 'user', time: { created: 1 }, text: 'hello' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ data: [{ id: 'm1', type: 'user', time: { created: 1 }, text: 'hello' }], cursor: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
+    expect((await client.listMessages('s1', 10)).ok).toBe(true);
+    const message = await client.getMessage('s1', 'm1');
+    expect(message).toMatchObject({ ok: true, data: {
+      info: { id: 'm1', role: 'user' },
+      parts: [{ id: 'm1:text', messageID: 'm1', type: 'text', text: 'hello' }],
+    } });
+    expect((await client.abortSession('s1')).data).toBe(true);
+    expect(requests).toEqual([
+      'GET /api/session/s1/message',
+      'GET /api/session/s1/message/m1',
+      'POST /api/session/s1/interrupt',
+    ]);
   });
 
-  it('eventStream：解析 SSE data 帧，跳过畸形帧与注释', async () => {
-    const frames = [
-      ': ping\n\n',
-      'data: {"type":"session.idle","properties":{"sessionID":"s1"}}\n\n',
-      'data: not-json\n\n',
-      'data: {"type":"message.part.updated","properties":{}}\n\n',
-    ];
-    vi.stubGlobal('fetch', async () => {
+  it('把 v2 assistant content 投影为现有 UI 的 parts', async () => {
+    mockFetch({
+      'GET /api/session/s1/message': {
+        body: {
+          data: [{
+            id: 'assistant-1',
+            type: 'assistant',
+            time: { created: 1 },
+            agent: 'build',
+            model: { id: 'model-1', providerID: 'provider-1' },
+            content: [
+              { type: 'text', text: 'done' },
+              { type: 'reasoning', text: 'thinking' },
+              { type: 'tool', id: 'tool-1', name: 'read', state: { status: 'completed', input: { path: 'a.ts' }, content: [{ type: 'text', text: 'ok' }] } },
+            ],
+          }],
+          cursor: {},
+        },
+      },
+    });
+    const result = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).listMessages('s1');
+    expect(result.data).toEqual([expect.objectContaining({
+      info: expect.objectContaining({ id: 'assistant-1', role: 'assistant', providerID: 'provider-1', modelID: 'model-1' }),
+      parts: [
+        expect.objectContaining({ type: 'text', text: 'done' }),
+        expect.objectContaining({ type: 'reasoning', text: 'thinking' }),
+        expect.objectContaining({ type: 'tool', callID: 'tool-1', tool: 'read', state: expect.objectContaining({ status: 'completed', input: { path: 'a.ts' } }) }),
+      ],
+    })]);
+  });
+
+  it('permission.reply 与 form reply/cancel 替代旧 question/todo', async () => {
+    let replyBody: any;
+    vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/api/session/s1/permission/p1/reply') {
+        replyBody = JSON.parse(String(init?.body));
+        return new Response(null, { status: 204 });
+      }
+      if (path === '/api/form') {
+        return new Response(JSON.stringify({ location: { directory: 'C:/p' }, data: [{ id: 'f1', sessionID: 's1', title: 'Pick', fields: [] }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if ((init?.method || 'GET') === 'GET' && path === '/api/session/s1/form/f1') {
+        return new Response(JSON.stringify({ data: { id: 'f1', sessionID: 's1', title: 'Pick', fields: [{ key: 'choice', type: 'multiselect' }], state: {} } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
+    expect((await client.answerPermission('s1', 'p1', 'always')).ok).toBe(true);
+    expect(replyBody).toEqual({ decision: 'always' });
+    expect((await client.answerQuestion('f1', [['a', 'b']])).ok).toBe(true);
+    expect(await client.rejectQuestion('f1')).toEqual({ ok: true, data: true });
+    const todos = await client.sessionTodos('s1');
+    const tui = await client.appendPrompt('x');
+    expect(todos).toEqual({ ok: false, error: 'OpenCode 2.0.15 官方客户端不提供该能力' });
+    expect(tui).toEqual({ ok: false, error: 'OpenCode 2.0.15 官方客户端不提供该能力' });
+  });
+
+  it('event.subscribe 保留 AbortSignal，并把 V2Event id/data/location 转为 OcEvent', async () => {
+    vi.stubGlobal('fetch', async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       const stream = new ReadableStream({
         start(controller) {
-          const enc = new TextEncoder();
-          for (const f of frames) controller.enqueue(enc.encode(f));
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode('data: {"id":"evt-1","type":"session.execution.started","location":{"directory":"C:/p"},"data":{"sessionID":"s1"}}\n\n'));
+          controller.enqueue(encoder.encode('data: {"id":"evt-2","type":"session.execution.succeeded","location":{"directory":"C:/p"},"data":{"sessionID":"s1"}}\n\n'));
+          controller.enqueue(encoder.encode('data: {"id":"evt-3","type":"session.text.delta","data":{"sessionID":"s1","assistantMessageID":"m2","ordinal":0,"delta":"hi"}}\n\n'));
+          controller.enqueue(encoder.encode('data: {"id":"evt-4","type":"session.tool.success","data":{"sessionID":"s1","assistantMessageID":"m2","id":"tool-1","content":[{"type":"text","text":"ok"}]}}\n\n'));
           controller.close();
         },
       });
-      return new Response(stream, { status: 200 });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     });
-    const got: string[] = [];
-    for await (const ev of new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).eventStream()) got.push(ev.type);
-    expect(got).toEqual(['session.idle', 'message.part.updated']);
+    const controller = new AbortController();
+    const events = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).eventStream(controller.signal);
+    const started = await events.next();
+    expect(started.value).toMatchObject({
+      type: 'session.status',
+      id: 'evt-1',
+      location: { directory: 'C:/p' },
+      properties: { sessionID: 's1', status: { type: 'busy' } },
+    });
+    const succeeded = await events.next();
+    expect(succeeded.value).toMatchObject({
+      type: 'session.idle',
+      id: 'evt-2',
+      properties: { sessionID: 's1' },
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: 'message.part.delta',
+      id: 'evt-3',
+      properties: { sessionID: 's1', messageID: 'm2', partID: 'm2:text:0', field: 'text', delta: 'hi' },
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: 'message.part.updated',
+      id: 'evt-4',
+      properties: { sessionID: 's1', part: { type: 'tool', callID: 'tool-1', state: { status: 'completed' } } },
+    });
+    expect((await events.next()).done).toBe(true);
+  });
+
+  it('event.subscribe：inbox.enqueued 投影为用户消息（骨架+text part），interrupted 映射 idle 但 shutdown 除外', async () => {
+    vi.stubGlobal('fetch', async (_url: string | URL | Request, init?: RequestInit) => {
+      const stream = new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode('data: {"id":"i1","type":"session.inbox.enqueued","data":{"inboxID":"u9","sessionID":"s1","item":{"type":"user","payload":{"text":"帮我看看这个"},"delivery":"steer"}}}\n\n'));
+          controller.enqueue(encoder.encode('data: {"id":"i2","type":"session.execution.interrupted","data":{"sessionID":"s1","reason":"user"}}\n\n'));
+          controller.enqueue(encoder.encode('data: {"id":"i3","type":"session.execution.interrupted","data":{"sessionID":"s1","reason":"shutdown"}}\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const events = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).eventStream(new AbortController().signal);
+    const skeleton = await events.next();
+    expect(skeleton.value).toMatchObject({
+      type: 'message.updated',
+      id: 'i1',
+      properties: { sessionID: 's1', info: { id: 'u9', sessionID: 's1', role: 'user' } },
+    });
+    const userPart = await events.next();
+    expect(userPart.value).toMatchObject({
+      type: 'message.part.updated',
+      id: 'i1',
+      properties: { sessionID: 's1', part: { id: 'u9:text', messageID: 'u9', type: 'text', text: '帮我看看这个' } },
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: 'session.idle',
+      id: 'i2',
+      properties: { sessionID: 's1' },
+    });
+    // shutdown：不产出任何事件
+    expect((await events.next()).done).toBe(true);
   });
 });
 
@@ -190,16 +362,24 @@ describe('OpencodeManager', () => {
     ], silent);
     managers.push(mgr);
     mgr.setAgentProvider(() => ['*']);
+    const forwarded: Array<{ id?: string; type: string }> = [];
+    mgr.setEventForwarder((_instance, event) => forwarded.push({ id: event.id, type: event.type }));
     mgr.start();
     const ok = await waitFor(() => mgr.listInstances()[0]?.state === 'connected');
     expect(ok).toBe(true);
     const st = mgr.listInstances()[0]!;
-    expect(st.capabilities?.version).toBe('1.18.32-fake');
+    expect(st.capabilities?.version).toBe('2.0.15-fake');
     expect(st.pid).toBeGreaterThan(0);
+    expect(await waitFor(() => forwarded.length > 0 && Boolean(mgr.latestEventId('t1')))).toBe(true);
+    expect(mgr.replayEvents('t1', 'unknown')).toBeNull();
+    expect(mgr.replayEvents('t1', forwarded[0]!.id)).toEqual(expect.any(Array));
 
     const sessions = await mgr.listSessions('dev', 't1');
     expect(sessions.ok).toBe(true);
     expect((sessions.data as any[]).length).toBe(2);
+    // v2 归一化：location.directory → 顶层 directory（顺序跟上游，不做二次排序）
+    expect((sessions.data as any[])[0].directory).toBe('C:/fake-project');
+    expect((sessions.data as any[])[1].directory).toBe('C:/other');
 
     const created = await mgr.createSession('dev', 't1', 'co-team 派活');
     expect(created.ok).toBe(true);
@@ -220,13 +400,27 @@ describe('OpencodeManager', () => {
     expect(mgr.listInstances().find((s) => s.id === 't1')?.pid).toBeUndefined();
   }, 20000);
 
+  it('managed：serve 强制 Basic 鉴权时从日志解析密码带凭据连接（opencode 2.x 默认行为）', async () => {
+    const mgr = new OpencodeManager([
+      { id: 'auth-m', kind: 'managed', command: 'node', args: [fakeOcFile], project_root: tmp, auto_start: true, env: { FAKE_REQUIRE_AUTH: '1' } },
+    ], silent);
+    managers.push(mgr);
+    mgr.setAgentProvider(() => ['*']);
+    mgr.start();
+    // 若密码解析/凭据注入断裂：/api/info 401 空 content-type → UnsupportedContentType → 就绪超时
+    expect(await waitFor(() => mgr.listInstances()[0]?.state === 'connected')).toBe(true);
+    expect(mgr.listInstances()[0]?.error).toBeUndefined();
+    expect(await mgr.stopInstance('auth-m')).toBe(true);
+    await waitFor(() => !mgr.listInstances().find((s) => s.id === 'auth-m')?.pid);
+  }, 20000);
+
   it('attached-cli：readonly 档拒绝控制操作、放行只读与审批；allow_shell 默认禁用', async () => {
     // 先手动拉起一个假服务当 attached 目标
     const port = 38112;
     const child = spawn('node', [fakeOcFile, 'serve', '--port', String(port)], { stdio: 'ignore', shell: true });
     let up = false;
     for (let i = 0; i < 100 && !up; i++) {
-      try { up = (await fetch(`http://127.0.0.1:${port}/global/health`)).ok; } catch { /* 未起 */ }
+        try { up = (await fetch(`http://127.0.0.1:${port}/api/info`)).ok; } catch { /* 未起 */ }
       if (!up) await new Promise((r) => setTimeout(r, 100));
     }
     expect(up).toBe(true);
@@ -251,6 +445,42 @@ describe('OpencodeManager', () => {
       const shell = await mgr.runShell(undefined, 'ro', 's1', 'rm -rf /');
       expect(shell.ok).toBe(false);
       expect(shell.error).toContain('allow_shell');
+    } finally {
+      child.kill('SIGTERM');
+    }
+  }, 20000);
+
+  it('attached：SSE part 事件对缓存外的新消息自建骨架（接管介入后 readMessages 不漏新回复）', async () => {
+    const port = 38113;
+    const child = spawn('node', [fakeOcFile, 'serve', '--port', String(port)], { stdio: 'ignore', shell: true });
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) {
+      try { up = (await fetch(`http://127.0.0.1:${port}/api/info`)).ok; } catch { /* 未起 */ }
+      if (!up) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(up).toBe(true);
+    try {
+      const mgr = new OpencodeManager([
+        { id: 'cache', kind: 'attached-cli', url: `http://127.0.0.1:${port}`, mode: 'control' },
+      ], silent);
+      managers.push(mgr);
+      mgr.start();
+      expect(await waitFor(() => mgr.listInstances()[0]?.state === 'connected')).toBe(true);
+
+      // 先读一次：权威拉取建立缓存（m1）
+      const before = await mgr.readMessages(undefined, 'cache', 's1', { limit: 20 });
+      expect(before.ok).toBe(true);
+      expect((before.data!.messages as any[]).map((m) => m.info?.id ?? m.id)).toEqual(['m1']);
+
+      // 触发假服务推送 v2 风格的新消息 part 事件（无 message.updated）
+      const trigger = await fetch(`http://127.0.0.1:${port}/api/test/emit-parts`, { method: 'POST' });
+      expect(trigger.ok).toBe(true);
+      expect(await waitFor(async () => {
+        const after = await mgr.readMessages(undefined, 'cache', 's1', { limit: 20 });
+        if (!after.ok) return false;
+        const ids = (after.data!.messages as any[]).map((m) => m.info?.id ?? m.id);
+        return ids.includes('m-new') && JSON.stringify(after.data!.messages).includes('PATCHED_NEW_MSG');
+      })).toBe(true);
     } finally {
       child.kill('SIGTERM');
     }
@@ -350,7 +580,7 @@ describe('modelInjection', () => {
 // ---------- oc_* 工具层（假桥：跑 run_task 全流程与模型降级链） ----------
 
 /** 可控假桥：记录调用序列，按脚本决定返回值 */
-class FakeBridge implements OpencodeBridge {
+class FakeBridge {
   calls: string[] = [];
   /** prompt 第 N 次发送是否失败（模拟模型故障，触发降级链） */
   failFirstSend = false;
@@ -392,6 +622,10 @@ class FakeBridge implements OpencodeBridge {
   resolveModel(_i: string, name: string) { return name === 'm-a' || name === 'm-b' ? { providerID: 'p', modelID: name } : undefined; }
 }
 
+function fakeBridge(opts: { shell?: boolean } = {}): FakeBridge & OpencodeBridge {
+  return new FakeBridge(opts) as FakeBridge & OpencodeBridge;
+}
+
 describe('oc_* 工具层', () => {
   it('isOcTool 精确匹配（不误伤未来工具）', () => {
     expect(isOcTool('oc_run_task')).toBe(true);
@@ -410,7 +644,7 @@ describe('oc_* 工具层', () => {
   });
 
   it('oc_run_task：建会话→异步发→等 idle→回收终局文本+diff', async () => {
-    const bridge = new FakeBridge();
+    const bridge = fakeBridge();
     const r = await runOpencodeTool(bridge, 'dev', { tool: 'oc_run_task', instance: 't1', prompt: '把测试跑绿' });
     expect(r.ok).toBe(true);
     expect(r.session).toBe('sess-new');
@@ -420,7 +654,7 @@ describe('oc_* 工具层', () => {
   });
 
   it('oc_run_task 模型降级链：首选失败自动换下一个', async () => {
-    const bridge = new FakeBridge();
+    const bridge = fakeBridge();
     bridge.failFirstSend = true;
     const r = await runOpencodeTool(bridge, 'dev', { tool: 'oc_run_task', instance: 't1', prompt: 'x', models: ['m-a', 'm-b'] });
     expect(r.ok).toBe(true);
@@ -431,29 +665,29 @@ describe('oc_* 工具层', () => {
   });
 
   it('oc_run_task 模型名不可解析时明确报错', async () => {
-    const r = await runOpencodeTool(new FakeBridge(), 'dev', { tool: 'oc_run_task', instance: 't1', prompt: 'x', models: ['not-in-pool'] });
+    const r = await runOpencodeTool(fakeBridge(), 'dev', { tool: 'oc_run_task', instance: 't1', prompt: 'x', models: ['not-in-pool'] });
     expect(r.ok).toBe(false);
     expect(String(r.error)).toContain('not-in-pool');
   });
 
   it('oc_permission 参数校验：response 三态', async () => {
-    const bridge = new FakeBridge();
+    const bridge = fakeBridge();
     expect((await runOpencodeTool(bridge, 'dev', { tool: 'oc_permission', instance: 't1', session_id: 's1', permission_id: 'p1', response: 'reject' })).ok).toBe(true);
     expect((await runOpencodeTool(bridge, 'dev', { tool: 'oc_permission', instance: 't1', session_id: 's1', permission_id: 'p1', response: 'maybe' })).ok).toBe(false);
     expect((await runOpencodeTool(bridge, 'dev', { tool: 'oc_permission', instance: 't1', session_id: 's1', response: 'once' })).ok).toBe(false);
   });
 
   it('oc_shell 走桥的 runShell（实例未开 allow_shell 时由 manager 拒——这里验参数传递）', async () => {
-    const bridge = new FakeBridge({ shell: true });
+    const bridge = fakeBridge({ shell: true });
     const r = await runOpencodeTool(bridge, 'dev', { tool: 'oc_shell', instance: 't1', session_id: 's1', command: 'ls' });
     expect(r.ok).toBe(true);
     expect(bridge.calls).toContain('shell');
   });
 
   it('未知/缺参：软错误不 throw', async () => {
-    expect((await runOpencodeTool(new FakeBridge(), 'dev', { tool: 'oc_nope', instance: 't1' })).ok).toBe(false);
-    expect((await runOpencodeTool(new FakeBridge(), 'dev', { tool: 'oc_send', instance: '', prompt: 'x' })).ok).toBe(false);
-    expect((await runOpencodeTool(new FakeBridge(), 'dev', { tool: 'oc_send', instance: 't1', session_id: 's1' })).ok).toBe(false);
+    expect((await runOpencodeTool(fakeBridge(), 'dev', { tool: 'oc_nope', instance: 't1' })).ok).toBe(false);
+    expect((await runOpencodeTool(fakeBridge(), 'dev', { tool: 'oc_send', instance: '', prompt: 'x' })).ok).toBe(false);
+    expect((await runOpencodeTool(fakeBridge(), 'dev', { tool: 'oc_send', instance: 't1', session_id: 's1' })).ok).toBe(false);
   });
 });
 
@@ -461,7 +695,7 @@ describe('oc_* 工具层', () => {
 
 describe('applyToolCalls oc_ 分发', () => {
   it('经 knowledgeCtx.opencode 桥执行并回喂', async () => {
-    const bridge = new FakeBridge();
+    const bridge = fakeBridge();
     const results = await applyToolCalls(process.cwd(), [{ tool: 'oc_run_task', instance: 't1', prompt: '跑测试' }] as any, { agent: 'dev', opencode: bridge });
     expect((results[0] as any).ok).toBe(true);
     expect((results[0] as any).final_text).toBe('任务完成：测试全绿');

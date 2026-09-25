@@ -5,8 +5,8 @@
  * - managed：spawn `opencode serve`（端口可配/自动挑选、cwd=项目根、stdio 落日志），
  *   健康巡检、意外退出按退避重启（auto_start），进程树查杀；
  * - attached：免 spawn；桌面版实例 URL 留空时从桌面日志自动发现端口；Basic 鉴权按配置注入；
- * - 每个实例一条 SSE /event 订阅（断线指数退避重连），事件转发给 setEventForwarder 注册方；
- * - capabilities 探测（/doc + /global/health）兜底 v1/v2 API 世代差异；
+ * - 每个实例一条官方事件订阅（断线指数退避重连），事件经 OpencodeEventHub 转发；
+ * - OpenCode 2.0.15+ 版本门禁与官方能力探测；
  * - OpencodeBridge 门控：agent 可见性白名单（agent.yaml 的 opencode_instances，缺省不可见）、
  *   readonly/control 档位、allow_shell 高危开关；control 档写操作全部记审计日志。
  */
@@ -20,6 +20,7 @@ import type { ModelConfig } from '../types';
 import { resolveModelRef } from './modelInjection';
 import { OpencodeClient } from './client';
 import { EventBatcher, isDroppedEvent, eventSessionId } from './events';
+import { OpencodeEventHub } from './eventHub';
 import {
   DEFAULT_OC_COMMAND,
   DEFAULT_OC_HOSTNAME,
@@ -35,6 +36,7 @@ import {
 
 const HEALTH_INTERVAL_MS = 15_000;
 const HEALTH_WAIT_MS = 20_000;
+const SERVE_PASSWORD_WAIT_MS = 8_000;
 const SSE_BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000];
 const RESTART_BACKOFF_MS = [2_000, 5_000, 15_000, 60_000];
 const PROBE_TIMEOUT_MS = 8_000;
@@ -55,10 +57,13 @@ interface InstanceState {
   logPath?: string;
   lastCheckedAt?: string;
   projectRoot?: string;
+  /** attached-desktop 自动发现得到的 serve 密码（官方注册文件；健康巡检换址时更新） */
+  discoveredPassword?: string;
   /** sessionId → idle/error 等待器（run_task 复合工具；SSE session.idle/error 唤醒） */
   idleWaiters?: Map<string, { resolve: (v: 'idle' | 'error') => void; timer: NodeJS.Timeout }>;
   /** delta 微批器（TUI 同构镜像：token 级事件 50ms 合并，防 WS burst 上限） */
   batcher?: EventBatcher;
+  hub: OpencodeEventHub;
 }
 
 /** idle 等待的绝对值定义：run_task 的最坏等待预算（opencode 自主跑一个任务可能很久） */
@@ -190,6 +195,7 @@ export class OpencodeManager implements OpencodeBridge {
       url: (cfg.url || '').replace(/\/+$/, ''),
       retries: 0,
       projectRoot: cfg.project_root,
+      hub: new OpencodeEventHub({ instanceId: cfg.id }),
     };
   }
 
@@ -293,6 +299,7 @@ export class OpencodeManager implements OpencodeBridge {
       const args = [...(st.cfg.args || []), 'serve', '--port', String(port), '--hostname', hostname, '--cors', corsOrigins.join(',')];
       if (!st.cfg.project_root) throw new Error('managed 实例必须配置 project_root');
       fs.mkdirSync(st.cfg.project_root, { recursive: true });
+      st.hub.reset();
       const logDir = path.join(os.tmpdir(), 'coteam-opencode-logs');
       fs.mkdirSync(logDir, { recursive: true });
       const logPath = path.join(logDir, `${st.cfg.id}-${Date.now()}.log`);
@@ -335,6 +342,13 @@ export class OpencodeManager implements OpencodeBridge {
         st.error = `启动失败：${String(e.message || e).slice(0, 200)}`;
       });
       this.logger.info('Opencode managed instance spawned', { id: st.cfg.id, port, project_root: st.cfg.project_root });
+      // opencode 2.x serve 启动即生成随机密码并强制 Basic 鉴权（stdout 打印 "server password <pw>"）。
+      // 不带凭据的健康探测会得到 401（空 content-type），官方客户端抛 UnsupportedContentType → 就绪永远超时。
+      const servePassword = await this.waitForServePassword(st.logPath, SERVE_PASSWORD_WAIT_MS);
+      if (servePassword) {
+        this.logger.info('Opencode managed serve password acquired from log', { id: st.cfg.id });
+        st.client = this.buildClient(st, servePassword);
+      }
       // 健康等待 + capabilities + SSE
       await this.waitHealthy(st);
       this.ensureHealthLoop(st);
@@ -342,8 +356,27 @@ export class OpencodeManager implements OpencodeBridge {
       st.state = 'error';
       st.error = String(e?.message || e).slice(0, 300);
       this.logger.warn('Opencode managed instance start failed', { id: st.cfg.id, error: st.error });
+      // 就绪失败时 serve 可能已被拉起（鉴权/版本不符等）：不杀会留下孤儿 serve 占端口耗内存
+      this.killTree(st);
+      st.proc = undefined;
+      st.pid = undefined;
       if (st.cfg.auto_start !== false) this.scheduleRestart(st);
     }
+  }
+
+  /** 从 serve 日志解析 "server password <pw>"（opencode 2.x serve 启动即打印）。解析不到按无鉴权处理，兼容关闭密码的未来版本 */
+  private async waitForServePassword(logPath: string, timeoutMs: number): Promise<string | undefined> {
+    const begin = Date.now();
+    while (Date.now() - begin < timeoutMs) {
+      try {
+        if (fs.existsSync(logPath)) {
+          const m = fs.readFileSync(logPath, 'utf-8').match(/^server password (\S+)/m);
+          if (m) return m[1];
+        }
+      } catch { /* 日志尚未落盘——继续等 */ }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return undefined;
   }
 
   private scheduleRestart(st: InstanceState): void {
@@ -364,15 +397,25 @@ export class OpencodeManager implements OpencodeBridge {
     st.error = undefined;
     try {
       let url = st.cfg.url || '';
+      let discoveredPassword: string | undefined;
       if (!url) {
         if (st.cfg.kind === 'attached-desktop') {
-          const port = discoverDesktopPort();
-          if (port) url = `http://127.0.0.1:${port}`;
+          // 首选官方注册文件（url+密码齐全，桌面版/TUI 启动即写入）；兜底解析桌面日志端口
+          const disc = discoverDesktopService();
+          if (disc) {
+            url = disc.url;
+            if (!st.cfg.auth?.password) discoveredPassword = disc.password;
+          }
+          if (!url) {
+            const port = discoverDesktopPort();
+            if (port) url = `http://127.0.0.1:${port}`;
+          }
         }
-        if (!url) throw new Error('未配置 url 且自动发现失败（attached-desktop 会解析桌面日志；其余请手填 url）');
+        if (!url) throw new Error('未配置 url 且自动发现失败（桌面版/TUI 未启动？启动后本实例会自动重连）');
       }
+      if (discoveredPassword) st.discoveredPassword = discoveredPassword;
       st.url = url.replace(/\/+$/, '');
-      st.client = this.buildClient(st);
+      st.client = this.buildClient(st, st.cfg.auth?.password ? undefined : st.discoveredPassword);
       const caps = await withProbeTimeout(st.client.probe(), PROBE_TIMEOUT_MS).catch((e) => {
         throw new Error(String(e?.message || e).slice(0, 200));
       });
@@ -397,10 +440,13 @@ export class OpencodeManager implements OpencodeBridge {
     }
   }
 
-  private buildClient(st: InstanceState): OpencodeClient {
-    const auth = st.cfg.auth?.password
-      ? { username: st.cfg.auth.username, password: expandEnv(st.cfg.auth.password) }
-      : undefined;
+  private buildClient(st: InstanceState, managedPassword?: string): OpencodeClient {
+    // 托管实例的密码来自 serve 日志（opencode 2.x serve 启动即生成）；attached 实例来自配置/env 展开
+    const auth = managedPassword
+      ? { username: 'opencode', password: managedPassword }
+      : st.cfg.auth?.password
+        ? { username: st.cfg.auth.username, password: expandEnv(st.cfg.auth.password) }
+        : undefined;
     return new OpencodeClient({
       baseUrl: st.url,
       ...(auth ? { auth } : {}),
@@ -434,6 +480,20 @@ export class OpencodeManager implements OpencodeBridge {
     }
     st.state = 'error';
     st.error = `健康检查失败：${h.error}`;
+    // 桌面版/TUI 重启会换端口+密码：重新读官方注册文件换址重连（下一拍巡检即生效）
+    if (st.cfg.kind === 'attached-desktop' && !st.cfg.url) {
+      const disc = discoverDesktopService();
+      if (disc && disc.url !== st.url) {
+        st.url = disc.url;
+        st.discoveredPassword = st.cfg.auth?.password ? undefined : disc.password;
+        st.client = this.buildClient(st, st.cfg.auth?.password ? undefined : st.discoveredPassword);
+        st.retries = 0;
+        this.logger.info('Opencode desktop service relocated, re-pointing instance', { id: st.cfg.id, url: st.url });
+      } else if (disc && disc.url === st.url && disc.password && !st.cfg.auth?.password && disc.password !== st.discoveredPassword) {
+        st.discoveredPassword = disc.password;
+        st.client = this.buildClient(st, st.discoveredPassword);
+      }
+    }
     if (st.cfg.kind === 'managed' && st.cfg.auto_start !== false && !st.proc) this.scheduleRestart(st);
   }
 
@@ -486,7 +546,9 @@ export class OpencodeManager implements OpencodeBridge {
             this.trackPending(st, ev);
             // 已加载会话的消息缓存增量维护（翻页/完整原文的数据源）
             this.patchCache(st, ev);
-            batcher.push(ev);
+            const committed = st.hub.commit(ev);
+            committed.event.id = committed.eventId;
+            batcher.push(committed.event);
           }
         } catch { /* 断流/被 abort——走退避 */ }
         if (ac.signal.aborted || this.stopped) break;
@@ -609,10 +671,27 @@ export class OpencodeManager implements OpencodeBridge {
     return this.instances.get(id)?.capabilities;
   }
 
+  latestEventId(id: string): string | undefined {
+    return this.instances.get(id)?.hub.latestEventId;
+  }
+
+  replayEvents(id: string, eventId?: string): OcEvent[] | null {
+    const replay = this.instances.get(id)?.hub.replayAfter(eventId);
+    return replay ? replay.map(({ event }) => event) : null;
+  }
+
   async listSessions(agent: string | undefined, instance: string): Promise<OcCallResult<OcSession[]>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
-    return st.client!.listSessions();
+    const r = await st.client!.listSessions();
+    if (!r.ok || !Array.isArray(r.data)) return r;
+    // v2 会话的目录在 location.directory（1.x 是顶层 directory）——归一化回顶层，双端「本项目」过滤依赖它。
+    // 顺序跟上游（最新在前）走，不做二次排序
+    const sessions = (r.data as OcSession[]).map((s) => {
+      const loc = s.location && typeof s.location === 'object' ? (s.location as Record<string, unknown>) : {};
+      return typeof loc.directory === 'string' ? { ...s, directory: loc.directory } : s;
+    });
+    return { ok: true, data: sessions };
   }
 
   async createSession(agent: string | undefined, instance: string, title?: string): Promise<OcCallResult<OcSession>> {
@@ -621,12 +700,14 @@ export class OpencodeManager implements OpencodeBridge {
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
     this.audit('create_session', st, { title });
-    return st.client!.createSession(title);
+    // 会话登记到实例的项目目录：否则 opencode 把它放进全局项目，agent 的工作目录跑错项目，
+    // 面板「本项目」过滤也看不到
+    return st.client!.createSession(title, st.projectRoot || st.cfg.project_root);
   }
 
   /**
    * 读会话消息（尾优先分页）。
-   * - 不带 before：从缓存取尾 limit 条；无缓存则拉上游 limit 条（opencode 1.18.32 原生尾优先）
+     * - 不带 before：从缓存取尾 limit 条；无缓存则拉上游 limit 条（官方 v2 尾优先）
    *   并后台建缓存（翻页与"完整原文"都依赖它）
    * - 带 before：本地缓存切片（上游 before 参数该版本 BadRequest，翻页只能缓存切）
    * - 响应路径统一裁剪（system 剥离/巨块头尾），trimmed 回传被裁 part id；full=true 跳过
@@ -768,11 +849,37 @@ export class OpencodeManager implements OpencodeBridge {
         const part = p.part || {};
         const mid = String(part.messageID || '');
         const pid = String(part.id || '');
-        const m = entry.messages.find((x) => msgId(x) === mid);
-        if (!m) return;
+        if (!mid || !pid) return;
+        const m = this.ensureCachedMessage(entry, mid);
         const parts = Array.isArray(m.parts) ? [...m.parts] : [];
         const pi = parts.findIndex((x) => String(x.id) === pid);
         if (pi >= 0) parts[pi] = part; else parts.push(part);
+        m.parts = parts;
+      } else if (ev.type === 'message.part.delta') {
+        const mid = String(p.messageID || '');
+        const pid = String(p.partID || '');
+        if (!mid || !pid) return;
+        const m = this.ensureCachedMessage(entry, mid);
+        const parts = Array.isArray(m.parts) ? m.parts : [];
+        let part = parts.find((x) => String(x.id) === pid);
+        if (!part) {
+          part = { id: pid, messageID: mid, type: 'text' };
+          parts.push(part);
+        }
+        const field = String(p.field || 'text');
+        const delta = String(p.delta ?? '');
+        if (field.includes('.')) {
+          const keys = field.split('.');
+          let cur: Record<string, any> = part;
+          for (let i = 0; i < keys.length - 1; i++) {
+            if (typeof cur[keys[i]] !== 'object' || cur[keys[i]] === null) cur[keys[i]] = {};
+            cur = cur[keys[i]];
+          }
+          const last = keys[keys.length - 1];
+          cur[last] = typeof cur[last] === 'string' ? cur[last] + delta : delta;
+        } else {
+          part[field] = typeof part[field] === 'string' ? part[field] + delta : delta;
+        }
         m.parts = parts;
       } else if (ev.type === 'message.removed') {
         const mid = String(p.messageID || '');
@@ -783,6 +890,16 @@ export class OpencodeManager implements OpencodeBridge {
         if (m && Array.isArray(m.parts)) m.parts = m.parts.filter((x) => String(x.id) !== String(p.partID || ''));
       }
     } catch { /* patch 失败不影响主链 */ }
+  }
+
+  /** v2 事件流没有全量 message.updated：part 事件先到且消息不在缓存时自建骨架，否则接管介入后的新消息永远进不了缓存 */
+  private ensureCachedMessage(entry: { messages: Record<string, any>[] }, mid: string): Record<string, any> {
+    let m = entry.messages.find((x) => msgId(x) === mid);
+    if (!m) {
+      m = { info: { id: mid, role: 'assistant' }, parts: [] };
+      entry.messages.push(m);
+    }
+    return m;
   }
 
   async sendPrompt(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<unknown>> {
@@ -810,6 +927,37 @@ export class OpencodeManager implements OpencodeBridge {
     if (gate) return { ok: false, error: gate };
     this.audit('abort', st, { session: sessionId });
     return st.client!.abortSession(sessionId);
+  }
+
+  /** 即时切换会话执行模式（agent）——TUI 同款选中即生效 */
+  async switchSessionAgent(agent: string | undefined, instance: string, sessionId: string, ocAgent: string): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('switch_agent', st, { session: sessionId, ocAgent });
+    return st.client!.switchAgent(sessionId, ocAgent);
+  }
+
+  /** 即时切换会话模型 */
+  async switchSessionModel(agent: string | undefined, instance: string, sessionId: string, model: { providerID: string; modelID: string }): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('switch_model', st, { session: sessionId, model });
+    return st.client!.switchModel(sessionId, model);
+  }
+
+  /** 删除会话 */
+  async deleteSession(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<boolean>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    const gate = this.requireControl(st);
+    if (gate) return { ok: false, error: gate };
+    this.audit('delete_session', st, { session: sessionId });
+    this.msgCache.delete(cacheKey(instance, sessionId));
+    return st.client!.deleteSession(sessionId);
   }
 
   async revertMessage(agent: string | undefined, instance: string, sessionId: string, messageID: string): Promise<OcCallResult<boolean>> {
@@ -984,12 +1132,11 @@ export class OpencodeManager implements OpencodeBridge {
     return { ok: true, data: { session: sorted[0], reason: 'recent' as const } };
   }
 
-  async listAgents(agent: string | undefined, instance: string): Promise<OcCallResult<{ name: string; description?: string; mode?: string }[]>> {
+  async listAgents(agent: string | undefined, instance: string): Promise<OcCallResult<{ name: string; display?: string; description?: string; mode?: string }[]>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
-    const r = await st.client!.listAgents();
-    if (!r.ok) return r;
-    return { ok: true, data: (r.data || []).map((a) => ({ name: a.name, ...(a.description ? { description: a.description } : {}), ...(a.mode ? { mode: a.mode } : {}) })) };
+    // client 层已做过滤（hidden/subagent）与投影（name=id 执行名，display=显示名），直接透传
+    return st.client!.listAgents();
   }
 
   async listProviders(agent: string | undefined, instance: string): Promise<OcCallResult<{ providers?: unknown[]; default?: Record<string, string> }>> {
@@ -1057,19 +1204,6 @@ export class OpencodeManager implements OpencodeBridge {
     return st.client!.selectSession(sessionId);
   }
 
-  /**
-   * attached 实例的浏览器侧代理 SSE：co-team 持 Basic 鉴权代收（EventSource 无法设请求头）。
-   * managed 实例无鉴权，前端走 /direct 拿地址直连，不占这里。
-   */
-  async proxyEvents(id: string, onEvent: (ev: OcEvent) => void, signal: AbortSignal): Promise<void> {
-    const st = this.instances.get(id);
-    if (!st?.client) throw new Error(`实例 ${id} 不存在或未连接`);
-    for await (const ev of st.client.eventStream(signal)) {
-      if (isDroppedEvent(ev.type)) continue;
-      onEvent(ev);
-    }
-  }
-
   /** PTY 列表（TUI 的实时终端） */
   async ptyList(agent: string | undefined, instance: string): Promise<OcCallResult<{ id: string; title?: string; command?: string; status?: string }[]>> {
     const { st, err } = this.resolve(agent, instance);
@@ -1085,15 +1219,6 @@ export class OpencodeManager implements OpencodeBridge {
     if (!r.ok || !r.data) return { ok: false, error: r.error || '签票失败' };
     const wsBase = st.url.replace(/^http/, 'ws');
     return { ok: true, data: { ...r.data, ws_url: `${wsBase}/pty/${encodeURIComponent(ptyId)}/connect` } };
-  }
-
-  /** managed 实例的直连信息（无鉴权 + CORS 已放行 → 浏览器 EventSource/WS 直连） */
-  directInfo(id: string): { ok: boolean; url: string; direct: boolean; reason?: string } {
-    const st = this.instances.get(id);
-    if (!st || st.cfg.enabled === false) return { ok: false, url: '', direct: false, reason: '实例不存在或已禁用' };
-    if (st.cfg.kind !== 'managed') return { ok: false, url: st.url, direct: false, reason: 'attached 实例带鉴权，走 /events 代理' };
-    if (st.state !== 'connected') return { ok: false, url: st.url, direct: false, reason: `实例未连接：${st.error || '启动中'}` };
-    return { ok: true, url: st.url, direct: true };
   }
 
   // ---------- 运行时状态（/api/opencode、/api/status） ----------
@@ -1187,6 +1312,24 @@ function pickFreePort(): Promise<number> {
  * 桌面版 service 端口自动发现：解析 %APPDATA%/ai.opencode.desktop/logs/<最新目录>/*.log
  * 里的 `port: '<n>'`（2026-09-24 实测 crash.log 有该行）。失败返回 undefined（转手填兜底）。
  */
+/** 桌面版/TUI 官方服务注册文件（opencode 启动即写入 url+pid+password；路径为官方 Service.discover 的 Windows 落点） */
+export function desktopRegistrationPath(): string {
+  return path.join(os.homedir(), '.local', 'state', 'opencode', 'service.json');
+}
+
+/** 读官方注册文件发现桌面版/TUI 服务：返回 url + 密码（比解析桌面日志可靠——密码只在这里有） */
+export function discoverDesktopService(): { url: string; password?: string; pid?: number } | undefined {
+  try {
+    const file = desktopRegistrationPath();
+    if (!fs.existsSync(file)) return undefined;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as { url?: string; password?: string; pid?: number; version?: string };
+    if (!raw.url || !/^https?:\/\//.test(raw.url)) return undefined;
+    return { url: raw.url.replace(/\/+$/, ''), ...(raw.password ? { password: raw.password } : {}), ...(raw.pid ? { pid: raw.pid } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
 export function discoverDesktopPort(): number | undefined {
   try {
     const logsRoot = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ai.opencode.desktop', 'logs');

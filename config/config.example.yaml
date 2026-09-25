@@ -246,8 +246,10 @@ redis:
 #       auto_start: true             # 随 co-team 启动自动拉起
 #     - id: desktop
 #       kind: attached-desktop       # 接管正在跑的会话，用 opencode 自己的模型
-#       # url: http://127.0.0.1:49374 # 留空=自动发现（解析 %APPDATA%/ai.opencode.desktop/logs）
-#       auth: { username: opencode, password: "${OPENCODE_DESKTOP_PASSWORD}" }
+#       # url: http://127.0.0.1:49374 # 留空=自动发现：官方注册文件（~/.local/state/opencode/service.json，
+#       #                              #   带 url+密码）优先，兜底解析 %APPDATA%/ai.opencode.desktop/logs；
+#       #                              #   注册文件发现时 Basic 密码自动带上，无需再配 auth
+#       # auth: { username: opencode, password: "${OPENCODE_DESKTOP_PASSWORD}" }  # 显式密码（可选，优先于自动发现）
 #       mode: control                # readonly（只读+审批）| control（发消息/打断/回退，记审计）
 #       # allow_shell: true          # 高危：允许经 oc_shell 在会话内执行任意命令（默认关）
 # 协作会话（convo）：单 agent 长对话直接操作项目工作区（/convo 页面）。

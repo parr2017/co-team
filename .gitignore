@@ -4,6 +4,8 @@ node_modules/
 # build output (rebuild with: npm run build)
 server/dist/
 web/dist/
+mobile/dist/
+packages/opencode-sync/dist/
 
 # logs & temp
 logs/
@@ -44,3 +46,7 @@ server/tsconfig.tsbuildinfo
 .opencode/
 e2e-*.png
 preview-*.png
+
+# opencode 真机验收脚本（临时，本地保留备复跑）
+oc-*.ts
+oc-*.mts

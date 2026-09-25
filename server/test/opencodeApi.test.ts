@@ -5,28 +5,28 @@ import type { ApiContext } from '../src/api';
 import type { OpencodeBridge } from '../src/opencode/types';
 
 /** 最小假 manager：只实现路由用到的桥方法 */
-const fakeBridge: OpencodeBridge = {
+const fakeBridge = {
   listInstances: () => [
     { id: 't1', kind: 'managed', enabled: true, state: 'connected', url: 'http://127.0.0.1:4196', mode: 'control', version: '1.18.32', model_injection: true },
     { id: 'ro', kind: 'attached-cli', enabled: true, state: 'connected', url: 'http://127.0.0.1:5000', mode: 'readonly', version: '', model_injection: false },
   ],
   instanceCapabilities: () => undefined,
-  listSessions: async (_a, instance) => (instance === 't1' ? { ok: true, data: [{ id: 's1', title: '会话一' }] } : { ok: false, error: `实例 ${instance} 未连接` }),
-  createSession: async (_a, instance) => ({ ok: instance === 't1', data: instance === 't1' ? { id: 's-new' } : undefined, error: instance === 't1' ? undefined : 'readonly 档拒绝建会话' }),
+  listSessions: async (_a: unknown, instance: string) => (instance === 't1' ? { ok: true, data: [{ id: 's1', title: '会话一' }] } : { ok: false, error: `实例 ${instance} 未连接` }),
+  createSession: async (_a: unknown, instance: string) => ({ ok: instance === 't1', data: instance === 't1' ? { id: 's-new' } : undefined, error: instance === 't1' ? undefined : 'readonly 档拒绝建会话' }),
   readMessages: async (_a: unknown, _i: string, _s: string, opts?: { limit?: number; before?: string }) => ({ ok: true, data: { messages: [{ info: { id: 'm1', role: 'assistant' }, parts: [{ type: 'text', text: '结果' }] }], has_more: !!opts?.before, next_before: opts?.before ? 'm1' : undefined, trimmed: [] } }),
   sendPrompt: async () => ({ ok: true, data: { info: {} } }),
   sendPromptAsync: async () => ({ ok: true, data: { messageID: 'm-x' } }),
   abortSession: async () => ({ ok: true, data: true }),
   revertMessage: async () => ({ ok: true, data: true }),
   sessionDiff: async () => ({ ok: true, data: [{ file: 'a.ts', additions: 1, deletions: 0 }] }),
-  answerPermission: async (_a, _i, _s, _p, response) => (response === 'reject' ? { ok: true, data: true } : { ok: false, error: 'x' }),
+  answerPermission: async (_a: unknown, _i: string, _s: string, _p: string, response: 'once' | 'always' | 'reject') => (response === 'reject' ? { ok: true, data: true } : { ok: false, error: 'x' }),
   runShell: async () => ({ ok: false, error: '实例未开启 allow_shell' }),
   waitSessionIdle: async () => ({ ok: true, data: 'idle' }),
   toolsIndex: () => '',
   listModelsForAgent: () => [],
   hasShellEnabled: () => false,
   resolveModel: () => undefined,
-};
+} as unknown as OpencodeBridge;
 
 const ctx = {
   config: { opencode: { instances: [{ id: 't1', kind: 'managed' }, { id: 'ro', kind: 'attached-cli', mode: 'readonly', auth: { username: 'opencode', password: '${OC_PW}' } }] } },
@@ -43,6 +43,8 @@ const ctx = {
     revertMessage: (a: string | undefined, i: string, s: string, m: string) => fakeBridge.revertMessage(a, i, s, m),
     sessionDiff: (a: string | undefined, i: string, s: string) => fakeBridge.sessionDiff(a, i, s),
     answerPermission: (a: string | undefined, i: string, s: string, p: string, r: 'once' | 'always' | 'reject') => fakeBridge.answerPermission(a, i, s, p, r),
+    latestEventId: () => 'e2',
+    replayEvents: (_i: string, after?: string) => after === 'e1' ? [{ type: 'session.idle', id: 'e2', properties: { sessionID: 's1' } }] : null,
   },
 } as unknown as ApiContext;
 
@@ -100,10 +102,25 @@ describe('/api/opencode 路由', () => {
   });
 
   it('GET messages 尾优先分页：默认 50 条 + has_more/trimmed 透传', async () => {
-    const body = (await (await app().request('/api/opencode/sessions/t1/s1/messages')).json()) as { messages: unknown[]; has_more: boolean; trimmed: unknown[] };
+    const body = (await (await app().request('/api/opencode/sessions/t1/s1/messages')).json()) as { messages: unknown[]; has_more: boolean; trimmed: unknown[]; event_id?: string };
     expect(body.messages.length).toBe(1);
     expect(body.has_more).toBe(false);
     expect(body.trimmed).toEqual([]);
+    expect(body.event_id).toBe('e2');
+  });
+
+  it('GET events/replay：可重放返回事件，失效游标要求权威对账', async () => {
+    const ok = await app().request('/api/opencode/instances/t1/events/replay?after=e1');
+    expect(ok.status).toBe(200);
+    expect((await ok.json() as { resync: boolean; events: unknown[] })).toMatchObject({ resync: false, events: [{ type: 'session.idle', id: 'e2' }] });
+    const stale = await app().request('/api/opencode/instances/t1/events/replay?after=missing');
+    expect(stale.status).toBe(409);
+    expect((await stale.json() as { resync: boolean })).toMatchObject({ resync: true });
+  });
+
+  it('浏览器直连事件入口已关闭，统一走 co-team WebSocket', async () => {
+    expect((await app().request('/api/opencode/instances/t1/direct')).status).toBe(410);
+    expect((await app().request('/api/opencode/instances/t1/events')).status).toBe(410);
   });
 
   it('GET messages?before= 走翻页游标（has_more=true 透传）', async () => {
