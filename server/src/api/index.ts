@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { Hono } from 'hono';
+import { compress } from 'hono/compress';
 import type { Context } from 'hono';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { Server } from 'node:http';
@@ -91,6 +92,10 @@ export async function readJsonAuto<T>(c: Context): Promise<T> {
 export function createApi(ctx: ApiContext): Hono {
   const app = new Hono();
   const logger = getLogger();
+
+  // gzip 压缩（API JSON 与静态资源）：/api/tasks、/api/agents/profiles 单响应 1.2~1.4MB，
+  // 手机端裸传一次要数秒——压缩后 4~8 倍缩减（Node 22 CompressionStream，无 SSE 端点故无缓冲流风险）
+  app.use('*', compress());
 
   // all task executions go through the project queue: same project runs one task at
   // a time, different projects run concurrently, failures block the lane until resumed
