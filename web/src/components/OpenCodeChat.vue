@@ -351,24 +351,45 @@ function applyEvents(frames: ({ event?: any; events?: any[] } | any)[]): void {
   }
 }
 
-// ---------- 停帧看门狗（发送后回复不渲染的自愈兜底） ----------
-// 服务端 opencode 事件泵若卡在断流退避窗，期间的帧没人拉取也不进 hub 缓冲（不可补放），
-// 表现就是 busy 但流面永远不动。此处 busy 且长时间无任何帧 → 静默全量重拉。
+// ---------- 停帧看门狗 + 状态对账（发送后回复不渲染的自愈兜底） ----------
+// 服务端 opencode 事件泵若卡在断流退避窗，期间的帧没人拉取也不进 hub 缓冲（不可补放）。
+// busy 的唯一来源是事件流——泵死时本地永远 idle，单靠"busy 且停帧"探测不到发送后的场景，
+// 所以先做 5s REST 状态对账（对齐移动端已有轮询）：busy 不一致即纠正本地状态，事件陈旧
+// 就全量补拉；看门狗再兜"对上 busy 之后中途停帧"的场景。
 // 等提问/权限不算停帧（那是等人拍板）；后台标签页不跑（rAF 暂停，回前台自然恢复）。
 let lastFrameAt = Date.now();
 let lastSelfHealAt = 0;
-let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let selfHealTimer: ReturnType<typeof setInterval> | null = null;
 
-function startWatchdog(): void {
-  if (watchdogTimer) return;
-  watchdogTimer = setInterval(() => {
+function startSelfHeal(): void {
+  if (selfHealTimer) return;
+  selfHealTimer = setInterval(() => {
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-    const s = snap.value;
-    if (!s.busy || s.pendingQuestions.length || s.pendingPermissions.length) return;
-    const now = Date.now();
-    if (now - lastFrameAt < 30_000 || now - lastSelfHealAt < 30_000) return;
-    lastSelfHealAt = now;
-    void reloadAll();
+    void (async () => {
+      // 状态对账：本地 busy 全靠事件流，泵死即失真——用 REST 权威状态纠偏
+      try {
+        const d = await api.ocSessionStatus(props.instance.id, props.sessionId);
+        const before = snap.value;
+        const serverBusy = d.status === 'busy';
+        if (serverBusy !== before.busy) {
+          stream.applyEvent({ type: 'session.status', properties: { status: { type: d.status } } });
+          lastFrameAt = Date.now();
+          flush();
+          // 状态不一致 = 漏过事件帧：事件陈旧就全量补拉（对齐移动端口径）
+          if (Date.now() - before.lastEventAt > 4000) {
+            lastSelfHealAt = Date.now();
+            void reloadAll();
+          }
+        }
+      } catch { /* 软错误：下轮再试 */ }
+      // 停帧看门狗：对上 busy 之后 30s 无任何事件帧 → 全量重拉
+      const s = snap.value;
+      if (!s.busy || s.pendingQuestions.length || s.pendingPermissions.length) return;
+      const now = Date.now();
+      if (now - lastFrameAt < 30_000 || now - lastSelfHealAt < 30_000) return;
+      lastSelfHealAt = now;
+      void reloadAll();
+    })();
   }, 5_000);
 }
 
@@ -814,13 +835,13 @@ watch(diffDlg, (v) => { if (v && !diffFiles.value.length) void loadDiff(); });
 onMounted(() => {
   void reloadAll();
   void loadSelectors();
-  startWatchdog();
+  startSelfHeal();
 });
 onBeforeUnmount(() => {
   offWs();
   closePty();
   if (renderRaf) cancelAnimationFrame(renderRaf);
-  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  if (selfHealTimer) { clearInterval(selfHealTimer); selfHealTimer = null; }
 });
 </script>
 
