@@ -51,6 +51,8 @@ interface InstanceState {
   proc?: ChildProcess;
   error?: string;
   retries: number;
+  /** SSE 事件泵自己的重连退避计数（与进程重启的 retries 分开——健康即归零，防棘轮到 30s 死窗） */
+  sseRetries: number;
   healthTimer?: NodeJS.Timeout;
   restartTimer?: NodeJS.Timeout;
   eventAbort?: AbortController;
@@ -194,6 +196,7 @@ export class OpencodeManager implements OpencodeBridge {
       state: 'stopped',
       url: (cfg.url || '').replace(/\/+$/, ''),
       retries: 0,
+      sseRetries: 0,
       projectRoot: cfg.project_root,
       hub: new OpencodeEventHub({ instanceId: cfg.id }),
     };
@@ -536,9 +539,17 @@ export class OpencodeManager implements OpencodeBridge {
     st.eventAbort = ac;
     void (async () => {
       while (!ac.signal.aborted && !this.stopped) {
+        let delivered = false;
         try {
           for await (const ev of st.client!.eventStream(ac.signal)) {
             if (ac.signal.aborted) break;
+            // 流健康即归零退避：SSE 偶发断流（opencode 重启/休眠/网络闪断）不该棘轮到最大退避——
+            // 卡在 30s 死窗期间 opencode 吐出的事件帧没人拉取、也不进 hub 缓冲，客户端补放补不到，
+            // 表现就是"发消息后回复不渲染，刷新才出来"。
+            if (!delivered) {
+              delivered = true;
+              st.sseRetries = 0;
+            }
             if (isDroppedEvent(ev.type)) continue;
             // run_task 的 idle 等待器先行（本地唤醒，不依赖转发方接线）
             this.wakeIdleWaiters(st, ev);
@@ -552,8 +563,9 @@ export class OpencodeManager implements OpencodeBridge {
           }
         } catch { /* 断流/被 abort——走退避 */ }
         if (ac.signal.aborted || this.stopped) break;
-        const delay = SSE_BACKOFF_MS[Math.min(st.retries, SSE_BACKOFF_MS.length - 1)];
-        st.retries += 1;
+        const delay = SSE_BACKOFF_MS[Math.min(st.sseRetries, SSE_BACKOFF_MS.length - 1)];
+        st.sseRetries += 1;
+        this.logger.warn('Opencode SSE 事件流断开，退避重连（卡窗期间的事件帧不可补放，前端靠停帧看门狗兜底）', { id: st.cfg.id, attempt: st.sseRetries, delayMs: delay });
         await new Promise((r) => setTimeout(r, delay));
       }
     })();

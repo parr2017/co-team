@@ -345,7 +345,31 @@ function applyEvents(frames: ({ event?: any; events?: any[] } | any)[]): void {
       touched = true;
     }
   }
-  if (touched) flush();
+  if (touched) {
+    lastFrameAt = Date.now();
+    flush();
+  }
+}
+
+// ---------- 停帧看门狗（发送后回复不渲染的自愈兜底） ----------
+// 服务端 opencode 事件泵若卡在断流退避窗，期间的帧没人拉取也不进 hub 缓冲（不可补放），
+// 表现就是 busy 但流面永远不动。此处 busy 且长时间无任何帧 → 静默全量重拉。
+// 等提问/权限不算停帧（那是等人拍板）；后台标签页不跑（rAF 暂停，回前台自然恢复）。
+let lastFrameAt = Date.now();
+let lastSelfHealAt = 0;
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+function startWatchdog(): void {
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    const s = snap.value;
+    if (!s.busy || s.pendingQuestions.length || s.pendingPermissions.length) return;
+    const now = Date.now();
+    if (now - lastFrameAt < 30_000 || now - lastSelfHealAt < 30_000) return;
+    lastSelfHealAt = now;
+    void reloadAll();
+  }, 5_000);
 }
 
 /** 合并刷帧：delta 可能 50ms 一批，rAF 合并 DOM 更新 */
@@ -390,6 +414,7 @@ async function reloadAll(): Promise<void> {
     childSessions.value = [];
     const todos = await api.ocTodos(props.instance.id, props.sessionId).catch(() => null);
     if (todos?.todos) stream.applyEvent({ type: 'todo.updated', properties: { todos: todos.todos } });
+    lastFrameAt = Date.now();
     flush();
     void loadChildren();
     if (isNearEnd()) await nextTick(() => scrollEnd());
@@ -773,6 +798,8 @@ function jumpBottom(): void {
 
 watch(() => props.sessionId, () => {
   lastEventId = undefined;
+  lastFrameAt = Date.now();
+  lastSelfHealAt = 0;
   void reloadAll();
 });
 // 流内出现新 task 工具分片时重配对（busy 中实时派生子代理的场景）
@@ -787,11 +814,13 @@ watch(diffDlg, (v) => { if (v && !diffFiles.value.length) void loadDiff(); });
 onMounted(() => {
   void reloadAll();
   void loadSelectors();
+  startWatchdog();
 });
 onBeforeUnmount(() => {
   offWs();
   closePty();
   if (renderRaf) cancelAnimationFrame(renderRaf);
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
 });
 </script>
 

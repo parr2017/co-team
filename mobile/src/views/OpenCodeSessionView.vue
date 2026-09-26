@@ -400,6 +400,13 @@ async function rejectQuestion(requestId: string): Promise<void> {
 
 let gen = 0;
 let lastEventId: string | undefined;
+// ---------- 停帧看门狗（发送后回复不渲染的自愈兜底） ----------
+// 服务端 opencode 事件泵若卡在断流退避窗，期间帧不可补放；已有的 5s status 对账只在
+// "两端 busy 不一致"时触发，泵死在回复中途时两端一致正好漏掉。此处 busy 且长时间无任何
+// 帧 → 全量重拉自愈。等提问/权限不算停帧（那是等人拍板）。
+let lastFrameAt = Date.now();
+let lastSelfHealAt = 0;
+let watchdogTimer: ReturnType<typeof setInterval> | undefined;
 const { connected, ensureStarted, onEvent, onResync } = useWs();
 ensureStarted();
 const sseState = computed<'connecting' | 'open' | 'closed'>(() => connected.value ? 'open' : 'closed');
@@ -507,7 +514,10 @@ function applyEvents(events: OcEventLike[]) {
     stream.applyEvent(ev);
     applied += 1;
   }
-  if (applied) scheduleFlush();
+  if (applied) {
+    lastFrameAt = Date.now();
+    scheduleFlush();
+  }
 }
 
 async function replayFromHub(): Promise<void> {
@@ -586,6 +596,7 @@ async function loadMessages() {
       const id = String((m as any)?.info?.id || (m as any)?.id || '');
       if (id) knownMsgIds.add(id);
     }
+    lastFrameAt = Date.now();
     flushNow();
     void loadChildren();
   } catch (e: any) {
@@ -685,6 +696,8 @@ async function reloadAll() {
 async function enterSession() {
   const my = ++gen;
   lastEventId = undefined;
+  lastFrameAt = Date.now();
+  lastSelfHealAt = 0;
   stream = new SessionStream();
   knownMsgIds.clear();
   resolvedPerms.clear();
@@ -1214,6 +1227,16 @@ onMounted(() => {
       } catch { /* 软错误：下轮再试 */ }
     })();
   }, 5000);
+  // 停帧看门狗：busy 但 30s 无任何事件帧 → 全量重拉（服务端事件泵退避窗内帧不可补放）
+  watchdogTimer = window.setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    const s = snap.value;
+    if (!s.busy || s.pendingQuestions.length || s.pendingPermissions.length) return;
+    const now = Date.now();
+    if (now - lastFrameAt < 30_000 || now - lastSelfHealAt < 30_000) return;
+    lastSelfHealAt = now;
+    void reloadAll();
+  }, 5000);
   document.addEventListener('visibilitychange', onVisibility);
 });
 
@@ -1228,6 +1251,10 @@ onBeforeUnmount(() => {
   if (pollTimer !== undefined) {
     window.clearInterval(pollTimer);
     pollTimer = undefined;
+  }
+  if (watchdogTimer !== undefined) {
+    window.clearInterval(watchdogTimer);
+    watchdogTimer = undefined;
   }
   if (flushTimer !== undefined) {
     window.clearTimeout(flushTimer);
