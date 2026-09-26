@@ -39,6 +39,8 @@ export interface ConvoBridge {
   create(title: string, session: FeishuSession, chatId: string): Promise<string>;
   switchTo(ref: string, session: FeishuSession, chatId: string): Promise<string>;
   send(text: string, session: FeishuSession, chatId: string): Promise<string>;
+  /** 指定会话发言（引用回复路由用，不依赖当前绑定） */
+  sendTo(convoId: string, text: string, chatId?: string): Promise<string>;
   stop(session: FeishuSession): Promise<string>;
   handleCardAction(cfg: FeishuConfig, input: CardActionInput): Promise<Record<string, unknown> | void>;
   start(cfg: FeishuConfig): () => void;
@@ -134,7 +136,11 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         session.convo_id = convoId;
         await setSession(session);
       }
-      await bindChat(convoId, '', chatId);
+      return this.sendTo(convoId!, text, chatId);
+    },
+
+    async sendTo(convoId, text, chatId) {
+      await bindChat(convoId, '', chatId || '');
       const r = await deps.send(convoId, text);
       return r.queued ? '已排队：当前回复进行中，这条消息会在本轮结束后处理。' : '已发送，回复完成后推送。';
     },
@@ -148,7 +154,9 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
     async handleCardAction(cfg, input) {
       const logger2 = logger;
       const who = input.operatorOpenId || 'unknown';
-      const params = input.value || {};
+      let params: Record<string, unknown> | null = input.value && Object.keys(input.value).length ? input.value : null;
+      if (!params && input.messageId) params = (await busGet(`feishu:route:${input.messageId}`)) || null;
+      if (!params) return;
       const act = String(params.act || '');
       const convoId = String(params.convo_id || '');
       if (act === 'convo_approve') {
@@ -159,6 +167,14 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         if (input.messageId) await sendCard(cfg, input.chatId || '', card).catch(() => {});
         void logger2;
         return cardResponse(card);
+      }
+      if (act === 'convo_reply') {
+        // 终稿卡上的快速回复：注入会话后 agent 回复会以新卡推送——空响应让表单复位即可
+        const text = String(input.formValue?.reply || '').trim();
+        if (!text) return cardResponse(buildResultCard('回答为空', ['请输入内容后再提交。']));
+        await deps.send(convoId, text);
+        await sendText(cfg, input.chatId || '', `🗣 你：${text.slice(0, 200)}`);
+        return;
       }
       if (act === 'convo_answer') {
         const askId = String(params.ask_id || '');
@@ -178,17 +194,25 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         const convoId = String(env?.payload?.convo_id || '');
         if (!convoId) return;
         void (async () => {
+          const payload = (env?.payload || {}) as Record<string, any>;
           const bound = await busGet<{ chat_id: string; title?: string }>(`feishu:chat:convo:${convoId}`);
           if (!bound?.chat_id) return;
           if (type === 'convo_message') {
-            const msg = env!.payload!.message as { role?: string; kind?: string; text?: string };
+            const msg = payload.message as { role?: string; kind?: string; text?: string };
             if (msg?.role !== 'assistant' || msg?.kind !== 'text' || !msg.text) return;
             const title = bound.title || convoId;
             const body = msg.text.length > REPLY_MAX ? `${msg.text.slice(0, REPLY_MAX)}\n\n…（截断，完整内容回面板）` : msg.text;
-            await sendCard(cfg, bound.chat_id, card2('blue', `💬 ${title}`, [
+            // 终稿卡带输入框：回复此卡 = 向该会话发言（不受当前模式影响）
+            const card = card2('blue', `💬 ${title}`, [
               md(body),
-              note(`Co-Team · 会话回复 · ${new Date().toLocaleString()}`),
-            ]));
+              form(`cr_${convoId}_${Date.now()}`, [inputField('reply', '回复此会话…'), submitBtn('发送', 'go')]),
+              note(`Co-Team · 会话回复 · 引用回复本卡亦可 · ${new Date().toLocaleString()}`),
+            ]);
+            const messageId = await sendCard(cfg, bound.chat_id, card);
+            if (messageId) {
+              await busSet(`feishu:route:${messageId}`, { act: 'convo_reply', convo_id: convoId }, ROUTE_TTL);
+              await busSet(`feishu:reply:${messageId}`, { kind: 'convo', convo_id: convoId }, ROUTE_TTL);
+            }
           } else if (type === 'convo_approval') {
             const approval = env!.payload!.approval as { id: string; command: string; reason?: string; status?: string };
             if (!approval?.id || approval.status !== 'pending') return;

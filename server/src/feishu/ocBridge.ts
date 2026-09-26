@@ -52,6 +52,7 @@ export interface OcBridge {
   agent(ref: string, session: FeishuSession): Promise<string>;
   stop(session: FeishuSession): Promise<string>;
   send(text: string, session: FeishuSession, chatId: string): Promise<string>;
+  replyTo(instanceId: string, sessionId: string, text: string, chatId?: string): Promise<string>;
   handleCardAction(cfg: FeishuConfig, input: CardActionInput): Promise<Record<string, unknown> | void>;
   start(cfg: FeishuConfig): () => void;
   /** 单次权限/提问扫描（start 的 30s 定时器即循环调用它；独立导出便于测试） */
@@ -203,10 +204,14 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
 
     async send(text, session, chatId) {
       if (!session.oc_instance || !session.oc_session) return '未绑定实例/会话，先 /oc 进入并绑定。';
+      return this.replyTo(session.oc_instance, session.oc_session, text, chatId);
+    },
+
+    async replyTo(instanceId, sessionId, text, chatId) {
       await notifyChat(cfg0(), chatId);
-      const r = await deps.sendPrompt(session.oc_instance, session.oc_session, text);
+      const r = await deps.sendPrompt(instanceId, sessionId, text);
       return r.ok
-        ? `已发送到 ${session.oc_instance}（会话 ${session.oc_session.slice(0, 12)}），完成后推送结果——可以关掉飞书等通知。`
+        ? `已发送到 ${instanceId}（会话 ${sessionId.slice(0, 12)}），完成后推送结果——可以关掉飞书等通知。`
         : `发送失败：${String(r.error || '未知错误').slice(0, 200)}`;
     },
 
@@ -224,6 +229,17 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       try {
         if (!cfg.approvers?.length || !cfg.approvers.includes(who)) {
           return reply('无权操作', [`操作人 ${who} 不在审批白名单内。`]);
+        }
+        if (act === 'oc_reply') {
+          // 完成卡上的快速回复：向该会话继续发 prompt——空响应让表单复位，完成推送再回来
+          const text = String(input.formValue?.reply || '').trim();
+          if (!text) return cardResponse(buildResultCard('内容为空', ['请输入内容后再提交。']));
+          const instance = String(params.instance || '');
+          const sessionId = String(params.session_id || '');
+          const r = await deps.sendPrompt(instance, sessionId, text);
+          if (r.ok) await sendText(cfg, input.chatId || '', `已发送到 ${instance}（会话 ${sessionId.slice(0, 12)}），完成后推送结果。`);
+          else await sendText(cfg, input.chatId || '', `发送失败：${String(r.error || '未知错误').slice(0, 200)}`);
+          return;
         }
         if (act === 'oc_perm') {
           const instance = String(params.instance || '');
@@ -286,10 +302,17 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           const body = replyText
             ? replyText.length > 2400 ? `${replyText.slice(0, 2400)}\n\n…（截断，完整内容回面板）` : replyText
             : `会话 ${sid.slice(0, 12)} ${failed ? '执行出错' : '执行完成'}（无文本输出）`;
-          await sendCard(cfg, target.id, card2(failed ? 'red' : 'green', `🖥 OpenCode · ${instance} · ${failed ? '出错' : '已完成'}`, [
+          // 完成卡带输入框：回复此卡 = 向该会话继续发 prompt（不受当前模式影响）
+          const card = card2(failed ? 'red' : 'green', `🖥 OpenCode · ${instance} · ${failed ? '出错' : '已完成'}`, [
             md(`会话 ${sid.slice(0, 12)}\n${body}`),
-            note(`Co-Team · OpenCode 完成${deps.instanceKind(instance) === 'attached-desktop' ? '（桌面实例）' : ''} · ${new Date().toLocaleString()}`),
-          ]), target.type);
+            form(`ocr_${instance}_${sid}_${Date.now()}`, [inputField('reply', '继续此会话…'), submitBtn('发送', 'go')]),
+            note(`Co-Team · OpenCode 完成${deps.instanceKind(instance) === 'attached-desktop' ? '（桌面实例）' : ''} · 引用回复本卡亦可 · ${new Date().toLocaleString()}`),
+          ]);
+          const messageId = await sendCard(cfg, target.id, card, target.type);
+          if (messageId) {
+            await busSet(`feishu:route:${messageId}`, { act: 'oc_reply', instance, session_id: sid }, BIND_TTL_SEC);
+            await busSet(`feishu:reply:${messageId}`, { kind: 'oc', instance, session_id: sid }, BIND_TTL_SEC);
+          }
         })().catch((e) => logger2.warn('Feishu oc completion push failed', { error: String(e).slice(0, 200), instance }));
       });
 

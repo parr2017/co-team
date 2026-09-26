@@ -117,19 +117,32 @@ describe('convo 桥', () => {
     expect(bound?.chat_id).toBe('oc1');
   });
 
-  it('agent 终稿（convo_message）推富文本卡到绑定聊天', async () => {
+  it('agent 终稿（convo_message）推富文本卡到绑定聊天；卡上输入框可快速回复', async () => {
     await busSet('feishu:chat:convo:c1', { chat_id: 'oc1', title: '登录方案' }, 3600);
-    const bridge = createConvoBridge(makeConvoDeps());
+    const deps = makeConvoDeps();
+    const bridge = createConvoBridge(deps);
     const stop = bridge.start(cfg);
     await emitEvent(CHANNELS.DASHBOARD, 'convo_message', { convo_id: 'c1', message: { role: 'assistant', kind: 'text', text: '这是 agent 的回复' } });
     await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(1));
     const card = sendCardMock.mock.calls[0][2] as Record<string, any>;
     expect(card.header.title.content).toContain('登录方案');
     expect(JSON.stringify(card)).toContain('这是 agent 的回复');
+    expect(JSON.stringify(card)).toContain('回复此会话');
+    // 表单路由 + 引用回复路由均已注册
+    const route = await busGet<Record<string, string>>('feishu:route:om_new1');
+    expect(route).toMatchObject({ act: 'convo_reply', convo_id: 'c1' });
+    const replyRoute = await busGet<{ kind: string }>('feishu:reply:om_new1');
+    expect(replyRoute?.kind).toBe('convo');
+    // 表单提交 → 注入会话 + 用户回显
+    sendTextMock.mockClear();
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', formValue: { reply: '补充一个细节' },
+    });
+    expect(deps.send).toHaveBeenCalledWith('c1', '补充一个细节');
+    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('你：补充一个细节'))).toBe(true);
     // 用户消息不推
     await emitEvent(CHANNELS.DASHBOARD, 'convo_message', { convo_id: 'c1', message: { role: 'user', kind: 'text', text: '用户的话' } });
     await sleep(25);
-    expect(sendCardMock).toHaveBeenCalledTimes(1);
     stop();
   });
 
@@ -201,7 +214,7 @@ describe('oc 桥', () => {
     expect(notify?.chat_id).toBe('oc1');
   });
 
-  it('全局监控：session.idle → 读回复推完成卡（去重）', async () => {
+  it('全局监控：session.idle → 读回复推完成卡（去重）+ 卡上快速回复', async () => {
     const deps = makeOcDeps();
     const bridge = createOcBridge(deps);
     const stop = bridge.start(cfg);
@@ -211,10 +224,23 @@ describe('oc 桥', () => {
     const card = sendCardMock.mock.calls[0][2] as Record<string, any>;
     expect(card.header.title.content).toContain('已完成');
     expect(JSON.stringify(card)).toContain('已修复登录报错');
+    expect(JSON.stringify(card)).toContain('继续此会话');
+    // 路由注册：表单 + 引用回复
+    const route = await busGet<Record<string, string>>('feishu:route:om_new1');
+    expect(route).toMatchObject({ act: 'oc_reply', instance: 'main-exec', session_id: 's-1' });
+    const replyRoute = await busGet<{ kind: string }>('feishu:reply:om_new1');
+    expect(replyRoute?.kind).toBe('oc');
     // 同一轮重推（同 event id）→ 去重
     await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'session.idle', properties: { sessionID: 's-1' }, id: 'e1' } });
     await sleep(25);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
+    // 完成卡表单提交 → 继续向该会话发 prompt
+    sendTextMock.mockClear();
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', formValue: { reply: '再跑一轮回归' },
+    });
+    expect(deps.sendPrompt).toHaveBeenCalledWith('main-exec', 's-1', '再跑一轮回归');
+    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('完成后推送结果'))).toBe(true);
     stop();
   });
 

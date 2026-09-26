@@ -130,6 +130,17 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
     if (!msg) return;
     // 回复任务卡消息 = 中途插话（intervention）——先于指令处理
     if (msg.parentId) {
+      // 引用会话卡回复 = 向该会话发言（convo 终稿卡 / oc 完成卡推送时注册）
+      const replyRoute = await busGet<{ kind: string; convo_id?: string; instance?: string; session_id?: string }>(`feishu:reply:${msg.parentId}`);
+      if (replyRoute?.kind === 'convo' && commandDeps.convo) {
+        const r = await commandDeps.convo.sendTo(replyRoute.convo_id || '', msg.text, msg.chatId);
+        await sendText(cfg, msg.chatId, r);
+        return;
+      }
+      if (replyRoute?.kind === 'oc' && commandDeps.oc) {
+        await sendText(cfg, msg.chatId, await commandDeps.oc.replyTo(replyRoute.instance || '', replyRoute.session_id || '', msg.text, msg.chatId));
+        return;
+      }
       const linked = await busGet<string>(`feishu:cardmsg:${msg.parentId}`);
       if (linked) {
         try {
