@@ -94,7 +94,7 @@ function fmtTok(n: number): string {
   cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s;
 }
 .station:hover { border-color: var(--line-strong); }
-.station.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.station.selected { border-color: var(--accent-line); background: linear-gradient(90deg, var(--accent-soft), transparent 60%), var(--bg-panel); box-shadow: none; }
 .dot { position: absolute; left: -21px; top: 18px; width: 9px; height: 9px; border-radius: 50%; background: var(--text-3); border: 2px solid var(--bg-panel); box-sizing: content-box; margin-left: 1px; }
 .dot.completed { background: var(--ok); }
 .dot.running, .dot.retrying { background: var(--warn); animation: pulse 1.6s ease-in-out infinite; }

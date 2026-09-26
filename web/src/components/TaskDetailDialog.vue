@@ -1,34 +1,49 @@
 <template>
-  <el-dialog :model-value="modelValue" title="任务详情" width="88%" style="max-width: 1560px" top="3vh" @open="onOpen" @close="onClose">
+  <el-dialog :model-value="modelValue" width="88%" style="max-width: 1560px" top="3vh" @open="onOpen" @close="onClose">
+    <template #header><span></span></template>
     <div v-if="task" class="detail">
-      <!-- 顶部任务元信息 -->
-      <div class="meta">
-        <div class="meta-main">
-          <div class="desc">{{ task.description || task.task_id }}</div>
-          <div class="mono meta-sub">
-            {{ task.task_id }} · {{ task.workspace }} ·
-            {{ completedCount }}/{{ task.nodes.length }} 节点
-            <template v-if="taskTokens"> · {{ fmtTok(taskTokens) }} tok</template>
-            <template v-if="taskCostEstimate"> · ≈${{ taskCostEstimate.toFixed(4) }}（估算）</template>
-            <template v-if="task.git_commit"> · ⎇ {{ task.git_commit.branch }}</template>
+      <!-- 一体化头部：状态 + 标题 + 元信息 chips + 大进度 + 主操作 -->
+      <div class="td-head">
+        <div class="row1">
+          <span class="h-pill" :class="headPillClass"><span v-if="headPillClass !== 'dim'" class="h-dot" :class="headPillClass"></span>{{ statusText(task.status) }}</span>
+          <div class="title" :title="task.description || task.task_id">{{ task.description || task.task_id }}</div>
+          <div class="hbtns">
+            <el-button v-if="task.status === 'success'" size="small" type="primary" :loading="merging" @click="onMergePreview">⎇ 合并到主分支</el-button>
+            <el-button size="small" @click="openDocs"><el-icon style="margin-right:4px"><Memo /></el-icon>协同文档</el-button>
+            <el-button size="small" @click="openOutput"><el-icon style="margin-right:4px"><FolderOpened /></el-icon>实时产出</el-button>
+            <el-button v-if="canCancelTask" size="small" plain type="danger" :loading="cancelling" @click="onCancelTask">取消任务</el-button>
           </div>
         </div>
-        <div class="progress">
-          <div class="progress-fill" :style="{ width: progressPct + '%' }"></div>
+        <div class="row2">
+          <span class="chip mono">ID <b>{{ task.task_id }}</b></span>
+          <span class="chip mono">工作区 <b>{{ task.workspace }}</b></span>
+          <span v-if="task.git_commit" class="chip mono">⎇ <b>{{ task.git_commit.branch }}</b></span>
+          <span v-if="task.level" class="chip mono">等级 <b>{{ levelLabel(task.level) }}</b></span>
+          <span v-if="taskTokens" class="chip mono acc"><b>{{ fmtTok(taskTokens) }}</b> tok</span>
+          <span v-if="taskCostEstimate" class="chip mono">≈<b>${{ taskCostEstimate.toFixed(4) }}</b>（估算）</span>
+          <span v-if="progressEta !== null" class="chip mono">预计剩余 <b>{{ progressEta }}</b> 分钟</span>
+          <span v-if="mergeMsg" class="mono merge-msg" :class="{ ok: mergeOk }">{{ mergeMsg }}</span>
+        </div>
+        <div class="row3">
+          <div class="bigbar"><i :class="{ done: progressPct === 100, bad: task.status === 'failed' }" :style="{ width: progressPct + '%' }"></i></div>
+          <span class="big-lbl mono"><b>{{ progressPct }}%</b> · {{ completedCount }}/{{ task.nodes.length }} 节点</span>
         </div>
       </div>
 
-      <!-- A3/A2/A1: 验收合并 · 协同文档 · 实时产出 -->
-      <div class="meta-actions">
-        <el-button v-if="task.status === 'success'" size="small" type="primary" :loading="merging" @click="onMergePreview">⎇ 合并到主分支</el-button>
-        <el-button size="small" @click="openDocs"><el-icon style="margin-right:4px"><Memo /></el-icon>协同文档</el-button>
-        <el-button size="small" @click="openOutput"><el-icon style="margin-right:4px"><FolderOpened /></el-icon>实时产出</el-button>
-        <span v-if="mergeMsg" class="mono merge-msg" :class="{ ok: mergeOk }">{{ mergeMsg }}</span>
-      </div>
+      <!-- 主体：左竖导航 + 分区内容 -->
+      <div class="td-body">
+        <div class="vnav">
+          <button class="vn" :class="{ on: tab === 'warroom' }" @click="tab = 'warroom'"><i>◉</i>任务频道</button>
+          <button class="vn" :class="{ on: tab === 'cockpit' }" @click="tab = 'cockpit'"><i>◔</i>实时驾驶舱</button>
+          <button class="vn" :class="{ on: tab === 'archive' }" @click="tab = 'archive'"><i>≡</i>事件归档<span class="cnt-chip mono">{{ events.length > 999 ? '999+' : events.length }}</span></button>
+          <div class="vn-sep"></div>
+          <div class="vn-sub">管理</div>
+          <button class="vn" :class="{ on: tab === 'manage' }" @click="tab = 'manage'"><i>⚙</i>治理与配置<span v-if="managePendingCount" class="bdg">{{ managePendingCount > 99 ? '99+' : managePendingCount }}</span></button>
+        </div>
 
-      <el-tabs v-model="tab">
+        <div class="td-main">
         <!-- 任务频道：阶段 + 轨道 + 检视器（成员会话 / 节点详情） -->
-        <el-tab-pane label="任务频道" name="warroom">
+        <div v-show="tab === 'warroom'" class="pane">
           <div class="stage-banner">
             <div class="st-steps">
               <template v-for="(s, i) in STAGE_STEPS" :key="s">
@@ -232,10 +247,10 @@
               <div v-else class="empty mono">← 在左侧轨道选择一个节点</div>
             </div>
           </div>
-        </el-tab-pane>
+        </div>
 
         <!-- 2.3 驾驶舱：实时执行动态（WS 事件流 + 滚动阶段 + 验收清单） -->
-        <el-tab-pane label="实时" name="cockpit">
+        <div v-show="tab === 'cockpit'" class="pane">
           <div class="cockpit">
             <div class="cp-row">
               <div class="cp-card">
@@ -278,10 +293,9 @@
               </div>
             </div>
           </div>
-        </el-tab-pane>
-
+        </div>
         <!-- 事件归档（全部事件，可筛选） -->
-        <el-tab-pane :label="`事件归档 (${events.length})`" name="archive">
+        <div v-show="tab === 'archive'" class="pane">
           <div class="arch">
             <div class="arch-toolbar">
               <el-radio-group v-model="archCategory" size="small">
@@ -309,12 +323,11 @@
               </div>
             </div>
           </div>
-        </el-tab-pane>
-
+        </div>
         <!-- 管理：进度 / 主Agent模型 / 全局目标 / 快照回滚 -->
-        <el-tab-pane label="管理" name="manage">
+        <div v-show="tab === 'manage'" class="pane">
           <div class="manage">
-            <div class="mg-card">
+            <div class="mg-card wide">
               <div class="mg-title mono">PROGRESS · 实时进度</div>
               <div v-if="progress" class="mg-body">
                 <div class="mg-progress">
@@ -347,8 +360,8 @@
               </div>
             </div>
 
-            <div class="mg-card">
-              <div class="mg-title mono">SUPERVISOR · 监督者提案（待批准）</div>
+            <div class="mg-card" :class="{ alert: (proposals || []).some((p) => p.status === 'pending') }">
+              <div class="mg-title mono">SUPERVISOR · 监督者提案（待批准）<span v-if="(proposals || []).filter((p) => p.status === 'pending').length" class="t-badge">{{ proposals.filter((p) => p.status === 'pending').length }}</span></div>
               <div class="mg-body">
                 <template v-if="(proposals || []).filter((p) => p.status === 'pending').length">
                   <div v-for="p in proposals.filter((p) => p.status === 'pending')" :key="p.id" class="mg-line proposal-row">
@@ -377,8 +390,8 @@
               </div>
             </div>
 
-            <div class="mg-card">
-              <div class="mg-title mono">ASKS · 阻塞问答</div>
+            <div class="mg-card" :class="{ alert: (asks || []).some((a) => a.status === 'pending') }">
+              <div class="mg-title mono">ASKS · 阻塞问答<span v-if="(asks || []).filter((a) => a.status === 'pending').length" class="t-badge">{{ asks.filter((a) => a.status === 'pending').length }}</span></div>
               <div class="mg-body">
                 <template v-if="(asks || []).length">
                   <div v-for="a in asks" :key="a.id" class="ask-row">
@@ -398,7 +411,7 @@
             </div>
 
             <!-- 环境预检（o3xmkraj 复盘）：任务停靠人工门时给出缺失清单与一键放行 -->
-            <div v-if="task.status === 'waiting_approval' && task.preflight && !task.preflight.ok" class="mg-card">
+            <div v-if="task.status === 'waiting_approval' && task.preflight && !task.preflight.ok" class="mg-card alert">
               <div class="mg-title mono">PREFLIGHT · 环境预检未通过（任务已停靠）</div>
               <div class="mg-body">
                 <div v-if="task.preflight.missing_whitelist?.length" class="pf-row">
@@ -415,8 +428,8 @@
               </div>
             </div>
 
-            <div class="mg-card">
-              <div class="mg-title mono">EXECUTION POLICY · 执行策略（命令执行分级）</div>
+            <div class="mg-card" :class="{ alert: pendingCommands.length > 0 }">
+              <div class="mg-title mono">EXECUTION POLICY · 执行策略（命令执行分级）<span v-if="pendingCommands.length" class="t-badge">{{ pendingCommands.length }}</span></div>
               <div class="mg-body mg-row">
                 <el-select v-model="policyLevel" size="small" style="width: 200px" @change="savePolicy">
                   <el-option label="跟随全局设置" value="" />
@@ -454,7 +467,7 @@
               </div>
             </div>
 
-            <div class="mg-card">
+            <div class="mg-card wide">
               <div class="mg-title mono">GLOBAL GOAL · 全局目标</div>
               <div class="mg-body">
                 <div v-if="!goalEditing" class="mg-goal">{{ goal.content || '（尚未生成）' }}</div>
@@ -488,8 +501,9 @@
               </div>
             </div>
           </div>
-        </el-tab-pane>
-      </el-tabs>
+        </div>
+        </div>
+      </div>
     </div>
 
     <DiffDialog
@@ -610,6 +624,51 @@ const stageStep = computed(() => (task.value ? taskStage(task.value.status).step
 const stageLabel = computed(() => (task.value ? taskStage(task.value.status).label : ''));
 const stageFailed = computed(() => task.value?.status === 'failed');
 const progressEta = computed(() => (progress.value?.eta_sec !== undefined ? Math.max(1, Math.ceil(progress.value.eta_sec / 60)) : null));
+
+// ---------- 一体化头部（preview-taskdetail 拍板稿） ----------
+
+/** 头部状态药丸分组（与任务中心 pill 口径同源） */
+const headPillClass = computed(() => {
+  const s = task.value?.status || '';
+  if (['running', 'retrying', 'finalizing', 'interrupted'].includes(s)) return 'run';
+  if (['waiting_approval', 'waiting_clarify', 'clarifying', 'planned'].includes(s)) return 'warn';
+  if (['completed', 'success', 'completed_with_warnings'].includes(s)) return 'ok';
+  if (s === 'failed') return 'bad';
+  return 'dim';
+});
+function levelLabel(l?: string | null) {
+  return ({ light: '轻量', standard: '标准', heavy: '重量' } as Record<string, string>)[l || ''] || l || '标准';
+}
+const canCancelTask = computed(() => ['running', 'retrying', 'queued', 'pending', 'waiting_approval', 'waiting_clarify', 'clarifying', 'planned', 'finalizing'].includes(task.value?.status || ''));
+const cancelling = ref(false);
+async function onCancelTask() {
+  if (!task.value) return;
+  try {
+    await ElMessageBox.confirm(`确认取消任务 ${task.value.task_id}？未完成节点将停止执行。`, '取消任务', {
+      confirmButtonText: '取消任务',
+      cancelButtonText: '返回',
+      type: 'warning',
+    });
+  } catch {
+    return;
+  }
+  cancelling.value = true;
+  try {
+    await api.cancelTask(task.value.task_id);
+    ElMessage.success('任务已取消');
+    await refresh();
+  } catch (e: any) {
+    showApiError(e);
+  } finally {
+    cancelling.value = false;
+  }
+}
+/** 左导航"治理与配置"待办角标：待审批命令 + 待回答问答 + 待批准提案 */
+const managePendingCount = computed(() =>
+  pendingCommands.value.length
+  + (asks.value || []).filter((a) => a.status === 'pending').length
+  + (proposals.value || []).filter((p) => p.status === 'pending').length
+);
 
 // ---------- 成员 chips ----------
 
@@ -1239,6 +1298,71 @@ onUnmounted(() => window.clearInterval(pollTimer));
 <style scoped>
 .detail { font-size: 13px; }
 
+/* ============================================================
+   一体化头部 + 左竖导航（preview-taskdetail 拍板稿）
+   ============================================================ */
+.td-head { padding: 4px 2px 14px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.td-head .row1 { display: flex; align-items: center; gap: 12px; }
+.h-pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px;
+  font-size: var(--fs-meta); white-space: nowrap; border: 1px solid var(--line);
+  background: var(--bg-inset); color: var(--text-2); flex: none;
+}
+.h-pill.run { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); font-weight: 600; }
+.h-pill.warn { background: color-mix(in srgb, var(--warn) 13%, transparent); border-color: color-mix(in srgb, var(--warn) 40%, transparent); color: var(--warn); font-weight: 600; }
+.h-pill.bad { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger); font-weight: 600; }
+.h-pill.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: color-mix(in srgb, var(--ok) 40%, transparent); color: var(--ok); }
+.h-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--text-3); }
+.h-dot.run { background: var(--accent); animation: h-pulse 1.6s infinite; }
+.h-dot.warn { background: var(--warn); }
+.h-dot.bad { background: var(--danger); }
+.h-dot.ok { background: var(--ok); }
+@keyframes h-pulse { 50% { opacity: .3; } }
+.td-head .title {
+  flex: 1; min-width: 0; font-size: 19px; font-weight: 700; letter-spacing: .3px; color: var(--text-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hbtns { display: flex; gap: 2px; flex: none; }
+.td-head .row2 { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px; border-radius: 11px;
+  font-size: var(--fs-meta); font-family: var(--font-mono); color: var(--text-3);
+  background: var(--bg-inset); border: 1px solid var(--line);
+}
+.chip b { color: var(--text-1); font-weight: 500; }
+.chip.acc { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.chip.acc b { color: var(--accent); }
+.td-head .row3 { display: flex; align-items: center; gap: 14px; margin-top: 12px; }
+.bigbar { flex: 1; height: 6px; border-radius: 3px; background: var(--bg-inset); overflow: hidden; }
+.bigbar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .4s ease; }
+.bigbar i.done { background: var(--ok); }
+.bigbar i.bad { background: var(--danger); }
+.big-lbl { font-family: var(--font-mono); font-size: var(--fs-aux); color: var(--text-3); white-space: nowrap; }
+.big-lbl b { color: var(--accent); font-weight: 600; }
+
+.td-body { display: grid; grid-template-columns: 168px minmax(0, 1fr); }
+.vnav {
+  border-right: 1px solid var(--line); padding: 12px 10px; display: flex; flex-direction: column; gap: 4px;
+  background: var(--bg-inset); border-radius: 0 0 0 var(--r-float);
+}
+.vn {
+  display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px; border: none; border-radius: var(--r-ctl);
+  background: none; color: var(--text-2); font-size: var(--fs-aux); cursor: pointer; text-align: left; transition: all .15s;
+}
+.vn i { font-style: normal; font-size: 14px; width: 16px; text-align: center; color: var(--text-3); flex: none; }
+.vn:hover { color: var(--text-1); background: var(--bg-raised); }
+.vn.on { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.vn.on i { color: var(--accent); }
+.vn .cnt-chip { margin-left: auto; font-size: 10px; color: var(--text-3); background: var(--bg-panel); border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; }
+.vn .bdg {
+  margin-left: auto; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
+}
+.vn-sep { height: 1px; background: var(--line); margin: 8px 6px; }
+.vn-sub { padding: 4px 12px; font-size: 10px; color: var(--text-3); letter-spacing: 1px; }
+.td-main { padding: 2px 2px 4px 16px; min-width: 0; }
+.td-main > .pane { max-height: calc(88vh - 220px); overflow-y: auto; padding-right: 4px; }
+
 /* ---- 2.3 驾驶舱 ---- */
 .cockpit { display: flex; flex-direction: column; gap: 12px; }
 .cp-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
@@ -1266,8 +1390,6 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .cp-ev { font-size: var(--fs-meta); color: var(--text-2); padding: 3px 0; border-bottom: 1px dashed var(--line); display: flex; gap: 8px; }
 .cp-ev:last-child { border-bottom: none; }
 .cp-ts { color: var(--text-3); flex-shrink: 0; }
-.meta { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
-.meta-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .merge-msg { font-size: var(--fs-meta); color: var(--text-3); }
 .merge-msg.ok { color: var(--ok); }
 .doc-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed var(--line); }
@@ -1277,11 +1399,6 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .output-item:hover { background: var(--bg-raised); }
 .output-file-path { font-size: var(--fs-meta); color: var(--accent); margin: 8px 0 4px; }
 .output-pre { max-height: 320px; overflow: auto; background: var(--bg-raised); border-radius: 6px; padding: 8px; font-size: var(--fs-meta); white-space: pre-wrap; }
-.meta-main { flex: 1; min-width: 0; }
-.desc { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 4px; }
-.meta-sub { font-size: var(--fs-meta); color: var(--text-3); }
-.progress { flex: 0 0 160px; height: 6px; background: var(--bg-raised); border-radius: 3px; overflow: hidden; }
-.progress-fill { height: 100%; background: var(--accent); transition: width 0.5s; }
 
 /* ---- 阶段横幅 ---- */
 .stage-banner { display: flex; gap: 24px; align-items: flex-start; padding: 12px 14px; background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; }
@@ -1319,7 +1436,7 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .cl-ops { display: flex; gap: 8px; margin-top: 4px; }
 
 /* ---- 任务频道布局 ---- */
-.warroom { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
+.warroom { display: grid; grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.15fr); gap: 16px; align-items: start; }
 .wr-left, .wr-right { max-height: calc(88vh - 300px); }
 .wr-left { overflow-y: auto; padding-right: 12px; }
 .wr-hint { font-size: var(--fs-meta); color: var(--text-3); margin-top: 6px; }
@@ -1368,8 +1485,9 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .n-status.pending, .n-status.planned, .n-status.cancelled, .n-status.queued { color: var(--text-3); }
 .n-name { color: var(--text-1); font-weight: 600; }
 .n-meta { color: var(--text-3); font-size: var(--fs-meta); }
-.exec-archive { margin: 8px 0; padding: 8px 10px; background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px; font-size: var(--fs-meta); color: var(--text-2); }
-.ea-title { font-weight: 700; letter-spacing: 1px; color: var(--text-3); margin-bottom: 4px; }
+/* ---- 节点详情：分区卡化 ---- */
+.exec-archive { margin: 0 0 10px; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--line); border-radius: var(--r-ctl); font-size: var(--fs-meta); color: var(--text-2); }
+.ea-title { font-weight: 700; letter-spacing: 1.2px; color: var(--text-3); margin-bottom: 9px; }
 .ea-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
 .ea-row { margin: 2px 0; overflow-wrap: anywhere; }
 .ea-chip { display: inline-block; background: var(--bg-panel); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; margin-right: 4px; }
@@ -1384,20 +1502,23 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .mini-label.green { color: var(--ok); border-color: var(--ok); }
 .reason { font-size: var(--fs-aux); color: var(--text-2); font-style: italic; margin-bottom: 6px; }
 .error { color: var(--danger); font-size: var(--fs-aux); margin-bottom: 6px; }
-.summary { font-size: var(--fs-aux); color: var(--text-2); margin-bottom: 8px; white-space: pre-wrap; }
+.summary { font-size: var(--fs-aux); color: var(--text-1); line-height: 1.65; margin-bottom: 10px; white-space: pre-wrap; }
 .verification { font-size: var(--fs-aux); color: var(--ok); background: var(--bg-raised); border-left: 3px solid var(--ok); border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; }
 .gate-line { font-size: var(--fs-meta); border-radius: 4px; padding: 5px 10px; margin-bottom: 8px; }
 .gate-ok { color: var(--ok); background: var(--bg-raised); border-left: 3px solid var(--ok); }
 .gate-bad { color: var(--danger); background: var(--bg-raised); border-left: 3px solid var(--danger); }
+.defects-card { border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 12px 14px; margin-bottom: 10px; background: var(--bg-panel); }
+.defects-card .r-title { margin-bottom: 10px; }
 .defects-card .d-head { display: flex; align-items: center; gap: 8px; }
 .defects-card .d-title { font-size: var(--fs-aux); color: var(--text-1); font-weight: 600; }
 .defects-card .d-head .el-button { margin-left: auto; }
 .defects-card .d-detail { font-size: var(--fs-meta); color: var(--text-2); margin: 4px 0 8px; white-space: pre-wrap; }
-.report-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg-raised); }
-.r-title { font-size: var(--fs-meta); color: var(--text-3); letter-spacing: 1px; margin-bottom: 6px; }
+.report-card { border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 12px 14px; margin-bottom: 10px; background: var(--bg-panel); }
+.r-title { font-size: var(--fs-meta); color: var(--text-3); letter-spacing: 1.2px; margin-bottom: 6px; }
 .r-line { font-size: var(--fs-aux); color: var(--text-2); margin-bottom: 4px; }
 .r-fail { font-size: var(--fs-meta); color: var(--danger); }
-.changes .change { font-size: var(--fs-meta); color: var(--text-2); padding: 1px 0; }
+.changes { border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 12px 14px; margin-bottom: 10px; background: var(--bg-panel); }
+.changes .change { font-size: var(--fs-aux); color: var(--text-2); padding: 3px 0; }
 
 /* ---- 时间线 / 事件行 ---- */
 .sub-title { font-size: var(--fs-meta); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.6px; margin: 12px 0 6px; }
@@ -1430,10 +1551,20 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .arch-more { display: flex; justify-content: center; padding: 10px 0; }
 .empty { color: var(--text-3); text-align: center; padding: 40px 0; }
 
-/* manage tab */
-.manage { display: flex; flex-direction: column; gap: 14px; max-height: calc(88vh - 200px); overflow-y: auto; }
-.mg-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
-.mg-title { font-size: var(--fs-meta); color: var(--text-3); letter-spacing: 1px; margin-bottom: 10px; }
+/* manage pane：双列卡片网格，待人拍板的事项卡红色 alert 前置 */
+.manage { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-height: calc(88vh - 220px); overflow-y: auto; padding-right: 4px; align-items: start; }
+.mg-card { border: 1px solid var(--line); border-radius: var(--r-panel); padding: 14px 16px; background: var(--bg-panel); }
+.mg-card.alert {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--danger) 10%, transparent), transparent 50%), var(--bg-panel);
+}
+.mg-card.wide { grid-column: 1 / -1; }
+.mg-title { font-size: var(--fs-meta); color: var(--text-3); letter-spacing: 1.2px; margin-bottom: 10px; }
+.mg-title .t-badge {
+  display: inline-flex; margin-left: 8px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px;
+  background: var(--danger); color: #fff; font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  align-items: center; justify-content: center; letter-spacing: 0; vertical-align: 1px;
+}
 .pf-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .mg-body { display: flex; flex-direction: column; gap: 8px; }
 .mg-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

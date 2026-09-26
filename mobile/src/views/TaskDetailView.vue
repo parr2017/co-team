@@ -32,7 +32,7 @@ function liveText(n: TaskGraph['nodes'][number]): string | null {
 const taskId = computed(() => String(route.params.id));
 const task = computed<TaskGraph | null>(() => tasks.value[taskId.value] || null);
 
-const tab = ref<'warroom' | 'exec' | 'events'>('warroom');
+const tab = ref<'warroom' | 'exec' | 'events' | 'manage'>('warroom');
 const selectedAgent = ref('');
 const selectedNodeId = ref('');
 const events = ref<EventEnvelope[]>([]);
@@ -167,6 +167,54 @@ async function decideProposal(proposalId: string, approved: boolean) {
     deciding.value = '';
   }
 }
+// ---------- 阻塞问答（preview-taskdetail 拍板稿：mobile 补齐 web 的 ASKS） ----------
+const asks = ref<any[]>([]);
+const askDrafts = ref<Record<string, string>>({});
+const answering = ref('');
+async function loadAsks() {
+  try { asks.value = (await api.listAsks(taskId.value)).asks || []; } catch { /* ignore */ }
+}
+async function answerAsk(a: any) {
+  const text = (askDrafts.value[a.id] || '').trim();
+  if (!text) return;
+  answering.value = a.id;
+  try {
+    await api.answerAsk(taskId.value, a.id, text);
+    showToast('已回答，agent 继续执行');
+    askDrafts.value[a.id] = '';
+    await loadAsks();
+  } catch (e: any) {
+    showToast(e?.message || '回答失败');
+  } finally {
+    answering.value = '';
+  }
+}
+
+// ---------- 待审批命令（preview-taskdetail 拍板稿：mobile 补齐 web 的命令审批） ----------
+const pendingCommands = ref<any[]>([]);
+const resolving = ref('');
+async function loadPendingCommands() {
+  try { pendingCommands.value = (await api.getPendingCommands(taskId.value)).commands || []; } catch { pendingCommands.value = []; }
+}
+async function resolveCommand(c: any, approved: boolean) {
+  resolving.value = c.id;
+  try {
+    await api.resolveCommand(taskId.value, c.id, approved);
+    showToast(approved ? '已批准执行' : '已拒绝');
+    await loadPendingCommands();
+    await refresh();
+  } catch (e: any) {
+    showToast(e?.message || '操作失败');
+  } finally {
+    resolving.value = '';
+  }
+}
+
+// 管理分区待办角标：待审批命令 + 待回答问答 + 待批准提案
+const managePendingCount = computed(
+  () => pendingCommands.value.length + asks.value.filter((a) => a.status === 'pending').length + pendingProposals.value.length
+);
+
 const notFound = ref(false);
 let pollTimer: number | undefined;
 let unsub: (() => void) | undefined;
@@ -189,6 +237,17 @@ const progressPct = computed(() => {
 // 阶段横幅（回答"现在到哪一步了"）
 const stageLabel = computed(() => (task.value ? taskStage(task.value.status).label : ''));
 const stageFailed = computed(() => task.value?.status === 'failed');
+// preview-taskdetail 拍板稿：紧凑步进器 澄清→审核→执行→完成
+const stageStep = computed(() => (task.value ? taskStage(task.value.status).step : 0));
+// Hero 头卡状态药丸分组（与 web/任务中心同口径）
+const stagePill = computed(() => {
+  const st = task.value?.status || '';
+  if (['running', 'retrying', 'finalizing', 'interrupted'].includes(st)) return 'run';
+  if (['waiting_approval', 'waiting_clarify', 'clarifying', 'planned'].includes(st)) return 'warn';
+  if (['completed', 'success', 'completed_with_warnings'].includes(st)) return 'ok';
+  if (st === 'failed') return 'bad';
+  return 'dim';
+});
 
 // 任务消耗（Σ 节点 tokens）
 const taskTokens = computed(() => (task.value?.nodes || []).reduce((sum, n) => sum + (n.result?.tokens || 0), 0));
@@ -379,6 +438,8 @@ async function refresh() {
   void loadGoal();
   void loadSnapshots();
   void loadPolicy();
+  void loadAsks();
+  void loadPendingCommands();
   try {
     const ev = await api.taskEvents(taskId.value);
     events.value = ev.events;
@@ -682,9 +743,43 @@ async function onTaskMore(action: any) {
         <button class="ab-btn" @click="openOutput">产出</button>
       </div>
 
-      <van-tabs v-model:active="tab" class="tabs" sticky :offset-top="46" line-width="24px">
-        <!-- 任务频道：微信聊天页 -->
-        <van-tab title="聊天" name="warroom">
+      <!-- preview-taskdetail 拍板稿：Hero 头卡——一屏回答"现在怎样" -->
+      <div class="m-hero">
+        <div class="r1">
+          <span class="st-pill" :class="stagePill"><span v-if="stagePill !== 'dim'" class="st-dot" :class="stagePill"></span>{{ statusText(task.status) }}</span>
+          <span class="ttl">{{ task.description || task.task_id }}</span>
+        </div>
+        <div class="chips">
+          <span class="chip mono">{{ task.task_id }}</span>
+          <span v-if="task.level" class="chip mono">{{ ({ light: '轻量', standard: '标准', heavy: '重量' } as Record<string, string>)[task.level] || task.level }}</span>
+          <span class="chip mono acc">{{ fmtTok(taskTokens) }} tok</span>
+        </div>
+        <div class="bar">
+          <div class="m-bar"><i class="m-bar-fill" :class="{ failed: stageFailed }" :style="{ width: progressPct + '%' }"></i></div>
+          <div class="bl mono"><span><b>{{ progressPct }}%</b> · {{ task.nodes.filter((n) => n.status === 'completed').length }}/{{ task.nodes.length }} 节点</span></div>
+        </div>
+      </div>
+
+      <!-- 紧凑步进器：澄清→审核→执行→完成（与 web 同构） -->
+      <div class="m-steps">
+        <div class="m-stp done"><span class="d">✓</span><span class="l">澄清</span></div>
+        <span class="m-slink" :class="{ passed: stageStep > 1 }"></span>
+        <div class="m-stp" :class="stageStep > 1 ? 'done' : stageStep === 1 ? 'act' : ''"><span class="d">{{ stageStep > 1 ? '✓' : '2' }}</span><span class="l">审核</span></div>
+        <span class="m-slink" :class="{ passed: stageStep > 2 }"></span>
+        <div class="m-stp" :class="stageStep > 2 ? 'done' : stageStep === 2 ? 'act' : ''"><span class="d">{{ stageStep > 2 ? '✓' : '3' }}</span><span class="l">执行</span></div>
+        <span class="m-slink" :class="{ passed: stageStep > 3 }"></span>
+        <div class="m-stp" :class="stageStep > 3 ? 'done' : stageStep === 3 ? 'act' : ''"><span class="d">{{ stageStep > 3 ? '✓' : '4' }}</span><span class="l">完成</span></div>
+      </div>
+
+      <!-- 四分区 pill tabs -->
+      <div class="m-tabs">
+        <button class="m-tab" :class="{ on: tab === 'warroom' }" @click="tab = 'warroom'">对话</button>
+        <button class="m-tab" :class="{ on: tab === 'exec' }" @click="tab = 'exec'">执行详情</button>
+        <button class="m-tab" :class="{ on: tab === 'events' }" @click="tab = 'events'">事件</button>
+        <button class="m-tab" :class="{ on: tab === 'manage' }" @click="tab = 'manage'">管理<template v-if="managePendingCount"> <b class="t-bdg">{{ managePendingCount > 99 ? '99+' : managePendingCount }}</b></template></button>
+      </div>
+
+      <div v-show="tab === 'warroom'" class="m-pane">
           <div class="warroom">
             <!-- 进度主角卡：阶段一句话 + 大号百分比 -->
             <div class="stage-card">
@@ -717,10 +812,9 @@ async function onTaskMore(action: any) {
             <ChatStream :task-id="taskId" :filter-agent="selectedAgent || undefined" @quote="onQuote" @open-node="openNodeFromChat" />
             <InterventionInput :task-id="taskId" :task-status="task.status" :prefill="quoteDraft" />
           </div>
-        </van-tab>
+      </div>
 
-        <!-- 执行详情：微信分组列表 -->
-        <van-tab title="执行详情" name="exec">
+      <div v-show="tab === 'exec'" class="m-pane">
           <div class="exec">
             <div class="exec-progress wx-group">
               <div class="wx-cell prog-cell">
@@ -748,29 +842,6 @@ async function onTaskMore(action: any) {
               </div>
             </div>
 
-            <!-- M10-C 全局目标：摘要 + 弹窗看全文/编辑（长内容不再挤压列表） -->
-            <div class="wx-group">
-              <div class="wx-cell tap-cell" @click="goalOpen = true">
-                <div class="sup-title">全局目标</div>
-                <div class="goal-text clamp">{{ goalContent || '（未设置）' }}</div>
-                <span class="tap-more">全文 ›</span>
-              </div>
-            </div>
-
-            <!-- M10-C 快照：列表 + 一键回滚（二次确认） -->
-            <div class="wx-group">
-              <div class="wx-cell">
-                <div class="sup-title">快照</div>
-                <div v-if="snapshots.length" class="snap-list">
-                  <div v-for="s in snapshots.slice(0, 5)" :key="s.id" class="snap-row">
-                    <span class="mono">{{ s.tag }} · {{ fmtTime(s.created_at) }}</span>
-                    <van-button size="mini" plain :loading="snapBusy === s.id" @click="doRollback(s.id)">回滚</van-button>
-                  </div>
-                </div>
-                <div v-else class="cl-note">暂无快照</div>
-              </div>
-            </div>
-
             <!-- M10-C 验收报告：摘要行 + 点击弹窗看完整证据 -->
             <div v-if="acceptanceReport" class="wx-group">
               <div class="wx-cell">
@@ -783,42 +854,6 @@ async function onTaskMore(action: any) {
                   </div>
                 </div>
                 <div class="acc-note">E2E: {{ acceptanceReport.e2e?.note }}</div>
-              </div>
-            </div>
-
-            <!-- M10-C 监督者提案：摘要行 + 点击弹窗看全文并裁决 -->
-            <div v-if="pendingProposals.length" class="wx-group">
-              <div class="wx-cell">
-                <div class="sup-title">监督者提案 · 待批准</div>
-                <div v-for="p in pendingProposals" :key="p.id" class="sup-row tap-cell" @click="proposalView = p; proposalViewOpen = true">
-                  <span class="sup-reason clamp">{{ p.reason || p.type }}</span>
-                  <span class="tap-more">全文 ›</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 环境预检（双端一致）：停靠人工门时给出缺失清单与一键放行 -->
-            <div v-if="task.status === 'waiting_approval' && task.preflight && !task.preflight.ok" class="wx-group">
-              <div class="wx-cell">
-                <div class="sup-title">环境预检未通过 · 任务已停靠</div>
-                <div v-if="task.preflight.missing_whitelist?.length" class="sup-row">
-                  <span class="sup-reason clamp">白名单缺：{{ task.preflight.missing_whitelist.join(' ') }}（机器上已安装）</span>
-                </div>
-                <div v-if="task.preflight.missing_path?.length" class="sup-row">
-                  <span class="sup-reason clamp">机器未安装：{{ task.preflight.missing_path.join(' ') }}（需人工安装 SDK）</span>
-                </div>
-                <van-button size="small" round type="primary" :loading="preflightRunning" @click="grantWhitelistAndRun">补授白名单并开跑</van-button>
-              </div>
-            </div>
-
-            <!-- 执行策略（双端一致）：level + 白名单命令 -->
-            <div class="wx-group">
-              <div class="wx-cell link" @click="openPolicyEditor">
-                <div class="sup-title">执行策略 · 白名单命令</div>
-                <div class="sup-row">
-                  <span class="sup-reason clamp">{{ policyText }}</span>
-                  <span class="tap-more">编辑 ›</span>
-                </div>
               </div>
             </div>
 
@@ -950,10 +985,9 @@ async function onTaskMore(action: any) {
               </div></div>
             </div>
           </div>
-        </van-tab>
+      </div>
 
-        <!-- 事件：中文化时间线，默认隐藏高频心跳 -->
-        <van-tab title="事件" name="events">
+      <div v-show="tab === 'events'" class="m-pane">
           <div class="events">
             <div class="ev-toolbar">
               <span class="ev-count mono">显示 {{ visibleEvents.length }} / {{ events.length }} 条</span>
@@ -979,8 +1013,101 @@ async function onTaskMore(action: any) {
               <div class="empty-text">暂无事件</div>
             </div>
           </div>
-        </van-tab>
-      </van-tabs>
+      </div>
+
+      <!-- 管理分区：待人拍板置顶（命令审批 / 阻塞问答为拍板稿补齐项） -->
+      <div v-show="tab === 'manage'" class="m-pane">
+        <div class="manage-list">
+          <!-- 环境预检：停靠人工门时给出缺失清单与一键放行 -->
+          <div v-if="task.status === 'waiting_approval' && task.preflight && !task.preflight.ok" class="wx-group alert">
+            <div class="wx-cell">
+              <div class="sup-title">环境预检未通过 · 任务已停靠</div>
+              <div v-if="task.preflight.missing_whitelist?.length" class="sup-row">
+                <span class="sup-reason clamp">白名单缺：{{ task.preflight.missing_whitelist.join(' ') }}（机器上已安装）</span>
+              </div>
+              <div v-if="task.preflight.missing_path?.length" class="sup-row">
+                <span class="sup-reason clamp">机器未安装：{{ task.preflight.missing_path.join(' ') }}（需人工安装 SDK）</span>
+              </div>
+              <van-button size="small" round type="primary" :loading="preflightRunning" @click="grantWhitelistAndRun">补授白名单并开跑</van-button>
+            </div>
+          </div>
+
+          <!-- 待审批命令（拍板稿补齐：此前仅 web 可批） -->
+          <div v-if="pendingCommands.length" class="wx-group alert">
+            <div class="wx-cell">
+              <div class="sup-title">待审批命令 · {{ pendingCommands.length }}</div>
+              <div v-for="c in pendingCommands" :key="c.id" class="cmd-cell">
+                <div class="cmd-text mono">{{ c.command }}</div>
+                <div class="cmd-ops">
+                  <span class="cmd-node mono">{{ c.node_name }}</span>
+                  <van-button size="small" round type="primary" :loading="resolving === c.id" @click="resolveCommand(c, true)">批准执行</van-button>
+                  <van-button size="small" round plain type="danger" :loading="resolving === c.id" @click="resolveCommand(c, false)">拒绝</van-button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 阻塞问答（拍板稿补齐：mobile 补齐 web 的 ASKS） -->
+          <div v-if="asks.length" class="wx-group" :class="{ alert: asks.some((a) => a.status === 'pending') }">
+            <div class="wx-cell">
+              <div class="sup-title">阻塞问答 · 待回答 {{ asks.filter((a) => a.status === 'pending').length }}</div>
+              <div v-for="a in asks" :key="a.id" class="ask-cell">
+                <div class="ask-line"><span class="ask-from mono">{{ a.from }}</span><span class="ask-q">{{ a.question }}</span></div>
+                <div v-if="a.status === 'pending'" class="ask-answer">
+                  <input v-model="askDrafts[a.id]" class="cl-a" placeholder="回答后 agent 继续执行" @keydown.enter="answerAsk(a)" />
+                  <van-button size="small" round type="primary" :loading="answering === a.id" @click="answerAsk(a)">回答</van-button>
+                </div>
+                <div v-else class="ask-resolved mono">✓ 已解决</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 监督者提案：摘要行 + 点击弹窗看全文并裁决 -->
+          <div v-if="pendingProposals.length" class="wx-group alert">
+            <div class="wx-cell">
+              <div class="sup-title">监督者提案 · 待批准</div>
+              <div v-for="p in pendingProposals" :key="p.id" class="sup-row tap-cell" @click="proposalView = p; proposalViewOpen = true">
+                <span class="sup-reason clamp">{{ p.reason || p.type }}</span>
+                <span class="tap-more">全文 ›</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 执行策略（双端一致）：level + 白名单命令 -->
+          <div class="wx-group">
+            <div class="wx-cell link" @click="openPolicyEditor">
+              <div class="sup-title">执行策略 · 白名单命令</div>
+              <div class="sup-row">
+                <span class="sup-reason clamp">{{ policyText }}</span>
+                <span class="tap-more">编辑 ›</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 全局目标：摘要 + 弹窗看全文/编辑 -->
+          <div class="wx-group">
+            <div class="wx-cell tap-cell" @click="goalOpen = true">
+              <div class="sup-title">全局目标</div>
+              <div class="goal-text clamp">{{ goalContent || '（未设置）' }}</div>
+              <span class="tap-more">全文 ›</span>
+            </div>
+          </div>
+
+          <!-- 快照：列表 + 一键回滚（二次确认） -->
+          <div class="wx-group">
+            <div class="wx-cell">
+              <div class="sup-title">快照</div>
+              <div v-if="snapshots.length" class="snap-list">
+                <div v-for="s in snapshots.slice(0, 5)" :key="s.id" class="snap-row">
+                  <span class="mono">{{ s.tag }} · {{ fmtTime(s.created_at) }}</span>
+                  <van-button size="mini" plain :loading="snapBusy === s.id" @click="doRollback(s.id)">回滚</van-button>
+                </div>
+              </div>
+              <div v-else class="cl-note">暂无快照</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </template>
     <!-- 任务不存在/已删除：明确错误态，替代无限 loading -->
     <div v-else-if="notFound" class="err-state">
@@ -1481,4 +1608,92 @@ async function onTaskMore(action: any) {
 .pnode.fail .rail i { background: var(--danger); border-color: var(--danger); }
 .pnode .pi { flex: 1; min-width: 0; }
 @keyframes ppulse { 50% { opacity: .35; } }
+</style>
+
+<style scoped>
+/* ============================================================
+   preview-taskdetail 拍板稿：Hero 头卡 / 紧凑步进器 / pill tabs / 管理分区
+   ============================================================ */
+
+/* ---- Hero 头卡 ---- */
+.m-hero {
+  margin: 10px 14px 0; padding: 13px 15px;
+  border-radius: 14px; border: 1px solid var(--accent-line);
+  background: linear-gradient(135deg, var(--accent-soft), transparent 55%), var(--panel);
+}
+.m-hero .r1 { display: flex; align-items: center; gap: 9px; }
+.m-hero .ttl { font-size: 15px; font-weight: 700; color: var(--text-1); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-pill {
+  display: inline-flex; align-items: center; gap: 5px; height: 21px; padding: 0 9px; border-radius: 11px;
+  font-size: var(--fs-meta); font-family: var(--font-mono); white-space: nowrap; flex: none;
+  border: 1px solid var(--line); background: var(--bg-inset); color: var(--text-2);
+}
+.st-pill.run { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); font-weight: 600; }
+.st-pill.warn { background: color-mix(in srgb, var(--warn) 13%, transparent); border-color: color-mix(in srgb, var(--warn) 40%, transparent); color: var(--warn); font-weight: 600; }
+.st-pill.bad { background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: color-mix(in srgb, var(--danger) 40%, transparent); color: var(--danger); font-weight: 600; }
+.st-pill.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); border-color: color-mix(in srgb, var(--ok) 40%, transparent); color: var(--ok); }
+.st-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); flex: none; }
+.st-dot.run { background: var(--accent); animation: ppulse 1.6s infinite; }
+.st-dot.warn { background: var(--warn); }
+.st-dot.bad { background: var(--danger); }
+.st-dot.ok { background: var(--ok); }
+.m-hero .chips { display: flex; gap: 6px; margin-top: 9px; flex-wrap: wrap; }
+.m-hero .chip {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-2);
+  background: var(--bg-inset); border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px;
+}
+.m-hero .chip.acc { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.m-hero .bar { margin-top: 11px; }
+.m-bar { height: 5px; border-radius: 3px; background: var(--bg-inset); overflow: hidden; }
+.m-bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }
+.m-bar-fill.failed { background: var(--danger); }
+.m-hero .bl { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10.5px; color: var(--text-3); }
+.m-hero .bl b { color: var(--accent); }
+
+/* ---- 紧凑步进器 ---- */
+.m-steps { display: flex; align-items: center; margin: 10px 14px 0; padding: 11px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.m-stp { display: flex; flex-direction: column; align-items: center; gap: 5px; flex: none; }
+.m-stp .d {
+  width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--line-strong); background: var(--bg-panel);
+  color: var(--text-3); font-size: 9px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono);
+}
+.m-stp.done .d { border-color: var(--ok); color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.m-stp.act .d { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.m-stp .l { font-size: 9.5px; color: var(--text-3); }
+.m-stp.act .l { color: var(--text-1); font-weight: 600; }
+.m-slink { flex: 1; height: 1.5px; background: var(--line); margin: 0 6px 14px; }
+.m-slink.passed { background: var(--ok); }
+
+/* ---- 四分区 pill tabs ---- */
+.m-tabs { display: flex; gap: 6px; margin: 12px 14px 0; }
+.m-tab {
+  flex: 1; height: 32px; border-radius: 16px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--text-2); font-size: 12.5px; cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+}
+.m-tab.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.m-tab .t-bdg {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
+}
+.m-pane { padding-bottom: 24px; }
+
+/* ---- 管理分区 ---- */
+.manage-list { padding: 12px 14px 0; }
+.wx-group.alert {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--danger) 10%, transparent), transparent 50%), var(--panel);
+}
+.cmd-cell { padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.cmd-cell:last-child { border-bottom: none; padding-bottom: 0; }
+.cmd-text { font-size: 11px; color: var(--warn); word-break: break-all; line-height: 1.5; }
+.cmd-ops { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.cmd-node { font-size: 10px; color: var(--text-3); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-cell { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.ask-cell:last-child { border-bottom: none; padding-bottom: 0; }
+.ask-line { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.ask-from { flex: none; font-size: 10px; color: var(--accent); }
+.ask-q { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; line-height: 1.55; }
+.ask-answer { display: flex; gap: 7px; margin-top: 8px; align-items: center; }
+.ask-answer .cl-a { flex: 1; }
+.ask-resolved { font-size: 10px; color: var(--ok); }
 </style>
