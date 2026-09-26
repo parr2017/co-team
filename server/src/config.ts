@@ -188,6 +188,8 @@ export interface FeishuConfig {
   ws_enabled?: boolean;
   /** 审批人白名单（飞书 open_id）；未配置时审批卡片不带按钮（安全优先） */
   approvers?: string[];
+  /** OpenCode 全局监控范围：all（所有实例）/ managed（仅托管实例）/ bound（仅绑定会话），默认 all */
+  oc_watch?: 'all' | 'managed' | 'bound';
 }
 
 export const PROJECT_ROOT = path.resolve(__dirname, '..', '..');

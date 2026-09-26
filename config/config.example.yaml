@@ -175,6 +175,8 @@ knowledge:
 #   ws_enabled: true       # 启动长连接网关（缺省 false，显式开启）
 #   approvers: []          # 审批人白名单（飞书 open_id，也可用环境变量 COTEAM_FEISHU_APPROVERS 逗号分隔）；
 #                          # 未配置时审批通知为纯信息卡片、不带按钮（安全优先）
+#   oc_watch: all          # OpenCode 全局监控范围：all/managed/bound（默认 all，
+#                          # attached 桌面实例嫌吵可改 managed）
 permissions:
   # 命令执行分级：plan_only（只出方案不写代码）/ readonly（只读）/
   # approve_required（白名单外命令需人工审批，默认）/ whitelist_auto（白名单自动，其余拒绝）/

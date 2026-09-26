@@ -6,11 +6,23 @@ import { busGet, busSet } from '../bus';
 
 const SESSION_TTL_SEC = 24 * 3600;
 
+export type FeishuMode = 'task' | 'convo' | 'oc';
+
 export interface FeishuSession {
   user_id: string;
+  /** 窗口主题（三态互斥）：task=任务模式（默认）/ convo=协作会话 / oc=OpenCode */
+  mode?: FeishuMode;
   current_project_id?: string;
   current_project_name?: string;
   current_agent_id?: string;
+  /** convo 模式：当前绑定的会话 id */
+  convo_id?: string;
+  /** oc 模式：当前绑定的实例与会话 */
+  oc_instance?: string;
+  oc_session?: string;
+  /** 裸命令列表的序号缓存（/switch 2 之类按它解析），随新列表覆盖 */
+  last_list?: { id: string; label: string }[];
+  last_list_kind?: 'convo' | 'oc_instance' | 'oc_session' | 'model' | 'agent';
   last_active_time: string;
 }
 

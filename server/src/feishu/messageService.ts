@@ -35,19 +35,19 @@ async function callApi(cfg: FeishuConfig, path: string, init: RequestInit, retri
   }
 }
 
-export async function sendText(cfg: FeishuConfig, chatId: string, text: string): Promise<string | null> {
-  return sendContent(cfg, chatId, 'text', JSON.stringify({ text }));
+export async function sendText(cfg: FeishuConfig, receiveId: string, text: string, receiveIdType: 'chat_id' | 'open_id' = 'chat_id'): Promise<string | null> {
+  return sendContent(cfg, receiveId, 'text', JSON.stringify({ text }), receiveIdType);
 }
 
-export async function sendCard(cfg: FeishuConfig, chatId: string, card: Record<string, unknown>): Promise<string | null> {
-  return sendContent(cfg, chatId, 'interactive', JSON.stringify(card));
+export async function sendCard(cfg: FeishuConfig, receiveId: string, card: Record<string, unknown>, receiveIdType: 'chat_id' | 'open_id' = 'chat_id'): Promise<string | null> {
+  return sendContent(cfg, receiveId, 'interactive', JSON.stringify(card), receiveIdType);
 }
 
-async function sendContent(cfg: FeishuConfig, chatId: string, msgType: string, content: string): Promise<string | null> {
+async function sendContent(cfg: FeishuConfig, receiveId: string, msgType: string, content: string, receiveIdType: 'chat_id' | 'open_id' = 'chat_id'): Promise<string | null> {
   try {
-    const data = await callApi(cfg, '/open-apis/im/v1/messages?receive_id_type=chat_id', {
+    const data = await callApi(cfg, `/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
       method: 'POST',
-      body: JSON.stringify({ receive_id: chatId, msg_type: msgType, content }),
+      body: JSON.stringify({ receive_id: receiveId, msg_type: msgType, content }),
     });
     return data?.data?.message_id ?? null;
   } catch {

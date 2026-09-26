@@ -11,7 +11,7 @@ import { EventDispatcher, WSClient } from '@larksuiteoapi/node-sdk';
 import type { FeishuConfig } from '../config';
 import { getLogger } from '../logger';
 import { seenEvent, type FeishuHandler } from './webhook';
-import { handleCardAction, type ApprovalActionDeps } from './approvalCards';
+import type { CardActionInput } from './approvalCards';
 
 export interface WsGatewayHandle {
   close: () => void;
@@ -21,7 +21,7 @@ export interface WsGatewayHandle {
 export function startWsGateway(
   cfg: FeishuConfig,
   getHandler: () => Promise<FeishuHandler>,
-  approvalDeps: ApprovalActionDeps,
+  onCardAction: (input: CardActionInput) => Promise<Record<string, unknown> | void>,
 ): WsGatewayHandle {
   const logger = getLogger();
   const dispatcher = new EventDispatcher({});
@@ -43,12 +43,24 @@ export function startWsGateway(
     'card.action.trigger': async (data: Record<string, any>) => {
       const dedupKey = `card:${data?.event_id || ''}:${data?.operator?.open_id || ''}`;
       if (await seenEvent(dedupKey)) return;
-      // 返回值会被 SDK 编码进响应帧——飞书用它作为点击后的卡片内容（空响应会回滚卡片）
-      return handleCardAction(cfg, approvalDeps, {
+      // 观测点：表单提交/按钮回调的真实字段结构（value/form_value/name）以此为准
+      logger.info('Feishu card action', {
+        operator: data?.operator?.open_id,
+        action_tag: data?.action?.tag,
+        act: data?.action?.value?.act,
+        name: data?.action?.name,
+        form_value: data?.action?.form_value,
+        message_id: data?.context?.open_message_id,
+      });
+      // 卡片动作统一交挂载处路由器分发（审批/决策/convo/oc）；返回值被 SDK
+      // 编码进响应帧——飞书用它作为点击后的卡片内容（空响应会回滚卡片）
+      return onCardAction({
         operatorOpenId: String(data?.operator?.open_id || ''),
         messageId: data?.context?.open_message_id,
         chatId: data?.context?.open_chat_id,
         value: data?.action?.value as Record<string, unknown> | undefined,
+        formValue: data?.action?.form_value as Record<string, unknown> | undefined,
+        actionName: typeof data?.action?.name === 'string' ? data.action.name : undefined,
       });
     },
   });

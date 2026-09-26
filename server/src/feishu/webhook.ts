@@ -12,10 +12,14 @@ import type { Context } from 'hono';
 import { busGet, busSet, getBus } from '../bus';
 import { CHANNELS } from '../types';
 import { getLogger } from '../logger';
+import { getTaskGraph, pushIntervention, appendJournal, emitProgress } from '../store';
+import { notify } from '../notify';
 import type { FeishuConfig } from '../config';
 import { verifySignature } from './tokenManager';
 import { getSession, setSession } from './session';
 import { handleCommand, type CommandDeps, type ProjectOption } from './commands';
+import type { ConvoBridge } from './convoBridge';
+import type { OcBridge } from './ocBridge';
 import { buildTaskCard, sendCard, sendText, updateCard } from './messageService';
 
 const EVENT_DEDUP_TTL_SEC = 300;
@@ -35,6 +39,14 @@ export interface FeishuDeps {
   listQueue?: () => Promise<{ key: string; running_task_id: string | null; pending: unknown[]; blocked: boolean; blocked_reason: string }[]>;
   /** 可选：/status 附带的网关连接状态 */
   gatewayStatus?: () => string;
+  /** 可选：/metrics 成本/成功率摘要 [v2] */
+  metrics?: () => Promise<string>;
+  /** 可选：/task <id> 单任务进度摘要 [v2] */
+  taskSummary?: (taskId: string) => Promise<string>;
+  /** 可选：convo 桥 [v2] */
+  convo?: ConvoBridge;
+  /** 可选：oc 桥 [v2] */
+  oc?: OcBridge;
 }
 
 /** True when this event id was already processed (飞书必然重推，需幂等). */
@@ -59,16 +71,21 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
     ...(deps.listTasks ? { listTasks: deps.listTasks } : {}),
     ...(deps.listQueue ? { listQueue: deps.listQueue } : {}),
     ...(deps.gatewayStatus ? { gatewayStatus: deps.gatewayStatus } : {}),
+    ...(deps.metrics ? { metrics: deps.metrics } : {}),
+    ...(deps.taskSummary ? { taskSummary: deps.taskSummary } : {}),
+    ...(deps.convo ? { convo: deps.convo } : {}),
+    ...(deps.oc ? { oc: deps.oc } : {}),
   };
 
-  /** Extract (userId, chatId, text) from a v2 (or lenient v1) message event. */
-  function extractMessage(body: Record<string, any>): { userId: string; chatId: string; text: string } | null {
+  /** Extract (userId, chatId, text, parentId) from a v2 (or lenient v1) message event. */
+  function extractMessage(body: Record<string, any>): { userId: string; chatId: string; text: string; parentId: string } | null {
     const v2 = body?.header?.event_type === 'im.message.receive_v1' ? body?.event : null;
     const legacy = !v2 && (body?.event_type === 'message' || body?.type === 'message') ? body?.event ?? body : null;
     const source = v2 || legacy;
     if (!source?.message) return null;
     const userId = source.sender?.sender_id?.open_id || source.sender?.sender_id?.user_id || source.open_id || '';
     const chatId = source.message.chat_id || '';
+    const parentId = String(source.message.parent_id || '');
     let text = '';
     try {
       const content = typeof source.message.content === 'string' ? JSON.parse(source.message.content) : source.message.content;
@@ -79,23 +96,68 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
     // strip @mention placeholders ("@_user_1 do it" → "do it")
     text = text.replace(/^@\S+\s*/, '').trim();
     if (!userId || !chatId || !text) return null;
-    return { userId, chatId, text };
+    return { userId, chatId, text, parentId };
+  }
+
+  /** 复刻 POST /api/tasks/:taskId/intervene（api/index.ts:560-602）核心副作用（图片富化仅在 API 层）。 */
+  async function interveneTask(taskId: string, text: string, by: string): Promise<void> {
+    const graph = await getTaskGraph(taskId);
+    if (!graph) throw new Error('task not found');
+    // failed 任务也放行：retry 提案批准后队列中的消息会被消费注入（对齐 intervene 端点）
+    if (!['running', 'pending', 'planned', 'retrying', 'waiting_approval', 'failed'].includes(graph.status)) {
+      throw new Error(`任务不可插话（status: ${graph.status}）`);
+    }
+    const item = await pushIntervention(taskId, text);
+    await appendJournal(taskId, 'orchestrator', {
+      role: 'master', kind: 'intervene', text, ts: item.ts,
+      node_id: 'intervene', node_name: `用户介入(${by})`, meta: { intervention_id: item.id },
+    });
+    await emitProgress('user_intervened', { task_id: taskId, message: text.slice(0, 500), intervention_id: item.id });
+    notify('user_intervened', { task_id: taskId }, `[Co-Team] 用户向任务 ${taskId} 发送介入指示：${text.slice(0, 80)}`);
   }
 
   async function replyAndBindTask(cfgLocal: FeishuConfig, chatId: string, taskId: string, title: string, status: string, detail: string): Promise<void> {
     const messageId = await sendCard(cfgLocal, chatId, buildTaskCard({ taskId, title, status, detail }));
-    if (messageId) await busSet(`feishu:card:${taskId}`, { chat_id: chatId, message_id: messageId }, 7 * 24 * 3600);
+    if (messageId) {
+      await busSet(`feishu:card:${taskId}`, { chat_id: chatId, message_id: messageId }, 7 * 24 * 3600);
+      // 反向索引：回复任务卡消息 = 中途插话（processEvent 的 parent_id 路由）
+      await busSet(`feishu:cardmsg:${messageId}`, taskId, 7 * 24 * 3600);
+    }
   }
 
   async function processEvent(body: Record<string, any>): Promise<void> {
     const msg = extractMessage(body);
     if (!msg) return;
+    // 回复任务卡消息 = 中途插话（intervention）——先于指令处理
+    if (msg.parentId) {
+      const linked = await busGet<string>(`feishu:cardmsg:${msg.parentId}`);
+      if (linked) {
+        try {
+          await interveneTask(linked, msg.text, msg.userId);
+          await sendText(cfg, msg.chatId, '已插话：将在 Agent 下一轮对话注入。');
+        } catch (e) {
+          await sendText(cfg, msg.chatId, `插话失败：${String((e as Error).message || e).slice(0, 120)}`);
+        }
+        return;
+      }
+    }
     try {
       let session = await getSession(msg.userId);
-      const cmd = await handleCommand(msg.text, session, commandDeps);
+      const cmd = await handleCommand(msg.text, session, commandDeps, msg.chatId);
       session = cmd.session ?? session;
       if (!cmd.passthrough) {
         if (cmd.reply) await sendText(cfg, msg.chatId, cmd.reply);
+        return;
+      }
+
+      // 自由文本按窗口主题路由（v2）：convo=会话发言 / oc=prompt / task=建任务
+      const mode = session.mode || 'task';
+      if (mode === 'convo' && commandDeps.convo) {
+        await sendText(cfg, msg.chatId, await commandDeps.convo.send(msg.text, session, msg.chatId));
+        return;
+      }
+      if (mode === 'oc' && commandDeps.oc) {
+        await sendText(cfg, msg.chatId, await commandDeps.oc.send(msg.text, session, msg.chatId));
         return;
       }
 

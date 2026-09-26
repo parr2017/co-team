@@ -19,6 +19,7 @@ import { appendJournal } from '../store';
 import type { FeishuConfig } from '../config';
 import type { TaskGraph } from '../types';
 import { sendCard, updateCard } from './messageService';
+import { buildResultCard, btn, btnRow, card2, md, note, cardResponse, type CardElement } from './cards';
 
 /** 与 HTTP 审批端点同源的动作原语（由 api 挂载处从 ctx 注入）。 */
 export interface ApprovalActionDeps {
@@ -39,53 +40,14 @@ export interface CardActionInput {
   messageId?: string;
   chatId?: string;
   value: Record<string, unknown> | undefined;
+  /** 表单提交：action.form_value（{输入框name: 值}）与提交按钮 name（路由令牌） */
+  formValue?: Record<string, unknown> | undefined;
+  actionName?: string | undefined;
 }
 
-// ---------- 卡片 JSON 2.0 构造 ----------
+// ---------- 卡片 JSON 2.0 构造（构件见 ./cards.ts） ----------
 
 const APPROVAL_EVENT_TTL_SEC = 3600;
-
-function card2(template: string, title: string, elements: Record<string, unknown>[]): Record<string, unknown> {
-  return {
-    schema: '2.0',
-    config: { update_multi: true },
-    header: { title: { tag: 'plain_text', content: title }, template },
-    body: { elements },
-  };
-}
-
-function md(content: string): Record<string, unknown> {
-  return { tag: 'markdown', content };
-}
-
-/**
- * 落款/提示行。注意：2.0 卡片不支持 1.0 的 `note` 标签（实测 230099 unsupported tag note），
- * 用 markdown 元素替代。
- */
-function note(content: string): Record<string, unknown> {
-  return md(content);
-}
-
-function btn(text: string, type: 'primary' | 'default' | 'danger', value: Record<string, unknown>): Record<string, unknown> {
-  return {
-    tag: 'button',
-    text: { tag: 'plain_text', content: text },
-    type,
-    size: 'medium',
-    behaviors: [{ type: 'callback', value }],
-  };
-}
-
-function btnRow(left: Record<string, unknown>, right: Record<string, unknown>): Record<string, unknown> {
-  return {
-    tag: 'column_set',
-    flex_mode: 'bisect',
-    columns: [
-      { tag: 'column', width: 'weighted', weight: 1, elements: [left] },
-      { tag: 'column', width: 'weighted', weight: 1, elements: [right] },
-    ],
-  };
-}
 
 function actionButtons(deps: { taskId: string; nodeId?: string; commandId?: string }, act: 'node' | 'command'): Record<string, unknown>[] {
   const base = { task_id: deps.taskId };
@@ -144,15 +106,6 @@ export function buildQueueGateCard(payload: { taskId: string; message?: string; 
   else elements.push(note(NO_APPROVERS_NOTE));
   elements.push(note(`Co-Team · 人工门 · ${new Date().toLocaleString()}`));
   return card2('red', '⛔ 任务停靠人工门', elements);
-}
-
-/** 处理结果卡（原地替换审批卡）。 */
-function buildResultCard(title: string, lines: string[]): Record<string, unknown> {
-  return card2(
-    title.includes('拒绝') || title.includes('取消') ? 'red' : 'green',
-    title,
-    [...lines.map((l) => md(l)), note(`Co-Team · ${new Date().toLocaleString()}`)],
-  );
 }
 
 // ---------- 渲染侧：TASK 频道订阅 ----------
@@ -223,9 +176,8 @@ export async function handleCardAction(cfg: FeishuConfig, deps: ApprovalActionDe
   const reply = async (title: string, lines: string[]): Promise<Record<string, unknown>> => {
     const card = buildResultCard(title, lines);
     if (input.messageId) await updateCard(cfg, input.messageId, card).catch(() => false);
-    // 卡片回调响应体必须包装为 { card: { type: 'raw', data: <卡片JSON> } }——
-    // 裸卡片 JSON 会被飞书当成空响应，卡片回滚到点击前状态（实测），updateCard 的结果被覆盖
-    return { card: { type: 'raw', data: card } };
+    // 卡片回调响应体必须包装为 { card: { type: 'raw', data } }——裸卡片 JSON 会被飞书当空响应回滚
+    return cardResponse(card);
   };
 
   try {

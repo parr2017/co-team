@@ -138,7 +138,7 @@ describe('feishu commands', () => {
   it('/agent lists and switches; /list project enumerates', async () => {
     const session = await getSession('ou_a');
     const listed = await handleCommand('/agent', session, deps);
-    expect(listed.reply).toContain('dev, test, review');
+    expect(listed.reply).toContain('3. review');
     const switched = await handleCommand('/agent rev', session, deps);
     expect(switched.reply).toContain('review');
     const projects = await handleCommand('/list project', session, deps);

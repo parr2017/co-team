@@ -50,6 +50,7 @@ vi.mock('../src/feishu/messageService', () => ({
 
 import { closeBus, initBus } from '../src/bus';
 import { startWsGateway } from '../src/feishu/wsGateway';
+import { handleCardAction } from '../src/feishu/approvalCards';
 import { handleCommand } from '../src/feishu/commands';
 import type { FeishuConfig } from '../src/config';
 
@@ -84,7 +85,7 @@ afterEach(() => {
 describe('feishu ws gateway', () => {
   it('im.message.receive_v1 拍平事件重包成信封交给 processEvent；同 event_id 去重', async () => {
     const processEvent = vi.fn(async () => {});
-    const handle = startWsGateway(cfg(), async () => ({ handle: async () => new Response('ok'), processEvent }), makeApprovalDeps());
+    const handle = startWsGateway(cfg(), async () => ({ handle: async () => new Response('ok'), processEvent }), makeApprovalDeps(), async () => {});
 
     expect(sdk.wsInstances).toHaveLength(1);
     expect(sdk.wsInstances[0].started).toBe(true);
@@ -109,8 +110,19 @@ describe('feishu ws gateway', () => {
     expect(sdk.wsInstances[0].closed).toBe(true);
   });
 
-  it('card.action.trigger 路由到审批回调；白名单外操作收到无权卡片', async () => {
-    const handle = startWsGateway(cfg(['ou_admin']), async () => ({ handle: async () => new Response('ok'), processEvent: vi.fn(async () => {}) }), makeApprovalDeps());
+  it('card.action.trigger 路由到 onCardAction；白名单外操作人收到无权卡片', async () => {
+    const approvalDeps = {
+      getTaskGraph: vi.fn(async () => null),
+      enqueue: vi.fn(async () => ({})),
+      abortTask: vi.fn(),
+      removePending: vi.fn(async () => {}),
+      resolvePendingCommand: vi.fn(async () => ({ ok: true })),
+    };
+    const handle = startWsGateway(
+      cfg(['ou_admin']),
+      async () => ({ handle: async () => new Response('ok'), processEvent: vi.fn(async () => {}) }),
+      async (input) => handleCardAction(cfg(['ou_admin']), approvalDeps, input),
+    );
     await sdk.registered['card.action.trigger']({
       event_id: 'c1',
       operator: { open_id: 'ou_stranger' },
@@ -124,7 +136,7 @@ describe('feishu ws gateway', () => {
   });
 
   it('status() 暴露连接状态；close() 幂等', () => {
-    const handle = startWsGateway(cfg(), async () => ({ handle: async () => new Response('ok'), processEvent: vi.fn(async () => {}) }), makeApprovalDeps());
+    const handle = startWsGateway(cfg(), async () => ({ handle: async () => new Response('ok'), processEvent: vi.fn(async () => {}) }), async () => {});
     handle.close();
     expect(() => handle.close()).not.toThrow();
     expect(handle.status()).toMatchObject({ state: 'connected', reconnectAttempts: 0 });

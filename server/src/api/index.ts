@@ -16,7 +16,7 @@ import { getTaskConversations } from '../transcript';
 import { toAgentInfo } from '../agents';
 import { mergeTaskBranch } from '../git';
 import { DiscussionError } from '../discussion';
-import { ConvoError } from '../convo';
+import { ConvoError, listConvos, createConvo, sendConvoMessage, stopConvo, resolveConvoApproval, answerConvoAsk } from '../convo';
 import { WorkspaceError, assertStandaloneWorkspace, slugifyProjectName, prepareSelfdevClone, removeSelfdev } from '../workspace';
 import { getDocRegistry } from '../ssot';
 import { listFiles, readFile } from '../tools';
@@ -25,7 +25,8 @@ import type { AppConfig, OrchestrationConfig } from '../config';
 import { PROJECT_ROOT } from '../config';
 import type { TaskGraph, TaskNode } from '../types';
 import type { FeishuHandler } from '../feishu/webhook';
-import { registerConvoRoutes } from './convos';
+import { registerConvoRoutes, convoDeps } from './convos';
+import { eventSessionId } from '../opencode/events';
 import { registerOpencodeRoutes } from './opencode';
 import { registerCoteamMcpRoutes } from '../mcpServer/server';
 import { getLogger } from '../logger';
@@ -2021,6 +2022,24 @@ export function createApi(ctx: ApiContext): Hono {
 
   if (ctx.config.feishu?.app_id && ctx.config.feishu.app_secret) {
     let handlerP: Promise<FeishuHandler> | null = null;
+    // v2：metrics / taskSummary / convo 桥 / oc 桥（getHandler 内透传给指令集）
+    const feishuMetrics = async (): Promise<string> => {
+      const graphs = await listTaskGraphs();
+      const total = graphs.length;
+      const success = graphs.filter((g) => g.status === 'success' || g.status === 'completed_with_warnings').length;
+      const running = graphs.filter((g) => ['running', 'retrying'].includes(g.status)).length;
+      const waiting = graphs.filter((g) => String(g.status).startsWith('waiting')).length;
+      return `任务 ${total} · 成功 ${success} · 在跑 ${running} · 等待人工 ${waiting}\n累计 token ${ctx.modelPool.totalTokens()} · 成本 ${ctx.modelPool.totalCost().toFixed(2)}`;
+    };
+    const feishuTaskSummary = async (taskId: string): Promise<string> => {
+      const g = await getTaskGraph(taskId);
+      if (!g) return `任务 ${taskId} 不存在`;
+      const lines = [`任务 ${taskId} · ${g.status} · ${(g.description || '').slice(0, 40)}`];
+      for (const n of g.nodes.slice(0, 10)) lines.push(`- ${n.name} · ${n.status}`);
+      return lines.join('\n');
+    };
+    let convoBridge: import('../feishu/convoBridge').ConvoBridge | undefined;
+    let ocBridge: import('../feishu/ocBridge').OcBridge | undefined;
     const getHandler = () => {
       handlerP ||= import('../feishu/webhook').then((m) =>
         m.createFeishuHandler(ctx.config.feishu!, {
@@ -2042,6 +2061,10 @@ export function createApi(ctx: ApiContext): Hono {
             })),
           listQueue: async () => ctx.taskQueue.snapshots(),
           gatewayStatus: () => feishuWsHandle?.status().state ?? 'off',
+          metrics: feishuMetrics,
+          taskSummary: feishuTaskSummary,
+          ...(convoBridge ? { convo: convoBridge } : {}),
+          ...(ocBridge ? { oc: ocBridge } : {}),
         })
       );
       return handlerP;
@@ -2055,9 +2078,16 @@ export function createApi(ctx: ApiContext): Hono {
       logger.info('Feishu bot webhook mounted at /api/feishu/webhook', { app_id: ctx.config.feishu.app_id });
     }
     // 长连接网关（无公网部署的入站通道）：出站 WebSocket 连飞书，ws_enabled 显式开启。
-    // 审批卡片仅在网关下启用——卡片按钮回调目前只有长连接能收回（旧版回传需公网 webhook）。
+    // v2 桥（通知/决策/convo/oc）仅随网关启用——按钮与表单回调只有长连接能收回。
     if (ctx.config.feishu.ws_enabled) {
-      void Promise.all([import('../feishu/approvalCards'), import('../feishu/wsGateway')]).then(([cards, gateway]) => {
+      void Promise.all([
+        import('../feishu/approvalCards'),
+        import('../feishu/wsGateway'),
+        import('../feishu/notifyBridge'),
+        import('../feishu/decisionCards'),
+        import('../feishu/convoBridge'),
+        import('../feishu/ocBridge'),
+      ]).then(([cards, gateway, notifyPush, decisions, convoMod, ocMod]) => {
         const approvalDeps = {
           getTaskGraph: (taskId: string) => getTaskGraph(taskId),
           enqueue: (taskId: string, projectId: string | null, workspace: string) => ctx.taskQueue.enqueue(taskId, projectId, workspace),
@@ -2065,9 +2095,123 @@ export function createApi(ctx: ApiContext): Hono {
           removePending: (taskId: string) => ctx.taskQueue.removePending(taskId),
           resolvePendingCommand: (taskId: string, commandId: string, approved: boolean) => ctx.orchestrator.resolvePendingCommand(taskId, commandId, approved),
         };
+        const decisionDeps = {
+          enqueue: approvalDeps.enqueue,
+          addNode: (taskId: string, input: { name: string; agent: string; afterNodeId: string }) => ctx.orchestrator.addNode(taskId, input),
+          createTask: (description: string, workspace: string, projectId?: string, opts?: { level?: string; autoRun?: boolean; planAsync?: boolean; skipClarification?: boolean }) =>
+            ctx.orchestrator.createTask(description, workspace, projectId, opts),
+          clarify: (taskId: string, input: { answers?: { question: string; answer: string }[]; confirm?: boolean; text?: string }) => ctx.orchestrator.clarify(taskId, input),
+          clarifyNode: (taskId: string, nodeId: string, input: { approve?: boolean; answers?: { question: string; answer: string }[]; text?: string }) => ctx.orchestrator.clarifyNode(taskId, nodeId, input),
+          postDiscussionMessage: async (discussionId: string, text: string) => {
+            const { postUserMessage } = await import('../discussion');
+            await postUserMessage(discDeps(), discussionId, text, {});
+          },
+        };
+        convoBridge = convoMod.createConvoBridge({
+          list: () => listConvos(),
+          create: (input) => createConvo(convoDeps(ctx), input),
+          send: (convoId, text) => sendConvoMessage(convoDeps(ctx), convoId, { text }),
+          stop: (convoId) => stopConvo(convoDeps(ctx), convoId),
+          resolveApproval: (convoId, approvalId, action) => resolveConvoApproval(convoDeps(ctx), convoId, approvalId, action),
+          answerAsk: (convoId, askId, answer) => answerConvoAsk(convoDeps(ctx), convoId, askId, answer),
+        });
+        if (ctx.opencode) {
+          const oc = ctx.opencode;
+          ocBridge = ocMod.createOcBridge({
+            listInstances: async () => oc.listInstances(undefined).map((i) => ({ id: i.id, label: i.label || i.id, kind: i.kind, state: i.state, mode: i.mode })),
+            activeSession: async (instanceId) => {
+              const r = await oc.activeSession(undefined, instanceId).catch(() => null);
+              return r?.ok && r.data?.session ? { id: r.data.session.id, title: r.data.session.title } : null;
+            },
+            listSessions: async (instanceId) => {
+              const r = await oc.listSessions(undefined, instanceId).catch(() => null);
+              return r?.ok && r.data ? r.data.map((s: any) => ({ id: s.id, title: s.title })) : [];
+            },
+            createSession: async (instanceId, title) => {
+              const r = await oc.createSession(undefined, instanceId, title).catch(() => null);
+              return r?.ok && r.data ? { id: r.data.id, title: r.data.title } : null;
+            },
+            sendPrompt: async (instanceId, sessionId, prompt) => {
+              const r = await oc.sendPromptAsync(undefined, instanceId, sessionId, prompt).catch(() => null);
+              return r ? { ok: r.ok, error: r.error } : { ok: false, error: 'instance unreachable' };
+            },
+            abort: async (instanceId, sessionId) => {
+              const r = await oc.abortSession(undefined, instanceId, sessionId).catch(() => null);
+              return !!(r && r.data);
+            },
+            listModels: async (instanceId) => {
+              const r = await oc.listProviders(undefined, instanceId).catch(() => null);
+              if (!r?.ok || !r.data) return [];
+              const out: { id: string; label: string; is_default?: boolean }[] = [];
+              const providers = ((r.data as any).providers || []) as any[];
+              for (const p of providers) {
+                const pid = p.id || p.providerID || '';
+                for (const [modelID, info] of Object.entries(p.models || {})) {
+                  out.push({ id: `${pid}/${modelID}`, label: String((info as any)?.name || modelID) });
+                }
+              }
+              const def = ((r.data as any).default || {}) as any;
+              const defId = def.providerID ? `${def.providerID}/${def.modelID}` : '';
+              for (const m of out) if (defId && m.id === defId) m.is_default = true;
+              return out;
+            },
+            switchModel: async (instanceId, sessionId, modelId) => {
+              const model = (oc as any).resolveModel ? (oc as any).resolveModel(instanceId, modelId) : undefined;
+              if (!model) return false;
+              const r = await oc.switchSessionModel(undefined, instanceId, sessionId, model).catch(() => null);
+              return !!(r && r.ok && r.data);
+            },
+            switchAgent: async (instanceId, sessionId, agent) => {
+              const r = await oc.switchSessionAgent(undefined, instanceId, sessionId, agent).catch(() => null);
+              return !!(r && r.ok && r.data);
+            },
+            readLastReply: async (instanceId, sessionId) => {
+              const r = await oc.readMessages(undefined, instanceId, sessionId, { limit: 5 }).catch(() => null);
+              if (!r?.ok || !r.data?.messages) return null;
+              for (const m of [...r.data.messages].reverse()) {
+                const parts = ((m as any)?.parts || []) as any[];
+                const text = parts.filter((p) => p?.type === 'text').map((p) => String(p.text || '')).join('\n').trim();
+                if (text) return text;
+              }
+              return null;
+            },
+            pendingAll: () => oc.pendingAll(),
+            answerPermission: async (instanceId, sessionId, permissionId, response) => {
+              const r = await oc.answerPermission(undefined, instanceId, sessionId, permissionId, response).catch(() => null);
+              return !!(r && r.ok && r.data);
+            },
+            answerQuestion: async (instanceId, requestID, answers) => {
+              const r = await oc.answerQuestion(undefined, instanceId, requestID, answers).catch(() => null);
+              return !!(r && r.ok && r.data);
+            },
+            rejectQuestion: async (instanceId, requestID) => {
+              const r = await oc.rejectQuestion(undefined, instanceId, requestID).catch(() => null);
+              return !!(r && r.ok && r.data);
+            },
+            eventSessionId: (event) => eventSessionId(event as any),
+            instanceKind: (instanceId) => oc.listInstances(undefined).find((i) => i.id === instanceId)?.kind || '',
+          });
+        }
         cards.startApprovalCards(ctx.config.feishu!, approvalDeps);
-        feishuWsHandle = gateway.startWsGateway(ctx.config.feishu!, getHandler, approvalDeps);
-        logger.info('Feishu WS gateway enabled (ws_enabled=true)', { app_id: ctx.config.feishu!.app_id, approvers: ctx.config.feishu!.approvers?.length ?? 0 });
+        notifyPush.startNotifyPush(ctx.config.feishu!);
+        decisions.startDecisionCards(ctx.config.feishu!, decisionDeps);
+        if (convoBridge) convoBridge.start(ctx.config.feishu!);
+        if (ocBridge) ocBridge.start(ctx.config.feishu!);
+        const APPROVAL_ACTS = new Set(['approve_node', 'cancel_task', 'approve_command', 'reject_command']);
+        const onCardAction = async (input: import('../feishu/approvalCards').CardActionInput) => {
+          let value = input.value;
+          if (!value || !Object.keys(value).length) {
+            if (input.messageId) value = (await busGet(`feishu:route:${input.messageId}`)) || undefined;
+            input.value = value;
+          }
+          const act = String(value?.act || '');
+          if (APPROVAL_ACTS.has(act)) return cards.handleCardAction(ctx.config.feishu!, approvalDeps, input);
+          if (act.startsWith('convo_') && convoBridge) return convoBridge.handleCardAction(ctx.config.feishu!, input);
+          if (act.startsWith('oc_') && ocBridge) return ocBridge.handleCardAction(ctx.config.feishu!, input);
+          return decisions.handleDecisionAction(ctx.config.feishu!, decisionDeps, input);
+        };
+        feishuWsHandle = gateway.startWsGateway(ctx.config.feishu!, getHandler, onCardAction);
+        logger.info('Feishu WS gateway enabled (ws_enabled=true)', { app_id: ctx.config.feishu!.app_id, approvers: ctx.config.feishu!.approvers?.length ?? 0, convo: !!convoBridge, oc: !!ocBridge });
       });
     }
   }
