@@ -108,3 +108,17 @@ graph TD
 
 ### 6.4 可观测性
 - 网关连接状态（connected / reconnecting / failed）暴露在 `GET /api/status` 的 `feishu_ws` 字段，`/status` 指令同步可查；连接失败日志会提示检查凭据与开放平台订阅模式。
+
+---
+
+## 7. v2：决策卡补全与会话桥（2026-09-26）
+
+**决策卡（decisionCards.ts）**：订阅 coteam:notify——agent 阻塞提问（ask_user，表单作答/跳过）、监督者提案（四类，一键批准含派生修复任务）、每日报告三选一裁决、需求澄清问卷（最多 3 轮）、节点开工确认、讨论拍板。notify 载荷只有 id，凭 id 回查 KV 取详情；**表单路由按卡片消息 id 注册**（feishu:route:{message_id}，渲染后写入）——表单回调只可靠携带 form_value 与 open_message_id；监督提案决定/每日裁决逻辑复刻对应 HTTP 端点（api/index.ts:680/1822），写动作全部过 approvers 白名单 + journal 审计。
+
+**通知统一化（notifyBridge.ts）**：白名单 notify 事件（task_success/failed/interrupted/auto_restart/preflight、light_escalated、supervisor_report、agent_user_message、task_model_changed、clarify_timeout）以纯文本推到任务绑定聊天（同类 1h 去重）；生命周期演进仍由绑定卡原地更新负责。
+
+**convo 桥（convoBridge.ts）**：`/convo` 进入会话模式（自动列出并绑定最近活跃会话）；自由文本→sendConvoMessage；agent 终稿（convo_message assistant text）推富文本卡；convo_approval / convo_ask 升级为按钮卡/表单卡（resolveConvoApproval / answerConvoAsk）。
+
+**oc 桥（ocBridge.ts）**：`/oc` 进入 OpenCode 模式（自动绑定 running 实例的活动会话）；自由文本→sendPromptAsync（受理回执→完成推送，waitSessionIdle 30min 上限）；**全局监控所有实例所有会话**——session.idle/session.error 事件驱动完成通知（读末条回复渲染），权限/提问 30s 扫描 pendingAll 推审批卡（answerPermission readonly 可用 / answerQuestion）；噪音阀门 `feishu.oc_watch: all|managed|bound`（默认 all）。
+
+**会话模式（session.mode: task/convo/oc 三态互斥）**：命令按当前模式域解析（模式内短命令 /list /new /switch /model /agent /stop），全局仅 /help /status /exit /reset + 模式入口 /convo /oc；"裸命令看选项（当前项打标、序号缓存进 session.last_list），带参数（序号或名称）才执行"。回复任务卡消息 = 中途插话（webhook.ts 按 feishu:cardmsg:{parent_id} 反查任务，复刻 intervene 端点副作用）。
