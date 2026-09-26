@@ -663,9 +663,13 @@ export class OpencodeClient {
           questions: fields.map((value) => {
             const field = value && typeof value === 'object' ? value as Record<string, unknown> : {};
             const options = Array.isArray(field.options) ? field.options : [];
+            const maxItems = Number((field as Record<string, unknown>).maxItems);
             return {
-              question: String(field.title || field.description || field.key || ''),
-              custom: field.type === 'text' || field.type === 'string',
+              question: String(field.question || field.title || field.description || field.key || ''),
+              header: field.header === undefined ? undefined : String(field.header),
+              // multiselect 且未限定"只选 1 项"→ 视为多选；字段自带 custom（如"其他"自填）也算自定义入口
+              multiple: field.type === 'multiselect' && !(maxItems === 1),
+              custom: field.custom === true || field.type === 'text' || field.type === 'string',
               options: options.map((option) => {
                 const entry = option && typeof option === 'object' ? option as Record<string, unknown> : {};
                 return { label: String(entry.label || entry.value || ''), description: String(entry.description || '') };

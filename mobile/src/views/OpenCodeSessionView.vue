@@ -126,6 +126,33 @@
         </div>
       </template>
 
+      <!-- 提问卡：opencode 的 AskUserQuestion——TUI 里弹的题，这里也能答（多问题逐题标记，统一提交） -->
+      <div v-for="q in liveQuestions" :key="q.id" class="q-card">
+        <template v-for="(qi, qii) in q.questions || []" :key="qii">
+          <div class="l1">
+            opencode 等你拍板{{ (q.questions || []).length > 1 ? ` · 第 ${qii + 1}/${(q.questions || []).length} 题` : '' }}
+            <span v-if="qi.header" class="q-header">{{ qi.header }}</span>
+          </div>
+          <div class="q-text">{{ qi.question }}</div>
+          <div class="q-opts">
+            <button
+              v-for="o in qi.options || []" :key="o.label"
+              :class="{ sel: qSel[q.id + ':' + qii] === o.label }"
+              @click="pickOption(q, qii, o.label)"
+            >{{ o.label }}</button>
+          </div>
+          <div v-if="selectedDesc(qi, q.id + ':' + qii)" class="q-desc">{{ selectedDesc(qi, q.id + ':' + qii) }}</div>
+          <div v-if="qi.custom" class="q-custom">
+            <input v-model="qDraft[q.id + ':' + qii]" placeholder="或输入你的回答" @keydown.enter="submitQuestion(q, qii)" />
+            <button class="p" @click="submitQuestion(q, qii)">提交</button>
+          </div>
+        </template>
+        <div class="acts">
+          <button v-if="(q.questions || []).length > 1" class="p" @click="submitQuestion(q)">提交全部回答</button>
+          <button @click="rejectQuestion(String(q.id))">不回答，让它自己拿主意</button>
+        </div>
+      </div>
+
       <!-- 审批卡：消息流末尾内嵌（readonly 也可人工放行） -->
       <div v-for="pm in livePermissions" :key="pm.id" class="perm-card">
         <div class="l1">权限请求 · opencode 等待审批</div>
@@ -310,6 +337,66 @@ const fullMessages = ref(new Map<string, any>());
 /** 本地已决权限（服务端 permission.replied 事件到达前先移除，双保险） */
 const resolvedPerms = reactive(new Set<string>());
 const livePermissions = computed(() => snap.value.pendingPermissions.filter((p) => !resolvedPerms.has(String(p.id))));
+/** 本地已答提问（question.replied/rejected 事件到达前先移除，双保险）；qSel 逐题点选 / qDraft 自定义输入 */
+const resolvedQuestions = reactive(new Set<string>());
+const liveQuestions = computed(() => snap.value.pendingQuestions.filter((q) => !resolvedQuestions.has(String(q.id))));
+const qSel = ref<Record<string, string>>({});
+const qDraft = ref<Record<string, string>>({});
+
+/** 已选选项的描述（点选后展示一行说明，弥补触屏无 hover tooltip） */
+function selectedDesc(qi: any, key: string): string {
+  if (!qi) return '';
+  const label = qSel.value[key];
+  if (!label) return '';
+  const hit = (qi.options || []).find((o: any) => o.label === label);
+  return String(hit?.description || '');
+}
+
+/** 点选一个选项：单问题立即作答；多问题只标记该题，待「提交全部回答」 */
+function pickOption(q: any, qii: number, label: string): void {
+  if ((q.questions || []).length <= 1) { void answerQuestionReq(q.id, [[label]]); return; }
+  qSel.value[q.id + ':' + qii] = label;
+}
+
+/** 组装按题序的 answers 矩阵：overrideQii 优先（单问题即答/回车提交），其余题取点选或自定义输入 */
+function buildAnswers(q: any, overrideQii?: number): string[][] {
+  const total = (q.questions || []).length;
+  return Array.from({ length: total }, (_, i) => {
+    if (i === overrideQii) { const c = String(qDraft.value[q.id + ':' + i] || '').trim(); return c ? [c] : []; }
+    const sel = qSel.value[q.id + ':' + i];
+    if (sel) return [sel];
+    const c = String(qDraft.value[q.id + ':' + i] || '').trim();
+    return c ? [c] : [];
+  });
+}
+
+/** 提交作答：qii 缺省=提交整卡（多问题）；qii 给定=仅该题的自定义输入即答 */
+function submitQuestion(q: any, qii?: number): void {
+  void answerQuestionReq(q.id, buildAnswers(q, qii));
+}
+
+/** 作答请求：保持槽位对齐（服务端按题序取 answers[index]，空题占位 [] 不能剔除） */
+async function answerQuestionReq(requestId: string, answers: string[][]): Promise<void> {
+  const cleaned = answers.map((a) => a.filter((x) => typeof x === 'string' && x.trim()));
+  if (!cleaned.some((a) => a.length)) { showFailToast('回答不能为空'); return; }
+  try {
+    await api.ocAnswerQuestion(instanceId.value, String(requestId), cleaned);
+    resolvedQuestions.add(String(requestId));
+    showSuccessToast('已作答');
+  } catch (e: any) {
+    showFailToast(e?.message || '作答失败');
+  }
+}
+
+async function rejectQuestion(requestId: string): Promise<void> {
+  try {
+    await api.ocRejectQuestion(instanceId.value, requestId);
+    resolvedQuestions.add(requestId);
+    showSuccessToast('已谢绝，opencode 将自行继续');
+  } catch (e: any) {
+    showFailToast(e?.message || '操作失败');
+  }
+}
 
 let gen = 0;
 let lastEventId: string | undefined;
@@ -601,6 +688,9 @@ async function enterSession() {
   stream = new SessionStream();
   knownMsgIds.clear();
   resolvedPerms.clear();
+  resolvedQuestions.clear();
+  qSel.value = {};
+  qDraft.value = {};
   toolOpen.clear();
   toolOutFull.clear();
   thinkClosed.value = new Set();
@@ -1254,6 +1344,20 @@ onBeforeUnmount(() => {
 
 /* 审批卡 */
 .perm-card { border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel)); border-radius: 10px; padding: 10px 12px; margin: 10px 0 6px; }
+/* 提问卡（对齐 web 端 q-card）：选项按钮 + 自定义输入 + 逐题提交 */
+.q-card { border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 8%, var(--bg-panel)); border-radius: 10px; padding: 10px 12px; margin: 10px 0 6px; }
+.q-card .l1 { font-size: 12px; font-weight: 600; color: var(--warn); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.q-card .q-header { font-size: 11px; color: var(--text-2); background: var(--bg-inset); border-radius: 4px; padding: 1px 6px; }
+.q-card .q-text { font-size: 13px; color: var(--text-1); margin-top: 5px; line-height: 1.5; }
+.q-card .q-opts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.q-card .q-opts button { padding: 6px 11px; border-radius: 7px; font-size: 12px; border: 1px solid var(--line-strong); background: var(--bg-inset); color: var(--text-1); max-width: 100%; }
+.q-card .q-opts button.sel { border: none; background: var(--accent); color: var(--accent-text); }
+.q-card .q-desc { margin-top: 6px; font-size: 11px; color: var(--text-3); line-height: 1.45; }
+.q-card .q-custom { display: flex; gap: 7px; margin-top: 8px; }
+.q-card .q-custom input { flex: 1; min-width: 0; background: var(--bg-overlay); border: 1px solid var(--border); border-radius: 4px; font-size: 13px; padding: 6px 8px; outline: none; }
+.q-card .acts { display: flex; gap: 8px; margin-top: 9px; }
+.q-card .acts button { flex: 1; padding: 7px 0; border-radius: 7px; font-size: 12px; border: 1px solid var(--line-strong); background: none; color: var(--text-2); }
+.q-card .acts button.p { border: none; background: var(--accent); color: var(--accent-text); }
 .perm-card .l1 { font-size: 12px; font-weight: 600; color: var(--danger); }
 .perm-title { font-size: 11px; color: var(--text-2); margin-top: 3px; }
 .perm-card .cmd { margin-top: 6px; font-size: 11px; color: var(--text-1); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }

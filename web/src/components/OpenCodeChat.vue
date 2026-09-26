@@ -122,26 +122,32 @@
           </div>
         </template>
 
-        <!-- 行内提问卡：opencode 的 AskUserQuestion——TUI 里弹的题，这里也能答 -->
+        <!-- 行内提问卡：opencode 的 AskUserQuestion——TUI 里弹的题，这里也能答。
+             多问题时逐题作答（点选只标记，统一提交）；单问题保持点选即答。 -->
         <div v-for="q in snap.pendingQuestions" :key="q.id" class="q-card">
           <template v-for="(qi, qii) in q.questions || []" :key="qii">
-            <div class="q-l1">opencode 等你拍板 · {{ qi.header || '征询' }}</div>
+            <div class="q-l1">
+              <span>opencode 等你拍板{{ (q.questions || []).length > 1 ? ` · 第 ${qii + 1}/${(q.questions || []).length} 题` : '' }}</span>
+              <span v-if="qi.header" class="q-header">{{ qi.header }}</span>
+            </div>
             <div class="q-text">{{ qi.question }}</div>
             <div class="q-opts">
               <el-button
                 v-for="o in qi.options || []"
                 :key="o.label"
                 size="small"
+                :type="qSel[q.id + ':' + qii] === o.label ? 'primary' : undefined"
                 :title="o.description || ''"
-                @click="answerQuestion(q.id, [[o.label]])"
+                @click="pickOption(q, qii, o.label)"
               >{{ o.label }}</el-button>
             </div>
             <div v-if="qi.custom" class="q-custom">
-              <el-input v-model="qDraft[q.id + ':' + qii]" size="small" placeholder="或输入你的回答" @keydown.enter="answerQuestion(q.id, [[qDraft[q.id + ':' + qii] || '']])" />
-              <el-button size="small" type="primary" @click="answerQuestion(q.id, [[qDraft[q.id + ':' + qii] || '']])">提交</el-button>
+              <el-input v-model="qDraft[q.id + ':' + qii]" size="small" placeholder="或输入你的回答" @keydown.enter="submitQuestion(q, qii)" />
+              <el-button size="small" type="primary" @click="submitQuestion(q, qii)">提交</el-button>
             </div>
           </template>
           <div class="q-acts">
+            <el-button v-if="(q.questions || []).length > 1" size="small" type="primary" @click="submitQuestion(q)">提交全部回答</el-button>
             <el-button size="small" text @click="rejectQuestion(q.id)">不回答，让它自己拿主意</el-button>
           </div>
         </div>
@@ -362,6 +368,8 @@ const nextBefore = ref('');
 const loadingMore = ref(false);
 /** 被服务端头尾裁剪的 part id（tool 卡角标 + 完整原文按钮） */
 const qDraft = ref<Record<string, string>>({});
+/** 逐题点选状态：`requestId:qii` → 已选 label（多问题时点选只标记、统一提交） */
+const qSel = ref<Record<string, string>>({});
 const trimmedParts = ref(new Set<string>());
 /** 已拉全文中消息 id → message（渲染时优先取全文 parts） */
 const fullMessages = ref(new Map<string, any>());
@@ -621,10 +629,40 @@ async function revertTo(m: Record<string, any>): Promise<void> {
   } catch (e: any) { showApiError(e); }
 }
 
-/** 回答提问：answerQuestion 走本地 stream 先移除（双保险），服务端事件随后确认 */
+/** 点选一个选项：单问题立即作答；多问题只标记该题，待「提交全部回答」 */
+function pickOption(q: { id: string; questions?: unknown[] }, qii: number, label: string): void {
+  if ((q.questions || []).length <= 1) {
+    void answerQuestion(q.id, [[label]]);
+    return;
+  }
+  qSel.value[q.id + ':' + qii] = label;
+}
+
+/** 组装按题序的 answers 矩阵：overrideQii 优先（单问题即答/回车提交），其余题取点选或自定义输入 */
+function buildAnswers(q: { id: string; questions?: unknown[] }, overrideQii?: number): string[][] {
+  const total = (q.questions || []).length;
+  return Array.from({ length: total }, (_, i) => {
+    if (i === overrideQii) {
+      const custom = String(qDraft.value[q.id + ':' + i] || '').trim();
+      return custom ? [custom] : [];
+    }
+    const sel = qSel.value[q.id + ':' + i];
+    if (sel) return [sel];
+    const custom = String(qDraft.value[q.id + ':' + i] || '').trim();
+    return custom ? [custom] : [];
+  });
+}
+
+/** 提交作答：qii 缺省=提交整卡（多问题）；qii 给定=仅该题的自定义输入即答 */
+function submitQuestion(q: { id: string; questions?: unknown[] }, qii?: number): void {
+  void answerQuestion(q.id, buildAnswers(q, qii));
+}
+
+/** 回答提问：answerQuestion 走本地 stream 先移除（双保险），服务端事件随后确认。
+ *  注意保持槽位对齐——服务端按题序取 answers[index]，空题占位 [] 不能剔除。 */
 async function answerQuestion(requestId: string, answers: string[][]): Promise<void> {
-  const cleaned = answers.map((a) => a.filter((x) => typeof x === 'string' && x.trim())).filter((a) => a.length);
-  if (!cleaned.length) { ElMessage.warning('回答不能为空'); return; }
+  const cleaned = answers.map((a) => a.filter((x) => typeof x === 'string' && x.trim()));
+  if (!cleaned.some((a) => a.length)) { ElMessage.warning('回答不能为空'); return; }
   try {
     const r = await api.ocAnswerQuestion(props.instance.id, requestId, cleaned);
     if (r.ok) {
@@ -826,7 +864,8 @@ onBeforeUnmount(() => {
 .tc-pre { margin: 0 0 8px; font-size: 12px; background: var(--el-fill-color-light); border-radius: 6px; padding: 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .tc-sec.err { color: var(--el-color-danger); font-size: 12px; }
 .q-card { border: 1px solid var(--el-color-primary); border-radius: 8px; padding: 10px 12px; background: var(--el-color-primary-light-9); }
-.q-l1 { font-size: 12px; font-weight: 600; color: var(--el-color-primary-darken-2); }
+.q-l1 { font-size: 12px; font-weight: 600; color: var(--el-color-primary-darken-2); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.q-header { font-size: 11px; font-weight: 500; color: var(--text-2); background: var(--bg-panel); border-radius: 4px; padding: 1px 6px; }
 .q-text { font-size: 13px; margin: 4px 0 8px; }
 .q-opts { display: flex; flex-wrap: wrap; gap: 8px; }
 .q-custom { display: flex; gap: 8px; margin-top: 8px; }

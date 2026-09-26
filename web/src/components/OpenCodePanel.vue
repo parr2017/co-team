@@ -170,11 +170,27 @@ async function loadInstances() {
   try {
     const d = await api.ocInstances();
     instances.value = d.instances || [];
+    applyPendingSessionLink();
   } catch (e: any) {
     showApiError(e);
   } finally {
     loadingInstances.value = false;
   }
+}
+
+/** 消费跨页深链目标（审批收件箱「去会话回答」在 /approvals 页落下的接力棒） */
+function applyPendingSessionLink() {
+  const raw = sessionStorage.getItem('coteam:pending-oc-session');
+  if (!raw) return;
+  sessionStorage.removeItem('coteam:pending-oc-session');
+  try {
+    const d = JSON.parse(raw) as { instance?: string; sessionId?: string };
+    const inst = instances.value.find((i) => i.id === d.instance);
+    if (!inst || !d.sessionId) return;
+    expandedId.value = inst.id;
+    void loadSessions(inst);
+    openSession(inst, { id: d.sessionId } as OcSession);
+  } catch { /* ignore */ }
 }
 
 async function loadSessions(inst: OcInstance) {
@@ -260,8 +276,19 @@ async function stopInstance(inst: OcInstance) {
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let offEvent: (() => void) | null = null;
 
+/** 审批收件箱等外部入口深链到指定会话（coteam:open-opencode-session {instance, sessionId}） */
+function onOpenSessionEvent(e: Event) {
+  const d = (e as CustomEvent<{ instance?: string; sessionId?: string }>).detail || {};
+  const inst = instances.value.find((i) => i.id === d.instance);
+  if (!inst || !d.sessionId) return;
+  expandedId.value = inst.id;
+  void loadSessions(inst);
+  openSession(inst, { id: d.sessionId } as OcSession);
+}
+
 onMounted(() => {
   void loadInstances();
+  window.addEventListener('coteam:open-opencode-session', onOpenSessionEvent);
   // 实例状态轻轮询：starting→connected 等迁移不依赖人工点刷新
   pollTimer = setInterval(() => { if (document.visibilityState === 'visible') void loadInstances(); }, 12_000);
   // 会话标题/活跃度随事件变化：展开中的实例收到会话事件时刷新列表
@@ -278,6 +305,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
+  window.removeEventListener('coteam:open-opencode-session', onOpenSessionEvent);
   offEvent?.();
 });
 </script>

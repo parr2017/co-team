@@ -26,6 +26,8 @@ interface ApprovalItem {
   rejectable?: boolean;
   /** oc-question 专用：提问选项（label 一键作答） */
   questionOptions?: { label: string; description?: string }[];
+  /** oc-question 专用：所属会话（多问题时引导去会话页逐题作答） */
+  sessionId?: string;
 }
 
 const items = ref<ApprovalItem[]>([]);
@@ -142,15 +144,21 @@ async function load() {
         });
       }
       for (const q of pending.questions || []) {
-        const first = (q.questions || [])[0] || {};
+        const qs: any[] = q.questions || [];
+        const first = qs[0] || {} as any;
+        // 多问题时逐题列出（题干 + 选项），快捷选项按钮只在单问题给——多题的作答矩阵去会话页
+        const detail = qs.length <= 1
+          ? [first.question, ((first.options || []) as any[]).length ? `选项：${((first.options || []) as any[]).map((o) => o.label).join(' / ')}` : ''].filter(Boolean).join('\n')
+          : qs.map((qi: any, i: number) => `${i + 1}. ${qi.header ? `【${qi.header}】` : ''}${qi.question || ''}${((qi.options || []) as any[]).length ? `\n   选项：${((qi.options || []) as any[]).map((o) => o.label).join(' / ')}` : ''}`).join('\n');
         out.push({
           key: `oc-question:${q.instance}:${q.id}`,
           kind: 'oc-question',
           taskId: '',
-          title: `OpenCode 提问 · ${first.header || '征询'}`,
-          detail: [first.question, ((first.options || []) as any[]).map((o) => o.label).join(' / ')].filter(Boolean).join('\n'),
+          title: `OpenCode 提问 · ${first.header || '征询'}${qs.length > 1 ? `（${qs.length} 个问题）` : ''}`,
+          detail,
           act: async () => { /* 选项作答走 questionOptions 按钮，不落 act */ },
-          questionOptions: ((first.options || []) as any[]).map((o) => ({ label: String(o.label), description: o.description })),
+          questionOptions: qs.length === 1 ? ((first.options || []) as any[]).map((o) => ({ label: String(o.label), description: o.description })) : undefined,
+          sessionId: q.sessionID ? String(q.sessionID) : undefined,
         });
       }
     } catch { /* opencode 未接入时静默 */ }
@@ -263,6 +271,17 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
             :loading="busy(it.key)"
             @click="answerOcQuestion(it, o.label)"
           >{{ o.label }}</van-button>
+          <van-button size="small" :loading="busy(it.key)" @click="rejectOcQuestion(it)">不回答</van-button>
+        </div>
+        <!-- 多问题提问：快捷 label 表达不了逐题作答，引导去会话页（逐题点选 + 统一提交） -->
+        <div v-else-if="it.kind === 'oc-question'" class="ap-actions">
+          <van-button
+            v-if="it.sessionId"
+            size="small"
+            type="primary"
+            plain
+            @click="router.push(`/opencode/session/${it.key.replace('oc-question:', '').split(':')[0]}/${it.sessionId}`)"
+          >去会话回答</van-button>
           <van-button size="small" :loading="busy(it.key)" @click="rejectOcQuestion(it)">不回答</van-button>
         </div>
         <div v-else-if="it.act" class="ap-actions">

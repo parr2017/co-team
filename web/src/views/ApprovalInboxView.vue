@@ -5,11 +5,13 @@
  * 「去处理」通过全局事件打开任务详情对话框（对话框宿主在 App.vue）。
  */
 import { onUnmounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { api } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { showApiError } from '../utils/apiError';
 
 const { tasks, connected } = useDashboard();
+const router = useRouter();
 
 interface ApprovalItem {
   key: string;
@@ -20,6 +22,8 @@ interface ApprovalItem {
   act?: (decision: { approved: boolean; answer?: string }) => Promise<void>;
   /** oc-question 专用：提问选项（收件箱内快速 label 作答） */
   questionOptions?: { label: string; description?: string }[];
+  /** oc-question 专用：所属会话（多问题时引导去接管面板逐题作答） */
+  sessionId?: string;
   rejectable?: boolean;
 }
 
@@ -132,19 +136,24 @@ async function load() {
         });
       }
       for (const q of pending.questions || []) {
-        const first = (q.questions || [])[0] || {};
-        const opts = (first.options || []).map((o: any) => o.label).join(' / ');
+        const qs: any[] = q.questions || [];
+        const first = qs[0] || {} as any;
+        // 多问题时逐题列出（题干 + 选项），快捷选项按钮只在单问题给——多题的作答矩阵去会话面板
+        const detail = qs.length <= 1
+          ? [first.question, (first.options || []).length ? `选项：${(first.options || []).map((o: any) => o.label).join(' / ')}` : ''].filter(Boolean).join('\n')
+          : qs.map((qi: any, i: number) => `${i + 1}. ${qi.header ? `【${qi.header}】` : ''}${qi.question || ''}${(qi.options || []).length ? `\n   选项：${(qi.options || []).map((o: any) => o.label).join(' / ')}` : ''}`).join('\n');
         out.push({
           key: `oc-question:${q.instance}:${q.id}`,
           kind: 'oc-question',
           taskId: '',
-          title: `OpenCode 提问 · ${first.header || '征询'}`,
-          detail: [first.question, opts ? `选项：${opts}` : ''].filter(Boolean).join('\n'),
+          title: `OpenCode 提问 · ${first.header || '征询'}${qs.length > 1 ? `（${qs.length} 个问题）` : ''}`,
+          detail,
           act: async ({ approved }) => {
             if (!approved) await api.ocRejectQuestion(String(q.instance), String(q.id));
           },
-          /** 提问的选项作答：收件箱里以"作答"输入 label（与 ask 同交互；复杂多选去接管面板） */
-          questionOptions: (first.options || []).map((o: any) => ({ label: o.label, description: o.description })),
+          /** 提问的选项作答：单问题收件箱里点 label 即答；多问题不设快捷按钮（去会话面板逐题作答） */
+          questionOptions: qs.length === 1 ? (first.options || []).map((o: any) => ({ label: o.label, description: o.description })) : undefined,
+          sessionId: q.sessionID ? String(q.sessionID) : undefined,
         });
       }
     } catch { /* opencode 未接入/未启动时静默跳过 */ }
@@ -202,6 +211,16 @@ function toggleAnswer(key: string) {
 function goTask(taskId: string) {
   window.dispatchEvent(new CustomEvent('coteam:open-task', { detail: taskId }));
 }
+
+/** 多问题提问：收件箱的快捷 label 表达不了逐题作答，转接管面板打开对应会话 */
+function goSession(item: ApprovalItem) {
+  if (!item.sessionId) return;
+  const instance = item.key.replace('oc-question:', '').split(':')[0];
+  sessionStorage.setItem('coteam:pending-oc-session', JSON.stringify({ instance, sessionId: item.sessionId }));
+  if (router.currentRoute.value.path !== '/opencode') router.push('/opencode');
+  // 面板已挂载时事件直达；未挂载时面板 mount/loadInstances 消费 sessionStorage 接力棒
+  window.dispatchEvent(new CustomEvent('coteam:open-opencode-session', { detail: { instance, sessionId: item.sessionId } }));
+}
 </script>
 
 <template>
@@ -218,7 +237,24 @@ function goTask(taskId: string) {
       </div>
       <div class="ap-title">{{ it.title }}</div>
       <div v-if="it.detail" class="ap-detail">{{ it.detail }}</div>
-      <div v-if="it.act" class="ap-actions">
+      <div v-if="it.kind === 'oc-question'" class="ap-actions">
+        <!-- 单问题：选项 label 一键作答；多问题：逐题作答去接管面板 -->
+        <template v-if="it.questionOptions?.length">
+          <el-button
+            v-for="o in it.questionOptions"
+            :key="o.label"
+            size="small"
+            type="primary"
+            plain
+            :title="o.description || ''"
+            :loading="busy(it.key)"
+            @click="decide(it, true, o.label)"
+          >{{ o.label }}</el-button>
+        </template>
+        <el-button v-else-if="it.sessionId" size="small" type="primary" plain @click="goSession(it)">去会话回答</el-button>
+        <el-button size="small" :loading="busy(it.key)" @click="decide(it, false)">不回答</el-button>
+      </div>
+      <div v-else-if="it.act" class="ap-actions">
         <el-button size="small" type="primary" :loading="busy(it.key)" @click="decide(it, true)">批准</el-button>
         <el-button v-if="it.rejectable" size="small" :loading="busy(it.key)" @click="decide(it, false)">拒绝</el-button>
         <el-button v-if="it.kind === 'ask'" size="small" @click="toggleAnswer(it.key)">{{ answering === it.key ? '收起' : '作答' }}</el-button>

@@ -115,6 +115,43 @@ describe('OpencodeClient', () => {
     }
   });
 
+  it('form.created → question.asked：question/header/custom/multiple 透传（提问卡渲染契约）', () => {
+    const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
+    const events = (client as unknown as { convertEvents: (e: unknown) => Array<{ type: string; properties: Record<string, any> }> }).convertEvents({
+      id: 'evt-q1',
+      type: 'form.created',
+      data: {
+        form: {
+          id: 'form-1',
+          sessionID: 'ses-1',
+          fields: [
+            // OpenCode 2.x 表单字段契约：key/title/description/options{value,label,description}/custom/maxItems
+            { key: 'q0', type: 'multiselect', title: '目标入口', maxItems: 1, custom: true, options: [{ value: 'desktop', label: '桌面客户端', description: '走 .NET Remoting' }, { value: 'web', label: 'Web 端' }] },
+            { key: 'q1', type: 'multiselect', header: 'token 用途', title: '拿到 token 之后要干什么？', options: [{ value: 'sso', label: '单点登录' }] },
+            { key: 'q2', type: 'string', title: '补充说明' },
+          ],
+        },
+      },
+    });
+    const q = events.find((e) => e.type === 'question.asked');
+    expect(q).toBeTruthy();
+    expect(q!.properties.id).toBe('form-1');
+    expect(q!.properties.sessionID).toBe('ses-1');
+    const qs = q!.properties.questions as any[];
+    expect(qs).toHaveLength(3);
+    // q0：question 优先级 question > title > description > key；maxItems:1 → 单选；字段自带 custom
+    expect(qs[0].question).toBe('目标入口');
+    expect(qs[0].multiple).toBe(false);
+    expect(qs[0].custom).toBe(true);
+    expect(qs[0].options).toEqual([{ label: '桌面客户端', description: '走 .NET Remoting' }, { label: 'Web 端', description: '' }]);
+    // q1：header 透传；multiselect 未限 1 项 → 多选
+    expect(qs[1].header).toBe('token 用途');
+    expect(qs[1].multiple).toBe(true);
+    // q2：string 字段可自由输入
+    expect(qs[2].custom).toBe(true);
+    expect(qs[2].multiple).toBe(false);
+  });
+
   it('HTTP 错误与网络异常全部软收口 {ok:false}', async () => {
     mockFetch({ 'GET /api/session': { status: 500, text: 'boom' } });
     const result = await new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' }).listSessions();
