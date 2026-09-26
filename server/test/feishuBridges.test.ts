@@ -84,8 +84,9 @@ describe('convo 桥', () => {
     const bridge = createConvoBridge(makeConvoDeps());
     const session = freshSession();
     const r = await handleCommand('/convo', session, { listProjects: async () => [], listAgentNames: () => [], convo: bridge }, 'oc1');
-    expect(r.reply).toContain('已进入会话模式');
-    expect(r.reply).toContain('登录方案');
+    const cardText = String(JSON.stringify(r.card));
+    expect(cardText).toContain('登录方案');
+    expect(cardText).toContain('convo_pick');
     expect(r.session?.mode).toBe('convo');
     expect(r.session?.convo_id).toBe('c1');
     const bound = await busGet<{ chat_id: string }>('feishu:chat:convo:c1');
@@ -173,7 +174,9 @@ describe('oc 桥', () => {
     const bridge = createOcBridge(makeOcDeps());
     const session = freshSession();
     const r = await handleCommand('/oc', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
-    expect(r.reply).toContain('已进入 OpenCode 模式');
+    const cardText = String(JSON.stringify(r.card));
+    expect(cardText).toContain('main-exec');
+    expect(cardText).toContain('oc_pick_session');
     expect(r.session?.oc_instance).toBe('main-exec');
     expect(r.session?.oc_session).toBe('s-1');
     expect(r.session?.mode).toBe('oc');

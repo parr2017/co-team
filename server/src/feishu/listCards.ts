@@ -11,7 +11,7 @@ import { busGet, busSet } from '../bus';
 import { getTaskGraph, getTaskJournals } from '../store';
 import type { FeishuConfig } from '../config';
 import { sendCard } from './messageService';
-import { buildResultCard, card2, cardResponse, md, note, type CardElement } from './cards';
+import { buildResultCard, card2, cardResponse, md, note, btnRow, type CardElement } from './cards';
 import type { CardActionInput } from './approvalCards';
 
 const PAGE_SIZE = 6;
@@ -148,6 +148,40 @@ export function buildOcAgentsCard(agents: { id: string; label: string }[], page 
   if (pages > 1) elements.push(navRow('oc_agents_page', p, pages));
   elements.push(note(`Co-Team · Agent 切换 · ${new Date().toLocaleString()}`));
   return card2('blue', '🤖 OpenCode Agent', elements);
+}
+
+/** /oc 进入卡：实例按钮 + 绑定实例的会话按钮（当前项打标）。 */
+export function buildOcInstancesCard(instances: { id: string; label: string; kind: string; state: string; mode: string }[], boundId: string | undefined, sessions: { id: string; title?: string }[], boundSession: string | undefined): Record<string, unknown> {
+  const elements: CardElement[] = [];
+  const instBtns = instances.slice(0, 3).map((i) => ({
+    tag: 'button', text: { tag: 'plain_text', content: `${boundId === i.id ? '✓ ' : ''}${i.id}` }, type: boundId === i.id ? 'default' as const : 'primary' as const, size: 'medium',
+    behaviors: [{ type: 'callback', value: { act: 'oc_pick_instance', instance: i.id } }],
+  }));
+  if (instBtns.length === 2) elements.push(btnRow(instBtns[0], instBtns[1]));
+  else instBtns.forEach((b) => elements.push(b));
+  const shown = sessions.slice(0, 6);
+  if (shown.length) elements.push(md(`**会话（${boundId || ''}）：**`));
+  for (const s of shown) {
+    const current = s.id === boundSession;
+    elements.push(md(`${current ? `**${s.title || s.id}（当前）**` : `**${s.title || s.id}**`}`));
+    elements.push(actionBtn(current ? '📍 当前会话' : '💬 切换到此会话', { act: 'oc_pick_session', instance: boundId || '', session_id: s.id }, current ? 'default' : 'primary'));
+  }
+  elements.push(note(`Co-Team · OpenCode · 点按钮切换 · 直接输入需求发往当前会话 · ${new Date().toLocaleString()}`));
+  return card2('blue', '🖥 OpenCode', elements);
+}
+
+/** /convo 进入卡：会话按钮（当前项打标）。 */
+export function buildConvoEnterCard(convos: { id: string; title: string; status: string }[], boundId: string | undefined): Record<string, unknown> {
+  const elements: CardElement[] = [];
+  const shown = convos.slice(0, 6);
+  if (!shown.length) elements.push(md('（暂无会话，已为你新建）'));
+  for (const c of shown) {
+    const current = c.id === boundId;
+    elements.push(md(`${current ? `**${c.title}（当前）**` : `**${c.title}**`} · ${c.status}`));
+    elements.push(actionBtn(current ? '📍 当前会话' : `💬 切换到「${c.title.slice(0, 10)}」`, { act: 'convo_pick', convo_id: c.id }, current ? 'default' : 'primary'));
+  }
+  elements.push(note(`Co-Team · 会话列表 · 直接发言发往当前会话 · ${new Date().toLocaleString()}`));
+  return card2('blue', '💬 协作会话', elements);
 }
 
 export function buildInboxListCard(items: { kind: string; title: string }[], page = 0): Record<string, unknown> {

@@ -15,7 +15,7 @@ import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
 import { buildResultCard, btnRow, card2, cardResponse, form, inputField, md, note, submitBtn } from './cards';
-import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard } from './listCards';
+import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard, buildOcInstancesCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
 export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string }
@@ -54,6 +54,8 @@ export interface OcBridge {
   stop(session: FeishuSession): Promise<string>;
   send(text: string, session: FeishuSession, chatId: string): Promise<string>;
   replyTo(instanceId: string, sessionId: string, text: string, chatId?: string): Promise<string>;
+  /** [v2] 进入卡：实例 + 会话点选（无参 /oc 渲染） */
+  enterCard(arg: string, session: FeishuSession, chatId: string): Promise<Record<string, unknown>>;
   /** [v2] 会话列表交互卡（点按钮切换） */
   listSessionsCard(session: FeishuSession): Promise<Record<string, unknown>>;
   /** [v2] 模型列表交互卡（点按钮切换） */
@@ -207,6 +209,27 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       const agentId = hit?.id || ref;
       const ok = await deps.switchAgent(session.oc_instance, session.oc_session, agentId);
       return ok ? `✅ 已切换 Agent ${agentId}。` : '切换失败（见服务端日志）。';
+    },
+
+    async enterCard(arg, session, chatId) {
+      const instances = await deps.listInstances();
+      let bound = '';
+      if (arg.trim()) {
+        bound = (instances.find((i) => i.id === arg || i.label.includes(arg)) || instances[0] || { id: '' }).id;
+      } else {
+        bound = (instances.find((i) => i.state === 'running' || i.state === 'connected') || instances[0] || { id: '' }).id;
+      }
+      session.mode = 'oc';
+      session.oc_instance = bound;
+      const active = bound ? await deps.activeSession(bound).catch(() => null) : null;
+      session.oc_session = active?.id || (bound ? (await deps.listSessions(bound).catch(() => []))[0]?.id || '' : '');
+      await setSession(session);
+      await notifyChat(cfg0(), chatId);
+      const sessions = bound ? await deps.listSessions(bound).catch(() => []) : [];
+      session.last_list = sessions.map((s) => ({ id: s.id, label: s.title || s.id }));
+      session.last_list_kind = 'oc_session';
+      await setSession(session);
+      return buildOcInstancesCard(instances, bound || undefined, sessions, session.oc_session || undefined);
     },
 
     async listSessionsCard(session) {

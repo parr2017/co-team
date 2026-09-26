@@ -122,6 +122,7 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
 
     case '/convo': {
       if (!deps.convo) return { reply: '会话模式未启用（服务端未挂载 convo 桥）。', session };
+      if (!arg && deps.convo.enterCard) return { reply: '协作会话：', card: await deps.convo.enterCard(arg, session, chatId || ''), session };
       return { reply: await deps.convo.enter(arg, session, chatId || ''), session };
     }
 
@@ -133,6 +134,7 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
 
     case '/oc': {
       if (!deps.oc) return { reply: 'OpenCode 模式未启用（服务端未挂载 oc 桥）。', session };
+      if (!arg && deps.oc.enterCard) return { reply: 'OpenCode：', card: await deps.oc.enterCard(arg, session, chatId || ''), session };
       return { reply: await deps.oc.enter(arg, session, chatId || ''), session };
     }
   }

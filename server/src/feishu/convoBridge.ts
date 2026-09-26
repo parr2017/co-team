@@ -15,7 +15,7 @@ import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
 import { buildResultCard, card2, cardResponse, form, inputField, md, note, submitBtn, btnRow } from './cards';
-import { buildConvoListCard } from './listCards';
+import { buildConvoListCard, buildConvoEnterCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
 export interface ConvoListItem {
@@ -40,6 +40,8 @@ export interface ConvoBridge {
   create(title: string, session: FeishuSession, chatId: string): Promise<string>;
   switchTo(ref: string, session: FeishuSession, chatId: string): Promise<string>;
   send(text: string, session: FeishuSession, chatId: string): Promise<string>;
+  /** [v2] 进入卡：会话点选（无参 /convo 渲染） */
+  enterCard(arg: string, session: FeishuSession, chatId: string): Promise<Record<string, unknown>>;
   /** [v2] 会话列表交互卡（点按钮切换） */
   listCard(session: FeishuSession): Promise<Record<string, unknown>>;
   /** 指定会话发言（引用回复路由用，不依赖当前绑定） */
@@ -108,6 +110,21 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
       session.last_list_kind = 'convo';
       await setSession(session);
       return `协作会话列表：\n${text}\n/switch 序号切换 · /new 新建。`;
+    },
+
+    async enterCard(arg, session, chatId) {
+      const convos = await deps.list();
+      let target = (arg.trim() && convos.find((c) => c.id === arg || c.title.includes(arg))) || convos[0] || null;
+      if (!target) {
+        target = await deps.create({ project_id: session.current_project_id });
+      }
+      session.mode = 'convo';
+      session.convo_id = target.id;
+      await bindChat(target.id, target.title, chatId);
+      session.last_list = (convos.length ? convos : [target]).slice(0, 30).map((c) => ({ id: c.id, label: c.title }));
+      session.last_list_kind = 'convo';
+      await setSession(session);
+      return buildConvoEnterCard(convos.length ? convos : [target], target.id);
     },
 
     async listCard(session) {
