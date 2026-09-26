@@ -28,7 +28,7 @@ const text = computed(() => props.label || props.status);
 </template>
 
 <style scoped>
-/* 预览样式：方角 mono 小标签（4px 圆角 + 发丝线 + 语义 tint），保留状态点 */
+/* 药丸形统一状态签（与 web 任务中心 pill 同构）：语义 tint + 状态点 + 全圆角 */
 .st-tag {
   display: inline-flex;
   align-items: center;
@@ -37,9 +37,9 @@ const text = computed(() => props.label || props.status);
   font-family: var(--font-mono);
   font-weight: 500;
   line-height: 1;
-  height: 18px;
-  padding: 0 7px;
-  border-radius: 4px;
+  height: 21px;
+  padding: 0 9px;
+  border-radius: 11px;
   border: 1px solid transparent;
   white-space: nowrap;
 }

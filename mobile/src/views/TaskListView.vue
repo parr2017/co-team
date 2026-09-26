@@ -187,11 +187,11 @@ async function refreshStats() {
 }
 
 const chips = [
-  { key: '', label: '全部', get count() { return stats.value.total; } },
-  { key: 'running', label: '执行中', get count() { return stats.value.running; } },
-  { key: 'waiting', label: '待处理', get count() { return stats.value.waiting; } },
-  { key: 'failed', label: '失败', get count() { return stats.value.failed; } },
-  { key: 'done', label: '完成', get count() { return stats.value.done; } },
+  { key: '', label: '全部', dot: '', get count() { return stats.value.total; } },
+  { key: 'running', label: '执行中', dot: 'run', get count() { return stats.value.running; } },
+  { key: 'waiting', label: '待处理', dot: 'warn', get count() { return stats.value.waiting; } },
+  { key: 'failed', label: '失败', dot: 'bad', get count() { return stats.value.failed; } },
+  { key: 'done', label: '完成', dot: 'ok', get count() { return stats.value.done; } },
 ];
 
 function matchesFilter(t: TaskGraph): boolean {
@@ -268,32 +268,32 @@ onUnmounted(() => {
           :name="theme === 'dark' ? 'bulb-o' : 'lock'"
           size="20"
           color="var(--text-2)"
-          style="margin-right: 14px"
           @click="toggle()"
         />
-        <van-icon name="plus" size="22" color="var(--ct-accent)" @click="router.push('/task/new')" />
       </template>
     </van-nav-bar>
 
-    <!-- 主角只有一个：等你处理的事；其余是配角指标 -->
+    <!-- 主角只有一个：等你处理的事；其余是配角指标（accent 渐变描边 Hero 卡） -->
     <div class="hero">
       <button class="hero-main" @click="router.push('/approvals')">
-        <span class="hero-num" :class="{ alert: humanCount > 0 }">{{ humanCount }}</span>
-        <span class="hero-label">待我处理<template v-if="humanCount"> ›</template></span>
+        <span class="h-row">
+          <span class="hero-num" :class="{ alert: humanCount > 0 }">{{ humanCount }}</span>
+          <span class="hero-label">待我处理</span>
+          <span class="h-arrow">›</span>
+        </span>
       </button>
-      <div class="hero-div"></div>
-      <div class="hero-side">
-        <div class="hs-item">
-          <span class="hs-num">{{ runningCount }}</span>
-          <span class="hs-label">执行中</span>
+      <div class="h-sub">
+        <div class="h-item">
+          <span class="v">{{ runningCount }}</span>
+          <span class="k">执行中</span>
         </div>
-        <div class="hs-item">
-          <span class="hs-num mono">{{ sys?.tokens_total != null ? fmtTok(sys.tokens_total) : '—' }}</span>
-          <span class="hs-label">Token</span>
+        <div class="h-item">
+          <span class="v mono">{{ sys?.tokens_total != null ? fmtTok(sys.tokens_total) : '—' }}</span>
+          <span class="k">Token</span>
         </div>
-        <div class="hs-item">
-          <span class="hs-num mono">{{ sys?.cost_total != null ? '¥' + Number(sys.cost_total).toFixed(2) : '—' }}</span>
-          <span class="hs-label">成本</span>
+        <div class="h-item">
+          <span class="v mono">{{ sys?.cost_total != null ? '¥' + Number(sys.cost_total).toFixed(2) : '—' }}</span>
+          <span class="k">成本</span>
         </div>
       </div>
     </div>
@@ -305,7 +305,7 @@ onUnmounted(() => {
       @search="onSearch"
     />
 
-    <!-- 状态筛选：药丸分段 -->
+    <!-- 状态筛选：药丸分段（带语义状态点，与 web 统计卡同源） -->
     <div class="filter-row">
       <button
         v-for="c in chips"
@@ -313,7 +313,7 @@ onUnmounted(() => {
         class="f-chip"
         :class="{ on: statusFilter === c.key }"
         @click="toggleFilter(c.key)"
-      >{{ c.label }} <b class="mono">{{ c.count }}</b></button>
+      ><span v-if="c.dot" class="dot" :class="c.dot"></span>{{ c.label }} <b class="mono">{{ c.count }}</b></button>
     </div>
 
     <!-- execution queues: one lane per project, blocked lanes wait for the user -->
@@ -367,7 +367,7 @@ onUnmounted(() => {
             <div class="meta">
               <span class="time mono">{{ sessionTime(t.updated_at) }}<template v-if="t.project_id && projectNames[t.project_id]"> · {{ projectNames[t.project_id] }}</template></span>
               <span class="mtags">
-                <span v-if="badgeCount(t)" class="tag accent">{{ badgeCount(t) > 99 ? '99+' : badgeCount(t) }}</span>
+                <span v-if="badgeCount(t)" class="badge">{{ badgeCount(t) > 99 ? '99+' : badgeCount(t) }}</span>
                 <van-button
                   v-if="canRestart(t.status)"
                   size="mini"
@@ -383,6 +383,9 @@ onUnmounted(() => {
         </van-list>
       </div>
     </van-pull-refresh>
+
+    <!-- 新建任务 FAB（取代导航栏 + 入口） -->
+    <button class="m-fab" aria-label="新建任务" @click="router.push('/task/new')">+</button>
   </div>
 </template>
 
@@ -396,8 +399,13 @@ onUnmounted(() => {
   font-size: 12.5px; color: var(--text-2);
 }
 .f-chip b { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); font-weight: 500; }
-.f-chip.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text-1); }
+.f-chip.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text-1); font-weight: 600; }
 .f-chip.on b { color: var(--accent); }
+.f-chip .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; display: inline-block; background: var(--text-3); }
+.f-chip .dot.run { background: var(--accent); animation: wx-pulse 1.6s infinite; }
+.f-chip .dot.warn { background: var(--warn); }
+.f-chip .dot.bad { background: var(--danger); }
+.f-chip .dot.ok { background: var(--ok); }
 
 .page { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
 /* pull-refresh wraps WITHOUT scrolling; the inner .pull is the touch scroller */
@@ -414,11 +422,14 @@ onUnmounted(() => {
 .lrow .t { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
 .lrow .nm { font-size: 14.5px; font-weight: 600; color: var(--text-1); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lrow .last { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lrow .last.unread { color: var(--text); }
+.lrow .last.unread { color: var(--text-2); font-weight: 500; }
 .lrow .meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 5px; }
 .lrow .time { font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lrow .mtags { display: flex; align-items: center; gap: 6px; flex: none; }
-.lrow .tag.accent { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 4px; padding: 0 6px; height: 16px; display: inline-flex; align-items: center; font-size: var(--fs-meta); font-family: var(--font-mono); }
+.lrow .badge {
+  min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--danger); color: #fff;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
+}
 .lrow .l-id { font-size: var(--fs-meta); color: var(--text-3); }
 .s-restart { height: 24px; padding: 0 10px; border-radius: var(--r-ctl); font-weight: 500; }
 
@@ -430,7 +441,10 @@ onUnmounted(() => {
   border-radius: 10px;
   background: var(--panel-2);
 }
-.queue-strip.queue-blocked { border-color: var(--red); }
+.queue-strip.queue-blocked {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--danger) 10%, transparent), transparent 45%), var(--panel-2);
+}
 .q-head { display: flex; align-items: center; gap: 8px; }
 .q-tag {
   font-size: var(--fs-meta); font-weight: 600; padding: 2px 8px; border-radius: 5px;
@@ -440,37 +454,48 @@ onUnmounted(() => {
 .q-tag.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
 .q-info { flex: 1; min-width: 0; font-size: var(--fs-aux); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q-reason { margin-top: 6px; font-size: var(--fs-aux); color: var(--red); line-height: 1.4; }
+
+/* 新建任务 FAB：强调色圆形入口，悬于 tabbar 之上 */
+.m-fab {
+  position: fixed; right: 16px;
+  bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  width: 52px; height: 52px; border-radius: 50%;
+  background: var(--accent); color: var(--accent-text);
+  font-size: 26px; font-weight: 300; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  border: none; cursor: pointer; z-index: 10;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 40%, transparent);
+  transition: transform .15s;
+}
+.m-fab:active { transform: scale(.94); }
 </style>
 
 <style scoped>
-/* 主角卡：待我处理独占 C 位，配角指标靠右弱化 */
+/* 主角卡（改版）：待我处理 C 位大数字 + 配角指标一行（accent 渐变描边） */
 .hero {
-  display: flex; align-items: stretch;
-  margin: 10px 16px 0;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  margin: 4px 14px 12px; padding: 16px 18px 0;
+  border-radius: 16px; overflow: hidden;
+  background: linear-gradient(135deg, var(--accent-soft), transparent 55%), var(--panel);
+  border: 1px solid var(--accent-line);
   box-shadow: var(--shadow-card);
-  overflow: hidden;
 }
 .hero-main {
-  flex: 1; min-width: 0;
-  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
-  gap: 3px; padding: 15px 18px;
-  background: transparent; border: none; text-align: left; cursor: pointer;
+  width: 100%; display: block;
+  background: transparent; border: none; text-align: left; cursor: pointer; padding: 0 0 14px;
 }
-.hero-main:active { background: var(--panel-2); }
-.hero-num { font-size: 30px; /* 大数字 mono 化 */ font-family: var(--font-mono); font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
-.hero-num.alert { color: var(--red); }
-.hero-label { font-size: var(--fs-sm); color: var(--text-3); }
-.hero-div { width: 1px; background: var(--border); transform: scaleX(0.5); margin: 10px 0; }
-.hero-side { display: flex; align-items: center; }
-.hs-item {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; padding: 0 14px; min-width: 74px;
+.hero-main:active { opacity: .8; }
+.h-row { display: flex; align-items: baseline; gap: 10px; }
+.hero-num {
+  font-size: 34px; font-family: var(--font-mono); font-weight: 700; line-height: 1;
+  color: var(--text-1); font-variant-numeric: tabular-nums;
 }
-.hs-item + .hs-item { border-left: 1px solid var(--border); transform: scaleX(0.999); }
-.hs-item + .hs-item::before { content: none; }
-.hs-num { font-size: 15px; font-weight: 600; color: var(--text-2); line-height: 1; font-variant-numeric: tabular-nums; }
-.hs-label { font-size: var(--fs-meta); color: var(--text-3); }
+/* 有待办时：强调色 + 呼吸闪烁，把视线拽过来 */
+.hero-num.alert { color: var(--accent); animation: heroBlink 2.2s infinite; }
+@keyframes heroBlink { 50% { opacity: .55; } }
+.hero-label { font-size: var(--fs-sub); color: var(--text-1); font-weight: 600; }
+.h-arrow { margin-left: auto; color: var(--text-3); font-size: 16px; }
+.h-sub { display: flex; border-top: 1px solid var(--line); padding: 12px 0 14px; }
+.h-item { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.h-item .v { font-family: var(--font-mono); font-size: 16px; font-weight: 600; color: var(--text-1); line-height: 1; font-variant-numeric: tabular-nums; }
+.h-item .k { font-size: 10.5px; color: var(--text-3); }
 </style>
