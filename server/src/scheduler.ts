@@ -76,6 +76,13 @@ export class ModelPool {
     return !!t && Date.now() - t < ModelPool.CAPACITY_AVOID_MS;
   }
 
+  /** 容量稳定度秩（jgfhfaux 复盘）：0 = 近 10 分钟无 429；1 = 近 10 分钟吃过 429 但已出避让窗口；2 = 正处避让窗口。 */
+  capacityStabilityRank(m: ModelEntry): 0 | 1 | 2 {
+    if (this.capacityBlocked(m)) return 2;
+    const t = this.capacityHits.get(this.endpointKey(m));
+    return !!t && Date.now() - t < 10 * 60_000 ? 1 : 0;
+  }
+
   /** Cooldown for a model with >=3 consecutive failures, doubling per extra failure (capped at 15 min). */
   cooldownRemainingMs(m: ModelEntry): number {
     if (m.failCount < 3) return 0;
@@ -113,7 +120,7 @@ export class ModelPool {
     return matched.length ? matched : models;
   }
 
-  selectModel(tags?: string[], complexity: Complexity = 'normal'): ModelEntry | null {
+  selectModel(tags?: string[], complexity: Complexity = 'normal', opts?: { preferStable?: boolean }): ModelEntry | null {
     const healthy = this.filterByTags(this.models, tags).filter((m) => this.isHealthy(m));
     let available = healthy.filter((m) => this.availableSlots(m) > 0);
     if (available.length === 0) available = this.models.filter((m) => this.isHealthy(m) && this.availableSlots(m) > 0);
@@ -121,6 +128,18 @@ export class ModelPool {
     // 容量软避让：有未限流的端点组可用就绕开刚吃 429 的组（组全灭则照常返回，由调用方退避）
     const open = available.filter((m) => !this.capacityBlocked(m));
     if (open.length > 0) available = open;
+
+    // heavy 任务容量稳定优先（jgfhfaux 复盘）：429 风暴把 heavy 任务全程逼进降级弱模型是
+    // 幻觉交付的诱因——heavy 不做加权随机的"赌运气"，在容量稳定的候选里确定性取最优，
+    // 让强模型/稳定端点在风暴期也被优先吃到槽位（并发上限仍由 slot 机制约束）。
+    if (opts?.preferStable) {
+      return [...available].sort(
+        (a, b) =>
+          this.capacityStabilityRank(a) - this.capacityStabilityRank(b) ||
+          this.effectivePriority(a) - this.effectivePriority(b) ||
+          b.professional_weight - a.professional_weight
+      )[0];
+    }
 
     if (complexity === 'simple') {
       // cost optimization: cheapest healthy model

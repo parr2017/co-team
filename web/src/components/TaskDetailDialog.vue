@@ -140,11 +140,32 @@
                     :loading="retryingNode === selected.id"
                     @click="retrySelectedNode(selected)"
                   >已处理，从此节点继续</el-button>
+                  <el-button
+                    v-if="canRestartFromNode"
+                    size="small"
+                    :type="selected.status === 'completed' ? 'danger' : 'warning'"
+                    plain
+                    :loading="retryingNode === selected.id"
+                    @click="restartFromNode(selected)"
+                  >从此节点重新开始</el-button>
                 </div>
                 <div class="n-obs mono">
                   <span>{{ selected.result?.model || '模型未记录' }}</span>
                   <span v-if="selected.result?.tokens"> · {{ fmtTok(selected.result.tokens || 0) }} tok</span>
                   <el-button v-if="selected.branch" size="small" link type="primary" class="diff-btn" @click="diffNodeId = selected.id">查看代码变更</el-button>
+                </div>
+                <!-- 疑似零产出上游（jgfhfaux 复盘）：人工门卡下游时给"向上游级联"快捷入口 -->
+                <div v-if="zeroOutputUpstream.length" class="n-zero mono">
+                  <span class="nz-label">⚠ {{ zeroOutputUpstream.length }} 个上游节点账面完成但交付校验不一致（疑似零产出）：</span>
+                  <el-button
+                    v-for="u in zeroOutputUpstream"
+                    :key="u.id"
+                    size="small"
+                    link
+                    type="danger"
+                    :loading="retryingNode === u.id"
+                    @click="restartFromNode(u)"
+                  >从「{{ u.name }}」重新开始</el-button>
                 </div>
                 <!-- OBS-1 节点执行档案：轮次/工具/技能/知识命中/上下文 一屏可查 -->
                 <div v-if="(selected.result as any)?.execution" class="exec-archive mono">
@@ -915,12 +936,13 @@ async function savePolicyWhitelist() {
 }
 
 // 人工门续跑（o3xmkraj 复盘）：环境/前置修复后重置失败节点及下游并重新入队
+// 任意节点重新开始（jgfhfaux 复盘）：completed 节点同样可重置——下游全量级联作废
 const retryingNode = ref('');
 async function retrySelectedNode(n: { id: string; name: string }) {
   retryingNode.value = n.id;
   try {
     const r = await api.retryNode(props.taskId, n.id);
-    ElMessage.success(`已重新入队（${r.reset_nodes.length} 个节点重置）`);
+    ElMessage.success(`已重新入队（${r.reset_nodes.length} 个节点重置${(r as any).restarted_from_completed ? '，旧产出作废' : ''}）`);
     emit('refresh');
   } catch (e: any) {
     showApiError(e);
@@ -928,6 +950,65 @@ async function retrySelectedNode(n: { id: string; name: string }) {
     retryingNode.value = '';
   }
 }
+
+// 重新开始的下游影响面提示：edges 可达的下游节点数（不含自身）
+function downstreamCount(nodeId: string): number {
+  const edges = (task.value?.edges as [string, string][]) || [];
+  const seen = new Set<string>([nodeId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    // 只向下游爬：reset 节点的所有出边终点入集
+    for (const [s, d] of edges) {
+      if (seen.has(s) && !seen.has(d)) { seen.add(d); changed = true; }
+    }
+  }
+  return Math.max(0, seen.size - 1);
+}
+
+const canRestartFromNode = computed(() => {
+  const n = selected.value;
+  if (!n) return false;
+  if (['running', 'retrying'].includes(n.status)) return false;
+  if (['running', 'finalizing'].includes(task.value?.status || '')) return false;
+  // 人工门失败节点已有专属按钮，避免双入口重复
+  if (n.status === 'failed' && (n as any).needs_human) return false;
+  return true;
+});
+
+async function restartFromNode(n: { id: string; name: string; status: string }) {
+  const dc = downstreamCount(n.id);
+  const tip = n.status === 'completed'
+    ? `从「${n.name}」重新开始？该节点旧产出作废，连同 ${dc} 个下游节点一并重跑。`
+    : `从「${n.name}」重新开始？连同 ${dc} 个下游节点一并重置重跑。`;
+  try {
+    await ElMessageBox.confirm(tip, '从此节点重新开始', { confirmButtonText: '重新开始', cancelButtonText: '取消', type: 'warning' });
+  } catch { return; }
+  await retrySelectedNode(n);
+}
+
+// 疑似零产出的上游 completed 节点（jgfhfaux 场景）：delivery_check 不一致 = 交付存疑，
+// 人工门卡在下游时给出"向上游级联"的快捷入口
+const zeroOutputUpstream = computed(() => {
+  const n = selected.value;
+  if (!n || !(n.status === 'failed' && (n as any).needs_human)) return [];
+  const edges = (task.value?.edges as [string, string][]) || [];
+  const upstreamOf = new Map<string, string[]>();
+  for (const t of task.value?.nodes || []) upstreamOf.set(t.id, []);
+  for (const [s, d] of edges) upstreamOf.get(d)?.push(s);
+  const seen = new Set<string>([n.id]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const t of task.value?.nodes || []) {
+      if (!seen.has(t.id) && (upstreamOf.get(t.id) || []).some((u) => seen.has(u))) { seen.add(t.id); changed = true; }
+    }
+  }
+  return (task.value?.nodes || [])
+    .filter((t) => seen.has(t.id) && t.id !== n.id && t.status === 'completed'
+      && (t.result as any)?.delivery_check?.consistent === false)
+    .map((t) => ({ id: t.id, name: t.name, status: t.status, phantom: ((t.result as any).delivery_check.phantom || []).length, unchanged: ((t.result as any).delivery_check.unchanged || []).length }));
+});
 
 // 环境预检放行：把缺失命令并入任务白名单后一键开跑
 const preflightRunning = ref(false);
@@ -1296,6 +1377,9 @@ onUnmounted(() => window.clearInterval(pollTimer));
 .ea-loaded { color: var(--ok); }
 .n-obs { display: flex; align-items: center; gap: 6px; font-size: var(--fs-meta); color: var(--text-3); background: var(--bg-raised); border-radius: 4px; padding: 4px 10px; margin-bottom: 8px; }
 .diff-btn { margin-left: auto; }
+/* 疑似零产出上游提示条（jgfhfaux 复盘）：窄屏可换行 */
+.n-zero { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-meta); color: var(--warn, #b45309); background: var(--bg-raised); border-radius: 4px; padding: 4px 10px; margin-bottom: 8px; }
+.n-zero .nz-label { color: var(--text-2); }
 .mini-label { display: inline-block; font-size: var(--fs-meta); color: var(--text-3); border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 5px; margin-right: 8px; vertical-align: 1px; }
 .mini-label.green { color: var(--ok); border-color: var(--ok); }
 .reason { font-size: var(--fs-aux); color: var(--text-2); font-style: italic; margin-bottom: 6px; }

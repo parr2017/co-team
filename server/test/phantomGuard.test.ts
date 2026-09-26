@@ -88,13 +88,40 @@ describe('phantom 完成守卫（假完成分级裁决）', () => {
     const g = simpleGit({ baseDir: tmp });
     await g.add('-A');
     await g.commit('add exists');
-    agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'ok', changes: ['exists.txt: ok', 'lib/missing.dart: ok'], errors: [] }) }));
+    // jgfhfaux 复盘后语义收紧：申报"修改"exists.txt 但零写盘 → 内容级幻影；
+    // 真实交付改走结构化 files（applyFinalOutput 落盘 → 实际变更）
+    agentBehaviors.push(() => ({
+      content: JSON.stringify({
+        status: 'success', summary: '完成', verification: 'ok',
+        files: [{ path: 'new.txt', content: 'x\n' }],
+        changes: ['new.txt: ok', 'exists.txt: ok', 'lib/missing.dart: ok'],
+        errors: [],
+      }),
+    }));
     await saveTaskGraph('t-ph2', [makeNode('d1')], [], { description: 'x', workspace: tmp, status: 'planned' });
     const result = await (orchestrator as any).execute('t-ph2', tmp);
     expect(result.status).toBe('success');
     const node = (await getTaskGraph('t-ph2'))!.nodes.find((n) => n.id === 'd1')!;
     expect(node.status).toBe('completed');
-    expect(node.result!.changes).toEqual(['exists.txt: ok']);
+    // writeFiles 落盘的裸路径 + 申报条目（applyFinalOutput 既有行为）
+    expect(node.result!.changes).toEqual(['new.txt', 'new.txt: ok']);
     expect((node.result as any).delivery_check.phantom).toContain('lib/missing.dart');
+    expect((node.result as any).delivery_check.unchanged).toContain('exists.txt');
+  });
+
+  it('内容级假完成：申报修改已存在文件但零变更 → 全幻影拦截转人工（jgfhfaux 复盘）', async () => {
+    // base.txt 在基线提交中存在；agent 声称"修改"它但没有任何写盘——存在性检查放行
+    // （文件在），内容级检查（节点生命周期内 mtime+size 零变化）必须拦下
+    const claim = () => ({ content: JSON.stringify({ status: 'success', summary: '已修改 base.txt', verification: '已核对', changes: ['base.txt: 修改配置'], errors: [] }) });
+    agentBehaviors.push(claim, claim); // 正常尝试 + 主 Agent 接管各一次
+    await saveTaskGraph('t-ph3', [makeNode('d1')], [], { description: 'x', workspace: tmp, status: 'planned' });
+    const result = await (orchestrator as any).execute('t-ph3', tmp);
+    expect(result.status).toBe('failed');
+    const node = (await getTaskGraph('t-ph3'))!.nodes.find((n) => n.id === 'd1')!;
+    expect(node.status).toBe('failed');
+    expect(node.needs_human).toBe(true);
+    expect(node.error).toContain('零变更');
+    expect((node.result as any).delivery_check.unchanged).toContain('base.txt');
+    expect((node.result as any).delivery_check.phantom).toEqual([]);
   });
 });

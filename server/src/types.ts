@@ -96,7 +96,16 @@ export interface AgentResult {
   /** P0-1 self-modification gate: the mandatory self-test run on self-referential tasks */
   gate_test?: { command: string; returncode: number; passed: boolean; summary?: string };
   /** quality metric: reported changes vs actual git working-tree changes */
-  delivery_check?: { consistent: boolean; reported_count: number; actual_count: number; unreported: string[]; phantom: string[] };
+  delivery_check?: {
+    consistent: boolean;
+    reported_count: number;
+    actual_count: number;
+    unreported: string[];
+    phantom: string[];
+    /** 内容级假完成（jgfhfaux 复盘）：申报"修改"了已存在文件，但该文件自节点启动起
+     *  mtime+size 零变化——存在性检查拦不住的幻觉交付（申报改现有文件绕过 phantom）。 */
+    unchanged?: string[];
+  };
   /** 假完成拦截（2026-09-17）：规格点名但最终未落盘的文件路径清单（产物核查门产出，可审计、进 metrics）。
    *  放 AgentResult 顶层而非 delivery_check 内——recordDeliveryCheck 会整对象覆写 delivery_check，内嵌字段会被冲掉。 */
   spec_missing?: string[];

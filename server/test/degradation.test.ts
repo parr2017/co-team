@@ -121,3 +121,37 @@ describe('model pinning & degradation (resolvePrimary)', () => {
     expect(pool.isHealthy(mainEntry as ModelEntry)).toBe(false); // 突破冷却也要能拿到
   });
 });
+
+describe('heavy 容量稳定优先（preferStable，jgfhfaux 复盘）', () => {
+  let pool: ModelPool;
+  beforeEach(() => {
+    process.env.COTEAM_FORCE_MEMORY = '1';
+    closeBus();
+    pool = new ModelPool([
+      cfg({ id: 'm-shaky', name: 'm-shaky', priority: 1, tags: ['code'], professional_weight: 90, base_url: 'http://localhost:9' }),
+      cfg({ id: 'm-stable', name: 'm-stable', priority: 5, tags: ['code'], professional_weight: 50, base_url: 'http://localhost:10' }),
+    ]);
+  });
+  afterEach(() => closeBus());
+
+  it('近期吃过 429 的端点组在 preferStable 下确定性沉底（无随机）', () => {
+    // 2 分钟前的 429：已出 60s 软避让窗口（常规选型会照常选它），仍在 10 分钟稳定记恨期内
+    (pool as any).capacityHits.set('http://localhost:9|k', Date.now() - 2 * 60_000);
+    // 常规 simple 选型：优先级高者胜（m-shaky priority=1）
+    expect(pool.selectModel(['code'], 'simple')!.name).toBe('m-shaky');
+    // preferStable：容量稳定秩 0 的 m-stable 确定性胜出，且重复调用结果一致（不做加权随机）
+    const first = pool.selectModel(['code'], 'normal', { preferStable: true })!;
+    expect(first.name).toBe('m-stable');
+    expect(pool.selectModel(['code'], 'normal', { preferStable: true })!.name).toBe('m-stable');
+  });
+
+  it('稳定度秩：避让窗口内 rank 2，出窗 10 分钟内 rank 1，无近期 429 rank 0', () => {
+    const shaky = pool.getModel('m-shaky')!;
+    const stable = pool.getModel('m-stable')!;
+    expect(pool.capacityStabilityRank(stable)).toBe(0);
+    (pool as any).capacityHits.set('http://localhost:9|k', Date.now());
+    expect(pool.capacityStabilityRank(shaky)).toBe(2);
+    (pool as any).capacityHits.set('http://localhost:9|k', Date.now() - 2 * 60_000);
+    expect(pool.capacityStabilityRank(shaky)).toBe(1);
+  });
+});

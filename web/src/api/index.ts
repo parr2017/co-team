@@ -886,9 +886,9 @@ export const api = {
   taskJournals: (id: string) => request<{ task_id: string; journals: Record<string, JournalEntry[]> }>(`/api/tasks/${id}/journals`),
   agentProfiles: () => request<{ agents: Record<string, AgentProfileInfo> }>('/api/agents/profiles'),
   approveNode: (taskId: string, nodeId: string) => request(`/api/tasks/${taskId}/approve/${nodeId}`, { method: 'POST' }),
-  // 人工门续跑：needs_human 节点在人工修复后重置该节点及下游并重新入队
+  // 人工门续跑 / 任意节点重新开始（jgfhfaux 复盘）：重置该节点及全部下游并重新入队
   retryNode: (taskId: string, nodeId: string) =>
-    request<{ status: string; reset_nodes: string[] }>(`/api/tasks/${taskId}/nodes/${nodeId}/retry`, { method: 'POST' }),
+    request<{ status: string; reset_nodes: string[]; restarted_from_completed?: boolean }>(`/api/tasks/${taskId}/nodes/${nodeId}/retry`, { method: 'POST' }),
   // 环境预检停靠后的人工放行（补授白名单后一键开跑）
   runTask: (taskId: string) => request<{ status: string; task_id: string }>(`/api/tasks/${taskId}/run`, { method: 'POST' }),
   // feature: 实施前澄清

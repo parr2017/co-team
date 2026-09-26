@@ -81,7 +81,9 @@ async function saveWithPolicy(taskId: string, policy: 'strict' | 'tolerant' | un
 
 describe('B1 验收软门', () => {
   it('policy 缺省（tolerant）→ 验收失败不判死，completed_with_warnings + 验收报告留证', async () => {
-    agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'base.txt 存在', changes: ['base.txt: ok'], errors: [] }) }));
+    // 内容级假完成守卫（jgfhfaux 复盘）后：真实交付走结构化 files 落盘，
+    // 只申报不写盘的 changes 会被判假完成——本用例验证的是验收软门，不是交付守卫
+    agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'feat.txt 已写', files: [{ path: 'feat.txt', content: 'x' }], changes: ['feat.txt: ok'], errors: [] }) }));
     await saveWithPolicy('t-acc1', undefined);
     const result = await (orchestrator as any).execute('t-acc1', tmp);
     expect(result.status).toBe('completed_with_warnings');
@@ -91,7 +93,9 @@ describe('B1 验收软门', () => {
   });
 
   it('policy=strict → 保持硬失败语义', async () => {
-    agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'base.txt 存在', changes: ['base.txt: ok'], errors: [] }) }));
+    // 内容级假完成守卫（jgfhfaux 复盘）后：真实交付走结构化 files 落盘，
+    // 只申报不写盘的 changes 会被判假完成——本用例验证的是验收软门，不是交付守卫
+    agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'feat.txt 已写', files: [{ path: 'feat.txt', content: 'x' }], changes: ['feat.txt: ok'], errors: [] }) }));
     await saveWithPolicy('t-acc2', 'strict');
     const result = await (orchestrator as any).execute('t-acc2', tmp);
     expect(result.status).toBe('failed');

@@ -502,18 +502,62 @@ function approve(nodeId: string) {
 }
 
 // 人工门续跑（o3xmkraj 复盘）：环境/前置修复后一键重置失败节点及下游并重新入队
+// 任意节点重新开始（jgfhfaux 复盘）：completed 节点同样可重置，下游全量级联作废
 const retryingNodeId = ref('');
 async function retryNode(nodeId: string) {
   retryingNodeId.value = nodeId;
   try {
     const r = await api.retryNode(taskId.value, nodeId);
-    showToast(`已重新入队（${r.reset_nodes.length} 个节点重置）`);
+    showToast(`已重新入队（${r.reset_nodes.length} 个节点重置${(r as any).restarted_from_completed ? '，旧产出作废' : ''}）`);
     void refresh();
   } catch (e: any) {
     showToast(e.message || '续跑失败');
   } finally {
     retryingNodeId.value = '';
   }
+}
+
+// 从此节点重新开始：确认弹窗展示下游影响面（completed 重开会作废旧产出）
+function canRestartFromNode(n: { status: string; needs_human?: boolean }): boolean {
+  if (['running', 'retrying'].includes(n.status)) return false;
+  if (task.value && ['running', 'finalizing'].includes(task.value.status)) return false;
+  // 人工门失败节点已有专属按钮，避免双入口重复
+  if (n.status === 'failed' && n.needs_human) return false;
+  return true;
+}
+async function restartFromNode(n: { id: string; name: string; status: string }) {
+  try {
+    await showConfirmDialog({
+      title: '从此节点重新开始',
+      message: n.status === 'completed'
+        ? `从「${n.name}」重新开始？该节点旧产出作废，下游节点一并重置重跑。`
+        : `从「${n.name}」重新开始？下游节点将一并重置重跑。`,
+      confirmButtonText: '重新开始',
+      cancelButtonText: '取消',
+    });
+  } catch { return; }
+  await retryNode(n.id);
+}
+
+// 疑似零产出上游（jgfhfaux 场景）：上游 completed 且 delivery_check.consistent === false
+// 的节点（账面完成但交付校验不一致 = 幻觉交付高概率），人工门卡下游时给级联重开入口
+function zeroOutputUpstream(n: { id: string }): { id: string; name: string; status: string }[] {
+  if (!task.value) return [];
+  const next = new Map<string, string[]>();
+  for (const t of task.value.nodes) next.set(t.id, []);
+  for (const [s, d] of task.value.edges || []) next.get(s)?.push(d);
+  const seen = new Set<string>([n.id]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const t of task.value.nodes) {
+      if (!seen.has(t.id) && (next.get(t.id) || []).some((d) => seen.has(d))) { seen.add(t.id); changed = true; }
+    }
+  }
+  return task.value.nodes
+    .filter((t) => seen.has(t.id) && t.id !== n.id && t.status === 'completed'
+      && (t.result as any)?.delivery_check?.consistent === false)
+    .map((t) => ({ id: t.id, name: t.name, status: t.status }));
 }
 
 // P0-2: convert a structured defect into a fix task with a backlink
@@ -823,6 +867,28 @@ async function onTaskMore(action: any) {
                   <div v-if="n.status !== 'completed' && agentOptions.length" class="n-swap" @click.stop="openAgentSwap(n)">
                     <span class="n-swap-label">当前 Agent: <b class="mono">{{ n.agent }}</b></span>
                     <van-button size="mini" plain type="primary">更换 Agent</van-button>
+                  </div>
+                  <!-- 任意节点重新开始（jgfhfaux 复盘）：completed 重开 = 旧产出作废 + 下游级联 -->
+                  <div v-if="canRestartFromNode(n)" class="n-restart" @click.stop="restartFromNode(n)">
+                    <van-button
+                      size="mini"
+                      plain
+                      :type="n.status === 'completed' ? 'danger' : 'warning'"
+                      :loading="retryingNodeId === n.id"
+                    >从此节点重新开始</van-button>
+                  </div>
+                  <!-- 疑似零产出上游（双端一致）：交付校验不一致的账面完成节点，给向上游级联入口 -->
+                  <div v-if="n.status === 'failed' && n.needs_human && zeroOutputUpstream(n).length" class="n-zero-up" @click.stop>
+                    <span class="nzu-label">⚠ 疑似零产出上游</span>
+                    <van-button
+                      v-for="u in zeroOutputUpstream(n)"
+                      :key="u.id"
+                      size="mini"
+                      plain
+                      type="danger"
+                      :loading="retryingNodeId === u.id"
+                      @click.stop="restartFromNode(u)"
+                    >{{ u.name }}</van-button>
                   </div>
                   <div v-if="n.error" class="n-error">✗ {{ n.error }}</div>
                   <!-- 包 D：执行档案——与 web 对齐，手机上直接看 skill 是否生效 -->
@@ -1260,6 +1326,10 @@ async function onTaskMore(action: any) {
 .n-diff-btn:active { opacity: 0.6; }
 .n-swap { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
 .n-swap-label { font-size: var(--fs-aux); color: var(--text-2); }
+/* 任意节点重新开始（jgfhfaux 复盘）+ 疑似零产出上游入口，双端一致 */
+.n-restart { display: flex; align-items: center; gap: 10px; padding: 0 10px; margin-bottom: 8px; }
+.n-zero-up { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.n-zero-up .nzu-label { font-size: var(--fs-aux); color: var(--text-2); }
 .n-error { color: var(--red); font-size: 14px; margin-bottom: 8px; white-space: pre-wrap; line-height: 1.5; }
 /* 包 D：执行档案（对齐 web EXECUTION 卡） */
 .n-exec { background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 9px 11px; margin-bottom: 10px; font-size: var(--fs-aux); color: var(--text-2); }

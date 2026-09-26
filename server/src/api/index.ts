@@ -868,8 +868,11 @@ export function createApi(ctx: ApiContext): Hono {
     }
   });
 
-  // 人工门续跑（o3xmkraj 复盘）：needs_human 节点在人工修复环境/补充信息后，
-  // 一键重置该节点及被连带取消的下游 → 重新入队，不再"整任务报废"
+  // 节点续跑/重新开始（o3xmkraj 复盘 + jgfhfaux 复盘泛化）：
+  // - 人工门续跑：needs_human 节点在人工修复环境/补充信息后重置续跑；
+  // - 任意节点重新开始（2026-09-26）：completed 节点同样可重置——jgfhfaux 里三个 dev
+  //   节点"账面完成、零产出"，人工门卡在下游测试节点，旧接口拒重置 completed 节点，
+  //   任务永远无法绕开毒节点。现在从任意节点重开 = 该节点 + 全部下游级联重置。
   app.post('/api/tasks/:taskId/nodes/:nodeId/retry', async (c) => {
     const taskId = c.req.param('taskId');
     const nodeId = c.req.param('nodeId');
@@ -877,39 +880,50 @@ export function createApi(ctx: ApiContext): Hono {
     if (!graph) throw new HttpError(404, 'task not found');
     const node = graph.nodes.find((n) => n.id === nodeId);
     if (!node) throw new HttpError(404, 'node not found');
-    // 三种可续跑形态：① needs_human 失败节点（人工修完环境/补完信息）；
-    // ② interrupted 被中断节点——含"反复重启被停靠 failed"的任务（infra_retries>3 时
-    //    sweepInterruptedTasks 判死，但成果都在，环境恢复后应当能人工复活，此前无路径）；
-    // ③ 僵尸 running 节点——持久状态是 running 但内存里没有执行器（进程被杀/异常丢线程），
-    //    调度器永远跳过它，只能经此接口解锁（2026-09-23 pk0udn4p s2-3 卡死 9 小时实证）。
-    //    isNodeExecuting 为 true 的一律拒绝：那是真在跑的节点，重置会双跑。
-    const zombieRunning = node.status === 'running' && !ctx.orchestrator.isNodeExecuting(taskId, nodeId);
-    const interrupted = node.status === 'interrupted';
-    if (!((node.status === 'failed' && node.needs_human) || zombieRunning || interrupted)) {
-      throw new HttpError(400, '节点不是"需人工介入/被中断/僵尸 running"态，无需续跑');
+    // 僵尸 running 节点可解锁（持久状态 running 但内存无执行器，2026-09-23 pk0udn4p
+    // s2-3 卡死 9 小时实证）；isNodeExecuting 为 true 的一律拒绝：真在跑，重置会双跑。
+    const targetExecuting = node.status === 'running' && ctx.orchestrator.isNodeExecuting(taskId, nodeId);
+    if (targetExecuting) {
+      throw new HttpError(400, '节点正在执行中，不能重置（防双跑）');
     }
-    // 被停靠/中断的任务整体复活：清零重启计数与任务级失败态（入队时置 queued）
-    if (['failed', 'interrupted'].includes(graph.status)) {
-      graph.status = 'queued';
-      graph.infra_retries = 0;
-      await persistGraph(graph);
+    // 旧语义（人工门续跑/中断复活/僵尸解锁）在任务 running 时也放行——重置入队，
+    // 车道空出来后生效（既有行为，UI 的人工门提示即此流程）
+    const legacyRetryable = (node.status === 'failed' && node.needs_human) || node.status === 'interrupted' || node.status === 'running';
+    // 新语义（任意节点重新开始）要求任务不在途：completed 节点重开会让在途执行的
+    // runGraph 持有的内存图与新持久化状态打架
+    if (!legacyRetryable && ['running', 'finalizing'].includes(graph.status)) {
+      throw new HttpError(400, '任务正在执行中，请等任务结束或先取消再从该节点重新开始');
     }
-    const upstream = new Map<string, string[]>();
-    for (const n of graph.nodes) upstream.set(n.id, []);
-    for (const [src, dst] of graph.edges) upstream.get(dst)?.push(src);
+
+    // 级联重置集：目标节点 + 全部下游可达节点（任意状态）——从上游重开时，
+    // 下游已完成节点的产出基于旧输入，必须一并作废（旧逻辑只重置 pending/cancelled，
+    // 是"人工门续跑"语义；"重新开始"必须全量级联）
     const reset = new Set<string>([nodeId]);
     let changed = true;
     while (changed) {
       changed = false;
-      for (const n of graph.nodes) {
-        if ((n.status === 'pending' || n.status === 'cancelled') && !reset.has(n.id) && (upstream.get(n.id) || []).some((d) => reset.has(d))) {
-          // !reset.has 守卫（2026-09-16 o3xmkraj 实证）：缺它时 Set.add 幂等但 changed
-          // 仍被置 true——下游存在 pending/cancelled 节点即无条件死循环，冻结事件循环
-          // （retry POST 后全 API 无响应、supervisor 心跳同停），一天两起假死皆此因
-          reset.add(n.id);
+      // 只向下游爬：reset 节点的所有出边终点入集（fixpoint 迭代到不动）
+      for (const [src, dst] of graph.edges) {
+        if (reset.has(src) && !reset.has(dst)) {
+          reset.add(dst);
           changed = true;
         }
       }
+    }
+    for (const id of reset) {
+      const n = graph.nodes.find((x) => x.id === id);
+      if (!n) continue;
+      if (n.status === 'running' && ctx.orchestrator.isNodeExecuting(taskId, id)) {
+        throw new HttpError(400, `下游节点「${n.name}」正在执行中，不能级联重置（防双跑）`);
+      }
+    }
+
+    const restartedFromCompleted = node.status === 'completed';
+    // 停靠/中断/已完成/已取消的任务整体复活：清零重启计数（入队时置 queued）
+    if (['failed', 'interrupted', 'waiting_approval', 'completed', 'cancelled'].includes(graph.status)) {
+      graph.status = 'queued';
+      graph.infra_retries = 0;
+      await persistGraph(graph);
     }
     for (const n of graph.nodes) {
       if (reset.has(n.id) && n.status !== 'pending') {
@@ -918,17 +932,31 @@ export function createApi(ctx: ApiContext): Hono {
         (n as any).error_type = undefined;
         n.needs_human = false;
         n.finished_at = '';
+        (n as any).started_at = '';
+        n.retry_count = 0;
+        // 旧分支清空：worktree 模式下分支跨任务存活，残留分支会让 createNodeBranch
+        // 直接 checkout 旧内容，重跑节点会叠在过期产物上
+        n.branch = '';
+        n.branch_base = '';
       }
     }
+    // 重置节点遗留的待审批命令一并清理（重跑会重新提交，旧条目批了也是对旧上下文执行）
+    const pcKey = `task:pending_commands:${taskId}`;
+    const pcQueue = (await busGet<{ id: string; node_id: string; command: string }[]>(pcKey)) || [];
+    const prunedPc = pcQueue.filter((q) => !reset.has(q.node_id));
+    if (prunedPc.length !== pcQueue.length) await busSet(pcKey, prunedPc);
+
     await persistGraph(graph);
     await appendJournal(taskId, 'orchestrator', {
       role: 'master', kind: 'round',
-      text: `人工已处理：节点「${node.name}」及其下游共 ${reset.size} 个节点重置待跑，任务重新入队`,
+      text: restartedFromCompleted
+        ? `重新开始：从节点「${node.name}」重跑，连同下游共 ${reset.size} 个节点重置待跑（completed 节点重开，旧产出作废），任务重新入队`
+        : `人工已处理：节点「${node.name}」及其下游共 ${reset.size} 个节点重置待跑，任务重新入队`,
       ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
     });
-    await emitProgress('node_retried', { task_id: taskId, node_id: node.id, name: node.name, reset_nodes: [...reset] });
+    await emitProgress('node_retried', { task_id: taskId, node_id: node.id, name: node.name, reset_nodes: [...reset], restarted_from_completed: restartedFromCompleted });
     await ctx.taskQueue.enqueue(taskId, graph.project_id ?? null, validateWorkspace(graph.workspace || ''));
-    return c.json({ status: 'requeued', task_id: taskId, node_id: nodeId, reset_nodes: [...reset] });
+    return c.json({ status: 'requeued', task_id: taskId, node_id: nodeId, reset_nodes: [...reset], restarted_from_completed: restartedFromCompleted });
   });
 
   // 环境预检停靠后的人工放行（o3xmkraj 复盘）：补授白名单/装好工具链后一键开跑

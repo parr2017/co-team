@@ -6,7 +6,7 @@ import type { ChecklistItem } from '../types';
 import type { ModelPool, ModelEntry } from '../scheduler';
 import { Router, DEFAULT_RULES } from '../router';
 import type { AgentPlugin, AgentTask } from '../agents';
-import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, PermissionPolicy } from '../sandbox';
+import { createSandbox, cleanupSandbox, mergeChanges, policyWithLevel, executeCommandAsync, isIgnoredRelPath, PermissionPolicy } from '../sandbox';
 import { runPostMergeAcceptance, runChecklistAudit, detectProjectProfile } from './acceptance';
 import { applyFinalOutput, applyToolCalls, renderWorkspaceTree, estimateTokens, gitDiffFull, listTestAssets } from '../tools';
 import type { AskBridge, KnowledgeToolContext } from '../tools';
@@ -339,6 +339,12 @@ export class Orchestrator {
   /** E5 软重试防浪费记忆（o3xmkraj 复盘）：本任务内已"降思考强度重试仍烧穿"的模型——
    *  同模型只软重试一次，命中记忆直接换模（网关不认 reasoning_effort 时避免双倍烧） */
   private thinkingBurned = new Map<string, Set<string>>();
+  /** 内容级假完成守卫（jgfhfaux 复盘）基线快照：`${taskId}:${nodeId}` → 沙箱非忽略文件的
+   *  (mtime,size) 表。存在性 phantom 拦不住"申报修改现有文件"的幻觉（文件本来就在）——
+   *  以节点启动时的文件指纹为基准，收尾时申报路径指纹未变 = 零变更 = 内容级 phantom。 */
+  private nodeFileSnapshots = new Map<string, Map<string, { m: number; s: number }>>();
+  /** 快照规模上限：超过则跳过内容校验（超巨型仓库退回旧行为，不做 O(n) 拖累） */
+  static readonly FILE_SNAPSHOT_CAP = 30_000;
   private logger = getLogger();
   onProgress: ((type: string, payload: Record<string, unknown>) => void) | null = null;
   /** plan_async+auto_run：后台规划落到 planned 后的入队钩子（index.ts 装配 taskQueue.enqueue） */
@@ -1227,6 +1233,10 @@ export class Orchestrator {
     } finally {
       // E5 软重试防浪费记忆随任务收尾清理（记忆语义 = 本任务内）
       this.thinkingBurned.delete(taskId);
+      // 内容级假完成守卫的节点指纹快照同理随任务收尾清理
+      for (const k of this.nodeFileSnapshots.keys()) {
+        if (k.startsWith(`${taskId}:`)) this.nodeFileSnapshots.delete(k);
+      }
       // 已批准命令登记同样随任务收尾清理（续跑轮次消费后即失效）
       await busSet(`task:approved_commands:${taskId}`, []).catch(() => {});
       if (this.sandboxEnabled && sandbox !== workspace) {
@@ -2089,23 +2099,43 @@ export class Orchestrator {
       const unreported = actual.filter((a) => !covered(a));
 
       const phantom: string[] = [];
+      const unchanged: string[] = [];
+      const snap = this.nodeFileSnapshots.get(`${graph.task_id}:${node.id}`);
       for (const rep of new Set(reported)) {
         if (!looksLikePath(rep)) continue;
-        if (![...actual].some((a) => a === rep || rep.endsWith('/' + a) || a.endsWith('/' + rep)) && !fs.existsSync(path.join(sandbox, rep))) {
+        const inActual = [...actual].some((a) => a === rep || rep.endsWith('/' + a) || a.endsWith('/' + rep));
+        if (!inActual && !fs.existsSync(path.join(sandbox, rep))) {
           phantom.push(rep);
+          continue;
+        }
+        // 内容级校验（jgfhfaux 复盘）：申报路径存在且相对 git 工作树干净 → 与节点启动
+        // 指纹比对，mtime+size 零变化 = 本节点从未写盘 = 申报的"修改"是幻觉。
+        // HEAD 被并发节点 checkout/提交搅动时不影响方向安全：checkout 重写文件必 bump mtime，
+        // 指纹未变 ⟹ 磁盘内容与节点启动时逐字节一致 ⟹ 申报的修改不存在。
+        if (!inActual && snap && snap.size > 0) {
+          const before = snap.get(rep);
+          if (before) {
+            let st: fs.Stats | null = null;
+            try {
+              const abs = path.join(sandbox, rep);
+              st = fs.existsSync(abs) ? fs.statSync(abs) : null;
+            } catch { st = null; }
+            if (st?.isFile() && Math.abs(st.mtimeMs - before.m) < 1 && st.size === before.s) unchanged.push(rep);
+          }
         }
       }
 
       result.delivery_check = {
-        consistent: unreported.length === 0 && phantom.length === 0,
+        consistent: unreported.length === 0 && phantom.length === 0 && unchanged.length === 0,
         reported_count: repSet.size,
         actual_count: actual.length,
         unreported: unreported.slice(0, 10),
         phantom: phantom.slice(0, 10),
+        unchanged: unchanged.slice(0, 10),
       };
       if (!result.delivery_check.consistent) {
         this.logger.warn('Delivery consistency check flagged mismatches', {
-          taskId: graph.task_id, nodeId: node.id, unreported: unreported.length, phantom: phantom.length,
+          taskId: graph.task_id, nodeId: node.id, unreported: unreported.length, phantom: phantom.length, unchanged: unchanged.length,
         });
       }
       return result.delivery_check;
@@ -2116,17 +2146,49 @@ export class Orchestrator {
   }
 
   /**
+   * 沙箱文件指纹快照（内容级假完成守卫基线）：递归非忽略文件 → relPath(小写/正斜杠) →
+   * {mtimeMs,size}。忽略目录与交付同步共用同一套 isIgnoredRelPath 规则（build/.git 等）。
+   * 超过 FILE_SNAPSHOT_CAP 返回空表 = 调用方跳过内容校验（退回旧行为，不做 O(n) 拖累）。
+   */
+  private snapshotSandboxFiles(sandbox: string): Map<string, { m: number; s: number }> {
+    const out = new Map<string, { m: number; s: number }>();
+    const walk = (dir: string) => {
+      if (out.size >= Orchestrator.FILE_SNAPSHOT_CAP) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (out.size >= Orchestrator.FILE_SNAPSHOT_CAP) return;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (isIgnoredRelPath(path.relative(sandbox, full))) continue;
+          walk(full);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        const rel = path.relative(sandbox, full).replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+        if (isIgnoredRelPath(rel)) continue;
+        try {
+          const st = fs.statSync(full);
+          out.set(rel, { m: st.mtimeMs, s: st.size });
+        } catch { /* raced delete: skip */ }
+      }
+    };
+    walk(sandbox);
+    return out;
+  }
+
+  /**
    * 假完成守卫（2026-09-16，o3xmkraj 实证）：429 限流风暴下 agent 抢不到写窗口却
    * "幻觉完成"——changes 申报的文件沙箱里不存在（两次复现：AiClient 账面 completed、
    * 分支无 lib/services/ai_client.dart），下游按申报等文件 → precondition blocker。
    * recordDeliveryCheck 已算出 phantom 但只记分；本守卫做分级裁决：
-   * - 全 phantom（git 无实际变更且申报全缺失）→ 'fail'，调用点判节点失败转人工；
+   * - 全 phantom（git 无实际变更且申报全缺失/零变更）→ 'fail'，调用点判节点失败转人工；
    * - 部分 phantom → 从 result.changes 剔除幻影条目（下游不再等不存在的文件），journal 审计。
+   * jgfhfaux 复盘补充：unchanged（申报"修改"现有文件但节点生命周期内指纹零变化）与
+   * 未落盘同罪合并裁决——只拦"新文件缺失"时，声称改现有文件的幻觉照样通关。
    * orchestrator 合并节点无文件产出语义，跳过。
    */
   private applyPhantomGuard(taskId: string, graph: TaskGraph, node: TaskNode, result: AgentResult, delivery: NonNullable<AgentResult['delivery_check']>): 'fail' | 'ok' {
     if (node.agent === 'orchestrator') return 'ok';
-    const phantom = delivery.phantom || [];
+    const phantom = [...(delivery.phantom || []), ...(delivery.unchanged || [])];
     if (!phantom.length) return 'ok';
 
     const phantomNorm = new Set(phantom.map((p) => this.normalizeReportedPath(p).toLowerCase()));
@@ -2361,6 +2423,15 @@ export class Orchestrator {
       await emitProgress('node_branch_created', { task_id: taskId, node_id: node.id, branch: node.branch, parent });
     }
 
+    // 内容级假完成守卫基线：节点动手前给沙箱文件拍 (mtime,size) 指纹——收尾时
+    // 申报"修改"的文件指纹未变即零变更幻影（jgfhfaux：申报改 ai_service.dart，
+    // 文件存在所以存在性 phantom 放行，实际从未写盘）
+    if (this.sandboxEnabled && sandbox !== graph.workspace) {
+      try {
+        this.nodeFileSnapshots.set(`${taskId}:${node.id}`, this.snapshotSandboxFiles(sandbox));
+      } catch { /* best effort: 缺快照时内容校验自动降级为跳过 */ }
+    }
+
     let error = '';
     let fixRound = 0;
     // E8: consecutive fix rounds whose failed test output yields zero parseable cases
@@ -2388,7 +2459,7 @@ export class Orchestrator {
         await persistGraph(graph);
         await emitProgress('node_retry', { task_id: taskId, node_id: node.id, attempt: attempt + 1 });
       }
-      const result = await this.dispatch(taskId, node, plugin, sandbox, false, error, `第 ${attempt + 1} 次尝试`, undefined, policy);
+      const result = await this.dispatch(taskId, node, plugin, sandbox, false, error, `第 ${attempt + 1} 次尝试`, undefined, policy, graph.level);
       if (result.status === 'success') {
         // improvement 8: test-fix loop — a failing test command blocks the commit and
         // triggers a targeted repair round instead of accepting broken code
@@ -2494,7 +2565,8 @@ export class Orchestrator {
         // quality metric: reported changes vs the actual working tree (before the commit)
         const delivery = await this.recordDeliveryCheck(graph, node, sandbox, result);
         if (delivery && this.applyPhantomGuard(taskId, graph, node, result, delivery) === 'fail') {
-          error = `假完成拦截：申报的 ${delivery.phantom.length} 个文件均未落盘（${delivery.phantom.slice(0, 3).join('、')}）——换模型重试或人工介入`;
+          const ph = [...(delivery.phantom || []), ...(delivery.unchanged || [])];
+          error = `假完成拦截：申报的 ${ph.length} 个文件全部未落盘或零变更（${ph.slice(0, 3).join('、')}）——换模型重试或人工介入`;
           break;
         }
 
@@ -2545,7 +2617,7 @@ export class Orchestrator {
 
     // escalation: main agent takes over with an adjusted strategy
     await emitProgress('node_escalate', { task_id: taskId, node_id: node.id, name: node.name, error });
-    const result = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 接管', undefined, policy);
+    const result = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 接管', undefined, policy, graph.level);
     if (result.status === 'success') {
       // P0-1: the takeover result faces the same gate (no fix rounds left at this point)
       const gate = await this.enforceSelfModGate(taskId, graph, node, plugin, sandbox, result, this.maxFixRounds, false);
@@ -2559,11 +2631,12 @@ export class Orchestrator {
         const delivery = await this.recordDeliveryCheck(graph, node, sandbox, result);
         if (delivery && this.applyPhantomGuard(taskId, graph, node, result, delivery) === 'fail') {
           // 主 Agent 接管后仍幻觉交付：无更多升级手段，停靠人工（error_type=content → 车道锁等人工决策）
-          const msg = `假完成拦截：申报的 ${delivery.phantom.length} 个文件均未落盘（${delivery.phantom.slice(0, 3).join('、')}）——接管后仍幻觉交付，转人工`;
+          const ph = [...(delivery.phantom || []), ...(delivery.unchanged || [])];
+          const msg = `假完成拦截：申报的 ${ph.length} 个文件全部未落盘或零变更（${ph.slice(0, 3).join('、')}）——接管后仍幻觉交付，转人工`;
           node.status = 'failed';
           node.finished_at = new Date().toISOString();
           node.error = `需人工介入（假完成守卫）：${msg}`;
-          // delivery_check 随节点结果落档——phantom 清单是人工排查的审计证据
+          // delivery_check 随节点结果落档——phantom/unchanged 清单是人工排查的审计证据
           node.result = { status: 'failed', error: node.error, summary: '节点停止（假完成守卫），未产出变更', delivery_check: delivery };
           node.needs_human = true;
           node.error_type = 'content';
@@ -2571,7 +2644,7 @@ export class Orchestrator {
           await persistGraph(graph);
           await this.recordAgentLife(taskId, graph, node, false, 0);
           await emitProgress('node_error', { task_id: taskId, node_id: node.id, name: node.name, agent: node.agent, error: node.error });
-          notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」假完成拦截（${delivery.phantom.length} 文件未落盘），转人工处理`);
+          notify('node_needs_human', { task_id: taskId, node_id: node.id }, `[Co-Team] 节点「${node.name}」假完成拦截（${ph.length} 文件未落盘/零变更），转人工处理`);
           return;
         }
         await this.finalizeNodeSuccess(taskId, graph, node, result, useBranch, sandbox, true);
@@ -2596,7 +2669,7 @@ export class Orchestrator {
           node_name: node.name,
         });
         await emitProgress('node_main_takeover', { task_id: taskId, node_id: node.id, name: node.name, model: mainEntry.name });
-        finalResult = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 兜底', mainEntry, policy);
+        finalResult = await this.dispatch(taskId, node, plugin, sandbox, true, error, '主 Agent 兜底', mainEntry, policy, graph.level);
         if (finalResult.status === 'success') {
           await this.finalizeNodeSuccess(taskId, graph, node, finalResult, useBranch, sandbox, true);
           return;
@@ -2942,7 +3015,7 @@ export class Orchestrator {
    * capacity, then break the cooldown glass. A node must not fail while any model
    * could still run it.
    */
-  private async resolvePrimary(taskId: string, node: TaskNode, plugin: AgentPlugin): Promise<ModelEntry | null> {
+  private async resolvePrimary(taskId: string, node: TaskNode, plugin: AgentPlugin, level?: TaskLevel): Promise<ModelEntry | null> {
     if (!this.pool) return null;
     const nodePin = node.model_id ? this.pool.getModel(node.model_id) : null;
     if (node.model_id && !nodePin) {
@@ -2951,9 +3024,11 @@ export class Orchestrator {
     if (plugin.modelOverride && !this.pool.getModel(plugin.modelOverride)) {
       this.logger.warn('Agent model_override not in pool, falling back to dynamic selection', { taskId, nodeId: node.id, agent: plugin.name, model: plugin.modelOverride });
     }
+    // heavy 档容量稳定优先（jgfhfaux 复盘）：降级链备胎的幻觉交付比等待更贵
+    const preferStable = level === 'heavy';
     let primary = nodePin || (plugin.modelOverride ? this.pool.getModel(plugin.modelOverride) : null);
-    if (!primary) primary = this.pool.selectModel(plugin.tags, node.complexity);
-    if (!primary) primary = await this.waitForModel(taskId, plugin.tags, node.complexity);
+    if (!primary) primary = this.pool.selectModel(plugin.tags, node.complexity, { preferStable });
+    if (!primary) primary = await this.waitForModel(taskId, plugin.tags, node.complexity, { preferStable });
     if (!primary) {
       primary = this.pool.emergencyCandidates()[0] || null;
       if (primary) {
@@ -2964,13 +3039,13 @@ export class Orchestrator {
   }
 
   /** Poll for model capacity (cooldown expiry / slot release) instead of failing immediately. */
-  private async waitForModel(taskId: string, tags: string[], complexity: Complexity): Promise<ModelEntry | null> {
+  private async waitForModel(taskId: string, tags: string[], complexity: Complexity, opts?: { preferStable?: boolean }): Promise<ModelEntry | null> {
     if (!this.pool || this.modelWaitTimeoutMs <= 0) return null;
     const deadline = Date.now() + this.modelWaitTimeoutMs;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 2000));
       if (await isCancelled(taskId)) return null;
-      const m = this.pool.selectModel(tags, complexity);
+      const m = this.pool.selectModel(tags, complexity, opts);
       if (m) {
         this.logger.info('Model became available after wait', { taskId, model: m.name, waitedMs: this.modelWaitTimeoutMs - (deadline - Date.now()) });
         return m;
@@ -2988,7 +3063,8 @@ export class Orchestrator {
     lastError: string,
     attemptLabel: string,
     forceEntry?: ModelEntry,
-    policy: PermissionPolicy = this.policy
+    policy: PermissionPolicy = this.policy,
+    level?: TaskLevel
   ): Promise<AgentResult> {
     try {
       await this.checkBudget(taskId);
@@ -3005,7 +3081,7 @@ export class Orchestrator {
     if (forceEntry) {
       chain = [forceEntry];
     } else {
-      const primary = await this.resolvePrimary(taskId, node, plugin);
+      const primary = await this.resolvePrimary(taskId, node, plugin, level);
       if (!primary) {
         this.logger.error('No model available even after wait & emergency bypass', { taskId, nodeId: node.id, agent: plugin.name });
         return { status: 'failed', error: 'No available model' };
@@ -3159,6 +3235,9 @@ export class Orchestrator {
           if (capTried < 2) {
             capacityRetries.set(entry.name, capTried + 1);
             const backoffMs = 20_000 * (capTried + 1);
+            // 端点组容量信号上报（jgfhfaux 复盘）：任务侧此前从不喂 noteCapacityHit，
+            // 容量软避让只在协作会话生效——429 风暴下每个新节点仍首撞限流组
+            this.pool.noteCapacityHit(entry);
             this.logger.warn('Model capacity limited (429) — backing off same model, health untouched', { taskId, nodeId: node.id, model: entry.name, backoff_sec: backoffMs / 1000, attempt: capTried + 1 });
             // OBS-1：限流退避可见（此前只写日志，用户看作战室只觉"卡住"）
             const backoffSec = Math.round(backoffMs / 1000);
@@ -3168,6 +3247,7 @@ export class Orchestrator {
             ci--; // 重试同一模型
             continue;
           }
+          this.pool.noteCapacityHit(entry);
           this.logger.warn('Model capacity limit persists after backoffs — skipping without health penalty', { taskId, nodeId: node.id, model: entry.name });
           continue; // 跳过该模型但不 markFailure：容量≠无能
         }
