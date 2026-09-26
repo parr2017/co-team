@@ -1,0 +1,910 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务详情改版预览 · Web + Mobile（preview-taskdetail）</title>
+<style>
+/* ============================================================
+   任务详情改版预览（纯静态 mock，不接任何数据）
+   设计语言延续 tokens.css：暗色终端 IDE 风 / 亮色同源切换
+   页面结构：① Web 任务详情（弹窗内四分区）  ② Mobile 手机框  ③ 改版说明
+   右下角浮标（主题切换）不属于产品 UI
+   ============================================================ */
+:root{
+  --bg-page:#0c0d10; --bg-panel:#121419; --bg-raised:#181b21;
+  --bg-overlay:#1d2129; --bg-inset:#0f1115;
+  --line:#23272f; --line-strong:#31363f;
+  --text-1:#e9ebee; --text-2:#98a0ab; --text-3:#626a76;
+  --accent:#ff9349; --accent-text:#0c0d10;
+  --accent-soft:color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-line:color-mix(in srgb, var(--accent) 38%, transparent);
+  --ok:#3fb96f; --warn:#d29922; --danger:#e5534b;
+  --ok-soft:color-mix(in srgb, var(--ok) 14%, transparent);
+  --warn-soft:color-mix(in srgb, var(--warn) 16%, transparent);
+  --danger-soft:color-mix(in srgb, var(--danger) 14%, transparent);
+  --ag-dev:#178a3e; --ag-test:#b8860b; --ag-review:#7c53c4;
+  --ag-deploy:#cc7a29; --ag-docs:#0e8fa3; --ag-refactor:#c4548f; --ag-launcher:#2f6fed; --ag-grader:#c4548f;
+  --fs-meta:11px; --fs-aux:12px; --fs-body:14px; --fs-sub:15px;
+  --fs-title:16px; --fs-h2:18px; --fs-h1:22px;
+  --r-ctl:6px; --r-panel:10px; --r-float:12px;
+  --shadow-float:0 12px 32px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.35);
+  --font-ui:-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+html[data-theme="light"]{
+  --bg-page:#f5f6f8; --bg-panel:#ffffff; --bg-raised:#ffffff;
+  --bg-overlay:#ffffff; --bg-inset:#f2f4f7;
+  --line:#e4e7ec; --line-strong:#cdd3db;
+  --text-1:#171a20; --text-2:#5b6472; --text-3:#8f98a5;
+  --accent:#2f6fed; --accent-text:#ffffff;
+  --ok:#1a7f37; --warn:#9a6700; --danger:#cf222e;
+  --shadow-float:0 12px 32px rgba(20,28,40,.14), 0 2px 8px rgba(20,28,40,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg-page);color:var(--text-1);font-family:var(--font-ui);font-size:var(--fs-body);-webkit-font-smoothing:antialiased}
+.mono{font-family:var(--font-mono)}
+a{color:var(--accent);text-decoration:none}
+button{font-family:var(--font-ui)}
+
+/* ---------- 预览页头 / 浮标（非产品 UI） ---------- */
+.pv-head{max-width:1560px;margin:0 auto;padding:20px 24px 0;display:flex;align-items:center;gap:14px}
+.pv-head .t{font-size:var(--fs-h2);font-weight:700}
+.pv-head .d{font-size:var(--fs-aux);color:var(--text-3)}
+.pv-head .sp{flex:1}
+.pv-head a{font-size:var(--fs-aux)}
+.pv-sec-title{max-width:1560px;margin:34px auto 12px;padding:0 24px;display:flex;align-items:baseline;gap:10px}
+.pv-sec-title h2{font-size:var(--fs-title);font-weight:700}
+.pv-sec-title span{font-size:var(--fs-aux);color:var(--text-3)}
+.pv-fab{position:fixed;right:18px;bottom:18px;z-index:99;display:flex;gap:8px}
+.pv-fab button{height:34px;padding:0 14px;border:1px solid var(--line-strong);border-radius:17px;background:var(--bg-overlay);color:var(--text-1);font-size:var(--fs-aux);cursor:pointer;box-shadow:var(--shadow-float)}
+.pv-fab button:hover{border-color:var(--accent-line);color:var(--accent)}
+.pv-note-bar{max-width:1560px;margin:6px auto 0;padding:0 24px;font-size:var(--fs-aux);color:var(--text-3)}
+
+/* ============================================================
+   ① WEB 任务详情
+   ============================================================ */
+.td-wrap{max-width:1560px;margin:0 auto;padding:0 24px 30px}
+.td{
+  border:1px solid var(--line);border-radius:var(--r-float);background:var(--bg-panel);
+  box-shadow:var(--shadow-float);overflow:hidden;
+}
+/* --- 弹窗头：状态 + 标题 + 元信息 chips + 动作 --- */
+.td-head{padding:18px 22px 14px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--accent-soft),transparent 140%),var(--bg-panel)}
+.td-head .row1{display:flex;align-items:center;gap:12px}
+.pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:12px;font-size:var(--fs-meta);white-space:nowrap;border:1px solid var(--line);background:var(--bg-inset);color:var(--text-2)}
+.pill.run{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);font-weight:600}
+.dot{width:6px;height:6px;border-radius:50%;flex:none;display:inline-block;background:var(--text-3)}
+.dot.run{background:var(--accent);animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.3}}
+.td-head .title{font-size:19px;font-weight:700;letter-spacing:.3px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.td-head .row2{display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:11px;font-size:var(--fs-meta);font-family:var(--font-mono);color:var(--text-2);background:var(--bg-inset);border:1px solid var(--line)}
+.chip b{color:var(--text-1);font-weight:500}
+.chip.acc{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.chip .sp-dot{width:3px;height:3px;border-radius:50%;background:var(--text-3)}
+.td-head .row3{display:flex;align-items:center;gap:14px;margin-top:12px}
+.bigbar{flex:1;height:6px;border-radius:3px;background:var(--bg-inset);overflow:hidden}
+.bigbar i{display:block;height:100%;border-radius:3px;background:var(--accent)}
+.big-lbl{font-family:var(--font-mono);font-size:var(--fs-aux);color:var(--text-2);white-space:nowrap}
+.big-lbl b{color:var(--accent);font-weight:600}
+.hbtns{display:flex;gap:8px;flex:none}
+.hbtn{height:28px;padding:0 12px;border:1px solid var(--line-strong);border-radius:var(--r-ctl);background:var(--bg-panel);color:var(--text-2);font-size:var(--fs-aux);cursor:pointer;transition:all .15s;white-space:nowrap}
+.hbtn:hover{color:var(--text-1);border-color:var(--accent-line);background:var(--accent-soft)}
+.hbtn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-text);font-weight:600}
+.hbtn.pri:hover{filter:brightness(1.08);color:var(--accent-text)}
+.hbtn.danger:hover{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent);background:var(--danger-soft)}
+
+/* --- 主体：左侧竖导航 + 内容 --- */
+.td-body{display:grid;grid-template-columns:168px 1fr;min-height:640px}
+.vnav{border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:4px;background:var(--bg-inset)}
+.vnav .vn{display:flex;align-items:center;gap:9px;height:34px;padding:0 12px;border:none;border-radius:var(--r-ctl);background:none;color:var(--text-2);font-size:var(--fs-aux);cursor:pointer;text-align:left;transition:all .15s}
+.vnav .vn i{font-style:normal;font-size:14px;width:16px;text-align:center;color:var(--text-3)}
+.vnav .vn:hover{color:var(--text-1);background:var(--bg-raised)}
+.vnav .vn.on{color:var(--accent);background:var(--accent-soft);font-weight:600}
+.vnav .vn.on i{color:var(--accent)}
+.vnav .vn .bdg{margin-left:auto;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--danger);color:#fff;font-family:var(--font-mono);font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
+.vnav .vn-sep{height:1px;background:var(--line);margin:8px 6px}
+.vnav .vn-sub{padding:4px 12px;font-size:10px;color:var(--text-3);letter-spacing:1px}
+
+.td-main{padding:16px 20px 22px;min-width:0}
+
+/* --- 阶段步进器 --- */
+.stepper{display:flex;align-items:center;gap:0;margin-bottom:14px}
+.stp{display:flex;align-items:center;gap:8px}
+.stp .n{
+  width:26px;height:26px;border-radius:50%;border:1px solid var(--line-strong);background:var(--bg-panel);
+  color:var(--text-3);font-family:var(--font-mono);font-size:var(--fs-aux);
+  display:flex;align-items:center;justify-content:center;flex:none;transition:all .2s;
+}
+.stp.done .n{border-color:var(--ok);color:var(--ok);background:var(--ok-soft)}
+.stp.act .n{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 4px var(--accent-soft)}
+.stp .lb{font-size:var(--fs-aux);color:var(--text-3);white-space:nowrap}
+.stp.done .lb{color:var(--text-2)}
+.stp.act .lb{color:var(--text-1);font-weight:600}
+.stp-link{flex:1;height:1px;background:var(--line);margin:0 12px;min-width:24px}
+.stp-link.passed{background:var(--ok)}
+
+/* --- 频道双栏 --- */
+.warroom{display:grid;grid-template-columns:minmax(380px,1fr) minmax(420px,1.15fr);gap:16px}
+.wr-l,.wr-r{min-width:0;display:flex;flex-direction:column;gap:12px}
+
+/* 成员条 */
+.members{display:flex;gap:6px;flex-wrap:wrap}
+.mb{
+  display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:14px;
+  border:1px solid var(--line);background:var(--bg-panel);color:var(--text-2);
+  font-family:var(--font-mono);font-size:var(--fs-aux);cursor:pointer;transition:all .15s;
+}
+.mb:hover{border-color:var(--line-strong);color:var(--text-1)}
+.mb.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent);font-weight:600}
+.mb .md{width:7px;height:7px;border-radius:50%;background:var(--text-3);flex:none}
+.mb .md.on{background:var(--ok);animation:pulse 1.6s infinite}
+
+/* 轨道：节点站卡 */
+.track{display:flex;flex-direction:column}
+.station-wrap{display:flex;gap:0}
+.railcol{width:26px;flex:none;display:flex;flex-direction:column;align-items:center}
+.railcol .rd{width:10px;height:10px;border-radius:50%;border:2px solid var(--line-strong);background:var(--bg-panel);margin-top:16px;flex:none}
+.railcol .rl{width:2px;flex:1;background:var(--line)}
+.station-wrap.done .rd{border-color:var(--ok);background:var(--ok)}
+.station-wrap.run .rd{border-color:var(--accent);background:var(--accent);animation:pulse 1.6s infinite}
+.station-wrap.warn .rd{border-color:var(--warn);background:var(--warn)}
+.station-wrap.bad .rd{border-color:var(--danger);background:var(--danger)}
+.station{
+  flex:1;min-width:0;margin:8px 0;padding:10px 14px;border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--bg-panel);cursor:pointer;transition:all .15s;
+}
+.station:hover{border-color:var(--line-strong)}
+.station.sel{border-color:var(--accent-line);background:linear-gradient(90deg,var(--accent-soft),transparent 60%),var(--bg-panel)}
+.s-top{display:flex;align-items:center;gap:8px}
+.s-name{font-size:var(--fs-body);font-weight:600;color:var(--text-1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.s-st{font-size:var(--fs-meta);font-family:var(--font-mono);flex:none}
+.s-st.completed{color:var(--ok)} .s-st.running{color:var(--accent)} .s-st.pending{color:var(--text-3)} .s-st.failed{color:var(--danger)} .s-st.queued{color:var(--text-3)}
+.s-meta{display:flex;align-items:center;gap:10px;margin-top:4px;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-3);flex-wrap:wrap}
+.s-meta .ab{color:var(--text-2);background:var(--bg-inset);border:1px solid var(--line);border-radius:4px;padding:0 5px}
+.hb{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap;align-items:center}
+.hb-chip{font-family:var(--font-mono);font-size:10px;color:var(--text-2);background:var(--bg-inset);border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+.hb-chip.model{color:var(--accent);border-color:var(--accent-line)}
+.hb-chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.hb-live{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-mono);font-size:10px;color:var(--ok)}
+.hb-live i{width:5px;height:5px;border-radius:50%;background:var(--ok);animation:pulse 1.2s infinite}
+.delta{
+  margin-top:7px;padding:6px 9px;border-left:2px solid var(--accent);background:var(--bg-inset);border-radius:0 4px 4px 0;
+  font-family:var(--font-mono);font-size:11px;color:var(--text-2);line-height:1.5;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.branches{border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-panel);padding:10px 14px}
+.br-title{font-size:var(--fs-meta);color:var(--text-3);letter-spacing:1px;margin-bottom:6px}
+.br-row{display:flex;gap:10px;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-2);padding:2px 0}
+.br-row .cm{color:var(--text-3);margin-left:auto}
+
+/* 右栏：视图切换 + 节点详情 */
+.wr-switch{display:flex;gap:2px;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r-ctl);padding:2px;width:max-content}
+.sw-btn{height:26px;padding:0 12px;border:none;background:none;border-radius:4px;font-size:var(--fs-aux);color:var(--text-3);cursor:pointer;font-family:var(--font-mono)}
+.sw-btn.on{background:var(--bg-panel);color:var(--text-1)}
+.sw-cur{align-self:center;margin-left:10px;font-size:var(--fs-meta);color:var(--text-3)}
+.nd-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.nd-head .nm{font-size:var(--fs-title);font-weight:700}
+.nd-head .mt{font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-3)}
+.nd-ops{margin-left:auto;display:flex;gap:8px}
+.sec{border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-panel);padding:12px 14px}
+.sec-t{font-size:var(--fs-meta);letter-spacing:1.2px;color:var(--text-3);margin-bottom:9px}
+.sec-t b{color:var(--text-2)}
+.sum{font-size:var(--fs-body);color:var(--text-1);line-height:1.65}
+.verif{display:flex;gap:8px;align-items:flex-start}
+.verif .vk{flex:none;color:var(--ok);background:var(--ok-soft);border:1px solid color-mix(in srgb,var(--ok) 35%,transparent);border-radius:4px;font-size:10px;padding:1px 6px;margin-top:2px;font-family:var(--font-mono)}
+.verif .vt{font-size:var(--fs-aux);color:var(--text-2);line-height:1.6}
+.chg-row{display:flex;gap:8px;font-family:var(--font-mono);font-size:var(--fs-aux);color:var(--text-2);padding:3px 0;align-items:baseline}
+.chg-row .ck{color:var(--ok);flex:none}
+.defect{border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-raised);padding:9px 12px;margin-bottom:8px}
+.defect:last-child{margin-bottom:0}
+.d-head{display:flex;align-items:center;gap:8px}
+.d-sev{font-family:var(--font-mono);font-size:10px;padding:1px 7px;border-radius:4px;border:1px solid var(--line)}
+.d-sev.high{color:var(--danger);background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
+.d-sev.medium{color:var(--warn);background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.d-title{font-size:var(--fs-aux);font-weight:600;color:var(--text-1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.d-act{height:22px;padding:0 9px;font-size:var(--fs-meta);border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);border-radius:var(--r-ctl);cursor:pointer;flex:none}
+.d-act:hover{filter:brightness(1.1)}
+.d-detail{margin-top:5px;font-size:var(--fs-meta);color:var(--text-3);line-height:1.55}
+.ea-grid{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-2)}
+.ea-grid .g{display:flex;flex-direction:column;gap:2px}
+.ea-grid .gk{font-size:10px;color:var(--text-3)}
+.ea-grid .gv b{color:var(--text-1);font-weight:600}
+.tool-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+.tool-chips .hb-chip.bad{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,transparent)}
+.tl-row{display:flex;gap:10px;padding:4px 0;font-size:var(--fs-aux);align-items:baseline}
+.tl-time{font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-3);flex:none;width:56px}
+.tl-dot{width:6px;height:6px;border-radius:50%;background:var(--text-3);flex:none;position:relative;top:0}
+.tl-dot.ok{background:var(--ok)} .tl-dot.run{background:var(--accent)} .tl-dot.warn{background:var(--warn)} .tl-dot.bad{background:var(--danger)}
+.tl-text{color:var(--text-2);min-width:0}
+.tl-text.warn{color:var(--warn)} .tl-text.bad{color:var(--danger)}
+
+/* --- 实时驾驶舱 --- */
+.cp-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+.cp-card{border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);padding:14px 16px}
+.cp-title{font-size:var(--fs-meta);color:var(--text-3);letter-spacing:1px;margin-bottom:8px}
+.cp-big{font-family:var(--font-mono);font-size:26px;font-weight:700;color:var(--accent);line-height:1.1}
+.cp-sub{font-size:var(--fs-aux);color:var(--text-2);margin-top:6px;line-height:1.5}
+.cp-item{display:flex;gap:8px;font-size:var(--fs-aux);color:var(--text-2);padding:3px 0}
+.cp-item .st{font-family:var(--font-mono);flex:none}
+.cp-item.done .st{color:var(--ok)} .cp-item.failed .st{color:var(--danger)} .cp-item.doing .st{color:var(--warn)}
+.counters{display:flex;gap:8px;flex-wrap:wrap}
+.cnt{font-family:var(--font-mono);font-size:var(--fs-aux);color:var(--text-2);background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r-ctl);padding:4px 10px}
+.cnt b{color:var(--text-1)}
+.cnt.warn{color:var(--warn)}
+.feed{border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-inset);padding:12px 16px;max-height:340px;overflow:auto}
+.feed-row{display:flex;gap:12px;padding:4px 0;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-2)}
+.feed-row .ts{color:var(--text-3);flex:none}
+.feed-row.hl{color:var(--accent)}
+
+/* --- 事件归档 --- */
+.arch-bar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.seg{display:flex;background:var(--bg-inset);border:1px solid var(--line);border-radius:var(--r-ctl);padding:2px}
+.seg button{height:26px;padding:0 12px;border:none;border-radius:4px;background:none;font-size:var(--fs-aux);color:var(--text-2);cursor:pointer}
+.seg button.on{background:var(--bg-panel);color:var(--text-1);font-weight:600}
+.arch-in{position:relative;width:220px}
+.arch-in input{width:100%;height:30px;padding:0 10px 0 28px;border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-overlay);color:var(--text-1);font-size:var(--fs-aux);outline:none}
+.arch-in .ic{position:absolute;left:9px;top:7px;color:var(--text-3);font-size:12px}
+.arch-count{margin-left:auto;font-size:var(--fs-meta);color:var(--text-3)}
+.arch-list{border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-inset);padding:10px 16px}
+.tl-chip{font-family:var(--font-mono);font-size:10px;color:var(--text-3);border:1px solid var(--line);border-radius:4px;padding:0 6px;flex:none;align-self:center}
+
+/* --- 管理 --- */
+.mg-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.mg-card{border:1px solid var(--line);border-radius:var(--r-panel);background:var(--bg-panel);padding:14px 16px}
+.mg-card.alert{border-color:color-mix(in srgb,var(--danger) 45%,var(--line));background:linear-gradient(135deg,var(--danger-soft),transparent 50%),var(--bg-panel)}
+.mg-card.wide{grid-column:1 / -1}
+.mg-h{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.mg-h .t{font-size:var(--fs-meta);letter-spacing:1.2px;color:var(--text-3)}
+.mg-h .n-badge{margin-left:auto;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--danger);color:#fff;font-family:var(--font-mono);font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
+.mg-line{font-size:var(--fs-aux);color:var(--text-2);padding:3px 0;line-height:1.55}
+.mg-line b{color:var(--text-1);font-weight:600}
+.prop{border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-raised);padding:9px 12px;margin-bottom:8px}
+.prop .p-r{display:flex;align-items:center;gap:8px}
+.prop .p-rsn{font-size:var(--fs-aux);color:var(--text-2);flex:1;min-width:0}
+.prop .p-ops{display:flex;gap:6px;margin-top:8px}
+.pbtn{height:24px;padding:0 11px;border-radius:var(--r-ctl);font-size:var(--fs-aux);cursor:pointer;border:1px solid var(--line-strong);background:var(--bg-panel);color:var(--text-2)}
+.pbtn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-text);font-weight:600}
+.pbtn:hover{filter:brightness(1.08)}
+.ask-in{display:flex;gap:8px;margin-top:8px}
+.ask-in input{flex:1;height:30px;border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-overlay);color:var(--text-1);font-size:var(--fs-aux);padding:0 10px;outline:none}
+.snap-row{display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-2);padding:5px 0;border-bottom:1px solid var(--line)}
+.snap-row:last-child{border-bottom:none}
+.snap-tag{font-size:10px;color:var(--accent);background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:4px;padding:0 6px}
+.snap-row .rb{margin-left:auto;color:var(--danger);background:none;border:none;font-size:var(--fs-meta);cursor:pointer;font-family:var(--font-mono)}
+.snap-row .rb:hover{text-decoration:underline}
+.mg-model{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.model-cur{font-family:var(--font-mono);font-size:var(--fs-aux);color:var(--accent);background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:var(--r-ctl);padding:5px 10px}
+.selbox{height:30px;border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-overlay);color:var(--text-2);font-size:var(--fs-aux);padding:0 10px}
+.mg-hint{font-size:var(--fs-meta);color:var(--text-3);line-height:1.6;margin-top:8px}
+.pc-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px dashed var(--line)}
+.pc-row:last-child{border-bottom:none}
+.pc-cmd{font-family:var(--font-mono);font-size:var(--fs-aux);color:var(--warn);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pc-node{font-family:var(--font-mono);font-size:var(--fs-meta);color:var(--text-3);flex:none}
+
+/* ============================================================
+   ② MOBILE
+   ============================================================ */
+.mob-wrap{display:flex;gap:40px;justify-content:center;align-items:flex-start;flex-wrap:wrap;padding-bottom:30px}
+.phone{width:390px;height:844px;border-radius:44px;border:10px solid #1a1d23;background:var(--bg-page);overflow:hidden;position:relative;display:flex;flex-direction:column;box-shadow:0 30px 80px rgba(0,0,0,.5);flex:none}
+html[data-theme="light"] .phone{border-color:#2a2e36}
+.m-statusbar{height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;font-size:12px;font-weight:600;color:var(--text-1);flex:none}
+.m-nav{height:48px;display:flex;align-items:center;gap:10px;padding:0 14px;flex:none;border-bottom:1px solid var(--line)}
+.m-nav .bk{color:var(--text-2);font-size:18px}
+.m-nav .t{font-size:16px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m-nav .op{color:var(--accent);font-size:13px;font-weight:600}
+.m-nav .op.dim{color:var(--text-3)}
+.m-body{flex:1;overflow-y:auto;overscroll-behavior:contain;padding-bottom:30px}
+
+/* Hero 头卡 */
+.m-hero{margin:10px 14px;padding:14px 16px;border-radius:14px;border:1px solid var(--accent-line);background:linear-gradient(135deg,var(--accent-soft),transparent 55%),var(--bg-panel)}
+.m-hero .r1{display:flex;align-items:center;gap:9px}
+.m-hero .ttl{font-size:15px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m-hero .chips{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+.m-chip{font-family:var(--font-mono);font-size:10px;color:var(--text-2);background:var(--bg-inset);border:1px solid var(--line);border-radius:5px;padding:2px 7px}
+.m-chip.acc{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.m-hero .bar{margin-top:11px}
+.m-bar{height:5px;border-radius:3px;background:var(--bg-inset);overflow:hidden}
+.m-bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+.m-hero .bl{display:flex;justify-content:space-between;margin-top:6px;font-family:var(--font-mono);font-size:10.5px;color:var(--text-3)}
+.m-hero .bl b{color:var(--accent)}
+
+/* 阶段步进（移动紧凑版） */
+.m-steps{display:flex;align-items:center;margin:12px 14px 0;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-panel)}
+.m-stp{display:flex;flex-direction:column;align-items:center;gap:5px;flex:none}
+.m-stp .d{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--line-strong);background:var(--bg-panel);color:var(--text-3);font-size:9px;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono)}
+.m-stp.done .d{border-color:var(--ok);color:var(--ok);background:var(--ok-soft)}
+.m-stp.act .d{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.m-stp .l{font-size:9.5px;color:var(--text-3)}
+.m-stp.act .l{color:var(--text-1);font-weight:600}
+.m-slink{flex:1;height:1.5px;background:var(--line);margin:0 6px 14px}
+.m-slink.passed{background:var(--ok)}
+
+/* 移动 pill tabs */
+.m-tabs{display:flex;gap:6px;margin:12px 14px 0}
+.m-tab{flex:1;height:32px;border-radius:16px;border:1px solid var(--line);background:var(--bg-panel);color:var(--text-2);font-size:12.5px;cursor:pointer}
+.m-tab.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent);font-weight:700}
+.m-pane{display:none}
+.m-pane.show{display:block}
+
+/* 对话 pane */
+.m-stage{margin:12px 14px 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg-panel)}
+.m-stage .r{display:flex;align-items:center;gap:8px}
+.m-stage .st{font-size:13px;font-weight:700;color:var(--accent)}
+.m-stage .pct{margin-left:auto;font-family:var(--font-mono);font-size:16px;font-weight:700;color:var(--accent)}
+.m-stage .meta{margin-top:6px;font-family:var(--font-mono);font-size:10.5px;color:var(--text-3)}
+.m-members{display:flex;gap:6px;padding:12px 14px 0;overflow-x:auto;scrollbar-width:none}
+.m-members::-webkit-scrollbar{display:none}
+.m-mb{flex:none;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:14px;border:1px solid var(--line);background:var(--bg-panel);color:var(--text-2);font-family:var(--font-mono);font-size:11px}
+.m-mb.on{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent)}
+.m-mb .d{width:6px;height:6px;border-radius:50%;background:var(--ok);animation:pulse 1.6s infinite}
+.m-chat{padding:12px 14px 0;display:flex;flex-direction:column;gap:10px}
+.bub{max-width:82%;padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.55}
+.bub.them{align-self:flex-start;background:var(--bg-panel);border:1px solid var(--line);color:var(--text-1);border-top-left-radius:4px}
+.bub.sys{align-self:center;background:none;border:none;color:var(--text-3);font-family:var(--font-mono);font-size:10.5px}
+.bub .who{font-family:var(--font-mono);font-size:10px;color:var(--text-3);margin-bottom:3px}
+
+/* 节点 rail（执行详情） */
+.m-nodes{padding:12px 14px 0}
+.pnode{display:flex;gap:12px}
+.pnode .rail{width:22px;flex:none;display:flex;flex-direction:column;align-items:center}
+.pnode .rail .rd{width:9px;height:9px;border-radius:50%;border:2px solid var(--line-strong);background:var(--bg-panel);margin-top:14px}
+.pnode .rail .ln{width:2px;flex:1;background:var(--line)}
+.pnode.done .rd{border-color:var(--ok);background:var(--ok)}
+.pnode.run .rd{border-color:var(--accent);background:var(--accent);animation:pulse 1.6s infinite}
+.pnode.bad .rd{border-color:var(--danger);background:var(--danger)}
+.pnode .pc{flex:1;min-width:0;margin-bottom:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg-panel);padding:10px 12px}
+.pnode .pr{display:flex;align-items:center;gap:8px}
+.pnode .pn{font-size:13px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pnode .ps{font-family:var(--font-mono);font-size:10px}
+.pnode .ps.completed{color:var(--ok)} .pnode .ps.running{color:var(--accent)} .pnode .ps.failed{color:var(--danger)} .pnode .ps.pending{color:var(--text-3)}
+.pnode .pm{margin-top:4px;font-family:var(--font-mono);font-size:10px;color:var(--text-3);display:flex;gap:8px;flex-wrap:wrap}
+.pnode .hb2{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap}
+.pnode .hb2 span{font-family:var(--font-mono);font-size:9.5px;color:var(--text-2);background:var(--bg-inset);border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+.pnode .hb2 span.warn{color:var(--warn)}
+
+/* 管理 pane */
+.m-mg{padding:12px 14px 0;display:flex;flex-direction:column;gap:10px}
+.mg-cell{border:1px solid var(--line);border-radius:12px;background:var(--bg-panel);padding:12px 14px}
+.mg-cell.alert{border-color:color-mix(in srgb,var(--danger) 45%,var(--line));background:linear-gradient(135deg,var(--danger-soft),transparent 50%),var(--bg-panel)}
+.mg-cell .h{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.mg-cell .h .t{font-size:12px;font-weight:700;color:var(--text-1)}
+.mg-cell .h .bd{margin-left:auto;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--danger);color:#fff;font-family:var(--font-mono);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.mg-cell .h .new{margin-left:auto;font-size:9px;color:var(--accent);border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:4px;padding:1px 6px;font-weight:700}
+.mg-cell .b{font-size:12px;color:var(--text-2);line-height:1.6}
+.mg-cell .askrow{display:flex;gap:7px;margin-top:9px}
+.mg-cell .askrow input{flex:1;height:30px;border:1px solid var(--line);border-radius:8px;background:var(--bg-overlay);color:var(--text-1);font-size:12px;padding:0 10px;outline:none}
+.mg-cell .askrow button{height:30px;padding:0 13px;border-radius:8px;border:none;background:var(--accent);color:var(--accent-text);font-size:12px;font-weight:600}
+.mg-cell .snap{display:flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:10.5px;color:var(--text-2);padding:5px 0;border-bottom:1px solid var(--line)}
+.mg-cell .snap:last-child{border:none}
+.mg-cell .snap .rb{margin-left:auto;color:var(--danger);background:none;border:none;font-size:10.5px}
+
+/* ---------- ③ 改版说明 ---------- */
+.notes{max-width:1560px;margin:30px auto 60px;padding:0 24px}
+.notes h2{font-size:var(--fs-title);margin-bottom:12px}
+.notes h3{font-size:var(--fs-sub);margin:18px 0 10px;color:var(--text-2)}
+.notes ul{list-style:none;display:flex;flex-direction:column;gap:8px}
+.notes li{font-size:var(--fs-body);color:var(--text-2);padding:10px 14px;border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--bg-panel)}
+.notes li b{color:var(--text-1)}
+.notes li .no{color:var(--text-3);font-family:var(--font-mono);font-size:var(--fs-aux);margin-right:8px}
+.notes li .new{color:var(--accent);border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:4px;font-size:10px;padding:1px 6px;margin-left:6px;font-weight:700}
+</style>
+</head>
+<body>
+
+<div class="pv-head">
+  <span class="t">任务详情改版预览</span>
+  <span class="d">纯静态 mock · 数据为演示用假数据 · 与任务中心同一套 tokens</span>
+  <span class="sp"></span>
+  <a href="#web-sec">Web 版</a>
+  <a href="#mob-sec">Mobile 版</a>
+  <a href="#notes-sec">改版说明</a>
+</div>
+<div class="pv-note-bar">现有四个分区（任务频道/实时/事件归档/管理）与全部操作一个不缺，只重新组织与美化；mobile 补齐"阻塞问答"缺口。</div>
+
+<!-- ============================================================ -->
+<!-- ① WEB                                                         -->
+<!-- ============================================================ -->
+<div class="pv-sec-title" id="web-sec"><h2>① Web 桌面版</h2><span>弹窗头一体化 · 左侧竖导航 · 频道双栏精修 · 管理双列卡片（点击左导航切换演示）</span></div>
+
+<div class="td-wrap">
+<div class="td">
+  <!-- 弹窗头 -->
+  <div class="td-head">
+    <div class="row1">
+      <span class="pill run"><span class="dot run"></span>执行中</span>
+      <span class="title">修复 SSE 退避棘轮锁死导致的 30 秒回复死窗</span>
+      <div class="hbtns">
+        <button class="hbtn pri">⎇ 合并到主分支</button>
+        <button class="hbtn">协同文档</button>
+        <button class="hbtn">实时产出</button>
+        <button class="hbtn danger">取消任务</button>
+      </div>
+    </div>
+    <div class="row2">
+      <span class="chip">ID <b>task_a91f</b></span>
+      <span class="chip">工作区 <b>D:\pxx\co-team</b></span>
+      <span class="chip">⎇ <b>coteam/task_a91f</b></span>
+      <span class="chip">等级 <b>heavy</b></span>
+      <span class="chip acc"><b>184k</b> tok</span>
+      <span class="chip">≈<b>$0.42</b>（估算）</span>
+      <span class="chip">预计剩余 <b>12</b> 分钟</span>
+    </div>
+    <div class="row3">
+      <div class="bigbar"><i style="width:62%"></i></div>
+      <span class="big-lbl"><b>62%</b> · 8/13 节点</span>
+    </div>
+  </div>
+
+  <!-- 主体 -->
+  <div class="td-body">
+    <!-- 左导航 -->
+    <div class="vnav">
+      <button class="vn on" data-pane="p-war"><i>◉</i>任务频道</button>
+      <button class="vn" data-pane="p-cp"><i>◔</i>实时驾驶舱</button>
+      <button class="vn" data-pane="p-arch"><i>≡</i>事件归档</button>
+      <div class="vn-sep"></div>
+      <div class="vn-sub">管理</div>
+      <button class="vn" data-pane="p-mg"><i>⚙</i>治理与配置<span class="bdg">3</span></button>
+    </div>
+
+    <div class="td-main">
+      <!-- ============ pane: 任务频道 ============ -->
+      <div class="pane" id="p-war">
+        <div class="stepper">
+          <div class="stp done"><span class="n">✓</span><span class="lb">需求澄清</span></div>
+          <span class="stp-link passed"></span>
+          <div class="stp done"><span class="n">✓</span><span class="lb">计划审核</span></div>
+          <span class="stp-link passed"></span>
+          <div class="stp act"><span class="n">3</span><span class="lb">节点执行</span></div>
+          <span class="stp-link"></span>
+          <div class="stp"><span class="n">4</span><span class="lb">完成</span></div>
+        </div>
+
+        <div class="warroom">
+          <!-- 左：成员 + 轨道 + 分支 -->
+          <div class="wr-l">
+            <div class="members">
+              <button class="mb on">全体</button>
+              <button class="mb"><span class="md on"></span>dev</button>
+              <button class="mb"><span class="md"></span>test</button>
+              <button class="mb"><span class="md"></span>review</button>
+              <button class="mb"><span class="md"></span>grader</button>
+            </div>
+
+            <div class="track">
+              <div class="station-wrap done">
+                <div class="railcol"><span class="rd"></span><span class="rl"></span></div>
+                <div class="station">
+                  <div class="s-top"><span class="s-name">梳理 SSE 重连链路与退避现状</span><span class="s-st completed">已完成</span></div>
+                  <div class="s-meta"><span class="ab">dev</span><span>⎇ coteam/task_a91f</span><span>6m</span></div>
+                </div>
+              </div>
+              <div class="station-wrap run">
+                <div class="railcol"><span class="rd"></span><span class="rl"></span></div>
+                <div class="station sel">
+                  <div class="s-top"><span class="s-name">实现退避棘轮解锁与自愈看门狗</span><span class="s-st running">执行中</span></div>
+                  <div class="s-meta"><span class="ab">dev</span><span>⎇ coteam/task_a91f</span><span>12m</span><span>重试 ×1</span></div>
+                  <div class="hb">
+                    <span class="hb-chip model">glm-4.7-flash</span>
+                    <span class="hb-chip">96k tok</span>
+                    <span class="hb-chip">第 2 轮</span>
+                    <span class="hb-chip warn">⏳ 限流退避 8s</span>
+                    <span class="hb-live"><i></i>生成中</span>
+                  </div>
+                  <div class="delta">…watchdog 检测到 pump 停帧后先探测 sse 通道，再触发 resubscribe；棘轮状态保存在 ratchetState…</div>
+                </div>
+              </div>
+              <div class="station-wrap">
+                <div class="railcol"><span class="rd"></span><span class="rl"></span></div>
+                <div class="station">
+                  <div class="s-top"><span class="s-name">回归测试：SSE 断流恢复场景</span><span class="s-st queued">排队中</span></div>
+                  <div class="s-meta"><span class="ab">test</span></div>
+                </div>
+              </div>
+              <div class="station-wrap warn">
+                <div class="railcol"><span class="rd"></span><span class="rl"></span></div>
+                <div class="station">
+                  <div class="s-top"><span class="s-name">修复方案代码评审</span><span class="s-st pending">待执行</span></div>
+                  <div class="s-meta"><span class="ab">review</span><span>2 个节点依赖此上游</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="branches">
+              <div class="br-title mono">BRANCHES</div>
+              <div class="br-row"><span>coteam/task_a91f</span><span class="cm">e7f21ac</span></div>
+              <div class="br-row"><span>dev</span><span class="cm">8e60292</span></div>
+            </div>
+          </div>
+
+          <!-- 右：节点详情 -->
+          <div class="wr-r">
+            <div>
+              <div class="wr-switch">
+                <button class="sw-btn">工作流</button>
+                <button class="sw-btn on">节点详情</button>
+                <span class="sw-cur mono">实现退避棘轮解锁与自愈看门狗</span>
+              </div>
+            </div>
+
+            <div class="nd-head">
+              <span class="pill run"><span class="dot run"></span>执行中</span>
+              <span class="nm">实现退避棘轮解锁与自愈看门狗</span>
+              <span class="mt">[dev] ⎇coteam/task_a91f · 12m</span>
+              <div class="nd-ops">
+                <select class="selbox mono"><option>dev</option><option>test</option><option>review</option></select>
+                <button class="hbtn">从此节点重新开始</button>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="sec-t">EXECUTION · 执行档案</div>
+              <div class="ea-grid">
+                <span class="g"><span class="gk">轮次</span><span class="gv"><b>2</b> / 折叠 1 次</span></span>
+                <span class="g"><span class="gk">耗时</span><span class="gv"><b>712</b>s</span></span>
+                <span class="g"><span class="gk">上下文</span><span class="gv"><b>96k</b> est</span></span>
+                <span class="g"><span class="gk">知识命中</span><span class="gv"><b>3</b> 条</span></span>
+              </div>
+              <div class="tool-chips">
+                <span class="hb-chip">Read ×14</span>
+                <span class="hb-chip">Edit ×6</span>
+                <span class="hb-chip">Bash ×9</span>
+                <span class="hb-chip bad">Bash ×1 失败</span>
+                <span class="hb-chip">技能：debug-sse · node-stream</span>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="sec-t">SUMMARY · 阶段产出</div>
+              <div class="sum">定位到退避棘轮在连续失败后被锁死在 30s 的根因：ratchet 只升不降且无死窗探测。已实现三级退避 + 停帧看门狗，SSE 静默超阈值时主动探测并重订阅；补状态对账兜底泵假死。</div>
+            </div>
+
+            <div class="sec">
+              <div class="sec-t">CHANGES · 代码变更</div>
+              <div class="chg-row"><span class="ck">✓</span><span>server/src/bus.ts — 退避棘轮加入衰减与下限</span></div>
+              <div class="chg-row"><span class="ck">✓</span><span>server/src/sse.ts — 停帧看门狗 + 主动重订阅</span></div>
+              <div class="chg-row"><span class="ck">✓</span><span>web/src/composables/useDashboard.ts — 重连状态对账</span></div>
+              <div class="chg-row"><span class="ck" style="color:var(--accent)">↗</span><span style="color:var(--text-3)">查看完整 diff（+214 / -38）</span></div>
+            </div>
+
+            <div class="sec">
+              <div class="sec-t">DEFECTS · 发现未修复的缺陷（2）</div>
+              <div class="defect">
+                <div class="d-head"><span class="d-sev high">high</span><span class="d-title">看门狗触发阈值在慢生成场景误报</span><button class="d-act">转修复任务</button></div>
+                <div class="d-detail">长 prompt prefill 阶段静默可超 20s，阈值需联动 first_token_idle_sec 配置。</div>
+              </div>
+              <div class="defect">
+                <div class="d-head"><span class="d-sev medium">medium</span><span class="d-title">重订阅后事件序号未对账</span><button class="d-act">转修复任务</button></div>
+                <div class="d-detail">resubscribe 后首个 last-event-id 未持久化，极端情况重复消费一条事件。</div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="sec-t">时间线</div>
+              <div class="tl-row"><span class="tl-time">14:31:02</span><span class="tl-dot run"></span><span class="tl-text">第 2 轮生成开始（模型 glm-4.7-flash）</span></div>
+              <div class="tl-row"><span class="tl-time">14:28:47</span><span class="tl-dot warn"></span><span class="tl-text">触发限流退避 8s（429 Too Many Requests）</span></div>
+              <div class="tl-row"><span class="tl-time">14:22:10</span><span class="tl-dot bad"></span><span class="tl-text">Bash "npm run e2e" 失败（exit 1）——已纳入重试</span></div>
+              <div class="tl-row"><span class="tl-time">14:19:33</span><span class="tl-dot ok"></span><span class="tl-text">知识库命中 3 条：sse-backoff.md / watchdog-spec.md</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ pane: 实时驾驶舱 ============ -->
+      <div class="pane" id="p-cp" style="display:none">
+        <div class="cp-cards">
+          <div class="cp-card">
+            <div class="cp-title">滚动阶段</div>
+            <div class="cp-big">第 2 阶段</div>
+            <div class="cp-sub">完成自愈看门狗与退避衰减实现，交联调验证后进入收尾验收。</div>
+          </div>
+          <div class="cp-card">
+            <div class="cp-title">验收清单</div>
+            <div class="cp-big">3<span style="font-size:14px;color:var(--text-3)">/6</span></div>
+            <div class="bigbar" style="margin:8px 0 10px"><i style="width:50%"></i></div>
+            <div class="cp-item done"><span class="st">✓</span>SSE 断流 30s 内恢复推送</div>
+            <div class="cp-item done"><span class="st">✓</span>退避棘轮可衰减不锁死</div>
+            <div class="cp-item doing"><span class="st">···</span>双端看门狗自愈联动</div>
+          </div>
+          <div class="cp-card">
+            <div class="cp-title">今日执行动态</div>
+            <div class="counters" style="margin-bottom:8px">
+              <span class="cnt warn">换模 <b>1</b></span>
+              <span class="cnt warn">退避 <b>4</b></span>
+              <span class="cnt">慢成功 <b>2</b></span>
+              <span class="cnt">重试 <b>3</b></span>
+            </div>
+            <div class="cp-sub">来自实时事件流（本次会话窗口）</div>
+          </div>
+        </div>
+        <div class="feed">
+          <div class="feed-row hl"><span class="ts">14:32:11</span><span>▶ dev 正在执行「实现退避棘轮解锁与自愈看门狗」第 2 轮</span></div>
+          <div class="feed-row"><span class="ts">14:31:02</span><span>模型 glm-4.7-flash · 上下文 96k est</span></div>
+          <div class="feed-row"><span class="ts">14:28:47</span><span>⏳ 限流退避 8s（429）</span></div>
+          <div class="feed-row"><span class="ts">14:22:10</span><span>✗ Bash e2e 失败，纳入重试（第 1 次）</span></div>
+          <div class="feed-row"><span class="ts">14:19:33</span><span>✓ 知识命中 3 条</span></div>
+          <div class="feed-row"><span class="ts">14:02:55</span><span>✓ 节点「梳理 SSE 重连链路与退避现状」完成</span></div>
+        </div>
+      </div>
+
+      <!-- ============ pane: 事件归档 ============ -->
+      <div class="pane" id="p-arch" style="display:none">
+        <div class="arch-bar">
+          <div class="seg">
+            <button class="on">全部</button><button>节点</button><button>Agent</button><button>任务</button><button>系统</button>
+          </div>
+          <div class="arch-in"><span class="ic">⌕</span><input placeholder="搜索事件…"></div>
+          <span class="arch-count">显示 128 / 1286 条</span>
+        </div>
+        <div class="arch-list">
+          <div class="tl-row"><span class="tl-time">14:32:11</span><span class="tl-dot run"></span><span class="tl-text">node_start · 实现退避棘轮解锁与自愈看门狗（第 2 轮）</span><span class="tl-chip">dev</span></div>
+          <div class="tl-row"><span class="tl-time">14:31:58</span><span class="tl-dot"></span><span class="tl-text">tool_call · Read server/src/bus.ts</span><span class="tl-chip">实现退避…</span><span class="tl-chip">dev</span></div>
+          <div class="tl-row"><span class="tl-time">14:28:47</span><span class="tl-dot warn"></span><span class="tl-text">llm_backoff · 429 退避 8s</span><span class="tl-chip">dev</span></div>
+          <div class="tl-row"><span class="tl-time">14:02:55</span><span class="tl-dot ok"></span><span class="tl-text">node_complete · 梳理 SSE 重连链路与退避现状</span><span class="tl-chip">dev</span></div>
+          <div class="tl-row"><span class="tl-time">13:58:02</span><span class="tl-dot ok"></span><span class="tl-text">plan_approved · 计划通过人工审核</span><span class="tl-chip">task</span></div>
+        </div>
+      </div>
+
+      <!-- ============ pane: 管理 ============ -->
+      <div class="pane" id="p-mg" style="display:none">
+        <div class="mg-grid">
+          <div class="mg-card alert">
+            <div class="mg-h"><span class="t">待审批命令 · 1</span><span class="n-badge">1</span></div>
+            <div class="pc-row"><span class="pc-cmd">curl -sSL https://deb.nodesource.com/setup_20.x | sudo -E bash -</span><span class="pc-node">安装依赖</span><button class="pbtn pri">批准执行</button><button class="pbtn">拒绝</button></div>
+          </div>
+          <div class="mg-card">
+            <div class="mg-h"><span class="t">阻塞问答 · 1</span><span class="n-badge">1</span></div>
+            <div class="mg-line"><b>test → 你：</b>恢复场景的 e2e 基线截图以哪次为准？旧基线含已废弃的占位页。</div>
+            <div class="ask-in"><input placeholder="回答后 agent 继续执行"><button class="pbtn pri">回答</button></div>
+          </div>
+          <div class="mg-card">
+            <div class="mg-h"><span class="t">监督者提案 · 待批准 1</span><span class="n-badge">1</span></div>
+            <div class="prop">
+              <div class="p-r"><span class="d-sev medium">replan</span><span class="p-rsn">e2e 环境缺 CI 依赖，建议插入「环境修复」节点后再继续下游</span></div>
+              <div class="p-ops"><button class="pbtn pri">批准</button><button class="pbtn">拒绝</button></div>
+            </div>
+          </div>
+          <div class="mg-card">
+            <div class="mg-h"><span class="t">执行策略</span></div>
+            <div class="mg-model">
+              <select class="selbox"><option>改动需审批</option><option>只读</option><option>白名单自动</option><option>完全控制</option></select>
+              <select class="selbox" style="flex:1"><option>白名单：python / git / npm / node …</option></select>
+            </div>
+            <div class="mg-hint">白名单外命令等你批准；改任务级策略立即生效并留痕。</div>
+          </div>
+          <div class="mg-card">
+            <div class="mg-h"><span class="t">主 Agent 模型（锁定）</span></div>
+            <div class="mg-model">
+              <span class="model-cur">glm-4.7-flash</span>
+              <select class="selbox"><option>选择新模型…</option><option>glm-4.7-air</option></select>
+              <button class="pbtn">更换模型</button>
+            </div>
+            <div class="mg-hint">创建时锁定，更换后立即生效并留痕。</div>
+          </div>
+          <div class="mg-card">
+            <div class="mg-h"><span class="t">快照与回滚</span></div>
+            <div class="snap-row"><span class="snap-tag">replan</span><span>09-26 13:58</span><span>e7f21ac</span><button class="rb">回滚到此处</button></div>
+            <div class="snap-row"><span class="snap-tag">start</span><span>09-26 13:40</span><span>8e60292</span><button class="rb">回滚到此处</button></div>
+            <div class="snap-row"><span class="snap-tag">manual</span><span>09-26 14:30</span><span>a1b2c3d</span><button class="rb">回滚到此处</button></div>
+          </div>
+          <div class="mg-card wide">
+            <div class="mg-h"><span class="t">全局目标</span></div>
+            <div class="mg-line">以最小改动修复 SSE 退避棘轮死窗，不引入新依赖；改动需带回归测试并保持双端行为一致；完成后在开发路线.md 记录复盘。</div>
+            <div class="mg-hint">所有 Agent 每次调用注入该目标，并要求汇报对目标的贡献 · <a href="#">编辑</a></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ② MOBILE                                                      -->
+<!-- ============================================================ -->
+<div class="pv-sec-title" id="mob-sec"><h2>② Mobile 版</h2><span>Hero 头卡 + 紧凑步进器 + 三分区（对话/执行详情/管理）· 补齐阻塞问答</span></div>
+
+<div class="mob-wrap">
+  <div class="phone">
+    <div class="m-statusbar"><span>14:32</span><span>▮▮▮ ⚡</span></div>
+    <div class="m-nav">
+      <span class="bk">‹</span>
+      <span class="t">task_a91f · 修复 SSE 退避棘轮死窗</span>
+      <span class="op">取消</span>
+      <span class="op dim">⋯</span>
+    </div>
+
+    <div class="m-body">
+      <!-- Hero -->
+      <div class="m-hero">
+        <div class="r1">
+          <span class="pill run" style="height:22px;font-size:10px;padding:0 8px"><span class="dot run"></span>执行中</span>
+          <span class="ttl">修复 SSE 退避棘轮锁死导致的 30 秒回复死窗</span>
+        </div>
+        <div class="chips">
+          <span class="m-chip">task_a91f</span>
+          <span class="m-chip">⎇ task_a91f</span>
+          <span class="m-chip">heavy</span>
+          <span class="m-chip acc">184k tok</span>
+          <span class="m-chip">≈$0.42</span>
+        </div>
+        <div class="bar">
+          <div class="m-bar"><i style="width:62%"></i></div>
+          <div class="bl"><span><b>62%</b> · 8/13 节点</span><span>预计剩余 12 分钟</span></div>
+        </div>
+      </div>
+
+      <!-- 阶段步进 -->
+      <div class="m-steps">
+        <div class="m-stp done"><span class="d">✓</span><span class="l">澄清</span></div>
+        <span class="m-slink passed"></span>
+        <div class="m-stp done"><span class="d">✓</span><span class="l">审核</span></div>
+        <span class="m-slink passed"></span>
+        <div class="m-stp act"><span class="d">3</span><span class="l">执行</span></div>
+        <span class="m-slink"></span>
+        <div class="m-stp"><span class="d">4</span><span class="l">完成</span></div>
+      </div>
+
+      <!-- 分区切换 -->
+      <div class="m-tabs" id="mTabs">
+        <button class="m-tab on" data-p="mp-chat">对话</button>
+        <button class="m-tab" data-p="mp-exec">执行详情</button>
+        <button class="m-tab" data-p="mp-mg">管理 <span id="mgN">3</span></button>
+      </div>
+
+      <!-- pane 对话 -->
+      <div class="m-pane show" id="mp-chat">
+        <div class="m-stage">
+          <div class="r"><span class="st">节点执行</span><span class="pct">62<i style="font-size:10px;font-style:normal">%</i></span></div>
+          <div class="m-bar" style="margin-top:8px"><i style="width:62%"></i></div>
+          <div class="meta">8/13 节点 · 184k tok · 剩余约 12 分钟</div>
+        </div>
+        <div class="m-members">
+          <span class="m-mb on">全体</span>
+          <span class="m-mb"><span class="d"></span>dev</span>
+          <span class="m-mb">test</span>
+          <span class="m-mb">review</span>
+          <span class="m-mb">grader</span>
+        </div>
+        <div class="m-chat">
+          <div class="bub sys">── 节点「实现退避棘轮解锁与自愈看门狗」开始执行 ──</div>
+          <div class="bub them"><div class="who">dev · 生成中</div>定位到根因：ratchet 只升不降且无死窗探测。正在实现三级退避 + 停帧看门狗…</div>
+        </div>
+      </div>
+
+      <!-- pane 执行详情 -->
+      <div class="m-pane" id="mp-exec">
+        <div class="m-nodes">
+          <div class="pnode done">
+            <div class="rail"><span class="rd"></span><span class="ln"></span></div>
+            <div class="pc">
+              <div class="pr"><span class="pn">梳理 SSE 重连链路与退避现状</span><span class="ps completed">已完成</span></div>
+              <div class="pm"><span>dev</span><span>6m</span><span>12k tok</span></div>
+            </div>
+          </div>
+          <div class="pnode run">
+            <div class="rail"><span class="rd"></span><span class="ln"></span></div>
+            <div class="pc" style="border-color:var(--accent-line)">
+              <div class="pr"><span class="pn">实现退避棘轮解锁与自愈看门狗</span><span class="ps running">执行中</span></div>
+              <div class="pm"><span>dev</span><span>12m</span><span>重试 ×1</span></div>
+              <div class="hb2"><span style="color:var(--accent);border-color:var(--accent-line)">glm-4.7-flash</span><span>第 2 轮</span><span class="warn">⏳ 退避 8s</span></div>
+            </div>
+          </div>
+          <div class="pnode bad">
+            <div class="rail"><span class="rd"></span><span class="ln"></span></div>
+            <div class="pc">
+              <div class="pr"><span class="pn">安装 e2e 依赖</span><span class="ps failed">失败</span></div>
+              <div class="pm"><span>deploy</span><span>缺 CI 依赖 · 待审批命令</span></div>
+            </div>
+          </div>
+          <div class="pnode">
+            <div class="rail"><span class="rd"></span></div>
+            <div class="pc">
+              <div class="pr"><span class="pn">回归测试：SSE 断流恢复场景</span><span class="ps pending">排队中</span></div>
+              <div class="pm"><span>test</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- pane 管理 -->
+      <div class="m-pane" id="mp-mg">
+        <div class="m-mg">
+          <div class="mg-cell alert">
+            <div class="h"><span class="t">待审批命令 · 1</span><span class="bd">1</span></div>
+            <div class="b mono" style="font-size:11px;color:var(--warn)">curl -sSL …nodesource.com/setup_20.x …</div>
+            <div class="askrow"><button class="askrow button" style="flex:1;height:30px;border-radius:8px;border:none;background:var(--accent);color:var(--accent-text);font-size:12px;font-weight:600">批准执行</button><button style="flex:1;height:30px;border-radius:8px;border:1px solid var(--line-strong);background:none;color:var(--text-2);font-size:12px">拒绝</button></div>
+          </div>
+          <div class="mg-cell">
+            <div class="h"><span class="t">阻塞问答 · 1</span><span class="new">NEW</span></div>
+            <div class="b"><b style="color:var(--text-1)">test → 你：</b>恢复场景的 e2e 基线截图以哪次为准？</div>
+            <div class="askrow"><input placeholder="回答后 agent 继续执行"><button>回答</button></div>
+          </div>
+          <div class="mg-cell">
+            <div class="h"><span class="t">监督者提案 · 1 待批准</span><span class="bd">1</span></div>
+            <div class="b">e2e 环境缺 CI 依赖，建议插入「环境修复」节点后再继续下游</div>
+            <div class="askrow"><button style="flex:1;height:30px;border-radius:8px;border:none;background:var(--accent);color:var(--accent-text);font-size:12px;font-weight:600">批准</button><button style="flex:1;height:30px;border-radius:8px;border:1px solid var(--line-strong);background:none;color:var(--text-2);font-size:12px">拒绝</button></div>
+          </div>
+          <div class="mg-cell">
+            <div class="h"><span class="t">执行策略 · 白名单命令</span></div>
+            <div class="b">改动需审批 · 白名单 python/git/npm/node…<br><span style="color:var(--text-3)">点开调整分级与白名单 ›</span></div>
+          </div>
+          <div class="mg-cell">
+            <div class="h"><span class="t">全局目标</span></div>
+            <div class="b">以最小改动修复 SSE 退避棘轮死窗，不引入新依赖…<span style="color:var(--text-3)">全文 ›</span></div>
+          </div>
+          <div class="mg-cell">
+            <div class="h"><span class="t">快照</span></div>
+            <div class="snap"><span class="snap-tag">replan</span><span>13:58 · e7f21ac</span><button class="rb">回滚</button></div>
+            <div class="snap"><span class="snap-tag">start</span><span>13:40 · 8e60292</span><button class="rb">回滚</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 移动端要点侧注 -->
+  <div style="max-width:420px;padding-top:8px">
+    <div class="notes" style="margin:0;padding:0">
+      <h2 style="font-size:var(--fs-sub)">移动端改版要点</h2>
+      <ul>
+        <li><b>Hero 头卡</b>：状态药丸 + 标题 + 元信息 chips + 进度条/剩余时间，一屏内先回答"现在怎样"。</li>
+        <li><b>紧凑步进器</b>：澄清→审核→执行→完成，与 web 同构。</li>
+        <li><b>三分区</b>：对话 / 执行详情 / 管理，治理类内容从"执行详情"里拆出来，不再混着刷。</li>
+        <li><b>节点 rail 卡</b>：运行中节点带心跳 chips（模型/轮次/退避），失败节点显示阻塞原因。</li>
+        <li><b>阻塞问答补齐</b><span class="new" style="color:var(--accent);border:1px solid var(--accent-line);background:var(--accent-soft);border-radius:4px;font-size:10px;padding:1px 6px;margin-left:6px;font-weight:700">NEW</span>：现版 mobile 没有"阻塞问答"，管理页补上提问卡 + 行内回答，与 web 对齐。</li>
+        <li><b>待审批命令/提案置顶</b>：需要人拍板的事永远排在管理页最上面，带红色角标。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ③ 改版说明                                                    -->
+<!-- ============================================================ -->
+<div class="notes" id="notes-sec">
+  <h2>Web 端改了什么（对照现版）</h2>
+  <ul>
+    <li><span class="no">01</span><b>弹窗头一体化</b>：状态药丸 + 标题 + 元信息 chips（ID/工作区/分支/等级/tok/成本/ETA）+ 大进度条 + 主操作（合并/文档/产出/取消）收进同一头部；原"元信息一行小字 + 散按钮"重组为可扫读的 chip 行。</li>
+    <li><span class="no">02</span><b>左侧竖导航取代横向 tabs</b>：任务频道 / 实时驾驶舱 / 事件归档 / 管理；管理入口带待办红标（待审批命令+问答+提案合计），有事直接可见。</li>
+    <li><span class="no">03</span><b>阶段步进器精修</b>：✓/当前步光环/连接线通过态着色，与 mobile 同构。</li>
+    <li><span class="no">04</span><b>节点轨道改为站卡 + 左侧圆点轨</b>：运行中节点保留心跳 chips（模型/轮次/token/退避）与生成直播打字行，选中节点强调色渐变高亮；成员 chips 精修为胶囊带运行点。</li>
+    <li><span class="no">05</span><b>节点详情分区卡化</b>：EXECUTION 执行档案（轮次/耗时/上下文/知识命中/工具 chips）/ SUMMARY / CHANGES / DEFECTS（严重度 chip + 转修复任务）/ 时间线，各区块独立卡片，标题统一 mono 小字距。</li>
+    <li><span class="no">06</span><b>实时驾驶舱</b>：三卡（滚动阶段/验收清单/执行动态计数）+ 终端风事件流，高亮当前节点事件。</li>
+    <li><span class="no">07</span><b>事件归档</b>：分类 seg + 搜索框 + 计数右对齐，列表加节点/agent 侧标 chips；保留"显示高频细节"与加载更多（预览未展开）。</li>
+    <li><span class="no">08</span><b>管理页双列卡片</b>：待审批命令（红色 alert 卡置顶）/ 阻塞问答 / 监督者提案 / 执行策略 / 主模型 / 快照 / 全局目标；全部现有操作（批准/拒绝/回答/补授白名单/换模型/回滚/编辑目标）保留。</li>
+    <li><span class="no">09</span><b>功能零删减</b>：澄清卡、零产出上游级联重启、门禁测试行、测试报告、协同文档/实时产出弹窗等全部保留原位，仅视觉重组。</li>
+    <li><span class="no">10</span><b>与任务中心同语言</b>：状态药丸/mono 数字/色轨/卡片圆角与任务中心改版完全同一套 token。</li>
+  </ul>
+</div>
+
+<div class="pv-fab"><button onclick="toggleTheme()">🌗 暗 / 亮切换</button></div>
+
+<script>
+function toggleTheme(){
+  const h = document.documentElement;
+  h.dataset.theme = h.dataset.theme === 'dark' ? 'light' : 'dark';
+}
+// web 左导航切换（演示）
+document.querySelectorAll('.vnav .vn[data-pane]').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.vnav .vn').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    document.querySelectorAll('.td-main .pane').forEach(p=>p.style.display='none');
+    document.getElementById(b.dataset.pane).style.display='block';
+  });
+});
+// mobile 三分区切换（演示）
+document.querySelectorAll('#mTabs .m-tab').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#mTabs .m-tab').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    document.querySelectorAll('.m-pane').forEach(p=>p.classList.remove('show'));
+    document.getElementById(b.dataset.p).classList.add('show');
+  });
+});
+</script>
+</body>
+</html>
