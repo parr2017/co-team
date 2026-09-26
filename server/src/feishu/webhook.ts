@@ -21,6 +21,7 @@ import { handleCommand, type CommandDeps, type ProjectOption } from './commands'
 import type { ConvoBridge } from './convoBridge';
 import type { OcBridge } from './ocBridge';
 import { buildTaskCard, sendCard, sendText, updateCard } from './messageService';
+import { buildPanelCard } from './panelCard';
 
 const EVENT_DEDUP_TTL_SEC = 300;
 
@@ -157,6 +158,11 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
     }
     try {
       let session = await getSession(msg.userId);
+      // /help 与 /panel → 功能面板卡（按钮面板；文本帮助保留在 handleCommand 供降级）
+      if (msg.text === '/help' || msg.text === '/panel') {
+        await sendCard(cfg, msg.chatId, buildPanelCard(session.mode || 'task'));
+        return;
+      }
       const cmd = await handleCommand(msg.text, session, commandDeps, msg.chatId);
       session = cmd.session ?? session;
       if (!cmd.passthrough) {

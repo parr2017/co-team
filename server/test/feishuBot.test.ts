@@ -168,6 +168,19 @@ describe('feishu message flow (async processing)', () => {
     expect(JSON.stringify(sent)).toContain('/project');
   });
 
+  it('/help 与 /panel 渲染功能面板卡（按钮面板）', async () => {
+    const { deps } = makeDeps();
+    const handler = createFeishuHandler(CFG, deps);
+    await handler.processEvent(messageEvent('/panel'));
+    await handler.processEvent(messageEvent('/help'));
+    const panelSends = fetchCalls.filter((c) => c.url.includes('/im/v1/messages') && String(c.init.body).includes('Co-Team 功能面板'));
+    expect(panelSends.length).toBe(2);
+    const first = JSON.parse(String(panelSends[0].init.body));
+    expect(first.msg_type).toBe('interactive');
+    expect(String(first.content)).toContain('/inbox');
+    expect(String(first.content)).toContain('/convo');
+  });
+
   it('free text with a project creates + enqueues a task and binds a progress card', async () => {
     const { deps, createTask, enqueue } = makeDeps();
     await setSession({ user_id: 'ou_u1', current_project_id: 'p1', current_project_name: '数据中台', last_active_time: new Date().toISOString() });

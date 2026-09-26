@@ -2236,6 +2236,20 @@ export function createApi(ctx: ApiContext): Hono {
             input.value = value;
           }
           const act = String(value?.act || '');
+          if (act === 'panel') {
+            // 功能面板按钮：合成消息事件走既有命令管道（解析/模式路由/去重/回执全复用）；
+            // 面板卡返回 undefined → 响应回滚为原面板，可继续连点
+            const cmd = String(value?.cmd || '');
+            if (cmd) {
+              const handler = await getHandler();
+              await handler.processEvent({
+                schema: '2.0',
+                header: { event_type: 'im.message.receive_v1', event_id: `panel:${Date.now()}:${Math.random().toString(36).slice(2, 8)}` },
+                event: { sender: { sender_id: { open_id: input.operatorOpenId } }, message: { chat_id: input.chatId, content: JSON.stringify({ text: cmd }) } },
+              });
+            }
+            return undefined;
+          }
           if (APPROVAL_ACTS.has(act)) return cards.handleCardAction(ctx.config.feishu!, approvalDeps, input);
           if (act.startsWith('convo_') && convoBridge) return convoBridge.handleCardAction(ctx.config.feishu!, input);
           if (act.startsWith('oc_') && ocBridge) return ocBridge.handleCardAction(ctx.config.feishu!, input);
