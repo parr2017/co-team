@@ -61,9 +61,9 @@ const nodeRuntime = reactive<Record<string, NodeRuntime>>({});
 const eventListeners = new Set<(msg: EventEnvelope) => void>();
 let ws: WebSocket | null = null;
 let started = false;
-let taskFilter: TaskListFilter | undefined = { scope: 'external' };
-/** 任务中心是否包含项目任务（默认只列外部任务，与原设计一致） */
-const includeProjects = ref(false);
+let taskFilter: TaskListFilter | undefined = {};
+/** 任务中心是否包含项目任务（默认包含，与移动端任务列表行为一致） */
+const includeProjects = ref(true);
 
 function setTaskScope(all: boolean) {
   includeProjects.value = all;

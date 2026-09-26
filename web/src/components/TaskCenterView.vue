@@ -4,7 +4,7 @@
       <h1>任务中心</h1>
       <span class="cnt mono">共 {{ stats.total }} · 执行中 {{ stats.running }}</span>
       <div class="spacer"></div>
-      <el-tooltip content="开启后列表、徽标与统计涵盖项目开发下的任务（默认只列外部下发的任务）" placement="top">
+      <el-tooltip content="开启后列表、徽标与统计涵盖项目开发下的任务（关闭则只列外部下发的任务，默认开启）" placement="top">
         <el-checkbox :model-value="includeProjects" size="small" @change="onScopeChange">包含项目任务</el-checkbox>
       </el-tooltip>
     </div>

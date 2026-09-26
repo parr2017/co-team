@@ -200,7 +200,7 @@ import OpenCodePanel from './components/OpenCodePanel.vue';
 import SettingsView from './views/SettingsView.vue';
 import { useDiscussion } from './composables/useDiscussion';
 
-const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, loadAgents, loadTasks, reconnectWs, clearEvents } = useDashboard();
+const { agents, tasks, events, connected, taskTotal, taskPage, taskPageSize, includeProjects, loadAgents, loadTasks, reconnectWs, clearEvents } = useDashboard();
 const { list: discList, loadList: loadDiscussions } = useDiscussion();
 
 // B5：审批收件箱「去处理/详情」打开任务详情对话框（收件箱是路由组件，对话框宿主在 App.vue）
@@ -316,8 +316,8 @@ function onTaskPageChange(page: number) {
 }
 
 function onTaskSearch(keyword: string) {
-  // R4: keyword search rides along with the workbench's external-task scope
-  void loadTasks(1, taskPageSize.value, { scope: 'external', q: keyword || undefined });
+  // R4: keyword search rides along with the workbench's task scope (跟随"包含项目任务"开关)
+  void loadTasks(1, taskPageSize.value, { ...(includeProjects.value ? {} : { scope: 'external' as const }), q: keyword || undefined });
 }
 
 async function onReloadAgents() {
