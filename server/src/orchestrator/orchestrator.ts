@@ -2754,6 +2754,151 @@ export class Orchestrator {
     });
   }
 
+  // ---------- 自动重开（jgfhfaux 复盘）：下游人工门失败归因到上游交付缺失时， ----------
+  // ---------- 主 agent 把失败原因反馈给肇事上游节点并自动级联重开，不再停靠人工 ----------
+
+  /** 下游错误文本里判定"上游交付缺失"类失败的信号（前置缺失/被测对象缺失/未落盘/未合入/假完成） */
+  static readonly ARTIFACT_MISSING_RE = /执行前置缺失|\[precondition\]|被测对象缺失|不存在|未落盘|未合入|未合并|假完成|产出未|交付校验不一致|missing (?:file|artifact)|does not exist/i;
+  /** 任务级自动重开上限（连同每节点单次限制，杜绝 5↔6 乒乓循环） */
+  static readonly AUTO_RESTART_CAP = 3;
+
+  /**
+   * 自动重开：任务停靠人工门后，确定性归因失败原因——
+   * 1. 从 failed 节点错误文本提取文件路径 token；
+   * 2. 与其上游 completed 节点的申报交付清单（files+changes）交叉匹配，命中者为肇事节点；
+   *    无路径命中时回退：上游中交付校验不一致（delivery_check.consistent===false）的节点 ≤2 个也算命中；
+   * 3. 把下游失败报告写入肇事节点的重跑反馈（callAgent 注入提示词），级联重置肇事节点及全部下游，
+   *    任务重新入队自动续跑。
+   * 护栏：任务级 ≤AUTO_RESTART_CAP 次；每个肇事节点只自动重开一次（第二次失败停靠人工）；
+   * 无法归因（错误不像交付缺失 / 无候选 / 候选已用过额度）一律保持人工门语义。
+   * 返回是否执行了自动重开（调用方据此重新入队）。
+   */
+  async autoRestartFromFailedNode(taskId: string): Promise<boolean> {
+    try {
+      const graph = await getTaskGraph(taskId);
+      if (!graph || graph.status !== 'failed') return false;
+      if ((graph.auto_restarts ?? 0) >= Orchestrator.AUTO_RESTART_CAP) return false;
+
+      const failedNodes = graph.nodes.filter((n) => n.status === 'failed' && n.needs_human);
+      if (!failedNodes.length) return false;
+
+      // 上游可达集（edges 反向 fixpoint）
+      const upstreamOf = (id: string): Set<string> => {
+        const seen = new Set<string>([id]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const [src, dst] of graph.edges) {
+            if (seen.has(dst) && !seen.has(src)) { seen.add(src); changed = true; }
+          }
+        }
+        seen.delete(id);
+        return seen;
+      };
+
+      for (const failed of failedNodes) {
+        const error = String(failed.error || '');
+        if (!Orchestrator.ARTIFACT_MISSING_RE.test(error)) continue;
+
+        const upstreamCompleted = [...upstreamOf(failed.id)]
+          .map((id) => graph.nodes.find((n) => n.id === id))
+          .filter((n): n is TaskNode => !!n && n.status === 'completed' && n.agent !== 'orchestrator');
+        if (!upstreamCompleted.length) continue;
+
+        // 错误文本中的文件路径 token（带目录的优先，另收裸文件名）——与申报路径归一化交叉匹配
+        const norm = (p: string) => p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^[a-zA-Z]:\//, '').toLowerCase();
+        const errorPaths = new Set<string>();
+        for (const m of error.matchAll(/[A-Za-z0-9_\-]+(?:\/[A-Za-z0-9_\- .]+)+\.[A-Za-z0-9]{1,6}/g)) errorPaths.add(norm(m[0]));
+        for (const m of error.matchAll(/(?:^|[^\w\-\/])([A-Za-z0-9_\-]+\.[A-Za-z0-9]{1,6})(?=$|[^\w\-.])/gm)) errorPaths.add(norm(m[1]));
+        errorPaths.delete('');
+
+        const claimsOf = (n: TaskNode): string[] =>
+          [...((n.result?.files || []).map((f) => f.path)), ...(n.result?.changes || [])]
+            .map((c) => norm(String(c).split(':')[0].trim()))
+            .filter(Boolean);
+        const matchesPath = (claims: string[], p: string) =>
+          claims.some((r) => r === p || r.endsWith('/' + p) || p.endsWith('/' + r));
+
+        let culprits: TaskNode[] = [];
+        if (errorPaths.size) {
+          culprits = upstreamCompleted.filter((u) => {
+            const claims = claimsOf(u);
+            return [...errorPaths].some((p) => matchesPath(claims, p));
+          });
+        }
+        if (!culprits.length) {
+          // 回退：交付校验不一致的 completed 上游（jgfhfaux 三节点均如此）——多于 2 个不做自动归因
+          const inconsistent = upstreamCompleted.filter((u) => (u.result as AgentResult | null)?.delivery_check?.consistent === false);
+          if (inconsistent.length >= 1 && inconsistent.length <= 2) culprits = inconsistent;
+        }
+        if (!culprits.length) continue;
+
+        // 每节点只自动重开一次：额度用尽即跳过该肇事节点（全部用尽则保持人工门）
+        const usable: TaskNode[] = [];
+        for (const c of culprits) {
+          const used = await busGet(`task:node:autorestart:${taskId}:${c.id}`);
+          if (!used) usable.push(c);
+        }
+        if (!usable.length) continue;
+
+        // 重跑反馈 + 级联重置（与 API retry 同语义：下游全量作废、分支清空、待审批命令清理）
+        for (const culprit of usable) {
+          await busSet(`task:node:feedback:${taskId}:${culprit.id}`, {
+            from: failed.name,
+            error: error.slice(0, 1500),
+            ts: new Date().toISOString(),
+          });
+          await busSet(`task:node:autorestart:${taskId}:${culprit.id}`, { ts: new Date().toISOString() });
+        }
+        const reset = new Set<string>(usable.map((c) => c.id));
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const [src, dst] of graph.edges) {
+            if (reset.has(src) && !reset.has(dst)) { reset.add(dst); changed = true; }
+          }
+        }
+        for (const n of graph.nodes) {
+          if (reset.has(n.id) && n.status !== 'pending') {
+            n.status = 'pending';
+            n.error = '';
+            (n as any).error_type = undefined;
+            n.needs_human = false;
+            n.finished_at = '';
+            (n as any).started_at = '';
+            n.retry_count = 0;
+            n.branch = '';
+            n.branch_base = '';
+          }
+        }
+        const pcKey = `task:pending_commands:${taskId}`;
+        const pcQueue = (await busGet<{ id: string; node_id: string; command: string }[]>(pcKey)) || [];
+        const prunedPc = pcQueue.filter((q) => !reset.has(q.node_id));
+        if (prunedPc.length !== pcQueue.length) await busSet(pcKey, prunedPc);
+
+        graph.auto_restarts = (graph.auto_restarts ?? 0) + 1;
+        graph.status = 'queued';
+        graph.infra_retries = 0;
+        await persistGraph(graph);
+
+        const culpritNames = usable.map((c) => `「${c.name}」(#${c.id})`).join('、');
+        await appendJournal(taskId, 'orchestrator', {
+          role: 'master', kind: 'round',
+          text: `🔁 自动重开（第 ${graph.auto_restarts}/${Orchestrator.AUTO_RESTART_CAP} 次）：下游节点「${failed.name}」失败归因到上游 ${culpritNames} 交付缺失——失败报告已反馈给肇事节点作为重跑要求，连同下游共 ${reset.size} 个节点重置，任务自动续跑`,
+          ts: new Date().toISOString(), node_id: failed.id, node_name: failed.name,
+        });
+        await emitProgress('node_retried', { task_id: taskId, node_id: usable[0].id, name: usable[0].name, reset_nodes: [...reset], auto: true });
+        await emitProgress('queue_auto_restart', { task_id: taskId, message: `自动重开：${culpritNames} 交付缺失已归因（下游「${failed.name}」报告），已反馈原因并自动续跑（${graph.auto_restarts}/${Orchestrator.AUTO_RESTART_CAP}）` });
+        notify('task_auto_restart', { task_id: taskId }, `[Co-Team] 任务 ${taskId} 自动重开：${culpritNames} 被下游失败报告归因，已反馈原因并级联重跑（无需人工）`);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      this.logger.warn('Auto-restart attribution failed — keeping human gate', { taskId, error: String(e).slice(0, 200) });
+      return false;
+    }
+  }
+
   /** feature: 命令执行分级 — 登记 approve_required 策略下等待人工审批的命令。 */
   private async registerPendingCommands(taskId: string, node: TaskNode, commands: string[]): Promise<void> {
     const key = `task:pending_commands:${taskId}`;
@@ -3494,6 +3639,13 @@ export class Orchestrator {
         (nodeClarifyState.answers?.length ? `\n用户答复:\n${nodeClarifyState.answers.map((a) => `- ${a.question} → ${a.answer}`).join('\n')}` : '')
       : '';
 
+    // 自动重开反馈（jgfhfaux 复盘）：下游失败归因到本节点交付缺失时，编排器重开本节点
+    // 并把下游失败报告原样带回——重跑必须真实写盘并自查，而不是再次口头申报
+    const restartFeedback = await busGet<{ from: string; error: string; ts: string }>(`task:node:feedback:${taskId}:${node.id}`);
+    const feedbackBlock = restartFeedback
+      ? `\n\n## ⚠ 自动重跑反馈（上次申报的产出未真实落盘/未合入，下游节点验收失败——本次执行因此重启）\n下游节点「${restartFeedback.from}」的失败报告：\n${restartFeedback.error.slice(0, 1500)}\n本次硬性要求：逐个真实写盘你申报的文件（write_file/edit_file 实际执行），完成后用 read_file/list_files 自查文件确实存在、内容完整，再在 changes 里申报——申报与磁盘不一致会被假完成守卫拦截并转人工。`
+      : '';
+
     // M7 角色差异化上下文裁剪：review 看完整 diff、test 看测试资产索引，其余角色维持统一模板
     let roleBlock = '';
     if (plugin.name === 'review') {
@@ -3515,6 +3667,7 @@ export class Orchestrator {
       context ? `前置节点成果:\n${context}\n` : '',
       roleBlock,
       clarifyBlock,
+      feedbackBlock,
       escalationBlock,
       fixContextBlock,
       interveneBlock,

@@ -193,6 +193,8 @@ export interface TaskGraph {
   sandbox_path?: string;
   /** 自指任务（用 co-team 开发 co-team）：执行被隔离到 projects.selfdev_root 的本地克隆 */
   self_ref?: boolean;
+  /** 自动重开计数（jgfhfaux 复盘）：下游失败确定性归因到上游交付缺失时自动级联重开的次数，封顶防循环 */
+  auto_restarts?: number;
   /** M4 滚动规划：任务按阶段滚动规划与验收 */
   rolling?: boolean;
   /** B1 验收策略（2026-09-17）：strict = 合并后验收失败即任务失败（旧行为）；

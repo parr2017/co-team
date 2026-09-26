@@ -8,6 +8,8 @@ import type { TaskStatus } from './types';
 /** Minimal execution surface (satisfied by Orchestrator). */
 export interface TaskExecutor {
   execute(taskId: string, workspace: string): Promise<{ status?: string }>;
+  /** 自动重开（jgfhfaux 复盘）：人工门失败确定性归因到上游交付缺失时，反馈原因并级联重开 */
+  autoRestartFromFailedNode?(taskId: string): Promise<boolean>;
 }
 
 /** Minimal model-pool surface (satisfied by ModelPool). */
@@ -194,6 +196,17 @@ export class TaskQueueManager {
     if (status === 'failed') {
       const failure = await this.classifyFailure(taskId);
       if (failure.kind === 'human_gate') {
+        // 自动重开（jgfhfaux 复盘）：失败原因明确归因到上游交付缺失时，主 agent 把
+        // 下游失败报告反馈给肇事上游节点并自动级联重开——能自愈的不再停靠人工。
+        // 归因不了/重开额度用尽才走人工门（下方原路径）。
+        const auto = this.executor.autoRestartFromFailedNode;
+        const autoRestarted = auto ? await auto.call(this.executor, taskId).catch(() => false) : false;
+        if (autoRestarted) {
+          this.logger.warn('Human-gate failure attributed to upstream delivery gap — auto-restarting from culprit', { lane: key, taskId });
+          await this.enqueue(taskId, failure.projectId ?? null, failure.workspace || '');
+          await emitProgress('queue_update', { lane: key, ...this.snapshot(key) });
+          return;
+        }
         // 人工门失败（o3xmkraj 复盘）：环境/前置问题，锁车道只会堵死整个项目——
         // 保槽放行，等人在任务上"已处理，从此节点继续"（POST /nodes/:id/retry）
         this.logger.warn('Human-gate failure — lane released, awaiting manual node retry', { lane: key, taskId, nodes: (await getTaskGraph(taskId))?.nodes.filter((n) => n.status === 'failed').length });
