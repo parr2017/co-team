@@ -82,3 +82,29 @@ graph TD
 
 ### 5.3 可扩展性
 - **插件化 Agent**：通过配置映射表（Mapping Table）增加新 Agent，无需修改核心路由逻辑。
+---
+
+## 6. 入站通道：HTTP Webhook 与长连接（2026-09-26 增补）
+
+系统支持两条互相独立的入站通道，可共存（`seenEvent` 共享去重防双处理），按部署形态选择：
+
+### 6.1 HTTP Webhook（原有通道）
+- 路由 `POST /api/feishu/webhook`（`feishu/webhook.ts`），要求飞书云可达（公网 IP / 内网穿透）。
+- 鉴权：`encrypt_key` AES 解密 + 签名校验，或 `verification_token` 比对；两者都未配置时 SEC-P0 拒绝挂载（无鉴权 webhook 禁用）。
+
+### 6.2 长连接网关（`feishu/wsGateway.ts`，无公网部署方案）
+- `WSClient` 以**出站** WebSocket 主动连飞书开放平台，事件与卡片回调经同一连接推回，服务器零公网暴露（仅出站 443）。长连接仅支持企业自建应用；开放平台「事件与回调」须切到「使用长连接接收事件」。
+- 开关：`config.feishu.ws_enabled`（缺省 false，显式开启）；凭据仍用 `app_id`/`app_secret`，`verification_token`/`encrypt_key` 不需要。
+- 事件流：SDK 将 v2 事件拍平后分发 → 网关重包回 `{header, event}` 信封 → 复用 `webhook.ts` 的 `processEvent`（建任务/指令/会话逻辑零重写）→ `seenEvent(event_id)` 去重。
+
+### 6.3 审批交互卡片（`feishu/approvalCards.ts`，随网关启用）
+- 订阅 TASK 事件频道，将三类停靠事件渲染为**新版 JSON 2.0** 交互卡片（按钮必须 `behaviors:[{type:"callback",value:{...}}]`；旧版卡片回传在长连接下收不到）：
+  - `node_waiting_approval` → 节点审批卡（批准 / 取消任务）
+  - `command_pending_approval` → 命令审批卡（每条待批命令一组批准/拒绝，id 取自 `task:pending_commands:*`）
+  - `queue_human_gate` → 人工门提示卡（信息 + 取消任务）
+- 卡片仅推送到任务绑定的飞书会话（`feishu:card:${taskId}`，@机器人建任务时写入）；面板创建的任务不推。
+- 回调处理：`card.action.trigger` → 白名单二次校验 → 复刻审批端点副作用（审批名单+enqueue / cancel+abort+removePending / resolvePendingCommand）→ 卡片原地更新 + journal 审计（操作人 open_id）。回调 3 秒内返回，不等节点续跑。
+- **安全**：`config.feishu.approvers`（open_id 白名单，环境变量 `COTEAM_FEISHU_APPROVERS` 逗号分隔）未配置时卡片不渲染按钮，回调侧一并拒绝（防御深度）。
+
+### 6.4 可观测性
+- 网关连接状态（connected / reconnecting / failed）暴露在 `GET /api/status` 的 `feishu_ws` 字段，`/status` 指令同步可查；连接失败日志会提示检查凭据与开放平台订阅模式。
