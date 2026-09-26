@@ -21,6 +21,8 @@ import { sendCard } from './messageService';
 import { buildNodeApprovalCard, buildCommandApprovalCard } from './approvalCards';
 import { askCard, proposalCard, clarifyCard, nodeClarifyCard } from './decisionCards';
 import { card2, md, note, btnRow } from './cards';
+import { buildInboxListCard } from './listCards';
+import type { CardActionInput } from './approvalCards';
 
 export interface InboxItem {
   kind: string;
@@ -32,7 +34,10 @@ export interface InboxItem {
 }
 
 export interface InboxBridge {
-  run(arg: string, session: FeishuSession, chatId: string): Promise<string>;
+  /** [v2] 收件箱交互卡（每条一枚 [处理] 按钮；聚合结果缓存 1h） */
+  listCard(userId: string): Promise<Record<string, unknown>>;
+  /** [v2] [处理] 按钮 → 推送对应决策卡 */
+  handleCardAction(cfg: FeishuConfig, input: CardActionInput): Promise<Record<string, unknown> | void>;
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -166,23 +171,28 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
   }
 
   return {
-    async run(arg, session, chatId) {
-      if (!arg.trim()) {
-        const items = await collect();
-        if (!items.length) return '✅ 没有等你拍板的事。';
-        session.last_list = items.map((it, i) => ({ id: String(i + 1), label: it.title }));
-        session.last_list_kind = 'inbox';
-        await setSession(session);
-        await busSet(`feishu:inbox:${session.user_id}`, items, 3600);
-        return `等你拍板（${items.length} 件）：\n${items.map((it, i) => `${i + 1}. [${KIND_LABEL[it.kind] || it.kind}] ${it.title}`).join('\n')}\n/inbox 序号 → 推送对应卡片直接处理。`;
+    async listCard(userId) {
+      const items = await collect();
+      await busSet(`feishu:inbox:${userId}`, items, 3600);
+      return buildInboxListCard(items.map((it) => ({ kind: it.kind, title: it.title })), 0);
+    },
+
+    async handleCardAction(cfg, input) {
+      const value = input.value || {};
+      if (String(value.act || '') !== 'inbox_open') return;
+      const items = (await busGet<InboxItem[]>(`feishu:inbox:${input.operatorOpenId}`).catch(() => null)) || [];
+      const idx = Number(value.index);
+      const item = Number.isInteger(idx) ? items[idx] : undefined;
+      if (!item) {
+        const { buildResultCard, cardResponse } = await import('./cards');
+        const { updateCard } = await import('./messageService');
+        const card = buildResultCard('条目已过期', ['/inbox 重新聚合。']);
+        if (input.messageId) await updateCard(cfg, input.messageId, card).catch(() => {});
+        return cardResponse(card);
       }
-      const n = Number(arg);
-      const saved = (await busGet<InboxItem[]>(`feishu:inbox:${session.user_id}`).catch(() => null)) || [];
-      const item = Number.isInteger(n) ? saved[n - 1] : undefined;
-      if (!item) return '序号无效：先 /inbox 刷新列表。';
-      const messageId = await sendCard(cfg, chatId, item.card);
+      const messageId = await sendCard(cfg, input.chatId || '', item.card);
       if (messageId && item.route) await busSet(`feishu:route:${messageId}`, item.route, 7 * 24 * 3600);
-      return '已推送，直接在卡片上操作。';
+      return; // 收件箱卡保留
     },
   };
 }

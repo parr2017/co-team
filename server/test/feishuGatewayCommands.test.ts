@@ -161,8 +161,8 @@ describe('feishu commands /tasks /queue /status', () => {
         ],
       },
     );
-    expect(reply.reply).toContain('t1');
-    expect(reply.reply).toContain('running');
+    expect(String(JSON.stringify(reply.card))).toContain('t1');
+    expect(String(JSON.stringify(reply.card))).toContain('running');
     expect(reply.reply).not.toContain('t2');
   });
 

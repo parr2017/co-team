@@ -27,6 +27,9 @@ import type { TaskGraph, TaskNode } from '../types';
 import type { FeishuHandler } from '../feishu/webhook';
 import { registerConvoRoutes, convoDeps } from './convos';
 import { eventSessionId } from '../opencode/events';
+import { getSession } from '../feishu/session';
+import { getTaskJournals } from '../store';
+import { buildTaskDetailCard } from '../feishu/listCards';
 import { registerOpencodeRoutes } from './opencode';
 import { registerCoteamMcpRoutes } from '../mcpServer/server';
 import { getLogger } from '../logger';
@@ -2031,6 +2034,13 @@ export function createApi(ctx: ApiContext): Hono {
       const waiting = graphs.filter((g) => String(g.status).startsWith('waiting')).length;
       return `任务 ${total} · 成功 ${success} · 在跑 ${running} · 等待人工 ${waiting}\n累计 token ${ctx.modelPool.totalTokens()} · 成本 ${ctx.modelPool.totalCost().toFixed(2)}`;
     };
+    const feishuListTasks = async (): Promise<{ id: string; description: string; status: string; project_id: string | null }[]> =>
+      (await listTaskGraphsPaged(1, 50, undefined)).items.map((g: TaskGraph) => ({
+        id: g.task_id,
+        description: g.description || '',
+        status: g.status,
+        project_id: g.project_id ?? null,
+      }));
     const feishuTaskSummary = async (taskId: string): Promise<string> => {
       const g = await getTaskGraph(taskId);
       if (!g) return `任务 ${taskId} 不存在`;
@@ -2053,17 +2063,18 @@ export function createApi(ctx: ApiContext): Hono {
           enqueue: (taskId, projectId, workspace) => ctx.taskQueue.enqueue(taskId, projectId, workspace),
           listProjects: async () => (await listProjects()).map((p) => ({ id: p.id, name: p.name, workspace: p.workspace })),
           listAgentNames: () => [...ctx.orchestrator.plugins.keys()],
-          listTasks: async () =>
-            (await listTaskGraphsPaged(1, 20, undefined)).items.map((g: TaskGraph) => ({
-              id: g.task_id,
-              description: g.description,
-              status: g.status,
-              project_id: g.project_id ?? null,
-            })),
+          listTasks: feishuListTasks,
           listQueue: async () => ctx.taskQueue.snapshots(),
           gatewayStatus: () => feishuWsHandle?.status().state ?? 'off',
           metrics: feishuMetrics,
           taskSummary: feishuTaskSummary,
+          taskDetailCard: async (taskId: string) => {
+            const g = await getTaskGraph(taskId);
+            if (!g) return null;
+            const journals = await getTaskJournals(taskId).catch(() => ({}));
+            const flat = Object.values(journals).flat().sort((a, b) => (b.ts || '').localeCompare(a.ts || '')).slice(0, 3);
+            return buildTaskDetailCard(g, flat);
+          },
           ...(convoBridge ? { convo: convoBridge } : {}),
           ...(ocBridge ? { oc: ocBridge } : {}),
           ...(inboxBridge ? { inbox: inboxBridge } : {}),
@@ -2091,7 +2102,42 @@ export function createApi(ctx: ApiContext): Hono {
         import('../feishu/ocBridge'),
         import('../feishu/inboxBridge'),
         import('../feishu/stallWatch'),
-      ]).then(([cards, gateway, notifyPush, decisions, convoMod, ocMod, inboxMod, stallMod]) => {
+        import('../feishu/listCards'),
+      ]).then(([cards, gateway, notifyPush, decisions, convoMod, ocMod, inboxMod, stallMod, listCardsMod]) => {
+        const ocSessions = async (instanceId: string) => {
+          const r = await ctx.opencode?.listSessions(undefined, instanceId).catch(() => null);
+          return r?.ok && r.data ? r.data.map((s: any) => ({ id: s.id, title: s.title })) : [];
+        };
+        const ocModels = async (instanceId: string) => {
+          const r = await ctx.opencode?.listProviders(undefined, instanceId).catch(() => null);
+          if (!r?.ok || !r.data) return [] as { id: string; label: string; is_default?: boolean }[];
+          const out: { id: string; label: string; is_default?: boolean }[] = [];
+          const providers = ((r.data as any).providers || []) as any[];
+          for (const p of providers) {
+            const pid = p.id || p.providerID || '';
+            for (const [modelID, info] of Object.entries(p.models || {})) {
+              out.push({ id: `${pid}/${modelID}`, label: String((info as any)?.name || modelID) });
+            }
+          }
+          const def = ((r.data as any).default || {}) as any;
+          const defId = def.providerID ? `${def.providerID}/${def.modelID}` : '';
+          for (const m of out) if (defId && m.id === defId) m.is_default = true;
+          return out;
+        };
+        const ocAgents = async (instanceId: string) => {
+          const r = await ctx.opencode?.listAgents?.(undefined, instanceId).catch(() => null);
+          if (!r?.ok || !r.data) return [] as { id: string; label: string }[];
+          return (Array.isArray(r.data) ? r.data : []).map((a: any) => ({ id: String(a.id || a.name), label: String(a.name || a.id) }));
+        };
+        const listDeps = {
+          listTasks: feishuListTasks,
+          getSession: (userId: string) => getSession(userId),
+          convoList: () => listConvos(),
+          ocListSessions: ocSessions,
+          ocListModels: ocModels,
+          ocListAgents: ocAgents,
+          inboxLoad: async (userId: string) => (await busGet(`feishu:inbox:${userId}`).catch(() => null)) as any,
+        };
         const approvalDeps = {
           getTaskGraph: (taskId: string) => getTaskGraph(taskId),
           enqueue: (taskId: string, projectId: string | null, workspace: string) => ctx.taskQueue.enqueue(taskId, projectId, workspace),
@@ -2138,10 +2184,7 @@ export function createApi(ctx: ApiContext): Hono {
               const r = await oc.activeSession(undefined, instanceId).catch(() => null);
               return r?.ok && r.data?.session ? { id: r.data.session.id, title: r.data.session.title } : null;
             },
-            listSessions: async (instanceId) => {
-              const r = await oc.listSessions(undefined, instanceId).catch(() => null);
-              return r?.ok && r.data ? r.data.map((s: any) => ({ id: s.id, title: s.title })) : [];
-            },
+            listSessions: ocSessions,
             createSession: async (instanceId, title) => {
               const r = await oc.createSession(undefined, instanceId, title).catch(() => null);
               return r?.ok && r.data ? { id: r.data.id, title: r.data.title } : null;
@@ -2154,22 +2197,7 @@ export function createApi(ctx: ApiContext): Hono {
               const r = await oc.abortSession(undefined, instanceId, sessionId).catch(() => null);
               return !!(r && r.data);
             },
-            listModels: async (instanceId) => {
-              const r = await oc.listProviders(undefined, instanceId).catch(() => null);
-              if (!r?.ok || !r.data) return [];
-              const out: { id: string; label: string; is_default?: boolean }[] = [];
-              const providers = ((r.data as any).providers || []) as any[];
-              for (const p of providers) {
-                const pid = p.id || p.providerID || '';
-                for (const [modelID, info] of Object.entries(p.models || {})) {
-                  out.push({ id: `${pid}/${modelID}`, label: String((info as any)?.name || modelID) });
-                }
-              }
-              const def = ((r.data as any).default || {}) as any;
-              const defId = def.providerID ? `${def.providerID}/${def.modelID}` : '';
-              for (const m of out) if (defId && m.id === defId) m.is_default = true;
-              return out;
-            },
+            listModels: ocModels,
             switchModel: async (instanceId, sessionId, modelId) => {
               const model = (oc as any).resolveModel ? (oc as any).resolveModel(instanceId, modelId) : undefined;
               if (!model) return false;
@@ -2249,6 +2277,9 @@ export function createApi(ctx: ApiContext): Hono {
               });
             }
             return undefined;
+          }
+          if (act === 'task_detail' || ['tasks_page', 'convo_list_page', 'oc_sessions_page', 'oc_models_page', 'oc_agents_page', 'inbox_page', 'inbox_open'].includes(act)) {
+            return listCardsMod.handleListAction(ctx.config.feishu!, listDeps, input);
           }
           if (APPROVAL_ACTS.has(act)) return cards.handleCardAction(ctx.config.feishu!, approvalDeps, input);
           if (act.startsWith('convo_') && convoBridge) return convoBridge.handleCardAction(ctx.config.feishu!, input);

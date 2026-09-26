@@ -12,9 +12,10 @@ import { CHANNELS } from '../types';
 import { getLogger } from '../logger';
 import type { FeishuConfig } from '../config';
 import type { FeishuSession } from './session';
-import { setSession } from './session';
+import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
 import { buildResultCard, btnRow, card2, cardResponse, form, inputField, md, note, submitBtn } from './cards';
+import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
 export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string }
@@ -53,6 +54,12 @@ export interface OcBridge {
   stop(session: FeishuSession): Promise<string>;
   send(text: string, session: FeishuSession, chatId: string): Promise<string>;
   replyTo(instanceId: string, sessionId: string, text: string, chatId?: string): Promise<string>;
+  /** [v2] 会话列表交互卡（点按钮切换） */
+  listSessionsCard(session: FeishuSession): Promise<Record<string, unknown>>;
+  /** [v2] 模型列表交互卡（点按钮切换） */
+  modelsCard(session: FeishuSession): Promise<Record<string, unknown>>;
+  /** [v2] Agent 列表交互卡（点按钮切换） */
+  agentsCard(session: FeishuSession): Promise<Record<string, unknown>>;
   handleCardAction(cfg: FeishuConfig, input: CardActionInput): Promise<Record<string, unknown> | void>;
   start(cfg: FeishuConfig): () => void;
   /** 单次权限/提问扫描（start 的 30s 定时器即循环调用它；独立导出便于测试） */
@@ -202,6 +209,30 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       return ok ? `✅ 已切换 Agent ${agentId}。` : '切换失败（见服务端日志）。';
     },
 
+    async listSessionsCard(session) {
+      const sessions = await deps.listSessions(session.oc_instance || '').catch(() => []);
+      session.last_list = sessions.map((s) => ({ id: s.id, label: s.title || s.id }));
+      session.last_list_kind = 'oc_session';
+      await setSession(session);
+      return buildOcSessionsCard(session.oc_instance || '', sessions, 0, session.oc_session);
+    },
+
+    async modelsCard(session) {
+      const models = await deps.listModels(session.oc_instance || '').catch(() => []);
+      session.last_list = models.map((m) => ({ id: m.id, label: m.label }));
+      session.last_list_kind = 'model';
+      await setSession(session);
+      return buildOcModelsCard(models, 0);
+    },
+
+    async agentsCard(session) {
+      const agents = deps.listAgents ? await deps.listAgents(session.oc_instance || '').catch(() => []) : [];
+      session.last_list = agents.map((a) => ({ id: a.id, label: a.label }));
+      session.last_list_kind = 'agent';
+      await setSession(session);
+      return buildOcAgentsCard(agents, 0);
+    },
+
     async stop(session) {
       if (!session.oc_instance || !session.oc_session) return '未绑定实例/会话。';
       const ok = await deps.abort(session.oc_instance, session.oc_session);
@@ -256,6 +287,35 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       try {
         if (!cfg.approvers?.length || !cfg.approvers.includes(who)) {
           return reply('无权操作', [`操作人 ${who} 不在审批白名单内。`]);
+        }
+        if (act === 'oc_pick_session') {
+          const session = await getSession(input.operatorOpenId);
+          const instance = String(params.instance || session.oc_instance || '');
+          const sid = String(params.session_id || '');
+          session.mode = 'oc';
+          session.oc_instance = instance;
+          session.oc_session = sid;
+          await setSession(session);
+          const recent = await deps.readRecent(instance, sid, 4).catch(() => []);
+          const preview = recent.length ? `\n最近对话：\n${recent.map((m) => `${m.role === 'user' ? '用户' : '助手'}：${m.text.replace(/\s+/g, ' ').slice(0, 120)}`).join('\n')}` : '';
+          await sendText(cfg, input.chatId || '', `✅ 已切换到会话 ${sid.slice(0, 12)}。${preview}\n直接输入需求。`);
+          return;
+        }
+        if (act === 'oc_pick_model') {
+          const session = await getSession(input.operatorOpenId);
+          const modelId = String(params.model_id || '');
+          const ok = await deps.switchModel(session.oc_instance || '', session.oc_session || '', modelId);
+          return ok
+            ? cardResponse(buildResultCard('✅ 已切换模型', [modelId]))
+            : cardResponse(buildResultCard('⚠ 切换失败', [modelId]));
+        }
+        if (act === 'oc_pick_agent') {
+          const session = await getSession(input.operatorOpenId);
+          const agentId = String(params.agent || '');
+          const ok = await deps.switchAgent(session.oc_instance || '', session.oc_session || '', agentId);
+          return ok
+            ? cardResponse(buildResultCard('✅ 已切换 Agent', [agentId]))
+            : cardResponse(buildResultCard('⚠ 切换失败', [agentId]));
         }
         if (act === 'oc_reply') {
           // 完成卡上的快速回复：向该会话继续发 prompt——空响应让表单复位，完成推送再回来

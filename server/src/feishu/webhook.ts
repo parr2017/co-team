@@ -44,12 +44,14 @@ export interface FeishuDeps {
   metrics?: () => Promise<string>;
   /** 可选：/task <id> 单任务进度摘要 [v2] */
   taskSummary?: (taskId: string) => Promise<string>;
+  /** 可选：/task <id> 单任务详情卡（优先于文本摘要）[v2] */
+  taskDetailCard?: (taskId: string) => Promise<Record<string, unknown> | null>;
   /** 可选：convo 桥 [v2] */
   convo?: ConvoBridge;
   /** 可选：oc 桥 [v2] */
   oc?: OcBridge;
   /** 可选：/inbox 待拍板收件箱 [v2] */
-  inbox?: { run(arg: string, session: FeishuSession, chatId?: string): Promise<string> };
+  inbox?: { listCard(userId: string): Promise<Record<string, unknown>> };
 }
 
 /** True when this event id was already processed (飞书必然重推，需幂等). */
@@ -76,6 +78,7 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
     ...(deps.gatewayStatus ? { gatewayStatus: deps.gatewayStatus } : {}),
     ...(deps.metrics ? { metrics: deps.metrics } : {}),
     ...(deps.taskSummary ? { taskSummary: deps.taskSummary } : {}),
+    ...(deps.taskDetailCard ? { taskDetailCard: deps.taskDetailCard } : {}),
     ...(deps.convo ? { convo: deps.convo } : {}),
     ...(deps.oc ? { oc: deps.oc } : {}),
     ...(deps.inbox ? { inbox: deps.inbox } : {}),
@@ -165,6 +168,11 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
       }
       const cmd = await handleCommand(msg.text, session, commandDeps, msg.chatId);
       session = cmd.session ?? session;
+      // [v2] 交互列表卡优先（reply 保留作降级文本，卡片发送失败时由调用方感知）
+      if (cmd.card) {
+        await sendCard(cfg, msg.chatId, cmd.card);
+        return;
+      }
       if (!cmd.passthrough) {
         if (cmd.reply) await sendText(cfg, msg.chatId, cmd.reply);
         return;

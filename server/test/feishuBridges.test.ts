@@ -17,6 +17,8 @@ import { createOcBridge } from '../src/feishu/ocBridge';
 import { createInboxBridge } from '../src/feishu/inboxBridge';
 import { handleCardAction } from '../src/feishu/approvalCards';
 import { handleCommand } from '../src/feishu/commands';
+import { buildTaskListCard, handleListAction } from '../src/feishu/listCards';
+import { setSession } from '../src/feishu/session';
 import type { FeishuConfig } from '../src/config';
 import type { FeishuSession } from '../src/feishu/session';
 
@@ -184,8 +186,8 @@ describe('oc 桥', () => {
     const bridge = createOcBridge(deps);
     const session: FeishuSession = { ...freshSession(), mode: 'oc', oc_instance: 'main-exec', oc_session: 's-1' };
     let r = await handleCommand('/model', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
-    expect(r.reply).toContain('GLM-5.3');
-    expect(r.reply).toContain('（默认）');
+    expect(String(JSON.stringify(r.card))).toContain('GLM-5.3');
+    expect(String(JSON.stringify(r.card))).toContain('（默认）');
     r = await handleCommand('/model 2', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
     expect(deps.switchModel).toHaveBeenCalledWith('main-exec', 's-1', 'deepseek/deepseek-v4-pro');
     expect(r.reply).toContain('已切换模型');
@@ -196,7 +198,7 @@ describe('oc 桥', () => {
     const bridge = createOcBridge(deps);
     const session: FeishuSession = { ...freshSession(), mode: 'oc', oc_instance: 'main-exec' };
     let r = await handleCommand('/list', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
-    expect(r.reply).toContain('活跃会话');
+    expect(String(JSON.stringify(r.card))).toContain('活跃会话');
     r = await handleCommand('/switch 2', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
     expect(r.reply).toContain('已切换到会话');
     expect(r.reply).toContain('最近对话');
@@ -306,14 +308,19 @@ describe('收件箱（/inbox）', () => {
     const bridge = createInboxBridge(cfg, { ocPending: () => ocDeps.pendingAll() });
     const session = freshSession();
     const r = await handleCommand('/inbox', session, { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
-    expect(r.reply).toContain('等你拍板（3');
-    expect(r.reply).toContain('[节点审批]');
-    expect(r.reply).toContain('[命令审批]');
-    expect(r.reply).toContain('[阻塞提问]');
+    const cardText = String(JSON.stringify(r.card));
+    expect(cardText).toContain('待拍板收件箱');
+    expect(cardText).toContain('节点审批');
+    expect(cardText).toContain('命令审批');
+    expect(cardText).toContain('阻塞提问');
+    expect(cardText).toContain('inbox_open'); // 每条一枚 [处理] 按钮
 
-    const r2 = await handleCommand('/inbox 3', session, { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
-    expect(r2.reply).toContain('已推送');
-    expect(sendCardMock).toHaveBeenCalled();
+    // 点 [处理]（第 3 条 ask）→ 对应决策卡重推
+    sendCardMock.mockClear();
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: session.user_id, messageId: 'om_card', chatId: 'oc1', value: { act: 'inbox_open', index: 2 },
+    });
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
     const route = await busGet<Record<string, string>>('feishu:route:om_new1');
     expect(route).toMatchObject({ act: 'ask_answer', task_id: 't1', ask_id: 'a1' });
   });
@@ -321,7 +328,7 @@ describe('收件箱（/inbox）', () => {
   it('没有待拍板时回复为空态', async () => {
     const bridge = createInboxBridge(cfg);
     const r = await handleCommand('/inbox', freshSession(), { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
-    expect(r.reply).toContain('没有等你拍板');
+    expect(String(JSON.stringify(r.card))).toContain('没有等你拍板');
   });
 });
 
@@ -371,5 +378,90 @@ describe('oc 卡住检测', () => {
     await sleep(25);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
     stop();
+  });
+});
+
+describe('交互列表卡与翻页（listCards）', () => {
+  const eightTasks = Array.from({ length: 8 }, (_, i) => ({ id: `t-${i + 1}`, description: `任务 ${i + 1}`, status: 'success', project_id: null }));
+
+  it('任务列表卡分页：第 0 页 6 条+下一页，第 1 页 2 条+上一页', () => {
+    const p0 = buildTaskListCard(eightTasks, 0);
+    expect(JSON.stringify(p0)).toContain('下一页');
+    expect(JSON.stringify(p0)).not.toContain('上一页');
+    const p1 = buildTaskListCard(eightTasks, 1);
+    expect(JSON.stringify(p1)).toContain('上一页');
+    expect(JSON.stringify(p1)).toContain('t-8');
+    expect(JSON.stringify(p1)).not.toContain('t-1');
+  });
+
+  it('tasks_page 点击 → 按会话项目重拉数据渲染该页', async () => {
+    const listTasks = vi.fn(async () => eightTasks.map((t) => ({ ...t, project_id: null })));
+    const deps = {
+      listTasks,
+      getSession: vi.fn(async () => ({})),
+      convoList: vi.fn(async () => []),
+      inboxLoad: vi.fn(async () => null),
+    };
+    const r = await handleListAction(cfg, deps, {
+      operatorOpenId: 'ou_admin', messageId: 'om_list', chatId: 'oc1', value: { act: 'tasks_page', page: 1 },
+    });
+    const card = (r as any).card;
+    expect(card.data.header.title.content).toBe('📋 最近任务');
+    expect(JSON.stringify(card)).toContain('第 2/2 页');
+  });
+
+  it('task_detail → 进度卡（节点+最近动态+取消按钮）', async () => {
+    await saveTaskGraph('t9', [{ id: 'n1', name: '实现登录', status: 'completed' } as any], [], { workspace: '/w', status: 'running' });
+    await busSet('task:t9:agent:dev:journal', [{ ts: '2026-09-27T10:00:00Z', role: 'dev', kind: 'brief', text: '完成了登录模块', node_name: '实现登录', node_id: 'n1' }]);
+    const r = await handleListAction(cfg, {
+      listTasks: vi.fn(async () => []),
+      getSession: vi.fn(async () => ({})),
+      convoList: vi.fn(async () => []),
+      inboxLoad: vi.fn(async () => null),
+    }, {
+      operatorOpenId: 'ou_admin', messageId: 'om_list', chatId: 'oc1', value: { act: 'task_detail', task_id: 't9' },
+    });
+    const card = (r as any).card;
+    expect(card.data.header.title.content).toBe('📄 任务 t9');
+    expect(JSON.stringify(card)).toContain('最近动态');
+    expect(JSON.stringify(card)).toContain('取消任务');
+  });
+
+  it('convo_pick 点选切换：绑定会话并推送预览', async () => {
+    const deps = makeConvoDeps();
+    const bridge = createConvoBridge(deps);
+    await busSet('convo:c2:messages', [
+      { role: 'user', kind: 'text', text: '选哪个数据库' },
+      { role: 'assistant', kind: 'text', text: '建议 PostgreSQL' },
+    ] as any);
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'convo_pick', convo_id: 'c2' },
+    });
+    expect(deps.list).toHaveBeenCalled();
+    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('已切换到「数据库选型」'))).toBe(true);
+    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('建议 PostgreSQL'))).toBe(true);
+    const session = await (await import('../src/feishu/session')).getSession('ou_admin');
+    expect(session.convo_id).toBe('c2');
+  });
+
+  it('oc_pick_model 点选切换', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    await setSession({ user_id: 'ou_admin', last_active_time: '', mode: 'oc', oc_instance: 'main-exec', oc_session: 's-1' });
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1',
+      value: { act: 'oc_pick_model', model_id: 'deepseek/deepseek-v4-pro' },
+    });
+    const session = await (await import('../src/feishu/session')).getSession('ou_admin');
+    expect(session.oc_instance).toBe('main-exec');
+    expect(deps.switchModel).toHaveBeenCalledWith('main-exec', 's-1', 'deepseek/deepseek-v4-pro');
+  });
+
+  it('/tasks 命令返回交互卡（第 0 页）', async () => {
+    const listTasks = vi.fn(async () => eightTasks.map((t) => ({ ...t, project_id: null })));
+    const r = await handleCommand('/tasks', freshSession(), { listProjects: async () => [], listAgentNames: () => [], listTasks }, 'oc1');
+    expect(r.card).toBeDefined();
+    expect(String(JSON.stringify(r.card))).toContain('下一页');
+    expect(String(JSON.stringify(r.card))).toContain('t-1 详情');
   });
 });

@@ -12,9 +12,10 @@ import { CHANNELS } from '../types';
 import { getLogger } from '../logger';
 import type { FeishuConfig } from '../config';
 import type { FeishuSession } from './session';
-import { setSession } from './session';
+import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
 import { buildResultCard, card2, cardResponse, form, inputField, md, note, submitBtn, btnRow } from './cards';
+import { buildConvoListCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
 export interface ConvoListItem {
@@ -39,6 +40,8 @@ export interface ConvoBridge {
   create(title: string, session: FeishuSession, chatId: string): Promise<string>;
   switchTo(ref: string, session: FeishuSession, chatId: string): Promise<string>;
   send(text: string, session: FeishuSession, chatId: string): Promise<string>;
+  /** [v2] 会话列表交互卡（点按钮切换） */
+  listCard(session: FeishuSession): Promise<Record<string, unknown>>;
   /** 指定会话发言（引用回复路由用，不依赖当前绑定） */
   sendTo(convoId: string, text: string, chatId?: string): Promise<string>;
   stop(session: FeishuSession): Promise<string>;
@@ -107,6 +110,14 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
       return `协作会话列表：\n${text}\n/switch 序号切换 · /new 新建。`;
     },
 
+    async listCard(session) {
+      const convos = await deps.list();
+      session.last_list = convos.slice(0, 30).map((c) => ({ id: c.id, label: c.title }));
+      session.last_list_kind = 'convo';
+      await setSession(session);
+      return buildConvoListCard(convos, 0, session.convo_id);
+    },
+
     async create(title, session, chatId) {
       const convo = await deps.create({ title: title || undefined, project_id: session.current_project_id });
       return bindAndEnter(convo, session, chatId);
@@ -167,6 +178,22 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         if (input.messageId) await sendCard(cfg, input.chatId || '', card).catch(() => {});
         void logger2;
         return cardResponse(card);
+      }
+      if (act === 'convo_pick') {
+        const targetId = String(params.convo_id || '');
+        const convos = await deps.list();
+        const hit = convos.find((c) => c.id === targetId);
+        if (!hit) return cardResponse(buildResultCard('未找到会话', [targetId]));
+        const session = await getSession(input.operatorOpenId);
+        session.mode = 'convo';
+        session.convo_id = hit.id;
+        await bindChat(hit.id, hit.title, input.chatId || '');
+        await setSession(session);
+        const msgs = (await busGet<any[]>(`convo:${hit.id}:messages`).catch(() => null)) || [];
+        const recent = msgs.filter((m) => m.kind === 'text' && m.text).slice(-4);
+        const preview = recent.length ? `\n${recent.map((m) => `${m.role === 'user' ? '用户' : '助手'}：${String(m.text).replace(/\s+/g, ' ').slice(0, 120)}`).join('\n')}` : '';
+        await sendText(cfg, input.chatId || '', `✅ 已切换到「${hit.title}」。${preview}\n直接发言继续对话。`);
+        return; // 列表卡保留
       }
       if (act === 'convo_reply') {
         // 终稿卡上的快速回复：注入会话后 agent 回复会以新卡推送——空响应让表单复位即可

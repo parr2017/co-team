@@ -12,6 +12,7 @@ import type { FeishuSession } from './session';
 import { fuzzyMatch, resetSession, setSession } from './session';
 import type { ConvoBridge } from './convoBridge';
 import type { OcBridge } from './ocBridge';
+import { buildTaskListCard, buildTaskDetailCard } from './listCards';
 
 export interface ProjectOption {
   id: string;
@@ -32,12 +33,14 @@ export interface CommandDeps {
   metrics?: () => Promise<string>;
   /** /task <id>：单任务进度摘要 [v2] */
   taskSummary?: (taskId: string) => Promise<string>;
+  /** /task <id>：单任务详情卡（优先于文本摘要）[v2] */
+  taskDetailCard?: (taskId: string) => Promise<Record<string, unknown> | null>;
   /** convo 桥 [v2] */
   convo?: ConvoBridge;
   /** oc 桥 [v2] */
   oc?: OcBridge;
   /** /inbox 待拍板收件箱 [v2] */
-  inbox?: { run(arg: string, session: FeishuSession, chatId?: string): Promise<string> };
+  inbox?: { listCard(userId: string): Promise<Record<string, unknown>> };
 }
 
 export interface CommandResult {
@@ -45,6 +48,8 @@ export interface CommandResult {
   session?: FeishuSession;
   /** a non-command free-text message → caller routes it by session.mode */
   passthrough?: boolean;
+  /** [v2] 交互列表卡——processEvent 走 sendCard（reply 保留作降级文本） */
+  card?: Record<string, unknown>;
 }
 
 const HELP_TASK = [
@@ -122,7 +127,8 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
 
     case '/inbox': {
       if (!deps.inbox) return { reply: '收件箱未启用（服务端未挂载）。', session };
-      return { reply: await deps.inbox.run(arg, session, chatId || ''), session };
+      const card = await deps.inbox.listCard(session.user_id);
+      return { reply: '待拍板收件箱：', card, session };
     }
 
     case '/oc': {
@@ -135,6 +141,7 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
   if (mode === 'convo' && deps.convo) {
     switch (cmd) {
       case '/list':
+        if (deps.convo.listCard) return { reply: '协作会话：', card: await deps.convo.listCard(session), session };
         return { reply: await deps.convo.list(session), session };
       case '/new':
         return { reply: await deps.convo.create(arg, session, chatId || ''), session };
@@ -151,14 +158,17 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
   if (mode === 'oc' && deps.oc) {
     switch (cmd) {
       case '/list':
+        if (deps.oc.listSessionsCard) return { reply: 'OpenCode 会话：', card: await deps.oc.listSessionsCard(session), session };
         return { reply: await deps.oc.listSessions(session), session };
       case '/new':
         return { reply: await deps.oc.createSession(arg, session, chatId || ''), session };
       case '/switch':
         return { reply: await deps.oc.switchTo(arg, session, chatId || ''), session };
       case '/model':
+        if (deps.oc.modelsCard && !arg) return { reply: 'OpenCode 模型：', card: await deps.oc.modelsCard(session), session };
         return { reply: await deps.oc.model(arg, session), session };
       case '/agent':
+        if (deps.oc.agentsCard && !arg) return { reply: 'OpenCode Agent：', card: await deps.oc.agentsCard(session), session };
         return { reply: await deps.oc.agent(arg, session), session };
       case '/stop':
         return { reply: await deps.oc.stop(session), session };
@@ -219,10 +229,9 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
     case '/tasks': {
       if (!deps.listTasks) return { reply: '任务查询未启用（服务端未挂载）', session };
       const all = await deps.listTasks();
-      const tasks = (session.current_project_id ? all.filter((t) => t.project_id === session.current_project_id) : all).slice(0, 8);
-      if (!tasks.length) return { reply: '当前项目暂无任务——直接发文本即可发起任务', session };
-      const lines = tasks.map((t) => `- ${t.id} · ${t.status} · ${(t.description || '').slice(0, 40)}`);
-      return { reply: `最近任务：\n${lines.join('\n')}`, session };
+      const tasks = (session.current_project_id ? all.filter((t) => t.project_id === session.current_project_id) : all).slice(0, 30);
+      const card = buildTaskListCard(tasks, 0, session.current_project_id ? `项目：${session.current_project_name || session.current_project_id}` : undefined);
+      return { reply: '最近任务：', card, session };
     }
 
     case '/queue': {
@@ -245,8 +254,12 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
     }
 
     case '/task': {
-      if (!deps.taskSummary) return { reply: '任务详情未启用（服务端未挂载）', session };
       if (!arg) return { reply: '用法：/task <任务ID>', session };
+      if (deps.taskDetailCard) {
+        const card = await deps.taskDetailCard(arg).catch(() => null);
+        if (card) return { reply: `任务 ${arg}`, card, session };
+      }
+      if (!deps.taskSummary) return { reply: '任务详情未启用（服务端未挂载）', session };
       return { reply: await deps.taskSummary(arg), session };
     }
 
