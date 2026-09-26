@@ -157,16 +157,24 @@ knowledge:
   #   model: text-embedding-model   # 模型池条目名，该条目 roles 建议标注 ['embedding']
   # 治理：GET /api/knowledge?stale=1 列出超过该天数未更新的过期候选
   stale_days: 90
-# 飞书 bot（事件订阅模式）：在飞书开放平台创建自建应用后启用。
+# 飞书 bot：在飞书开放平台创建企业自建应用后启用。
 # 密钥只走环境变量，禁止写入本文件：
 #   COTEAM_FEISHU_APP_ID / COTEAM_FEISHU_APP_SECRET
 #   COTEAM_FEISHU_VERIFICATION_TOKEN / COTEAM_FEISHU_ENCRYPT_KEY
-# 回调地址: http://<host>:8855/api/feishu/webhook （需局域网/公网可达）
+# 入站通道二选一（可共存，事件有去重）：
+#   1) HTTP webhook —— 回调地址 http://<host>:8855/api/feishu/webhook，要求飞书云可达
+#      （公网 IP / 内网穿透），并配置 verification_token 或 encrypt_key 鉴权
+#   2) 长连接网关 —— 无公网 IP 时的官方方案：服务端主动连飞书（仅出站 443）。
+#      开放平台「事件与回调」页把订阅方式切到「使用长连接接收事件」，订阅
+#      im.message.receive_v1，开通 im:message 权限并发布应用版本，然后：
 # feishu:
 #   app_id: cli_xxx        # 也可由环境变量提供
 #   app_secret: ""
-#   verification_token: ""
-#   encrypt_key: ""
+#   verification_token: "" # webhook 通道鉴权（长连接不需要）
+#   encrypt_key: ""        # webhook 通道加密（长连接不需要）
+#   ws_enabled: true       # 启动长连接网关（缺省 false，显式开启）
+#   approvers: []          # 审批人白名单（飞书 open_id，也可用环境变量 COTEAM_FEISHU_APPROVERS 逗号分隔）；
+#                          # 未配置时审批通知为纯信息卡片、不带按钮（安全优先）
 permissions:
   # 命令执行分级：plan_only（只出方案不写代码）/ readonly（只读）/
   # approve_required（白名单外命令需人工审批，默认）/ whitelist_auto（白名单自动，其余拒绝）/

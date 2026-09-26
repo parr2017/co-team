@@ -184,6 +184,10 @@ export interface FeishuConfig {
   encrypt_key?: string;
   /** open platform base url (override for tests) */
   api_base?: string;
+  /** 长连接网关（无公网部署的入站通道）——显式开启才启动，缺省关闭 */
+  ws_enabled?: boolean;
+  /** 审批人白名单（飞书 open_id）；未配置时审批卡片不带按钮（安全优先） */
+  approvers?: string[];
 }
 
 export const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -342,6 +346,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
           ...(process.env.COTEAM_FEISHU_VERIFICATION_TOKEN ? { verification_token: process.env.COTEAM_FEISHU_VERIFICATION_TOKEN } : {}),
           ...(process.env.COTEAM_FEISHU_ENCRYPT_KEY ? { encrypt_key: process.env.COTEAM_FEISHU_ENCRYPT_KEY } : {}),
           ...(process.env.COTEAM_FEISHU_API_BASE ? { api_base: process.env.COTEAM_FEISHU_API_BASE } : {}),
+          ...(process.env.COTEAM_FEISHU_WS_ENABLED
+            ? { ws_enabled: ['1', 'true', 'yes'].includes(process.env.COTEAM_FEISHU_WS_ENABLED.toLowerCase()) }
+            : {}),
+          ...(process.env.COTEAM_FEISHU_APPROVERS
+            ? { approvers: process.env.COTEAM_FEISHU_APPROVERS.split(',').map((s) => s.trim()).filter(Boolean) }
+            : {}),
         }
       : undefined,
     mcp: parseMcpConfig(raw.mcp),
