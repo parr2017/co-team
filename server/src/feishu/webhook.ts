@@ -29,6 +29,12 @@ export interface FeishuDeps {
   enqueue: (taskId: string, projectId: string | null, workspace: string) => Promise<unknown>;
   listProjects: () => Promise<ProjectOption[]>;
   listAgentNames: () => string[];
+  /** 可选：/tasks 指令的任务查询（未提供则指令回复未启用） */
+  listTasks?: () => Promise<{ id: string; description: string; status: string; project_id: string | null }[]>;
+  /** 可选：/queue 指令的队列快照 */
+  listQueue?: () => Promise<{ key: string; running_task_id: string | null; pending: unknown[]; blocked: boolean; blocked_reason: string }[]>;
+  /** 可选：/status 附带的网关连接状态 */
+  gatewayStatus?: () => string;
 }
 
 /** True when this event id was already processed (飞书必然重推，需幂等). */
@@ -47,7 +53,13 @@ export interface FeishuHandler {
 
 export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): FeishuHandler {
   const logger = getLogger();
-  const commandDeps: CommandDeps = { listProjects: deps.listProjects, listAgentNames: deps.listAgentNames };
+  const commandDeps: CommandDeps = {
+    listProjects: deps.listProjects,
+    listAgentNames: deps.listAgentNames,
+    ...(deps.listTasks ? { listTasks: deps.listTasks } : {}),
+    ...(deps.listQueue ? { listQueue: deps.listQueue } : {}),
+    ...(deps.gatewayStatus ? { gatewayStatus: deps.gatewayStatus } : {}),
+  };
 
   /** Extract (userId, chatId, text) from a v2 (or lenient v1) message event. */
   function extractMessage(body: Record<string, any>): { userId: string; chatId: string; text: string } | null {

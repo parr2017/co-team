@@ -2017,12 +2017,9 @@ export function createApi(ctx: ApiContext): Hono {
 
   // ---------- feishu bot (event subscription mode) ----------
 
+  let feishuWsHandle: { close: () => void; status: () => { state: string; reconnectAttempts: number } } | null = null;
+
   if (ctx.config.feishu?.app_id && ctx.config.feishu.app_secret) {
-    // SEC-P0：encrypt_key 与 verification_token 都未配置 = webhook 无鉴权（任何人可建任务入队），
-    // 此时拒绝挂载路由
-    if (!ctx.config.feishu.encrypt_key && !ctx.config.feishu.verification_token) {
-      logger.warn('Feishu webhook NOT mounted: no encrypt_key / verification_token configured (unauthenticated webhook is disabled by SEC-P0)');
-    } else {
     let handlerP: Promise<FeishuHandler> | null = null;
     const getHandler = () => {
       handlerP ||= import('../feishu/webhook').then((m) =>
@@ -2036,12 +2033,42 @@ export function createApi(ctx: ApiContext): Hono {
           enqueue: (taskId, projectId, workspace) => ctx.taskQueue.enqueue(taskId, projectId, workspace),
           listProjects: async () => (await listProjects()).map((p) => ({ id: p.id, name: p.name, workspace: p.workspace })),
           listAgentNames: () => [...ctx.orchestrator.plugins.keys()],
+          listTasks: async () =>
+            (await listTaskGraphsPaged(1, 20, undefined)).items.map((g: TaskGraph) => ({
+              id: g.task_id,
+              description: g.description,
+              status: g.status,
+              project_id: g.project_id ?? null,
+            })),
+          listQueue: async () => ctx.taskQueue.snapshots(),
+          gatewayStatus: () => feishuWsHandle?.status().state ?? 'off',
         })
       );
       return handlerP;
     };
-    app.post('/api/feishu/webhook', async (c) => (await getHandler()).handle(c));
-    logger.info('Feishu bot webhook mounted at /api/feishu/webhook', { app_id: ctx.config.feishu.app_id });
+    // SEC-P0：encrypt_key 与 verification_token 都未配置 = webhook 无鉴权（任何人可建任务入队），
+    // 此时拒绝挂载路由（只约束 HTTP webhook——长连接出站建连没有暴露面，不受此限）
+    if (!ctx.config.feishu.encrypt_key && !ctx.config.feishu.verification_token) {
+      logger.warn('Feishu webhook NOT mounted: no encrypt_key / verification_token configured (unauthenticated webhook is disabled by SEC-P0)');
+    } else {
+      app.post('/api/feishu/webhook', async (c) => (await getHandler()).handle(c));
+      logger.info('Feishu bot webhook mounted at /api/feishu/webhook', { app_id: ctx.config.feishu.app_id });
+    }
+    // 长连接网关（无公网部署的入站通道）：出站 WebSocket 连飞书，ws_enabled 显式开启。
+    // 审批卡片仅在网关下启用——卡片按钮回调目前只有长连接能收回（旧版回传需公网 webhook）。
+    if (ctx.config.feishu.ws_enabled) {
+      void Promise.all([import('../feishu/approvalCards'), import('../feishu/wsGateway')]).then(([cards, gateway]) => {
+        const approvalDeps = {
+          getTaskGraph: (taskId: string) => getTaskGraph(taskId),
+          enqueue: (taskId: string, projectId: string | null, workspace: string) => ctx.taskQueue.enqueue(taskId, projectId, workspace),
+          abortTask: (taskId: string) => ctx.orchestrator.abortTask(taskId),
+          removePending: (taskId: string) => ctx.taskQueue.removePending(taskId),
+          resolvePendingCommand: (taskId: string, commandId: string, approved: boolean) => ctx.orchestrator.resolvePendingCommand(taskId, commandId, approved),
+        };
+        cards.startApprovalCards(ctx.config.feishu!, approvalDeps);
+        feishuWsHandle = gateway.startWsGateway(ctx.config.feishu!, getHandler, approvalDeps);
+        logger.info('Feishu WS gateway enabled (ws_enabled=true)', { app_id: ctx.config.feishu!.app_id, approvers: ctx.config.feishu!.approvers?.length ?? 0 });
+      });
     }
   }
 
@@ -2057,6 +2084,8 @@ export function createApi(ctx: ApiContext): Hono {
       cost_total: ctx.modelPool.totalCost(),
       // 外部 MCP 服务连接状态（MCP client）：web 状态灯与 mobile 状态列表共用
       mcp: ctx.mcp ? ctx.mcp.status() : [],
+      // 飞书长连接网关状态（null = 未启用）：state 为 connected 表示入站通道就绪
+      feishu_ws: feishuWsHandle ? feishuWsHandle.status() : null,
     });
   });
 
