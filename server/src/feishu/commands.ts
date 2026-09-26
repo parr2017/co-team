@@ -36,6 +36,8 @@ export interface CommandDeps {
   convo?: ConvoBridge;
   /** oc 桥 [v2] */
   oc?: OcBridge;
+  /** /inbox 待拍板收件箱 [v2] */
+  inbox?: { run(arg: string, session: FeishuSession, chatId?: string): Promise<string> };
 }
 
 export interface CommandResult {
@@ -116,6 +118,11 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
     case '/convo': {
       if (!deps.convo) return { reply: '会话模式未启用（服务端未挂载 convo 桥）。', session };
       return { reply: await deps.convo.enter(arg, session, chatId || ''), session };
+    }
+
+    case '/inbox': {
+      if (!deps.inbox) return { reply: '收件箱未启用（服务端未挂载）。', session };
+      return { reply: await deps.inbox.run(arg, session, chatId || ''), session };
     }
 
     case '/oc': {

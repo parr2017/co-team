@@ -16,7 +16,7 @@
 import { busGet, busSet, getBus } from '../bus';
 import { CHANNELS } from '../types';
 import { getLogger } from '../logger';
-import { appendJournal, emitProgress, getTaskGraph, persistGraph } from '../store';
+import { appendJournal, emitProgress, getTaskGraph, listTaskGraphs, persistGraph } from '../store';
 import { resolveAsk, listAsks } from '../askGate';
 import { getDailyReport, resolveReportItem } from '../dailyReport';
 import { writeKnowledge } from '../knowledge';
@@ -50,7 +50,7 @@ const PROPOSAL_LABELS: Record<string, string> = {
   derive_task: '派生修复任务',
 };
 
-function askCard(taskId: string, ask: { id: string; from: string; question: string; node_name?: string }): Record<string, unknown> {
+export function askCard(taskId: string, ask: { id: string; from: string; question: string; node_name?: string }): Record<string, unknown> {
   return card2('orange', `❓ ${ask.from} 有一个问题`, [
     md(`**任务** ${taskId}${ask.node_name ? ` · 节点 ${ask.node_name}` : ''}`),
     md(ask.question.slice(0, 800)),
@@ -64,7 +64,7 @@ function askCard(taskId: string, ask: { id: string; from: string; question: stri
   ]);
 }
 
-function proposalCard(taskId: string, p: { id: string; type: string; reason?: string; description?: string }): Record<string, unknown> {
+export function proposalCard(taskId: string, p: { id: string; type: string; reason?: string; description?: string }): Record<string, unknown> {
   const label = PROPOSAL_LABELS[p.type] || p.type;
   return card2('orange', `🛎 提案：${label}`, [
     md(`**任务** ${taskId}`),
@@ -92,9 +92,11 @@ function threeBtnRow(date: string, itemId: string): CardElement {
   };
 }
 
-function dailyCard(report: { date: string; items: { id: string; category: string; count: number; sample: string }[] }): Record<string, unknown> {
+export function dailyCard(report: { date: string; items: { id: string; category: string; count: number; sample: string }[] }, stats?: { done?: number; parked?: number }): Record<string, unknown> {
   const shown = report.items.slice(0, 3);
-  const elements: CardElement[] = [md(`共 ${report.items.length} 类问题（按签名聚合）`)];
+  const elements: CardElement[] = [];
+  if (stats) elements.push(md(`**今日完成** ${stats.done ?? 0} · **停靠等待** ${stats.parked ?? 0} · **待你裁决** ${report.items.length}`));
+  else elements.push(md(`共 ${report.items.length} 类问题（按签名聚合）`));
   for (const item of shown) {
     elements.push(md(`**${item.category}** ×${item.count} · ${item.sample.slice(0, 80)}`));
     elements.push(threeBtnRow(report.date, item.id));
@@ -104,7 +106,7 @@ function dailyCard(report: { date: string; items: { id: string; category: string
   return card2('blue', `📋 每日问题报告 · ${report.date}`, elements);
 }
 
-function clarifyCard(taskId: string, state: { rounds?: number; questions?: string[] }): Record<string, unknown> {
+export function clarifyCard(taskId: string, state: { rounds?: number; questions?: string[] }): Record<string, unknown> {
   const round = state.rounds ?? 1;
   const questions = (state.questions || []).slice(0, 3);
   const elements: CardElement[] = [];
@@ -118,7 +120,7 @@ function clarifyCard(taskId: string, state: { rounds?: number; questions?: strin
   return card2('blue', `❔ 需求澄清（第 ${round}/3 轮）· ${taskId}`, elements);
 }
 
-function nodeClarifyCard(taskId: string, nodeId: string, nodeName: string, brief: { approach?: string; files?: string[]; risks?: string[] }): Record<string, unknown> {
+export function nodeClarifyCard(taskId: string, nodeId: string, nodeName: string, brief: { approach?: string; files?: string[]; risks?: string[] }): Record<string, unknown> {
   const elements: CardElement[] = [];
   if (brief.approach) elements.push(md(`**思路** ${brief.approach.slice(0, 400)}`));
   if (brief.files?.length) elements.push(md(`**涉及文件** ${brief.files.slice(0, 6).join('、')}`));
@@ -207,7 +209,12 @@ export function startDecisionCards(cfg: FeishuConfig, deps: DecisionDeps): () =>
           if (!target) return;
           const report = await getDailyReport(date);
           if (!report || !report.items.length) return;
-          await sendCard(cfg, target.id, dailyCard(report), target.type);
+          // 晨报三段式：完成 / 停靠 / 待裁决（今日口径）
+          const today = new Date().toISOString().slice(0, 10);
+          const graphs = await listTaskGraphs();
+          const done = graphs.filter((g) => (g.updated_at || '').startsWith(today) && (g.status === 'success' || g.status === 'completed_with_warnings')).length;
+          const parked = graphs.filter((g) => String(g.status).startsWith('waiting')).length;
+          await sendCard(cfg, target.id, dailyCard(report, { done, parked }), target.type);
           return;
         }
         case 'task_needs_clarification': {

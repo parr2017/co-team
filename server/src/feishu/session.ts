@@ -22,7 +22,7 @@ export interface FeishuSession {
   oc_session?: string;
   /** 裸命令列表的序号缓存（/switch 2 之类按它解析），随新列表覆盖 */
   last_list?: { id: string; label: string }[];
-  last_list_kind?: 'convo' | 'oc_instance' | 'oc_session' | 'model' | 'agent';
+  last_list_kind?: 'convo' | 'oc_instance' | 'oc_session' | 'model' | 'agent' | 'inbox';
   last_active_time: string;
 }
 

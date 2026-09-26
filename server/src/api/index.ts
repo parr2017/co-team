@@ -2040,6 +2040,7 @@ export function createApi(ctx: ApiContext): Hono {
     };
     let convoBridge: import('../feishu/convoBridge').ConvoBridge | undefined;
     let ocBridge: import('../feishu/ocBridge').OcBridge | undefined;
+    let inboxBridge: import('../feishu/inboxBridge').InboxBridge | undefined;
     const getHandler = () => {
       handlerP ||= import('../feishu/webhook').then((m) =>
         m.createFeishuHandler(ctx.config.feishu!, {
@@ -2065,6 +2066,7 @@ export function createApi(ctx: ApiContext): Hono {
           taskSummary: feishuTaskSummary,
           ...(convoBridge ? { convo: convoBridge } : {}),
           ...(ocBridge ? { oc: ocBridge } : {}),
+          ...(inboxBridge ? { inbox: inboxBridge } : {}),
         })
       );
       return handlerP;
@@ -2087,13 +2089,26 @@ export function createApi(ctx: ApiContext): Hono {
         import('../feishu/decisionCards'),
         import('../feishu/convoBridge'),
         import('../feishu/ocBridge'),
-      ]).then(([cards, gateway, notifyPush, decisions, convoMod, ocMod]) => {
+        import('../feishu/inboxBridge'),
+        import('../feishu/stallWatch'),
+      ]).then(([cards, gateway, notifyPush, decisions, convoMod, ocMod, inboxMod, stallMod]) => {
         const approvalDeps = {
           getTaskGraph: (taskId: string) => getTaskGraph(taskId),
           enqueue: (taskId: string, projectId: string | null, workspace: string) => ctx.taskQueue.enqueue(taskId, projectId, workspace),
           abortTask: (taskId: string) => ctx.orchestrator.abortTask(taskId),
           removePending: (taskId: string) => ctx.taskQueue.removePending(taskId),
           resolvePendingCommand: (taskId: string, commandId: string, approved: boolean) => ctx.orchestrator.resolvePendingCommand(taskId, commandId, approved),
+          alwaysAllowCommand: async (command: string) => {
+            const { readPermissions, savePermissions } = await import('../configStore');
+            const { policyFromConfig } = await import('../sandbox');
+            const perms = readPermissions();
+            if (perms.whitelist_commands.includes(command)) return { ok: true, already: true };
+            const next = { level: perms.level, whitelist_commands: [...perms.whitelist_commands, command], ...(perms.max_time_sec !== undefined ? { max_time_sec: perms.max_time_sec } : {}) };
+            savePermissions(next);
+            ctx.config.permissions = next;
+            ctx.orchestrator.setPolicy(policyFromConfig(next));
+            return { ok: true, already: false };
+          },
         };
         const decisionDeps = {
           enqueue: approvalDeps.enqueue,
@@ -2204,11 +2219,15 @@ export function createApi(ctx: ApiContext): Hono {
             instanceKind: (instanceId) => oc.listInstances(undefined).find((i) => i.id === instanceId)?.kind || '',
           });
         }
+        try {
+          inboxBridge = inboxMod.createInboxBridge(ctx.config.feishu!, ctx.opencode ? { ocPending: () => ctx.opencode!.pendingAll() } : undefined);
+        } catch { /* oc 缺失时收件箱仍可用（无 oc 分区） */ }
         cards.startApprovalCards(ctx.config.feishu!, approvalDeps);
         notifyPush.startNotifyPush(ctx.config.feishu!);
         decisions.startDecisionCards(ctx.config.feishu!, decisionDeps);
         if (convoBridge) convoBridge.start(ctx.config.feishu!);
         if (ocBridge) ocBridge.start(ctx.config.feishu!);
+        stallMod.startTaskStallWatch(ctx.config.feishu!);
         const APPROVAL_ACTS = new Set(['approve_node', 'cancel_task', 'approve_command', 'reject_command']);
         const onCardAction = async (input: import('../feishu/approvalCards').CardActionInput) => {
           let value = input.value;

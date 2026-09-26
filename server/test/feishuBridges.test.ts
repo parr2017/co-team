@@ -10,10 +10,12 @@ vi.mock('../src/feishu/messageService', () => ({
 }));
 
 import { closeBus, busGet, busSet, initBus } from '../src/bus';
-import { emitEvent } from '../src/store';
+import { emitEvent, saveTaskGraph } from '../src/store';
 import { CHANNELS } from '../src/types';
 import { createConvoBridge } from '../src/feishu/convoBridge';
 import { createOcBridge } from '../src/feishu/ocBridge';
+import { createInboxBridge } from '../src/feishu/inboxBridge';
+import { handleCardAction } from '../src/feishu/approvalCards';
 import { handleCommand } from '../src/feishu/commands';
 import type { FeishuConfig } from '../src/config';
 import type { FeishuSession } from '../src/feishu/session';
@@ -292,5 +294,82 @@ describe('oc 桥', () => {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', formValue: { answer: '继续' },
     });
     expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q1', [['继续']]);
+  });
+});
+
+describe('收件箱（/inbox）', () => {
+  it('聚合四类待拍板项并编号列出；/inbox 序号重推对应卡片', async () => {
+    await saveTaskGraph('t1', [{ id: 'n1', name: '坏节点', status: 'waiting_approval' } as any], [], { workspace: '/w', project_id: 'p1', status: 'running' });
+    await busSet('task:pending_commands:t1', [{ id: 'pc1', node_id: 'n1', node_name: 'x', command: 'npm publish', ts: '' }]);
+    await busSet('task:asks:t1', [{ id: 'a1', from: 'dev', to: 'user', question: '用哪个端口？', status: 'pending', ts: '', task_id: 't1' }]);
+    const ocDeps = makeOcDeps();
+    const bridge = createInboxBridge(cfg, { ocPending: () => ocDeps.pendingAll() });
+    const session = freshSession();
+    const r = await handleCommand('/inbox', session, { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
+    expect(r.reply).toContain('等你拍板（3');
+    expect(r.reply).toContain('[节点审批]');
+    expect(r.reply).toContain('[命令审批]');
+    expect(r.reply).toContain('[阻塞提问]');
+
+    const r2 = await handleCommand('/inbox 3', session, { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
+    expect(r2.reply).toContain('已推送');
+    expect(sendCardMock).toHaveBeenCalled();
+    const route = await busGet<Record<string, string>>('feishu:route:om_new1');
+    expect(route).toMatchObject({ act: 'ask_answer', task_id: 't1', ask_id: 'a1' });
+  });
+
+  it('没有待拍板时回复为空态', async () => {
+    const bridge = createInboxBridge(cfg);
+    const r = await handleCommand('/inbox', freshSession(), { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
+    expect(r.reply).toContain('没有等你拍板');
+  });
+});
+
+describe('白名单学习（command_always）', () => {
+  it('批准 + 写全局白名单；重复放行回 already', async () => {
+    await busSet('task:pending_commands:t1', [{ id: 'pc1', node_id: 'n1', node_name: 'x', command: 'npm publish', ts: '' }]);
+    const always = vi.fn(async () => ({ ok: true }));
+    const deps = {
+      getTaskGraph: vi.fn(async () => null),
+      enqueue: vi.fn(async () => ({})),
+      abortTask: vi.fn(),
+      removePending: vi.fn(async () => {}),
+      resolvePendingCommand: vi.fn(async () => ({ ok: true })),
+      alwaysAllowCommand: always,
+    };
+    await handleCardAction(cfg, deps as any, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1',
+      value: { act: 'command_always', task_id: 't1', command_id: 'pc1' },
+    });
+    expect(deps.resolvePendingCommand).toHaveBeenCalledWith('t1', 'pc1', true);
+    expect(always).toHaveBeenCalledWith('npm publish');
+
+    always.mockClear();
+    always.mockResolvedValue({ ok: true, already: true });
+    await handleCardAction(cfg, deps as any, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card2', chatId: 'oc1',
+      value: { act: 'command_always', task_id: 't1', command_id: 'pc1' },
+    });
+    expect(always).toHaveBeenCalled();
+  });
+});
+
+describe('oc 卡住检测', () => {
+  it('有活动但超阈值无事件 → 推提醒卡并清除跟踪；忽略后不再推', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id: 'd1' } });
+    await bridge.scanStalled(cfg, 0);
+    await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(1));
+    const card = sendCardMock.mock.calls[0][2] as Record<string, any>;
+    expect(card.header.title.content).toContain('疑似卡住');
+    expect(JSON.stringify(card)).toContain('oc_abort');
+    // 跟踪已清除 → 再扫不再推
+    await bridge.scanStalled(cfg, 0);
+    await sleep(25);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+    stop();
   });
 });

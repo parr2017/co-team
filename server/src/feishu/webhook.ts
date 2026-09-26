@@ -16,7 +16,7 @@ import { getTaskGraph, pushIntervention, appendJournal, emitProgress } from '../
 import { notify } from '../notify';
 import type { FeishuConfig } from '../config';
 import { verifySignature } from './tokenManager';
-import { getSession, setSession } from './session';
+import { getSession, setSession, type FeishuSession } from './session';
 import { handleCommand, type CommandDeps, type ProjectOption } from './commands';
 import type { ConvoBridge } from './convoBridge';
 import type { OcBridge } from './ocBridge';
@@ -47,6 +47,8 @@ export interface FeishuDeps {
   convo?: ConvoBridge;
   /** 可选：oc 桥 [v2] */
   oc?: OcBridge;
+  /** 可选：/inbox 待拍板收件箱 [v2] */
+  inbox?: { run(arg: string, session: FeishuSession, chatId?: string): Promise<string> };
 }
 
 /** True when this event id was already processed (飞书必然重推，需幂等). */
@@ -75,6 +77,7 @@ export function createFeishuHandler(cfg: FeishuConfig, deps: FeishuDeps): Feishu
     ...(deps.taskSummary ? { taskSummary: deps.taskSummary } : {}),
     ...(deps.convo ? { convo: deps.convo } : {}),
     ...(deps.oc ? { oc: deps.oc } : {}),
+    ...(deps.inbox ? { inbox: deps.inbox } : {}),
   };
 
   /** Extract (userId, chatId, text, parentId) from a v2 (or lenient v1) message event. */

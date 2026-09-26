@@ -32,6 +32,8 @@ export interface ApprovalActionDeps {
   removePending: (taskId: string) => Promise<void>;
   /** POST /api/tasks/:taskId/commands/:commandId/approve 里的 orchestrator.resolvePendingCommand */
   resolvePendingCommand: (taskId: string, commandId: string, approved: boolean) => Promise<unknown>;
+  /** [v2] 白名单学习：命令写入全局 permissions.whitelist_commands 并热更策略 */
+  alwaysAllowCommand?: (command: string) => Promise<{ ok: boolean; already?: boolean }>;
 }
 
 /** card.action.trigger 拍平后的关键字段（由 wsGateway 归一传入）。 */
@@ -64,6 +66,8 @@ function actionButtons(deps: { taskId: string; nodeId?: string; commandId?: stri
       btn('✅ 批准执行', 'primary', { ...base, command_id: deps.commandId, act: 'approve_command' }),
       btn('✖ 拒绝', 'danger', { ...base, command_id: deps.commandId, act: 'reject_command' }),
     ),
+    // 白名单学习：写入全局命令白名单（config permissions），同命令以后不再停靠
+    { tag: 'button', text: { tag: 'plain_text', content: '📌 永久放行此命令' }, type: 'default', size: 'medium', behaviors: [{ type: 'callback', value: { ...base, command_id: deps.commandId, act: 'command_always' } }] },
   ];
 }
 
@@ -232,6 +236,24 @@ export async function handleCardAction(cfg: FeishuConfig, deps: ApprovalActionDe
       });
       await deps.resolvePendingCommand(taskId, commandId, approved);
       return reply(approved ? '✅ 已批准执行' : '✖ 已拒绝', [`任务 ${taskId} · 命令 ${commandId}`, `操作人 ${who}`]);
+    } else if (act === 'command_always') {
+      // [v2] 白名单学习：批准该命令并写入全局 permissions.whitelist_commands（热更策略）
+      const commandId = String(value.command_id || '');
+      if (!deps.alwaysAllowCommand) return reply('⚠ 白名单学习未启用', ['服务端未挂载 alwaysAllowCommand。']);
+      const queue = (await busGet<{ id: string; command: string }[]>(`task:pending_commands:${taskId}`)) || [];
+      const command = queue.find((q) => q.id === commandId)?.command || '';
+      await appendJournal(taskId, 'orchestrator', {
+        role: 'master', kind: 'brief',
+        text: `[飞书审批] ${who} 批准并永久放行命令 ${command || commandId}`,
+        ts: new Date().toISOString(), node_id: '', node_name: '',
+      });
+      const approved = await deps.resolvePendingCommand(taskId, commandId, true);
+      const learned = command ? await deps.alwaysAllowCommand(command) : { ok: false };
+      if (!approved || !learned.ok) return reply('⚠ 处理失败', ['命令可能已被处理，请在面板确认。']);
+      return reply(learned.already ? '☑ 命令已在白名单' : '📌 已批准并永久放行', [
+        command ? `\`${command.slice(0, 160)}\`` : commandId,
+        '同命令后续任务不再停靠询问。',
+      ]);
     } else {
       return reply('未知操作', [`act=${act}`]);
     }

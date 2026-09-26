@@ -57,6 +57,8 @@ export interface OcBridge {
   start(cfg: FeishuConfig): () => void;
   /** 单次权限/提问扫描（start 的 30s 定时器即循环调用它；独立导出便于测试） */
   scanPendingOnce(cfg: FeishuConfig): Promise<void>;
+  /** 单次卡住检测（有活动但 N 分钟无事件 → 推提醒卡并清除跟踪） */
+  scanStalled(cfg: FeishuConfig, minAgeMs?: number): Promise<void>;
 }
 
 const BIND_TTL_SEC = 7 * 24 * 3600;
@@ -90,6 +92,10 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
   // cfg 由 start() 注入（通知落点用到 approvers 回落）
   let cfgRef: FeishuConfig | null = null;
   const cfg0 = () => cfgRef || ({ app_id: '', app_secret: '', approvers: [] } as FeishuConfig);
+
+  /** 会话活动时间（内存态：oc_event 到达即刷新；session.idle 清除）——卡住检测的数据源 */
+  const alive = new Map<string, number>();
+  const OC_STALL_MS = 10 * 60 * 1000;
 
   /** 切会话后的"当前内容"预览：最近几轮对话（用户/助手各一行截断）。 */
   async function renderOcPreview(instanceId: string, sessionId: string): Promise<string> {
@@ -215,6 +221,27 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         : `发送失败：${String(r.error || '未知错误').slice(0, 200)}`;
     },
 
+    async scanStalled(cfg, minAgeMs = OC_STALL_MS) {
+      cfgRef = cfg;
+      const target = await notifyChat(cfg0());
+      if (!target) return;
+      const now = Date.now();
+      for (const [key, ts] of [...alive]) {
+        if (now - ts < minAgeMs) continue;
+        alive.delete(key);
+        const [instance, ...rest] = key.split(':');
+        const sid = rest.join(':');
+        await sendCard(cfg, target.id, card2('orange', `🐢 OpenCode 疑似卡住 · ${instance}`, [
+          md(`会话 ${sid.slice(0, 12)} 已 ${Math.round((now - ts) / 60000)} 分钟无任何输出。`),
+          btnRow(
+            { tag: 'button', text: { tag: 'plain_text', content: '中止执行' }, type: 'danger', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'oc_abort', instance, session_id: sid } }] },
+            { tag: 'button', text: { tag: 'plain_text', content: '忽略（它只是慢）' }, type: 'default', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'noop' } }] },
+          ),
+          note(`Co-Team · 卡住检测 · ${new Date().toLocaleString()}`),
+        ]), target.type);
+      }
+    },
+
     async handleCardAction(cfg, input) {
       const who = input.operatorOpenId || 'unknown';
       let params: Record<string, unknown> | null = input.value && Object.keys(input.value).length ? input.value : null;
@@ -240,6 +267,14 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           if (r.ok) await sendText(cfg, input.chatId || '', `已发送到 ${instance}（会话 ${sessionId.slice(0, 12)}），完成后推送结果。`);
           else await sendText(cfg, input.chatId || '', `发送失败：${String(r.error || '未知错误').slice(0, 200)}`);
           return;
+        }
+        if (act === 'oc_abort') {
+          const instance = String(params.instance || '');
+          const sessionId = String(params.session_id || '');
+          const ok = await deps.abort(instance, sessionId);
+          return ok
+            ? reply('✅ 已中止', [`${instance} · ${sessionId.slice(0, 12)}`])
+            : reply('⏱ 会话已结束', [`${instance} · ${sessionId.slice(0, 12)}`]);
         }
         if (act === 'oc_perm') {
           const instance = String(params.instance || '');
@@ -288,6 +323,12 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const instance = String(env.payload?.instance || '');
         const event = env.payload?.event || {};
         if (!watchInstance(instance)) return;
+        // 卡住检测数据源：会话事件刷新活动时间（idle/error 清除——回合已收场）
+        const sid0 = deps.eventSessionId(event);
+        if (sid0) {
+          if (event.type === 'session.idle' || event.type === 'session.error') alive.delete(`${instance}:${sid0}`);
+          else alive.set(`${instance}:${sid0}`, Date.now());
+        }
         if (event.type !== 'session.idle' && event.type !== 'session.error') return;
         void (async () => {
           const sid = deps.eventSessionId(event);
@@ -319,6 +360,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       // 权限/提问：30s 扫描跨实例 pending 聚合（对齐 clarifyTimeout 扫描器模式）
       const timer = setInterval(() => {
         void this.scanPendingOnce(cfg).catch((e) => logger2.warn('Feishu oc pending scan failed', { error: String(e).slice(0, 200) }));
+        void this.scanStalled(cfg).catch((e) => logger2.warn('Feishu oc stall scan failed', { error: String(e).slice(0, 200) }));
       }, 30_000);
 
       return () => {
