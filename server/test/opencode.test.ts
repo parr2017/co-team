@@ -115,7 +115,7 @@ describe('OpencodeClient', () => {
     }
   });
 
-  it('form.created → question.asked：question/header/custom/multiple 透传（提问卡渲染契约）', () => {
+  it('form.created → question.asked：全字段语义透传 + 类型归一化（提问卡渲染契约）', () => {
     const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
     const events = (client as unknown as { convertEvents: (e: unknown) => Array<{ type: string; properties: Record<string, any> }> }).convertEvents({
       id: 'evt-q1',
@@ -124,11 +124,17 @@ describe('OpencodeClient', () => {
         form: {
           id: 'form-1',
           sessionID: 'ses-1',
+          title: '挖 Juable token 前的四个问题',
           fields: [
-            // OpenCode 2.x 表单字段契约：key/title/description/options{value,label,description}/custom/maxItems
-            { key: 'q0', type: 'multiselect', title: '目标入口', maxItems: 1, custom: true, options: [{ value: 'desktop', label: '桌面客户端', description: '走 .NET Remoting' }, { value: 'web', label: 'Web 端' }] },
-            { key: 'q1', type: 'multiselect', header: 'token 用途', title: '拿到 token 之后要干什么？', options: [{ value: 'sso', label: '单点登录' }] },
-            { key: 'q2', type: 'string', title: '补充说明' },
+            // OpenCode 2.x 表单字段契约：key/type/title/description/options{value,label,description}/custom/maxItems/required/when/hidden/placeholder/min/max/url
+            { key: 'q0', type: 'multiselect', title: '目标入口', maxItems: 1, custom: true, required: true, options: [{ value: 'desktop', label: '桌面客户端', description: '走 .NET Remoting' }, { value: 'web', label: 'Web 端' }] },
+            { key: 'q1', type: 'multiselect', header: 'token 用途', title: '拿到 token 之后要干什么？', options: [{ value: 'sso', label: '单点登录 (recommended)' }] },
+            { key: 'q2', type: 'string', title: '补充说明', placeholder: '想说的都写这里', required: true },
+            { key: 'q3', type: 'string', title: '入口域名', options: [{ value: 'lan', label: '内网' }], when: [{ key: 'q0', op: 'eq', value: 'web' }] },
+            { key: 'q4', type: 'number', title: '并发数', minimum: 1, maximum: 5 },
+            { key: 'q5', type: 'boolean', title: '允许写文件' },
+            { key: 'q6', type: 'external', title: '授权协议', url: 'https://example.com/eula' },
+            { key: 'q7', type: 'string', title: '内部备注', hidden: true },
           ],
         },
       },
@@ -137,19 +143,71 @@ describe('OpencodeClient', () => {
     expect(q).toBeTruthy();
     expect(q!.properties.id).toBe('form-1');
     expect(q!.properties.sessionID).toBe('ses-1');
+    expect(q!.properties.title).toBe('挖 Juable token 前的四个问题');
     const qs = q!.properties.questions as any[];
-    expect(qs).toHaveLength(3);
-    // q0：question 优先级 question > title > description > key；maxItems:1 → 单选；字段自带 custom
+    expect(qs).toHaveLength(8);
+    // q0：maxItems:1 → 单选；required/custom 透传；options 带 value
+    expect(qs[0].type).toBe('multiselect');
     expect(qs[0].question).toBe('目标入口');
     expect(qs[0].multiple).toBe(false);
+    expect(qs[0].required).toBe(true);
     expect(qs[0].custom).toBe(true);
-    expect(qs[0].options).toEqual([{ label: '桌面客户端', description: '走 .NET Remoting' }, { label: 'Web 端', description: '' }]);
-    // q1：header 透传；multiselect 未限 1 项 → 多选
+    expect(qs[0].options).toEqual([{ value: 'desktop', label: '桌面客户端', description: '走 .NET Remoting' }, { value: 'web', label: 'Web 端', description: undefined }]);
+    // q1：header 透传；未限 1 项 → 多选
+    expect(qs[1].type).toBe('multiselect');
     expect(qs[1].header).toBe('token 用途');
     expect(qs[1].multiple).toBe(true);
-    // q2：string 字段可自由输入
-    expect(qs[2].custom).toBe(true);
-    expect(qs[2].multiple).toBe(false);
+    // q2：string 无 options → input；placeholder 透传
+    expect(qs[2].type).toBe('input');
+    expect(qs[2].placeholder).toBe('想说的都写这里');
+    expect(qs[2].custom).toBe(false);
+    // q3：string+options → select；when 条件透传
+    expect(qs[3].type).toBe('select');
+    expect(qs[3].when).toEqual([{ key: 'q0', op: 'eq', value: 'web' }]);
+    // q4/q5/q6：number（min/max）/ boolean / external（url）
+    expect(qs[4].type).toBe('number');
+    expect(qs[4].minimum).toBe(1);
+    expect(qs[4].maximum).toBe(5);
+    expect(qs[5].type).toBe('boolean');
+    expect(qs[6].type).toBe('external');
+    expect(qs[6].externalUrl).toBe('https://example.com/eula');
+    // q7：hidden 透传
+    expect(qs[7].hidden).toBe(true);
+  });
+
+  it('answerQuestion key-based：按 form schema 收口类型（label→value / number / boolean / multiselect 数组）', async () => {
+    let replyBody: any;
+    vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/api/form') {
+        return new Response(JSON.stringify({ data: [{ id: 'form-1', sessionID: 'ses-1' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if ((init?.method || 'GET') === 'GET' && path === '/api/session/ses-1/form/form-1') {
+        return new Response(JSON.stringify({ data: { id: 'form-1', sessionID: 'ses-1', fields: [
+          { key: 'entrance', type: 'multiselect', options: [{ value: 'desktop', label: '桌面客户端' }] },
+          { key: 'concurrency', type: 'number' },
+          { key: 'allowWrite', type: 'boolean' },
+          { key: 'eula', type: 'external' },
+          { key: 'note', type: 'string' },
+        ] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (init?.method === 'POST' && path.endsWith('/reply')) {
+        replyBody = JSON.parse(String(init?.body));
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
+    const r = await client.answerQuestion('form-1', {
+      entrance: ['桌面客户端'],
+      concurrency: '3',
+      allowWrite: true,
+      eula: true,
+      note: 'ok',
+    });
+    expect(r.ok).toBe(true);
+    expect(replyBody.answer).toEqual({ entrance: ['desktop'], concurrency: 3, allowWrite: true, eula: true, note: 'ok' });
+    vi.unstubAllGlobals();
   });
 
   it('HTTP 错误与网络异常全部软收口 {ok:false}', async () => {

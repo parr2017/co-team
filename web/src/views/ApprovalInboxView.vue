@@ -20,8 +20,10 @@ interface ApprovalItem {
   title: string;
   detail: string;
   act?: (decision: { approved: boolean; answer?: string }) => Promise<void>;
-  /** oc-question 专用：提问选项（收件箱内快速 label 作答） */
-  questionOptions?: { label: string; description?: string }[];
+  /** oc-question 专用：提问选项（收件箱内快速 value 作答，仅单问题） */
+  questionOptions?: { value: string; label: string; description?: string }[];
+  /** oc-question 专用：单问题的字段 key（key-based 作答） */
+  questionKey?: string;
   /** oc-question 专用：所属会话（多问题时引导去接管面板逐题作答） */
   sessionId?: string;
   rejectable?: boolean;
@@ -152,7 +154,8 @@ async function load() {
             if (!approved) await api.ocRejectQuestion(String(q.instance), String(q.id));
           },
           /** 提问的选项作答：单问题收件箱里点 label 即答；多问题不设快捷按钮（去会话面板逐题作答） */
-          questionOptions: qs.length === 1 ? (first.options || []).map((o: any) => ({ label: o.label, description: o.description })) : undefined,
+          questionOptions: qs.length === 1 ? (first.options || []).map((o: any) => ({ value: String(o.value ?? o.label ?? ''), label: o.label, description: o.description })) : undefined,
+          questionKey: first.key ? String(first.key) : undefined,
           sessionId: q.sessionID ? String(q.sessionID) : undefined,
         });
       }
@@ -174,21 +177,21 @@ const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提
 const kindType: Record<string, string> = { node: 'warning', proposal: 'warning', command: 'warning', ask: 'warning', clarify: 'primary', 'oc-permission': 'warning', 'oc-question': 'primary' };
 const busy = (key: string) => busyKey.value === key;
 
-async function decide(item: ApprovalItem, approved: boolean, answer?: string) {
-  if (item.kind === 'oc-question' && approved && answer) {
-    // 提问选项作答：answer=选中的 label → ocAnswerQuestion(instance, requestId, [[label]])
-    busyKey.value = item.key;
-    try {
-      const [instance, requestId] = item.key.replace('oc-question:', '').split(':');
-      await api.ocAnswerQuestion(instance, requestId, [[answer]]);
-      refresh();
-    } catch (e: any) {
-      showApiError(e);
-    } finally {
-      busyKey.value = '';
-    }
-    return;
+/** 提问选项作答：key-based——answer = { [field.key]: option.value }（label→value 由服务端再兜底） */
+async function answerOcQuestion(item: ApprovalItem, value: string) {
+  busyKey.value = item.key;
+  try {
+    const [instance, requestId] = item.key.replace('oc-question:', '').split(':');
+    await api.ocAnswerQuestion(instance, requestId, { [item.questionKey || '']: value });
+    refresh();
+  } catch (e: any) {
+    showApiError(e);
+  } finally {
+    busyKey.value = '';
   }
+}
+
+async function decide(item: ApprovalItem, approved: boolean, answer?: string) {
   if (!item.act) return;
   busyKey.value = item.key;
   try {
@@ -248,7 +251,7 @@ function goSession(item: ApprovalItem) {
             plain
             :title="o.description || ''"
             :loading="busy(it.key)"
-            @click="decide(it, true, o.label)"
+            @click="answerOcQuestion(it, o.value)"
           >{{ o.label }}</el-button>
         </template>
         <el-button v-else-if="it.sessionId" size="small" type="primary" plain @click="goSession(it)">去会话回答</el-button>

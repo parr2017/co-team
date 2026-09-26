@@ -126,30 +126,28 @@
         </div>
       </template>
 
-      <!-- 提问卡：opencode 的 AskUserQuestion——TUI 里弹的题，这里也能答（多问题逐题标记，统一提交） -->
-      <div v-for="q in liveQuestions" :key="q.id" class="q-card">
-        <template v-for="(qi, qii) in q.questions || []" :key="qii">
-          <div class="l1">
-            opencode 等你拍板{{ (q.questions || []).length > 1 ? ` · 第 ${qii + 1}/${(q.questions || []).length} 题` : '' }}
-            <span v-if="qi.header" class="q-header">{{ qi.header }}</span>
-          </div>
-          <div class="q-text">{{ qi.question }}</div>
-          <div class="q-opts">
-            <button
-              v-for="o in qi.options || []" :key="o.label"
-              :class="{ sel: qSel[q.id + ':' + qii] === o.label }"
-              @click="pickOption(q, qii, o.label)"
-            >{{ o.label }}</button>
-          </div>
-          <div v-if="selectedDesc(qi, q.id + ':' + qii)" class="q-desc">{{ selectedDesc(qi, q.id + ':' + qii) }}</div>
-          <div v-if="qi.custom" class="q-custom">
-            <input v-model="qDraft[q.id + ':' + qii]" placeholder="或输入你的回答" @keydown.enter="submitQuestion(q, qii)" />
-            <button class="p" @click="submitQuestion(q, qii)">提交</button>
-          </div>
-        </template>
+      <!-- 提问卡：opencode 的 AskUserQuestion（字段控件/条件题/必填校验/草稿走共享 form 状态机，key-based 作答） -->
+      <div v-for="q in liveQuestions" :id="'qcard-' + q.id" :key="q.id" class="q-card">
+        <div class="q-head">
+          <span class="q-title">{{ q.title || 'opencode 等你拍板' }}</span>
+          <span v-if="(q.questions || []).length > 1" class="q-count">{{ qVisibleOf(q).length }}/{{ (q.questions || []).length }} 题</span>
+        </div>
+        <OcFormField
+          v-for="f in qVisibleOf(q)"
+          :key="q.id + ':' + f.key"
+          :field="f"
+          :value="qValueOf(q, f.key)"
+          :disabled="qBusy[q.id] === true"
+          :show-errors="qErrors[q.id] === true"
+          :missing="qMissingOf(q).includes(f.key)"
+          @update="(patch) => patchQValue(q, f.key, patch)"
+          @submit="submitQ(q)"
+        />
         <div class="acts">
-          <button v-if="(q.questions || []).length > 1" class="p" @click="submitQuestion(q)">提交全部回答</button>
-          <button @click="rejectQuestion(String(q.id))">不回答，让它自己拿主意</button>
+          <span v-if="qErrors[q.id] && qMissingOf(q).length" class="q-err">还有 {{ qMissingOf(q).length }} 个必填未作答</span>
+          <span class="q-sp" />
+          <button class="p" :disabled="qBusy[q.id] === true" @click="submitQ(q)">提交回答</button>
+          <button :disabled="qBusy[q.id] === true" @click="rejectQuestion(String(q.id))">不回答</button>
         </div>
       </div>
 
@@ -179,6 +177,11 @@
       <span v-for="pt in snap.ptys" :key="pt.id" class="pty-chip" :class="String(pt.status)" @click="openPty(pt)">
         {{ pt.title || pt.command || shortId(pt.id) }}<b v-if="pt.status === 'exited'"> · exit {{ pt.exitCode ?? '?' }}</b>
       </span>
+    </div>
+
+    <!-- 常驻入口条：提问卡会随消息流滚走，这里永远可见（点击跳到第一张卡） -->
+    <div v-if="liveQuestions.length" class="q-bar" @click="jumpToQuestion(liveQuestions[0].id)">
+      <span class="qb-dot" />opencode 等你回答 · {{ liveQuestions.length }} 张提问卡 · 点击查看
     </div>
 
     <!-- 输入栏：control 档才显示发送框 -->
@@ -304,8 +307,26 @@ import {
   type OcModelsInfo,
   type OcPty,
 } from '../api';
-import { SessionStream, toolOutputText as toolOutputOf, type StreamSnapshot } from '../opencode-stream';
+import {
+  SessionStream,
+  buildFormAnswer,
+  dropFormDraft,
+  fieldValueOf,
+  formFieldsSignature,
+  initialFormValues,
+  loadFormDraft,
+  missingRequiredKeys,
+  saveFormDraft,
+  visibleFields,
+  toolOutputText as toolOutputOf,
+  type FormFieldView,
+  type FormFieldValue,
+  type FormValues,
+  type StreamQuestion,
+  type StreamSnapshot,
+} from '../opencode-stream';
 import { useWs } from '../composables/useWs';
+import OcFormField from '../components/OcFormField.vue';
 import MdView from '../components/MdView.vue';
 
 interface OcEventLike {
@@ -340,51 +361,74 @@ const livePermissions = computed(() => snap.value.pendingPermissions.filter((p) 
 /** 本地已答提问（question.replied/rejected 事件到达前先移除，双保险）；qSel 逐题点选 / qDraft 自定义输入 */
 const resolvedQuestions = reactive(new Set<string>());
 const liveQuestions = computed(() => snap.value.pendingQuestions.filter((q) => !resolvedQuestions.has(String(q.id))));
-const qSel = ref<Record<string, string>>({});
-const qDraft = ref<Record<string, string>>({});
 
-/** 已选选项的描述（点选后展示一行说明，弥补触屏无 hover tooltip） */
-function selectedDesc(qi: any, key: string): string {
-  if (!qi) return '';
-  const label = qSel.value[key];
-  if (!label) return '';
-  const hit = (qi.options || []).find((o: any) => o.label === label);
-  return String(hit?.description || '');
+// ---------- 提问 dock 逻辑：表单状态机（共享 @co-team/opencode-sync/form，key-based 作答） ----------
+const qValues = ref<Record<string, FormValues>>({});
+const qBusy = ref<Record<string, boolean>>({});
+const qErrors = ref<Record<string, boolean>>({});
+
+function qSigOf(q: StreamQuestion): string {
+  return formFieldsSignature(q.questions || []);
+}
+function qValuesOf(q: StreamQuestion): FormValues {
+  if (!qValues.value[q.id]) {
+    qValues.value = { ...qValues.value, [q.id]: loadFormDraft(q.id, qSigOf(q)) ?? initialFormValues(q.questions || []) };
+  }
+  return qValues.value[q.id];
+}
+function qVisibleOf(q: StreamQuestion): FormFieldView[] {
+  return visibleFields(q.questions || [], qValuesOf(q));
+}
+function qValueOf(q: StreamQuestion, key: string): FormFieldValue {
+  return fieldValueOf(qValuesOf(q), key);
+}
+function qMissingOf(q: StreamQuestion): string[] {
+  return missingRequiredKeys(q.questions || [], qValuesOf(q));
+}
+function patchQValue(q: StreamQuestion, key: string, patch: Partial<FormFieldValue>): void {
+  const values = qValuesOf(q);
+  qValues.value = { ...qValues.value, [q.id]: { ...values, [key]: { ...fieldValueOf(values, key), ...patch } } };
+  saveFormDraft(q.id, qSigOf(q), qValues.value[q.id]);
+  scheduleFlush();
 }
 
-/** 点选一个选项：单问题立即作答；多问题只标记该题，待「提交全部回答」 */
-function pickOption(q: any, qii: number, label: string): void {
-  if ((q.questions || []).length <= 1) { void answerQuestionReq(q.id, [[label]]); return; }
-  qSel.value[q.id + ':' + qii] = label;
+// pending 提问到达即初始化/恢复草稿
+watch(() => snap.value.pendingQuestions, (qs) => {
+  for (const q of qs) {
+    if (!qValues.value[q.id]) {
+      qValues.value = { ...qValues.value, [q.id]: loadFormDraft(q.id, qSigOf(q)) ?? initialFormValues(q.questions || []) };
+    }
+  }
+}, { immediate: true });
+
+/** 常驻入口条：滚到第一张提问卡并高亮 */
+function jumpToQuestion(id: string): void {
+  const el = document.getElementById('qcard-' + id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1600);
 }
 
-/** 组装按题序的 answers 矩阵：overrideQii 优先（单问题即答/回车提交），其余题取点选或自定义输入 */
-function buildAnswers(q: any, overrideQii?: number): string[][] {
-  const total = (q.questions || []).length;
-  return Array.from({ length: total }, (_, i) => {
-    if (i === overrideQii) { const c = String(qDraft.value[q.id + ':' + i] || '').trim(); return c ? [c] : []; }
-    const sel = qSel.value[q.id + ':' + i];
-    if (sel) return [sel];
-    const c = String(qDraft.value[q.id + ':' + i] || '').trim();
-    return c ? [c] : [];
-  });
-}
-
-/** 提交作答：qii 缺省=提交整卡（多问题）；qii 给定=仅该题的自定义输入即答 */
-function submitQuestion(q: any, qii?: number): void {
-  void answerQuestionReq(q.id, buildAnswers(q, qii));
-}
-
-/** 作答请求：保持槽位对齐（服务端按题序取 answers[index]，空题占位 [] 不能剔除） */
-async function answerQuestionReq(requestId: string, answers: string[][]): Promise<void> {
-  const cleaned = answers.map((a) => a.filter((x) => typeof x === 'string' && x.trim()));
-  if (!cleaned.some((a) => a.length)) { showFailToast('回答不能为空'); return; }
+/** 提交：必填拦截 → key-based 作答；失败保留卡片可重试 */
+async function submitQ(q: StreamQuestion): Promise<void> {
+  if (qBusy.value[q.id]) return;
+  const missing = qMissingOf(q);
+  if (missing.length) {
+    qErrors.value = { ...qErrors.value, [q.id]: true };
+    return;
+  }
+  qBusy.value = { ...qBusy.value, [q.id]: true };
   try {
-    await api.ocAnswerQuestion(instanceId.value, String(requestId), cleaned);
-    resolvedQuestions.add(String(requestId));
+    const answer = buildFormAnswer(q.questions || [], qValuesOf(q));
+    await api.ocAnswerQuestion(instanceId.value, String(q.id), answer);
+    dropFormDraft(q.id);
+    resolvedQuestions.add(String(q.id));
     showSuccessToast('已作答');
   } catch (e: any) {
-    showFailToast(e?.message || '作答失败');
+    showFailToast(e?.message || '作答失败，可重试');
+  } finally {
+    qBusy.value = { ...qBusy.value, [q.id]: false };
   }
 }
 
@@ -702,8 +746,9 @@ async function enterSession() {
   knownMsgIds.clear();
   resolvedPerms.clear();
   resolvedQuestions.clear();
-  qSel.value = {};
-  qDraft.value = {};
+  qValues.value = {};
+  qErrors.value = {};
+  qBusy.value = {};
   toolOpen.clear();
   toolOutFull.clear();
   thinkClosed.value = new Set();
@@ -1373,18 +1418,21 @@ onBeforeUnmount(() => {
 .perm-card { border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel)); border-radius: 10px; padding: 10px 12px; margin: 10px 0 6px; }
 /* 提问卡（对齐 web 端 q-card）：选项按钮 + 自定义输入 + 逐题提交 */
 .q-card { border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 8%, var(--bg-panel)); border-radius: 10px; padding: 10px 12px; margin: 10px 0 6px; }
-.q-card .l1 { font-size: 12px; font-weight: 600; color: var(--warn); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.q-card .q-header { font-size: 11px; color: var(--text-2); background: var(--bg-inset); border-radius: 4px; padding: 1px 6px; }
-.q-card .q-text { font-size: 13px; color: var(--text-1); margin-top: 5px; line-height: 1.5; }
-.q-card .q-opts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
-.q-card .q-opts button { padding: 6px 11px; border-radius: 7px; font-size: 12px; border: 1px solid var(--line-strong); background: var(--bg-inset); color: var(--text-1); max-width: 100%; }
-.q-card .q-opts button.sel { border: none; background: var(--accent); color: var(--accent-text); }
-.q-card .q-desc { margin-top: 6px; font-size: 11px; color: var(--text-3); line-height: 1.45; }
-.q-card .q-custom { display: flex; gap: 7px; margin-top: 8px; }
-.q-card .q-custom input { flex: 1; min-width: 0; background: var(--bg-overlay); border: 1px solid var(--border); border-radius: 4px; font-size: 13px; padding: 6px 8px; outline: none; }
-.q-card .acts { display: flex; gap: 8px; margin-top: 9px; }
-.q-card .acts button { flex: 1; padding: 7px 0; border-radius: 7px; font-size: 12px; border: 1px solid var(--line-strong); background: none; color: var(--text-2); }
+.q-card.flash { animation: qflash 1.6s ease-out; }
+@keyframes qflash { 0%, 60% { box-shadow: 0 0 0 2px var(--warn); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.q-card .q-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.q-card .q-title { font-size: 12.5px; font-weight: 600; color: var(--warn); min-width: 0; }
+.q-card .q-count { font-size: 11px; color: var(--text-3); flex: none; }
+.q-card .q-sp { flex: 1; }
+.q-card .q-err { font-size: 11px; color: var(--danger); }
+.q-card .acts { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.q-card .acts button { padding: 7px 12px; border-radius: 7px; font-size: 12px; border: 1px solid var(--line-strong); background: none; color: var(--text-2); }
 .q-card .acts button.p { border: none; background: var(--accent); color: var(--accent-text); }
+.q-card .acts button:disabled { opacity: 0.6; }
+/* 常驻入口条：提问卡滚出视野也能看到 */
+.q-bar { display: flex; align-items: center; gap: 7px; border-top: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 12%, var(--bg-panel)); color: var(--warn); font-size: 12px; padding: 8px 12px; }
+.q-bar .qb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); animation: qbarpulse 1.6s ease-in-out infinite; }
+@keyframes qbarpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .perm-card .l1 { font-size: 12px; font-weight: 600; color: var(--danger); }
 .perm-title { font-size: 11px; color: var(--text-2); margin-top: 3px; }
 .perm-card .cmd { margin-top: 6px; font-size: 11px; color: var(--text-1); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }

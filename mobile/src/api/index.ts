@@ -586,9 +586,9 @@ export const api = {
   ocPending: () =>
     request<{ permissions: Record<string, any>[]; questions: Record<string, any>[] }>('/api/opencode/pending'),
   /** 回答 opencode 提问（answers 按问题顺序的 label 数组；需 control 档） */
-  ocAnswerQuestion: (instance: string, requestId: string, answers: string[][]) =>
+  ocAnswerQuestion: (instance: string, requestId: string, answer: Record<string, string | number | boolean | string[]>) =>
     request<{ ok: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reply?instance=${encodeURIComponent(instance)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer }),
     }),
   /** 拒绝/不回答 opencode 提问 */
   ocRejectQuestion: (instance: string, requestId: string) =>

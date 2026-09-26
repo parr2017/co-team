@@ -122,35 +122,6 @@
           </div>
         </template>
 
-        <!-- 行内提问卡：opencode 的 AskUserQuestion——TUI 里弹的题，这里也能答。
-             多问题时逐题作答（点选只标记，统一提交）；单问题保持点选即答。 -->
-        <div v-for="q in snap.pendingQuestions" :key="q.id" class="q-card">
-          <template v-for="(qi, qii) in q.questions || []" :key="qii">
-            <div class="q-l1">
-              <span>opencode 等你拍板{{ (q.questions || []).length > 1 ? ` · 第 ${qii + 1}/${(q.questions || []).length} 题` : '' }}</span>
-              <span v-if="qi.header" class="q-header">{{ qi.header }}</span>
-            </div>
-            <div class="q-text">{{ qi.question }}</div>
-            <div class="q-opts">
-              <el-button
-                v-for="o in qi.options || []"
-                :key="o.label"
-                size="small"
-                :type="qSel[q.id + ':' + qii] === o.label ? 'primary' : undefined"
-                :title="o.description || ''"
-                @click="pickOption(q, qii, o.label)"
-              >{{ o.label }}</el-button>
-            </div>
-            <div v-if="qi.custom" class="q-custom">
-              <el-input v-model="qDraft[q.id + ':' + qii]" size="small" placeholder="或输入你的回答" @keydown.enter="submitQuestion(q, qii)" />
-              <el-button size="small" type="primary" @click="submitQuestion(q, qii)">提交</el-button>
-            </div>
-          </template>
-          <div class="q-acts">
-            <el-button v-if="(q.questions || []).length > 1" size="small" type="primary" @click="submitQuestion(q)">提交全部回答</el-button>
-            <el-button size="small" text @click="rejectQuestion(q.id)">不回答，让它自己拿主意</el-button>
-          </div>
-        </div>
         <!-- 行内审批卡：opencode 等待放行 -->
         <div v-for="perm in snap.pendingPermissions" :key="perm.id" class="perm-card">
           <div class="perm-l1">权限请求 · opencode 等待审批</div>
@@ -161,6 +132,39 @@
             <el-button size="small" @click="answerPerm(perm.id, 'always')">总是允许</el-button>
             <el-button size="small" type="primary" @click="answerPerm(perm.id, 'once')">批准一次</el-button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 提问 dock：钉在 composer 上方不随流滚走（OpenChamber FormDock 同位）。
+         字段控件/条件题/必填校验/草稿持久化走共享 form 状态机，key-based 作答。 -->
+    <div v-if="snap.pendingQuestions.length" class="q-dock">
+      <div v-for="q in snap.pendingQuestions" :key="q.id" class="q-card">
+        <div class="q-head">
+          <span class="q-title">{{ q.title || 'opencode 等你拍板' }}</span>
+          <span v-if="(q.questions || []).length > 1" class="q-count">{{ qVisibleOf(q).length }}/{{ (q.questions || []).length }} 题</span>
+          <span class="q-sp" />
+          <el-button text size="small" class="mini" @click="copyQuestion(q, 'markdown')">复制MD</el-button>
+          <el-button text size="small" class="mini" @click="copyQuestion(q, 'json')">复制JSON</el-button>
+        </div>
+        <OcFormField
+          v-for="f in qVisibleOf(q)"
+          :key="q.id + ':' + f.key"
+          :field="f"
+          :value="qValueOf(q, f.key)"
+          :disabled="qBusy[q.id] === true"
+          :show-errors="qErrors[q.id] === true"
+          :missing="qMissingOf(q).includes(f.key)"
+          @update="(patch) => patchQValue(q, f.key, patch)"
+          @submit="submitQ(q)"
+        />
+        <div class="q-acts">
+          <span v-if="qErrors[q.id] && qMissingOf(q).length" class="q-err">
+            还有 {{ qMissingOf(q).length }} 个必填未作答
+          </span>
+          <span class="q-sp" />
+          <el-button size="small" type="primary" :loading="qBusy[q.id] === true" @click="submitQ(q)">提交回答</el-button>
+          <el-button size="small" text :disabled="qBusy[q.id] === true" @click="rejectQuestion(q.id)">不回答，让它自己拿主意</el-button>
         </div>
       </div>
     </div>
@@ -236,8 +240,27 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type OcInstance, type OcDiffFile } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { showApiError } from '../utils/apiError';
-import { SessionStream, toolOutputText as toolOutputOf } from '../opencode-stream';
+import {
+  SessionStream,
+  buildFormAnswer,
+  dropFormDraft,
+  fieldValueOf,
+  formFieldsSignature,
+  initialFormValues,
+  loadFormDraft,
+  missingRequiredKeys,
+  saveFormDraft,
+  serializeFormAsJson,
+  serializeFormAsMarkdown,
+  visibleFields,
+  toolOutputText as toolOutputOf,
+  type FormFieldView,
+  type FormFieldValue,
+  type FormValues,
+  type StreamQuestion,
+} from '../opencode-stream';
 import MdView from './MdView.vue';
+import OcFormField from './OcFormField.vue';
 
 const props = defineProps<{ instance: OcInstance; sessionId: string }>();
 const { onEvent, connected } = useDashboard();
@@ -412,9 +435,6 @@ const hasMore = ref(false);
 const nextBefore = ref('');
 const loadingMore = ref(false);
 /** 被服务端头尾裁剪的 part id（tool 卡角标 + 完整原文按钮） */
-const qDraft = ref<Record<string, string>>({});
-/** 逐题点选状态：`requestId:qii` → 已选 label（多问题时点选只标记、统一提交） */
-const qSel = ref<Record<string, string>>({});
 const trimmedParts = ref(new Set<string>());
 /** 已拉全文中消息 id → message（渲染时优先取全文 parts） */
 const fullMessages = ref(new Map<string, any>());
@@ -675,50 +695,79 @@ async function revertTo(m: Record<string, any>): Promise<void> {
   } catch (e: any) { showApiError(e); }
 }
 
-/** 点选一个选项：单问题立即作答；多问题只标记该题，待「提交全部回答」 */
-function pickOption(q: { id: string; questions?: unknown[] }, qii: number, label: string): void {
-  if ((q.questions || []).length <= 1) {
-    void answerQuestion(q.id, [[label]]);
+// ---------- 提问 dock：表单状态机（共享 @co-team/opencode-sync/form，key-based 作答） ----------
+const qValues = ref<Record<string, FormValues>>({});
+const qBusy = ref<Record<string, boolean>>({});
+const qErrors = ref<Record<string, boolean>>({});
+
+function qSigOf(q: StreamQuestion): string {
+  return formFieldsSignature(q.questions || []);
+}
+function qValuesOf(q: StreamQuestion): FormValues {
+  if (!qValues.value[q.id]) {
+    qValues.value = { ...qValues.value, [q.id]: loadFormDraft(q.id, qSigOf(q)) ?? initialFormValues(q.questions || []) };
+  }
+  return qValues.value[q.id];
+}
+function qVisibleOf(q: StreamQuestion): FormFieldView[] {
+  return visibleFields(q.questions || [], qValuesOf(q));
+}
+function qValueOf(q: StreamQuestion, key: string): FormFieldValue {
+  return fieldValueOf(qValuesOf(q), key);
+}
+function qMissingOf(q: StreamQuestion): string[] {
+  return missingRequiredKeys(q.questions || [], qValuesOf(q));
+}
+function patchQValue(q: StreamQuestion, key: string, patch: Partial<FormFieldValue>): void {
+  const values = qValuesOf(q);
+  qValues.value = { ...qValues.value, [q.id]: { ...values, [key]: { ...fieldValueOf(values, key), ...patch } } };
+  saveFormDraft(q.id, qSigOf(q), qValues.value[q.id]);
+  flush();
+}
+
+// pending 提问到达即初始化/恢复草稿（watch pre-flush，先于渲染）
+watch(() => snap.value.pendingQuestions, (qs) => {
+  for (const q of qs) {
+    if (!qValues.value[q.id]) {
+      qValues.value = { ...qValues.value, [q.id]: loadFormDraft(q.id, qSigOf(q)) ?? initialFormValues(q.questions || []) };
+    }
+  }
+}, { immediate: true });
+
+/** 提交：必填拦截 → key-based 作答；失败保留卡片可重试（loading 由 qBusy 控制） */
+async function submitQ(q: StreamQuestion): Promise<void> {
+  if (qBusy.value[q.id]) return;
+  const missing = qMissingOf(q);
+  if (missing.length) {
+    qErrors.value = { ...qErrors.value, [q.id]: true };
     return;
   }
-  qSel.value[q.id + ':' + qii] = label;
-}
-
-/** 组装按题序的 answers 矩阵：overrideQii 优先（单问题即答/回车提交），其余题取点选或自定义输入 */
-function buildAnswers(q: { id: string; questions?: unknown[] }, overrideQii?: number): string[][] {
-  const total = (q.questions || []).length;
-  return Array.from({ length: total }, (_, i) => {
-    if (i === overrideQii) {
-      const custom = String(qDraft.value[q.id + ':' + i] || '').trim();
-      return custom ? [custom] : [];
-    }
-    const sel = qSel.value[q.id + ':' + i];
-    if (sel) return [sel];
-    const custom = String(qDraft.value[q.id + ':' + i] || '').trim();
-    return custom ? [custom] : [];
-  });
-}
-
-/** 提交作答：qii 缺省=提交整卡（多问题）；qii 给定=仅该题的自定义输入即答 */
-function submitQuestion(q: { id: string; questions?: unknown[] }, qii?: number): void {
-  void answerQuestion(q.id, buildAnswers(q, qii));
-}
-
-/** 回答提问：answerQuestion 走本地 stream 先移除（双保险），服务端事件随后确认。
- *  注意保持槽位对齐——服务端按题序取 answers[index]，空题占位 [] 不能剔除。 */
-async function answerQuestion(requestId: string, answers: string[][]): Promise<void> {
-  const cleaned = answers.map((a) => a.filter((x) => typeof x === 'string' && x.trim()));
-  if (!cleaned.some((a) => a.length)) { ElMessage.warning('回答不能为空'); return; }
+  qBusy.value = { ...qBusy.value, [q.id]: true };
   try {
-    const r = await api.ocAnswerQuestion(props.instance.id, requestId, cleaned);
+    const answer = buildFormAnswer(q.questions || [], qValuesOf(q));
+    const r = await api.ocAnswerQuestion(props.instance.id, q.id, answer);
     if (r.ok) {
-      stream.applyEvent({ type: 'question.replied', properties: { requestID: requestId } });
+      dropFormDraft(q.id);
+      stream.applyEvent({ type: 'question.replied', properties: { requestID: q.id } });
       flush();
       ElMessage.success('已作答');
     } else {
-      ElMessage.warning(r.error || '作答失败');
+      ElMessage.warning(r.error || '作答失败，可重试');
     }
-  } catch (e: any) { showApiError(e); }
+  } catch (e: any) {
+    showApiError(e);
+  } finally {
+    qBusy.value = { ...qBusy.value, [q.id]: false };
+  }
+}
+
+/** 问题携带：复制为 Markdown（人读）或 JSON（喂脚本），路由 id 不带走 */
+function copyQuestion(q: StreamQuestion, fmt: 'markdown' | 'json'): void {
+  const carry = { title: q.title, fields: q.questions || [] };
+  const text = fmt === 'markdown' ? serializeFormAsMarkdown(carry) : serializeFormAsJson(carry);
+  void navigator.clipboard?.writeText(text)
+    .then(() => ElMessage.success(fmt === 'markdown' ? '已复制 Markdown' : '已复制 JSON'))
+    .catch(() => ElMessage.warning('复制失败'));
 }
 
 async function rejectQuestion(requestId: string): Promise<void> {
@@ -913,13 +962,14 @@ onBeforeUnmount(() => {
 .c-text { min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
 .tc-pre { margin: 0 0 8px; font-size: 12px; background: var(--el-fill-color-light); border-radius: 6px; padding: 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .tc-sec.err { color: var(--el-color-danger); font-size: 12px; }
-.q-card { border: 1px solid var(--el-color-primary); border-radius: 8px; padding: 10px 12px; background: var(--el-color-primary-light-9); }
-.q-l1 { font-size: 12px; font-weight: 600; color: var(--el-color-primary-darken-2); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.q-header { font-size: 11px; font-weight: 500; color: var(--text-2); background: var(--bg-panel); border-radius: 4px; padding: 1px 6px; }
-.q-text { font-size: 13px; margin: 4px 0 8px; }
-.q-opts { display: flex; flex-wrap: wrap; gap: 8px; }
-.q-custom { display: flex; gap: 8px; margin-top: 8px; }
-.q-acts { display: flex; justify-content: flex-end; margin-top: 6px; }
+.q-dock { flex: none; max-height: 42vh; overflow-y: auto; padding: 8px 12px 0; border-top: 1px solid var(--el-border-color-lighter); background: var(--el-color-primary-light-9); }
+.q-card { border: 1px solid var(--el-color-primary); border-radius: 8px; padding: 8px 12px; background: var(--bg-panel); margin-bottom: 8px; }
+.q-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.q-title { font-size: 12px; font-weight: 600; color: var(--el-color-primary-darken-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-count { font-size: 11px; color: var(--text-2); flex: none; }
+.q-sp { flex: 1; }
+.q-acts { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.q-err { font-size: 11px; color: var(--el-color-danger); }
 .perm-card { border: 1px solid var(--el-color-warning); border-radius: 8px; padding: 10px 12px; background: var(--el-color-warning-light-9); }
 .perm-l1 { font-size: 12px; color: var(--el-color-warning-darken-2); font-weight: 600; }
 .perm-title { font-size: 13px; margin-top: 2px; }

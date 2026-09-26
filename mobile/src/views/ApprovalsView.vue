@@ -24,8 +24,10 @@ interface ApprovalItem {
   act?: (decision: { approved: boolean; answer?: string }) => Promise<void>;
   /** 服务端是否有真实拒绝语义（节点审批/ask 只能批准或答复，不显示假拒绝按钮） */
   rejectable?: boolean;
-  /** oc-question 专用：提问选项（label 一键作答） */
-  questionOptions?: { label: string; description?: string }[];
+  /** oc-question 专用：提问选项（value 一键作答，仅单问题） */
+  questionOptions?: { value: string; label: string; description?: string }[];
+  /** oc-question 专用：单问题的字段 key（key-based 作答） */
+  questionKey?: string;
   /** oc-question 专用：所属会话（多问题时引导去会话页逐题作答） */
   sessionId?: string;
 }
@@ -157,7 +159,8 @@ async function load() {
           title: `OpenCode 提问 · ${first.header || '征询'}${qs.length > 1 ? `（${qs.length} 个问题）` : ''}`,
           detail,
           act: async () => { /* 选项作答走 questionOptions 按钮，不落 act */ },
-          questionOptions: qs.length === 1 ? ((first.options || []) as any[]).map((o) => ({ label: String(o.label), description: o.description })) : undefined,
+          questionOptions: qs.length === 1 ? ((first.options || []) as any[]).map((o) => ({ value: String(o.value ?? o.label ?? ''), label: String(o.label), description: o.description })) : undefined,
+          questionKey: first.key ? String(first.key) : undefined,
           sessionId: q.sessionID ? String(q.sessionID) : undefined,
         });
       }
@@ -224,14 +227,14 @@ async function rejectOcQuestion(item: ApprovalItem) {
   }
 }
 
-/** 回答 opencode 提问：label → ocAnswerQuestion(instance, requestId, [[label]]) */
-async function answerOcQuestion(item: ApprovalItem, label: string) {
+/** 回答 opencode 提问：key-based——answer = { [field.key]: option.value } */
+async function answerOcQuestion(item: ApprovalItem, value: string) {
   const parts = item.key.replace('oc-question:', '').split(':');
   const instance = parts[0];
   const requestId = parts.slice(1).join(':');
   busyKey.value = item.key;
   try {
-    const r = await api.ocAnswerQuestion(instance, requestId, [[label]]);
+    const r = await api.ocAnswerQuestion(instance, requestId, { [item.questionKey || '']: value });
     if (r.ok) { showToast('已作答'); refresh(); }
     else showToast(r.error || '作答失败');
   } catch (e: any) {
@@ -269,7 +272,7 @@ const goTask = (taskId: string) => router.push(`/task/${taskId}`);
             type="primary"
             plain
             :loading="busy(it.key)"
-            @click="answerOcQuestion(it, o.label)"
+            @click="answerOcQuestion(it, o.value)"
           >{{ o.label }}</van-button>
           <van-button size="small" :loading="busy(it.key)" @click="rejectOcQuestion(it)">不回答</van-button>
         </div>

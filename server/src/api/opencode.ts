@@ -214,15 +214,21 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
   });
 
   /**
-   * 回答 opencode 的提问（AskUserQuestion）：body {answers: string[][]}（按问题顺序，每题选中的 label 数组）。
+   * 回答 opencode 的提问（AskUserQuestion）。两种作答形态：
+   * - body {answer: Record<field.key, 值>}（key-based，新；类型由服务端按 form schema 收口）；
+   * - body {answers: string[][]}（按问题顺序的 label 数组，旧兼容）。
    * requestID 来自 question.asked 事件（QuestionRequest.id）——TUI 里的弹窗在这里也能答（需 control 档）。
    */
   app.post('/api/opencode/questions/:requestId/reply', async (c) => {
-    const body = await readJsonAuto<{ answers?: unknown }>(c);
+    const body = await readJsonAuto<{ answers?: unknown; answer?: unknown }>(c);
     const instance = String(new URL(c.req.url).searchParams.get('instance') || '');
-    const answers = Array.isArray(body.answers) ? (body.answers as unknown[]).map((a) => (Array.isArray(a) ? a.map(String) : [String(a)])) : [];
     if (!instance) return c.json({ detail: '缺少 instance 查询参数' }, 400);
-    if (!answers.length) return c.json({ detail: 'answers 不能为空（按问题顺序的 label 数组）' }, 400);
+    if (body.answer !== undefined && body.answer !== null && typeof body.answer === 'object' && !Array.isArray(body.answer)) {
+      const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), body.answer as Record<string, unknown>);
+      return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+    }
+    const answers = Array.isArray(body.answers) ? (body.answers as unknown[]).map((a) => (Array.isArray(a) ? a.map(String) : [String(a)])) : [];
+    if (!answers.length) return c.json({ detail: 'answer（Record<key,值>）或 answers（按题序数组）必填其一' }, 400);
     const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), answers);
     return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });

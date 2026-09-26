@@ -1,3 +1,5 @@
+export * from './form';
+
 export interface StreamPermission {
   id: string;
   title?: string;
@@ -9,7 +11,10 @@ export interface StreamPermission {
 
 export interface StreamQuestion {
   id: string;
-  questions: { question: string; header?: string; options?: { label: string; description?: string }[]; multiple?: boolean; custom?: boolean }[];
+  /** 表单级标题（opencode form.title；AskUserQuestion 场景为空） */
+  title?: string;
+  /** 全语义字段视图（FormFieldView 契约见 ./form；旧字段 question/header/options/custom/multiple 兼容在内） */
+  questions: import('./form').FormFieldView[];
   sessionID?: string;
   tool?: { messageID?: string; callID?: string };
 }

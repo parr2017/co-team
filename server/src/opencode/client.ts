@@ -345,7 +345,13 @@ export class OpencodeClient {
     return this.callTrue((client, options) => client.session.form.cancel({ sessionID, formID }, options));
   }
 
-  async answerQuestion(requestID: string, answers: string[][]): Promise<OcCallResult<boolean>> {
+  /**
+   * 回答 opencode 的提问。两种作答形态：
+   * - `answer`（key-based，新）：Record<field.key, 值>——本端按 form schema 逐字段收口类型；
+   * - `answers`（位置矩阵，旧）：按题序的 label 数组——兼容旧客户端。
+   * 均先读 form 权威 schema（key/type/options），label 自动映射回 option value。
+   */
+  async answerQuestion(requestID: string, answers: string[][] | Record<string, unknown>): Promise<OcCallResult<boolean>> {
     try {
       const listed = await this.call((client, options) => client.form.list(undefined, options));
       if (!listed.ok || !listed.data) return { ok: false, error: listed.error || '读取 form 失败' };
@@ -356,15 +362,55 @@ export class OpencodeClient {
         formID: form.id,
       }, options));
       if (!detail.ok || !detail.data) return { ok: false, error: detail.error || '读取 form 失败' };
-      const flat = answers.flat();
-      const answer: Record<string, string | number | boolean | string[]> = {};
-      ((detail.data as { fields: Array<{ key: string; type: string }> }).fields).forEach((field, index) => {
-        const selected = answers[index]?.length ? answers[index] : flat[index] !== undefined ? [flat[index]] : [];
-        answer[field.key] = field.type === 'multiselect' ? selected : selected[0] ?? '';
-      });
-      return this.replyForm(form.sessionID, form.id, answer);
+      const fields = ((detail.data as { fields?: Array<{ key: string; type: string; options?: Array<{ value?: string; label?: string }> }> }).fields) || [];
+      const answer: Record<string, unknown> = {};
+      if (answers && !Array.isArray(answers)) {
+        for (const field of fields) {
+          if (!(field.key in answers)) continue;
+          answer[field.key] = this.coerceFormAnswer(field, (answers as Record<string, unknown>)[field.key]);
+        }
+      } else {
+        const flat = (answers as string[][]).flat();
+        fields.forEach((field, index) => {
+          const selected = answers[index]?.length ? answers[index] : flat[index] !== undefined ? [flat[index]] : [];
+          answer[field.key] = this.coerceFormAnswer(field, selected);
+        });
+      }
+      // coerceFormAnswer 已按字段类型收口，这里断言回 SDK 的 reply 值域
+      return this.replyForm(form.sessionID, form.id, answer as Record<string, string | number | boolean | string[]>);
     } catch (error) {
       return { ok: false, error: this.errorText(error) };
+    }
+  }
+
+  /** 按字段类型把 UI 值收口成 opencode form reply 的目标类型（label → option value 自动映射） */
+  private coerceFormAnswer(
+    field: { key: string; type: string; options?: Array<{ value?: string; label?: string }> },
+    v: unknown,
+  ): unknown {
+    const opts = field.options || [];
+    const toValue = (x: unknown): string => {
+      const s = String(x ?? '');
+      const hit = opts.find((o) => o.value === s || o.label === s);
+      return hit ? String(hit.value ?? hit.label ?? s) : s;
+    };
+    switch (field.type) {
+      case 'multiselect': {
+        const arr = Array.isArray(v) ? v : v === undefined || v === null || v === '' ? [] : [v];
+        return arr.map(toValue);
+      }
+      case 'boolean':
+        return v === true || v === 'true' || v === 1 || v === '1';
+      case 'number':
+      case 'integer': {
+        if (v === undefined || v === null || v === '') return '';
+        const n = Number(v);
+        return Number.isFinite(n) ? n : '';
+      }
+      case 'external':
+        return v === true || v === 'true';
+      default:
+        return Array.isArray(v) ? toValue(v[0]) : toValue(v);
     }
   }
 
@@ -660,19 +706,47 @@ export class OpencodeClient {
         return this.eventEnvelope(event, 'question.asked', {
           id: String(form.id || event.id),
           sessionID: String(form.sessionID || ''),
+          title: form.title === undefined || form.title === null ? undefined : String(form.title),
           questions: fields.map((value) => {
             const field = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-            const options = Array.isArray(field.options) ? field.options : [];
-            const maxItems = Number((field as Record<string, unknown>).maxItems);
+            const rawOptions = Array.isArray(field.options) ? field.options : [];
+            const rawType = String(field.type || 'string');
+            const maxItems = Number(field.maxItems);
+            // 归一化视图类型：string+options=单选，string=自由输入；其余类型直通
+            const normType = rawType === 'multiselect' ? 'multiselect'
+              : rawType === 'number' || rawType === 'integer' ? 'number'
+              : rawType === 'boolean' ? 'boolean'
+              : rawType === 'external' ? 'external'
+              : rawOptions.length ? 'select' : 'input';
+            const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+            const when = Array.isArray(field.when) ? field.when : [];
             return {
+              key: String(field.key || ''),
+              type: normType,
               question: String(field.question || field.title || field.description || field.key || ''),
               header: field.header === undefined ? undefined : String(field.header),
+              description: field.description === undefined ? undefined : String(field.description),
+              placeholder: field.placeholder === undefined ? undefined : String(field.placeholder),
+              required: field.required === true,
+              hidden: field.hidden === true,
+              when: when.length ? (when as Record<string, unknown>[]).map((w) => ({
+                key: String(w.key || ''),
+                op: w.op === 'neq' ? 'neq' as const : 'eq' as const,
+                value: w.value as string | number | boolean,
+              })) : undefined,
+              minimum: num(field.minimum),
+              maximum: num(field.maximum),
               // multiselect 且未限定"只选 1 项"→ 视为多选；字段自带 custom（如"其他"自填）也算自定义入口
-              multiple: field.type === 'multiselect' && !(maxItems === 1),
-              custom: field.custom === true || field.type === 'text' || field.type === 'string',
-              options: options.map((option) => {
+              multiple: normType === 'multiselect' && !(maxItems === 1),
+              custom: field.custom === true,
+              externalUrl: rawType === 'external' ? String(field.url || '') : undefined,
+              options: rawOptions.map((option) => {
                 const entry = option && typeof option === 'object' ? option as Record<string, unknown> : {};
-                return { label: String(entry.label || entry.value || ''), description: String(entry.description || '') };
+                return {
+                  value: String(entry.value ?? entry.label ?? ''),
+                  label: String(entry.label || entry.value || ''),
+                  description: entry.description === undefined ? undefined : String(entry.description),
+                };
               }),
             };
           }),

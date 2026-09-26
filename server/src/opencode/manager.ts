@@ -996,9 +996,10 @@ export class OpencodeManager implements OpencodeBridge {
 
   /**
    * 回答 opencode 的提问（AskUserQuestion）。需 control 档——替用户做决定不能发生在只读实例上。
-   * requestID 来自 question.asked 事件的 QuestionRequest.id；answers 按问题顺序（每题选中的 label 数组）。
+   * requestID 来自 question.asked 事件的 QuestionRequest.id；
+   * answer 为 key-based（Record<field.key, 值>，新）或 answers 位置矩阵（string[][]，旧兼容）。
    */
-  async answerQuestion(agent: string | undefined, instance: string, requestID: string, answers: string[][]): Promise<OcCallResult<boolean>> {
+  async answerQuestion(agent: string | undefined, instance: string, requestID: string, answers: string[][] | Record<string, unknown>): Promise<OcCallResult<boolean>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     const gate = this.requireControl(st);
