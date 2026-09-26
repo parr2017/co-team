@@ -51,6 +51,7 @@ function makeOcDeps() {
     listAgents: vi.fn(async () => [{ id: 'dev', label: 'dev' }]),
     switchAgent: vi.fn(async () => true),
     readLastReply: vi.fn(async () => '已修复登录报错'),
+    readRecent: vi.fn(async () => [{ role: 'user', text: '把登录页的报错修一下' }, { role: 'assistant', text: '已修复，改了 auth 模块' }]),
     pendingAll: vi.fn(() => ({ permissions: [], questions: [] })),
     answerPermission: vi.fn(async () => true),
     answerQuestion: vi.fn(async () => true),
@@ -87,13 +88,19 @@ describe('convo 桥', () => {
     expect(bound?.chat_id).toBe('oc1');
   });
 
-  it('/switch 序号切换会话；/exit 返回任务模式', async () => {
+  it('/switch 序号切换会话；/exit 返回任务模式；切换后预览最近对话', async () => {
     const bridge = createConvoBridge(makeConvoDeps());
     let session = freshSession();
     let r = await handleCommand('/convo', session, { listProjects: async () => [], listAgentNames: () => [], convo: bridge }, 'oc1');
     session = r.session!;
+    await busSet('convo:c2:messages', [
+      { role: 'user', kind: 'text', text: '选哪个数据库' },
+      { role: 'assistant', kind: 'text', text: '建议 PostgreSQL' },
+    ] as any);
     r = await handleCommand('/switch 2', session, { listProjects: async () => [], listAgentNames: () => [], convo: bridge }, 'oc1');
     expect(r.reply).toContain('数据库选型');
+    expect(r.reply).toContain('最近对话');
+    expect(r.reply).toContain('建议 PostgreSQL');
     expect(r.session?.convo_id).toBe('c2');
     r = await handleCommand('/exit', session, { listProjects: async () => [], listAgentNames: () => [], convo: bridge }, 'oc1');
     expect(r.session?.mode).toBe('task');
@@ -167,6 +174,20 @@ describe('oc 桥', () => {
     r = await handleCommand('/model 2', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
     expect(deps.switchModel).toHaveBeenCalledWith('main-exec', 's-1', 'deepseek/deepseek-v4-pro');
     expect(r.reply).toContain('已切换模型');
+  });
+
+  it('/switch 序号切会话并预览最近对话', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    const session: FeishuSession = { ...freshSession(), mode: 'oc', oc_instance: 'main-exec' };
+    let r = await handleCommand('/list', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
+    expect(r.reply).toContain('活跃会话');
+    r = await handleCommand('/switch 2', session, { listProjects: async () => [], listAgentNames: () => [], oc: bridge }, 'oc1');
+    expect(r.reply).toContain('已切换到会话');
+    expect(r.reply).toContain('最近对话');
+    expect(r.reply).toContain('已修复');
+    expect(deps.readRecent).toHaveBeenCalledWith('main-exec', 's-2', 4);
+    expect(r.session?.oc_session).toBe('s-2');
   });
 
   it('oc 自由文本发 prompt 并回执受理', async () => {

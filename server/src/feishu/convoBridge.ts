@@ -116,7 +116,13 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
       const target = Number.isInteger(n) && session.last_list_kind === 'convo' ? session.last_list?.[n - 1] : undefined;
       const hit = (target && convos.find((c) => c.id === target.id)) || convos.find((c) => c.id === ref || c.title.includes(ref));
       if (!hit) return `未找到会话「${ref}」，/list 查看全部。`;
-      return bindAndEnter(hit, session, chatId);
+      const bindMsg = await bindAndEnter(hit, session, chatId);
+      const msgs = (await busGet<any[]>(`convo:${hit.id}:messages`)) || [];
+      const recent = msgs.filter((m) => m.kind === 'text' && m.text).slice(-4);
+      const preview = recent.length
+        ? `\n最近对话：\n${recent.map((m) => `${m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : '系统'}：${String(m.text).replace(/\s+/g, ' ').slice(0, 120)}`).join('\n')}`
+        : '';
+      return `${bindMsg}${preview}`;
     },
 
     async send(text, session, chatId) {

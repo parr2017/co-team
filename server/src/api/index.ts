@@ -2175,6 +2175,18 @@ export function createApi(ctx: ApiContext): Hono {
               }
               return null;
             },
+            readRecent: async (instanceId, sessionId, limit) => {
+              const r = await oc.readMessages(undefined, instanceId, sessionId, { limit }).catch(() => null);
+              if (!r?.ok || !r.data?.messages) return [];
+              const out: { role: string; text: string }[] = [];
+              for (const m of r.data.messages) {
+                const role = String((m as any)?.info?.role || 'assistant');
+                const parts = ((m as any)?.parts || []) as any[];
+                const text = parts.filter((p) => p?.type === 'text').map((p) => String(p.text || '')).join('\n').trim();
+                if (text) out.push({ role, text });
+              }
+              return out.slice(-4);
+            },
             pendingAll: () => oc.pendingAll(),
             answerPermission: async (instanceId, sessionId, permissionId, response) => {
               const r = await oc.answerPermission(undefined, instanceId, sessionId, permissionId, response).catch(() => null);

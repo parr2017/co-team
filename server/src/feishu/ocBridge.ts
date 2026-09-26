@@ -32,6 +32,8 @@ export interface OcBridgeDeps {
   listAgents?: (instanceId: string) => Promise<{ id: string; label: string }[]>;
   switchAgent: (instanceId: string, sessionId: string, agent: string) => Promise<boolean>;
   readLastReply: (instanceId: string, sessionId: string) => Promise<string | null>;
+  /** 会话最近消息（切会话时预览当前内容用） */
+  readRecent: (instanceId: string, sessionId: string, limit: number) => Promise<{ role: string; text: string }[]>;
   pendingAll: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] };
   answerPermission: (instanceId: string, sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => Promise<boolean>;
   answerQuestion: (instanceId: string, requestID: string, answers: string[][]) => Promise<boolean>;
@@ -88,6 +90,17 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
   let cfgRef: FeishuConfig | null = null;
   const cfg0 = () => cfgRef || ({ app_id: '', app_secret: '', approvers: [] } as FeishuConfig);
 
+  /** 切会话后的"当前内容"预览：最近几轮对话（用户/助手各一行截断）。 */
+  async function renderOcPreview(instanceId: string, sessionId: string): Promise<string> {
+    try {
+      const recent = await deps.readRecent(instanceId, sessionId, 4);
+      if (!recent.length) return '\n（该会话暂无消息）';
+      return `\n最近对话：\n${recent.map((m) => `${m.role === 'user' ? '用户' : '助手'}：${m.text.replace(/\s+/g, ' ').slice(0, 120)}`).join('\n')}`;
+    } catch {
+      return '';
+    }
+  }
+
   return {
     async enter(arg, session, chatId) {
       const instances = await deps.listInstances();
@@ -130,13 +143,20 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
     async switchTo(ref, session, chatId) {
       const n = Number(ref);
       if (Number.isInteger(n) && session.last_list_kind === 'oc_session' && session.last_list?.[n - 1]) {
-        session.oc_session = session.last_list[n - 1].id;
+        const sid = session.last_list[n - 1].id;
+        const inst = session.oc_instance || '';
+        session.oc_session = sid;
         await setSession(session);
         await notifyChat(cfg0(), chatId);
-        return `✅ 已切换到会话 ${session.oc_session.slice(0, 12)}。`;
+        const preview = await renderOcPreview(inst, sid);
+        return `✅ 已切换到会话 ${sid.slice(0, 12)}。${preview}`;
       }
       if (Number.isInteger(n) && session.last_list_kind === 'oc_instance' && session.last_list?.[n - 1]) {
-        return bindInstance(session.last_list[n - 1].id, session, chatId);
+        const bindMsg = await bindInstance(session.last_list[n - 1].id, session, chatId);
+        const inst = session.oc_instance || '';
+        const sid = session.oc_session || '';
+        const preview = sid ? await renderOcPreview(inst, sid) : '';
+        return `${bindMsg}${preview}`;
       }
       return '序号无效：先 /list 或 /oc 刷新列表。';
     },
