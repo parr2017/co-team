@@ -32,10 +32,10 @@ function versionParts(version: string): { major: number; minor: number; patch: n
 }
 
 function isSupportedVersion(version: string): boolean {
+  // 放宽为“主版本 2 即支持”（desktop 2.0.11 实测全功能正常——提问/审批/事件/完成推送全通）；
+  // MIN_VERSION 仍保留作为 SDK 依赖锚点，但不再逐位比较 minor/patch
   const parts = versionParts(version);
-  if (!parts || parts.major !== MIN_VERSION.major) return false;
-  if (parts.minor !== MIN_VERSION.minor) return parts.minor > MIN_VERSION.minor;
-  return parts.patch >= MIN_VERSION.patch;
+  return !!parts && parts.major === MIN_VERSION.major;
 }
 
 export class OpencodeClient {
@@ -121,7 +121,7 @@ export class OpencodeClient {
       return {
         ok: false,
         data: { version },
-        error: `OpenCode 版本不兼容：需要 >=2.0.15 且主版本为 2，实际为 ${version || 'unknown'}`,
+        error: `OpenCode 版本不兼容：需要主版本为 2，实际为 ${version || 'unknown'}`,
       };
     }
     return { ok: true, data: { version } };
