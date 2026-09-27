@@ -7,6 +7,7 @@ import { useTheme } from '../composables/useTheme';
 import StatusTag from '../components/StatusTag.vue';
 import type { TaskGraph, QueueSnapshot } from '../api';
 import { useDashboard } from '../composables/useDashboard';
+import { relativeTime } from '../utils/time';
 
 defineOptions({ name: 'TaskListView' });
 
@@ -51,6 +52,19 @@ function sessionTime(ts?: string): string {
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
   if (d.toDateString() === yesterday.toDateString()) return '昨天';
   return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/** 状态化时间标注：updated_at 是"最后状态变更时间"——完成/失败/待处理各配语义前缀，
+ *  与 web TaskTable timeLabel 同口径，解决"完成/失败/待审批不知何时发生"（2026-09-28） */
+function statusTime(t: TaskGraph): string {
+  const tm = sessionTime(t.updated_at);
+  if (!tm) return '';
+  if (['success', 'completed', 'completed_with_warnings'].includes(t.status)) return `✓完成 ${tm}`;
+  if (t.status === 'failed') return `✗失败 ${tm}`;
+  if (['waiting_approval', 'waiting_clarify', 'clarifying'].includes(t.status)) return `⏸待处理 ${tm}`;
+  if (t.status === 'interrupted') return `⚡中断 ${tm}`;
+  if (['running', 'retrying', 'finalizing'].includes(t.status)) return `▶ ${tm}`;
+  return tm;
 }
 
 /** red-dot: needs my attention (approval / clarification) */
@@ -365,7 +379,7 @@ onUnmounted(() => {
             </div>
             <div class="last" :class="{ unread: needsAttention(t) }">{{ digest(t) }}</div>
             <div class="meta">
-              <span class="time mono">{{ sessionTime(t.updated_at) }}<template v-if="t.project_id && projectNames[t.project_id]"> · {{ projectNames[t.project_id] }}</template></span>
+              <span class="time mono" :title="relativeTime(t.updated_at)">{{ statusTime(t) }}<template v-if="t.project_id && projectNames[t.project_id]"> · {{ projectNames[t.project_id] }}</template></span>
               <span class="mtags">
                 <span v-if="badgeCount(t)" class="badge">{{ badgeCount(t) > 99 ? '99+' : badgeCount(t) }}</span>
                 <van-button

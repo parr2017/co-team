@@ -32,7 +32,7 @@ function liveText(n: TaskGraph['nodes'][number]): string | null {
 const taskId = computed(() => String(route.params.id));
 const task = computed<TaskGraph | null>(() => tasks.value[taskId.value] || null);
 
-const tab = ref<'warroom' | 'exec' | 'events' | 'manage'>('warroom');
+const tab = ref<'warroom' | 'exec' | 'events' | 'timeline' | 'manage'>('warroom');
 const selectedAgent = ref('');
 const selectedNodeId = ref('');
 const events = ref<EventEnvelope[]>([]);
@@ -694,6 +694,62 @@ function fmtTime(ts: string) {
   } catch { return ts; }
 }
 
+// ---------- 任务时间线（2026-09-28）：持久化数据重建，刷新/重开不丢 ----------
+// 与 web TaskDetailDialog 时间线同源：journals（服务端持久化）+ 节点 started_at/finished_at
+interface TimelineItem { ts: string; text: string; level: string; kind: string }
+const tlKeyOnly = ref(true);
+const tlLimit = ref(150);
+const timelineItems = ref<TimelineItem[]>([]);
+const tlLoadedFor = ref('');
+const TL_KEY_KINDS = new Set(['error', 'final', 'intervene', 'handoff', 'deliverable', 'message', 'message_received', 'ask', 'answer', 'doc']);
+const TL_NOISE_KINDS = new Set(['tool_results', 'brief']);
+
+function nodeStatusEvent(status: string): { text: string; level: string } {
+  if (status === 'completed') return { text: '完成', level: 'success' };
+  if (status === 'failed') return { text: '失败', level: 'error' };
+  if (status === 'waiting_approval') return { text: '等待人工审批', level: 'accent' };
+  if (status === 'interrupted') return { text: '被服务重启中断', level: 'warn' };
+  if (status === 'cancelled') return { text: '取消', level: '' };
+  return { text: status, level: '' };
+}
+
+async function loadTimeline() {
+  try {
+    const [j, fresh] = await Promise.all([
+      api.taskJournals(taskId.value),
+      api.getTask(taskId.value),
+    ] as const);
+    const items: TimelineItem[] = [];
+    if (fresh.created_at) items.push({ ts: fresh.created_at, text: '任务创建', level: '', kind: 'created' });
+    for (const n of fresh.nodes || []) {
+      if (n.started_at) items.push({ ts: n.started_at, text: `▶ 节点「${n.name}」开始执行`, level: '', kind: 'node' });
+      if (n.finished_at) {
+        const st = nodeStatusEvent(n.status);
+        items.push({ ts: n.finished_at, text: `节点「${n.name}」${st.text}`, level: st.level, kind: 'node' });
+      }
+    }
+    for (const [agent, entries] of Object.entries((j.journals || {}) as Record<string, any[]>)) {
+      for (const e of entries || []) {
+        if (TL_NOISE_KINDS.has(e.kind)) continue;
+        const text = String(e.text || '').replace(/\s+/g, ' ').slice(0, 140);
+        if (!text) continue;
+        items.push({ ts: e.ts, text: `【${agent}·${e.kind}】${text}`, level: e.kind === 'error' ? 'fail' : '', kind: e.kind });
+      }
+    }
+    items.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+    timelineItems.value = items;
+    tlLoadedFor.value = taskId.value;
+  } catch { /* best effort */ }
+}
+function openTimeline() {
+  tab.value = 'timeline';
+  if (tlLoadedFor.value !== taskId.value) void loadTimeline();
+}
+const timelineFiltered = computed(() =>
+  tlKeyOnly.value ? timelineItems.value.filter((it) => TL_KEY_KINDS.has(it.kind) || it.kind === 'node' || it.kind === 'created') : timelineItems.value
+);
+const timelineShown = computed(() => timelineFiltered.value.slice(0, tlLimit.value));
+
 /** 预览稿 pipeline 轨道：节点状态 → 轨道圆点分档 */
 function nodeState(status: string): string {
   if (['completed', 'success'].includes(status)) return 'done';
@@ -776,6 +832,7 @@ async function onTaskMore(action: any) {
         <button class="m-tab" :class="{ on: tab === 'warroom' }" @click="tab = 'warroom'">对话</button>
         <button class="m-tab" :class="{ on: tab === 'exec' }" @click="tab = 'exec'">执行详情</button>
         <button class="m-tab" :class="{ on: tab === 'events' }" @click="tab = 'events'">事件</button>
+        <button class="m-tab" :class="{ on: tab === 'timeline' }" @click="openTimeline()">时间线</button>
         <button class="m-tab" :class="{ on: tab === 'manage' }" @click="tab = 'manage'">管理<template v-if="managePendingCount"> <b class="t-bdg">{{ managePendingCount > 99 ? '99+' : managePendingCount }}</b></template></button>
       </div>
 
@@ -1011,6 +1068,32 @@ async function onTaskMore(action: any) {
             <div v-if="!visibleEvents.length" class="empty">
               <van-icon name="clock-o" size="56" color="var(--text-3)" />
               <div class="empty-text">暂无事件</div>
+            </div>
+          </div>
+      </div>
+
+      <!-- 任务时间线（2026-09-28）：持久化数据（journals + 节点起止时间）重建——
+           事件页是会话内直播流，重开即空；时间线回答"何时完成/何时审批/何时失败" -->
+      <div v-show="tab === 'timeline'" class="m-pane">
+          <div class="events">
+            <div class="ev-toolbar">
+              <span class="ev-count mono">显示 {{ timelineShown.length }} / {{ timelineFiltered.length }} 条</span>
+              <span class="ev-toggle" @click="tlKeyOnly = !tlKeyOnly">
+                <span class="ev-toggle-dot" :class="{ on: tlKeyOnly }"></span>{{ tlKeyOnly ? '仅关键事件' : '显示全部' }}
+              </span>
+            </div>
+            <div class="wx-group">
+              <div v-for="(e, i) in timelineShown" :key="i" class="wx-cell event-row">
+                <span class="e-time mono">{{ fmtTime(e.ts) }}</span>
+                <span class="e-dot" :class="e.level"></span>
+                <div class="e-body">
+                  <span class="e-text" :class="e.level">{{ e.text }}</span>
+                </div>
+              </div>
+              <div v-if="!timelineItems.length" class="wx-cell"><div class="empty-text">暂无时间线数据</div></div>
+              <div v-if="timelineFiltered.length > tlLimit" style="text-align:center; padding: 8px 0;">
+                <van-button size="small" plain type="primary" @click="tlLimit += 200">显示更多（还有 {{ timelineFiltered.length - tlLimit }} 条）</van-button>
+              </div>
             </div>
           </div>
       </div>

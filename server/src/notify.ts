@@ -14,9 +14,16 @@ async function post(url: string, body: unknown): Promise<void> {
   }
 }
 
+/** 通知文案统一带发生时间——用户收到审批/中断/完成卡时不知道事件何时发生（2026-09-28） */
+function withTime(text: string): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${text}（${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}）`;
+}
+
 /** Task-lifecycle notification: log + event bus + webhook/Feishu (fire-and-forget). */
 export function notify(eventType: string, payload: Record<string, unknown>, message?: string): void {
-  const text = message || `[Co-Team] ${eventType}: ${payload.task_id ?? ''}`;
+  const text = withTime(message || `[Co-Team] ${eventType}: ${payload.task_id ?? ''}`);
   console.log(`[notify] ${text}`);
   emitEvent(CHANNELS.NOTIFY, eventType, { message: text, ...payload }).catch(() => {});
 

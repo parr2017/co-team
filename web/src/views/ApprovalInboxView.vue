@@ -9,6 +9,7 @@ import { useRouter } from 'vue-router';
 import { api } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { showApiError } from '../utils/apiError';
+import { fmtDateTime, relativeTime } from '../utils/time';
 
 const { tasks, connected } = useDashboard();
 const router = useRouter();
@@ -19,6 +20,8 @@ interface ApprovalItem {
   taskId: string;
   title: string;
   detail: string;
+  /** 事项发生时间——用户收审批时需要知道"什么时候发生的"（2026-09-28） */
+  ts?: string;
   act?: (decision: { approved: boolean; answer?: string }) => Promise<void>;
   /** oc-question 专用：提问选项（收件箱内快速 value 作答，仅单问题） */
   questionOptions?: { value: string; label: string; description?: string }[];
@@ -54,6 +57,7 @@ async function load() {
               taskId: t.task_id,
               title: `节点「${n.name}」等待审批`,
               detail: n.reason || '该节点被标记为需要人工审批后才能执行',
+              ts: n.finished_at || n.updated_at || t.updated_at,
               act: async ({ approved }) => {
                 if (!approved) return;
                 await api.approveNode(t.task_id, n.id);
@@ -95,6 +99,7 @@ async function load() {
               taskId: t.task_id,
               title: `命令待审批：${String(c.command || '').slice(0, 60)}`,
               detail: `节点 ${c.node_name || c.node_id || ''}`,
+              ts: c.ts,
               act: async ({ approved }) => {
                 await api.resolveCommand(t.task_id, c.id, approved);
               },
@@ -237,6 +242,8 @@ function goSession(item: ApprovalItem) {
       <div class="ap-head">
         <el-tag size="small" :type="(kindType[it.kind] as any) || 'info'">{{ kindLabel[it.kind] || it.kind }}</el-tag>
         <span class="ap-task mono" @click="goTask(it.taskId)">{{ it.taskId }} ›</span>
+        <span class="sp"></span>
+        <span v-if="it.ts" class="ap-time mono" :title="relativeTime(it.ts)">{{ fmtDateTime(it.ts) }} 发生</span>
       </div>
       <div class="ap-title">{{ it.title }}</div>
       <div v-if="it.detail" class="ap-detail">{{ it.detail }}</div>
@@ -278,7 +285,9 @@ function goSession(item: ApprovalItem) {
 .inbox { padding: 4px 0; }
 .inbox-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: var(--text-2); font-size: 13px; }
 .ap-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: var(--el-bg-color); }
-.ap-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.ap-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; }
+.ap-head .sp { flex: 1; }
+.ap-time { font-size: 12px; color: var(--text-3); white-space: nowrap; }
 .ap-task { font-size: 12px; color: var(--el-color-primary); cursor: pointer; }
 .ap-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
 .ap-detail { font-size: 12px; color: var(--text-2); margin-bottom: 8px; white-space: pre-wrap; }

@@ -36,6 +36,7 @@
           <button class="vn" :class="{ on: tab === 'warroom' }" @click="tab = 'warroom'"><i>◉</i>任务频道</button>
           <button class="vn" :class="{ on: tab === 'cockpit' }" @click="tab = 'cockpit'"><i>◔</i>实时驾驶舱</button>
           <button class="vn" :class="{ on: tab === 'archive' }" @click="tab = 'archive'"><i>≡</i>事件归档<span class="cnt-chip mono">{{ events.length > 999 ? '999+' : events.length }}</span></button>
+          <button class="vn" :class="{ on: tab === 'timeline' }" @click="openTimeline()"><i>⏱</i>时间线</button>
           <div class="vn-sep"></div>
           <div class="vn-sub">管理</div>
           <button class="vn" :class="{ on: tab === 'manage' }" @click="tab = 'manage'"><i>⚙</i>治理与配置<span v-if="managePendingCount" class="bdg">{{ managePendingCount > 99 ? '99+' : managePendingCount }}</span></button>
@@ -325,6 +326,31 @@
           </div>
         </div>
         <!-- 管理：进度 / 主Agent模型 / 全局目标 / 快照回滚 -->
+        <!-- 任务时间线（2026-09-28）：基于持久化数据（journals + 节点起止时间）重建——
+             刷新/重开页面不丢，打开即见"何时创建/何时审批/何时完成/何时失败"全程 -->
+        <div v-show="tab === 'timeline'" class="pane">
+          <div class="arch">
+            <div class="arch-toolbar">
+              <el-radio-group v-model="tlKeyOnly" size="small">
+                <el-radio-button :value="true">关键事件</el-radio-button>
+                <el-radio-button :value="false">全部</el-radio-button>
+              </el-radio-group>
+              <span class="arch-count mono">显示 {{ Math.min(timelineFiltered.length, tlLimit) }} / {{ timelineFiltered.length }} 条</span>
+              <el-button size="small" text @click="loadTimeline">刷新</el-button>
+            </div>
+            <div class="arch-list">
+              <div v-for="(e, i) in timelineShown" :key="i" class="tl-row">
+                <span class="tl-time mono">{{ tlFmt(e.ts) }}</span>
+                <span class="tl-dot" :class="e.level"></span>
+                <span class="tl-text" :class="e.level" :title="e.text">{{ e.text }}</span>
+              </div>
+              <div v-if="!timelineItems.length" class="tl-empty mono">暂无时间线数据——节点执行后这里会记录全程</div>
+              <div v-if="timelineFiltered.length > tlLimit" style="text-align:center; padding: 8px 0;">
+                <el-button size="small" text type="primary" @click="tlLimit += 300">显示更多（还有 {{ timelineFiltered.length - tlLimit }} 条）</el-button>
+              </div>
+            </div>
+          </div>
+        </div>
         <div v-show="tab === 'manage'" class="pane">
           <div class="manage">
             <div class="mg-card wide">
@@ -923,6 +949,69 @@ function dur(n: TaskNode): string {
   return ' ' + Math.max(0, Math.round((end - new Date(n.started_at).getTime()) / 100) / 10) + 's';
 }
 function fmt(ts: string): string { return new Date(ts).toLocaleTimeString(); }
+
+// ---------- 任务时间线（2026-09-28）：持久化数据重建，刷新/重开不丢 ----------
+// 事件归档是"本会话窗口"的直播流，页面重开即空——时间线改从 journals（服务端持久化）
+// 与节点 started_at/finished_at 重建，回答"任务何时完成/何时要审批/何时失败"。
+interface TimelineItem { ts: string; text: string; level: string; kind: string }
+const timelineItems = ref<TimelineItem[]>([]);
+const tlKeyOnly = ref(true);
+const tlLimit = ref(200);
+const tlLoadedFor = ref('');
+const TL_KEY_KINDS = new Set(['error', 'final', 'intervene', 'handoff', 'deliverable', 'message', 'message_received', 'ask', 'answer', 'doc']);
+const TL_NOISE_KINDS = new Set(['tool_results', 'brief']);
+
+function tlFmt(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function nodeStatusEvent(status: string): { text: string; level: string } {
+  if (status === 'completed') return { text: '完成', level: 'success' };
+  if (status === 'failed') return { text: '失败', level: 'error' };
+  if (status === 'waiting_approval') return { text: '等待人工审批', level: 'accent' };
+  if (status === 'interrupted') return { text: '被服务重启中断', level: 'warn' };
+  if (status === 'cancelled') return { text: '取消', level: 'info' };
+  return { text: status, level: 'info' };
+}
+
+async function loadTimeline() {
+  try {
+    const [j, fresh] = await Promise.all([
+      api.taskJournals(props.taskId),
+      api.getTask(props.taskId),
+    ] as const);
+    const items: TimelineItem[] = [];
+    if (fresh.created_at) items.push({ ts: fresh.created_at, text: '任务创建', level: 'info', kind: 'created' });
+    for (const n of fresh.nodes || []) {
+      if (n.started_at) items.push({ ts: n.started_at, text: `▶ 节点「${n.name}」开始执行`, level: 'info', kind: 'node' });
+      if (n.finished_at) {
+        const st = nodeStatusEvent(n.status);
+        items.push({ ts: n.finished_at, text: `节点「${n.name}」${st.text}${dur(n)}`, level: st.level, kind: 'node' });
+      }
+    }
+    for (const [agent, entries] of Object.entries((j.journals || {}) as Record<string, any[]>)) {
+      for (const e of entries || []) {
+        if (TL_NOISE_KINDS.has(e.kind)) continue;
+        const text = String(e.text || '').replace(/\s+/g, ' ').slice(0, 160);
+        if (!text) continue;
+        items.push({ ts: e.ts, text: `【${agent}·${e.kind}】${text}`, level: e.kind === 'error' ? 'danger' : '', kind: e.kind });
+      }
+    }
+    items.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+    timelineItems.value = items;
+    tlLoadedFor.value = props.taskId;
+  } catch { /* best effort——journals 拉不到时保持现状 */ }
+}
+function openTimeline() {
+  tab.value = 'timeline';
+  if (tlLoadedFor.value !== props.taskId) void loadTimeline();
+}
+const timelineFiltered = computed(() =>
+  tlKeyOnly.value ? timelineItems.value.filter((it) => TL_KEY_KINDS.has(it.kind) || it.kind === 'node' || it.kind === 'created') : timelineItems.value
+);
+const timelineShown = computed(() => timelineFiltered.value.slice(0, tlLimit.value));
 
 function pickDefaultAgent() {
   if (!agentsInTask.value.length) return;

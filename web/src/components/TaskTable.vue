@@ -53,7 +53,7 @@
             <span v-if="row.tokens" class="t-tok mono">{{ fmtTok(row.tokens) }}</span>
             <span v-else class="t-none mono">—</span>
 
-            <span class="t-time mono">{{ fmtTime(row.updated_at) }}</span>
+            <span class="t-time mono" :title="relativeTime(row.updated_at)">{{ timeLabel(row) }}</span>
 
             <div class="t-acts" @click.stop>
               <button v-if="row.status === 'planned'" class="abtn pri" @click.stop="emit('review', row.task_id)">审核计划</button>
@@ -119,7 +119,7 @@
           </template>
           <span v-else class="t-none">—</span>
           <span class="sp"></span>
-          <span class="t-time mono">{{ fmtTime(row.updated_at) }}</span>
+          <span class="t-time mono" :title="relativeTime(row.updated_at)">{{ timeLabel(row) }}</span>
           <button v-if="row.status === 'planned'" class="abtn pri" @click.stop="emit('review', row.task_id)">审核计划</button>
           <button v-else-if="row.status === 'clarifying'" class="abtn pri" @click.stop="emit('clarify', row.task_id)">回复澄清</button>
           <button v-else-if="row.status === 'failed'" class="abtn pri" @click.stop="onRestart(row)">重启</button>
@@ -147,7 +147,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, type TaskGraph } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { statusText } from '../utils/events';
-import { fmtDateTime } from '../utils/time';
+import { fmtDateTime, relativeTime } from '../utils/time';
 import AgentAvatar from './AgentAvatar.vue';
 
 interface Row {
@@ -275,6 +275,20 @@ function fmtTime(ts: string): string {
   } catch {
     return ts;
   }
+}
+/** 状态化时间标注：updated_at 是"最后状态变更时间"——完成/失败/待审批各配语义前缀，
+ *  解决"任务完成了但不知道什么时候完成的"（2026-09-28） */
+function timeLabel(row: { status: string; updated_at: string }): string {
+  const t = fmtTime(row.updated_at);
+  if (!t) return '';
+  const s = row.status;
+  if (['success', 'completed', 'completed_with_warnings'].includes(s)) return `✓ 完成 ${t}`;
+  if (s === 'failed') return `✗ 失败 ${t}`;
+  if (s === 'waiting_approval') return `⏸ 待审批 ${t}`;
+  if (s === 'interrupted') return `⚡ 中断 ${t}`;
+  if (['running', 'retrying', 'finalizing'].includes(s)) return `▶ ${t}`;
+  if (s === 'queued') return `… 排队 ${t}`;
+  return t;
 }
 </script>
 
