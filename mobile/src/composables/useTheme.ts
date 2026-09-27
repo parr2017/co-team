@@ -2,6 +2,13 @@ import { ref } from 'vue';
 
 export type ThemeMode = 'dark' | 'light';
 
+// v2 迁移：旧版本曾在每次加载时自动持久化 dark（非用户选择）——一次性清除，
+// 迁移后以显式切换为准（切换会持久化，F5/重开都尊重）
+const MIGRATION_KEY = 'coteam-theme-migrated-v2';
+if (!localStorage.getItem(MIGRATION_KEY)) {
+  localStorage.removeItem('coteam-theme');
+  localStorage.setItem(MIGRATION_KEY, '1');
+}
 const stored = (localStorage.getItem('coteam-theme') as ThemeMode) || 'light';
 const theme = ref<ThemeMode>(stored === 'dark' ? 'dark' : 'light');
 
