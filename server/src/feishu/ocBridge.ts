@@ -18,6 +18,71 @@ import { buildResultCard, btnRow, card2, cardResponse, form, inputField, md, not
 import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard, buildOcInstancesCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
+// ---------- oc 提问表单（question.asked 的飞书化：选择题点选、输入题表单、全答自动提交） ----------
+
+export interface OcFormField {
+  key: string;
+  type?: string; // input | select | multiselect | number | boolean | external
+  question?: string;
+  options?: { label?: string; value?: string }[];
+  required?: boolean;
+}
+
+export interface OcFormState {
+  act: 'oc_form';
+  instance: string;
+  request_id: string;
+  title: string;
+  fields: OcFormField[];
+  answers: Record<string, unknown>;
+}
+
+function buildOcFormCard(state: OcFormState): Record<string, unknown> {
+  const elements: import('./cards').CardElement[] = [];
+  if (state.title) elements.push(md(`**${state.title.slice(0, 80)}**`));
+  const missing: string[] = [];
+  const inputEls: import('./cards').CardElement[] = [];
+  for (const f of state.fields) {
+    const answered = state.answers[f.key] !== undefined;
+    if (!answered && f.required) missing.push(f.question || f.key);
+    elements.push(md(`${answered ? '✅' : '❔'} ${f.question || f.key}${f.required ? '（必填）' : ''}`));
+    const opts = (f.options || []).slice(0, 6);
+    if (opts.length) {
+      for (const o of opts) {
+        const val = o.value ?? o.label ?? '';
+        const selected = state.answers[f.key] === val;
+        elements.push({
+          tag: 'button', text: { tag: 'plain_text', content: `${selected ? '✅ ' : ''}${(o.label || val).slice(0, 24)}` },
+          type: selected ? 'primary' : 'default', size: 'small',
+          behaviors: [{ type: 'callback', value: { act: 'oc_form_pick', key: f.key, value: val } }],
+        });
+      }
+    } else if (f.type === 'boolean') {
+      for (const [label, val] of [['是', true], ['否', false]] as const) {
+        const selected = state.answers[f.key] === val;
+        elements.push({
+          tag: 'button', text: { tag: 'plain_text', content: `${selected ? '✅ ' : ''}${label}` },
+          type: selected ? 'primary' : 'default', size: 'small',
+          behaviors: [{ type: 'callback', value: { act: 'oc_form_pick', key: f.key, value: val } }],
+        });
+      }
+    } else {
+      inputEls.push(inputField(`in_${f.key}`, `回答：${(f.question || f.key).slice(0, 30)}`));
+    }
+  }
+  if (inputEls.length) {
+    elements.push(form(`ocform_${state.request_id}`, inputEls.concat([submitBtn('✅ 提交回答', 'go')])));
+  } else {
+    elements.push({
+      tag: 'button', text: { tag: 'plain_text', content: '✅ 提交回答' }, type: 'primary', size: 'medium',
+      behaviors: [{ type: 'callback', value: { act: 'oc_form_submit' } }],
+    });
+  }
+  if (missing.length) elements.push(note(`⚠ 必填未作答：${missing.join('、').slice(0, 120)}`));
+  elements.push(note(`Co-Team · OpenCode 提问 · ${new Date().toLocaleString()}`));
+  return card2('orange', `❓ OpenCode 提问 · ${state.instance}`, elements);
+}
+
 export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string }
 export interface OcSessionLite { id: string; title?: string }
 
@@ -304,9 +369,8 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       if (!params) return;
       const act = String(params.act || '');
       const reply = async (title: string, lines: string[]): Promise<Record<string, unknown>> => {
-        const card = buildResultCard(title, lines);
-        if (input.messageId) await sendCard(cfg, input.chatId || '', card).catch(() => {});
-        return cardResponse(card);
+        // 结果卡只随响应帧返回（原地替换被点的卡）；不再额外 sendCard——会双份显示
+        return cardResponse(buildResultCard(title, lines));
       };
       try {
         if (!cfg.approvers?.length || !cfg.approvers.includes(who)) {
@@ -370,29 +434,34 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
             ? reply(`✅ 权限已${response === 'reject' ? '拒绝' : '批准'}`, [`${instance} · ${permissionId}`])
             : reply('⏱ 权限已失效', [`${instance} · ${permissionId} 不在等待中。`]);
         }
-        if (act === 'oc_question') {
-          const instance = String(params.instance || '');
-          const requestID = String(params.request_id || '');
-          // OpenCode 回答格式：key-based Record<field.key, 值>（按 question.asked 的 questions[].key 组装；
-          // 此前发位置矩阵 [[text]] 与字段数不匹配 → OpenCode 400 Bad Request）。
-          // 判空在组装之后（表单字段名是 a1/a2…，不是 answer）
-          const pending = deps.pendingAll();
-          const q = (pending.questions || []).find((x) => String(x.requestID || x.id || '') === requestID);
-          const fields = (Array.isArray(q?.questions) ? q.questions : []) as { key: string }[];
-          const answers: Record<string, unknown> = {};
-          fields.forEach((f, i) => {
-            const v = String(input.formValue?.[`a${i + 1}`] ?? input.formValue?.[f.key] ?? '').trim();
-            if (v) answers[f.key || `f${i}`] = v;
-          });
-          if (!fields.length) {
-            const answer = String(input.formValue?.answer || '').trim();
-            if (answer) answers.answer = answer;
+        if (act === 'oc_form' || act === 'oc_form_pick') {
+          // 提问表单状态机：状态存 feishu:route:{message_id}。
+          // act='oc_form'（表单提交）：合并输入框值并提交；act='oc_form_pick'（选项点选）：
+          // 记录该题答案，全部作答后自动提交，未答完返回刷新卡（✓ 标记已选）。
+          const state: OcFormState | null = act === 'oc_form'
+            ? (params as unknown as OcFormState)
+            : (input.messageId ? await busGet<OcFormState>(`feishu:route:${input.messageId}`).catch(() => null) : null);
+          if (!state || (state as any).act !== 'oc_form') return reply('表单已过期', ['/inbox 重新获取。']);
+          if (act === 'oc_form_pick') {
+            state.answers[String((input.value as any).key || '')] = (input.value as any).value;
           }
-          if (!Object.keys(answers).length) return reply('回答为空', ['请输入内容后再提交。']);
-          const ok = await deps.answerQuestion(instance, requestID, answers);
-          return ok
-            ? reply('✅ 已回答', [Object.values(answers).map((v) => String(v).slice(0, 60)).join('；').slice(0, 100)])
-            : reply('⏱ 提问已失效', [`${instance} · ${requestID} 不在等待中。`]);
+          if (input.formValue) {
+            for (const f of state.fields) {
+              const v = String(input.formValue?.[`in_${f.key}`] ?? '').trim();
+              if (v) state.answers[f.key] = f.type === 'number' ? Number(v) : v;
+            }
+          }
+          if (input.messageId) await busSet(`feishu:route:${input.messageId}`, state, BIND_TTL_SEC).catch(() => {});
+          const allAnswered = state.fields.length > 0 && state.fields.every((f) => state.answers[f.key] !== undefined);
+          const missingRequired = state.fields.filter((f) => f.required && state.answers[f.key] === undefined);
+          const readyToSubmit = (act === 'oc_form' && !missingRequired.length && Object.keys(state.answers).length > 0) || (act === 'oc_form_pick' && allAnswered);
+          if (readyToSubmit) {
+            const ok = await deps.answerQuestion(state.instance, state.request_id, state.answers);
+            return ok
+              ? reply('✅ 已提交回答', ['opencode 将继续执行。'])
+              : reply('⏱ 提问已失效', [`${state.instance} · ${state.request_id} 不在等待中。`]);
+          }
+          return cardResponse(buildOcFormCard(state));
         }
         return;
       } catch (e) {
@@ -500,22 +569,13 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const seenKey = `feishu:oc:qseen:${qid}`;
         if (await busGet(seenKey)) continue;
         await busSet(seenKey, 1, 3600);
-        // question.asked 归一结构：{title, questions:[{key,type,question,options,required}]}——
-        // 问题正文在 questions[] 里（此前误取 title="Questions" 导致卡片只有标题没有问题）
-        const fields = (Array.isArray(q.questions) ? q.questions : []) as { key: string; question?: string; type?: string; options?: { label?: string; value?: string }[]; required?: boolean }[];
-        const questionText = fields.length
-          ? fields.map((f, i) => `${i + 1}. ${f.question || f.key}${f.required ? '（必填）' : ''}`).join('\n')
-          : String(q.question || q.title || '需要你的输入');
-        const card = card2('orange', `❓ OpenCode 提问 · ${instance}`, [
-          md(questionText.slice(0, 800)),
-          form(`oq_${qid}`, fields.slice(0, 3).map((f, i) => {
-            const optHint = (f.options || []).map((o) => o?.label || o?.value).filter(Boolean).slice(0, 5).join(' / ');
-            return inputField(`a${i + 1}`, optHint ? `${f.question?.slice(0, 24) || '回答'}（可选：${optHint}）` : `回答：${f.question?.slice(0, 24) || f.key}`);
-          }).concat([submitBtn('发送', 'go')])),
-          note(`Co-Team · OpenCode 提问 · ${new Date().toLocaleString()}`),
-        ]);
+        // question.asked 归一结构：{title, questions:[{key,type,question,options,required}]}
+        // 选择题渲染选项按钮（点选即答、✓标记），输入题渲染输入框，全部作答后自动提交
+        const fields = (Array.isArray(q.questions) ? q.questions : []) as OcFormField[];
+        const state: OcFormState = { act: 'oc_form', instance, request_id: qid, title: String(q.title || ''), fields, answers: {} };
+        const card = buildOcFormCard(state);
         const messageId = await sendCard(cfg, target.id, card, target.type);
-        if (messageId) await busSet(`feishu:route:${messageId}`, { act: 'oc_question', instance, request_id: qid }, BIND_TTL_SEC);
+        if (messageId) await busSet(`feishu:route:${messageId}`, state, BIND_TTL_SEC);
       }
     },
   };

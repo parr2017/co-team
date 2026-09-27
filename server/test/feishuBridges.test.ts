@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sendTextMock = vi.fn(async () => 'om_t');
 const sendCardMock = vi.fn(async () => 'om_new1');
+const updateCardMock = vi.fn(async () => true);
 vi.mock('../src/feishu/messageService', () => ({
   sendText: (...a: unknown[]) => sendTextMock(...(a as [any, any, any])),
   sendCard: (...a: unknown[]) => sendCardMock(...(a as [any, any, any])),
-  updateCard: vi.fn(async () => true),
+  updateCard: (...a: unknown[]) => updateCardMock(...(a as [any, any, any])),
   buildTaskCard: () => ({}),
 }));
 
@@ -73,6 +74,7 @@ beforeEach(async () => {
   await initBus({ host: '127.0.0.1', port: 6399, db: 0 });
   sendTextMock.mockClear();
   sendCardMock.mockClear();
+  updateCardMock.mockClear();
 });
 
 afterEach(() => {
@@ -285,20 +287,67 @@ describe('oc 桥', () => {
     expect(deps.answerPermission).toHaveBeenCalledWith('main-exec', 's-1', 'perm1', 'once');
   });
 
-  it('pending 提问扫描推表单卡并注册路由；回答转发 answerQuestion', async () => {
+  it('pending 提问扫描推表单卡（问题正文+输入框）并注册路由；表单提交转发 answerQuestion', async () => {
     const deps = makeOcDeps();
-    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q1', question: '要继续吗？' }] }));
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q1', requestID: 'q1', title: 'Questions', questions: [{ key: 'note', type: 'input', question: '要继续吗？' }] }] }));
     const bridge = createOcBridge(deps);
     await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
     await bridge.scanPendingOnce(cfg);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
-    const route = await busGet<Record<string, string>>('feishu:route:om_new1');
-    expect(route).toMatchObject({ act: 'oc_question', instance: 'main-exec', request_id: 'q1' });
+    const route = await busGet<any>('feishu:route:om_new1');
+    expect(route).toMatchObject({ act: 'oc_form', instance: 'main-exec', request_id: 'q1' });
+    // 问题正文来自 questions[].question（此前误取 title="Questions" 导致卡片空白）
+    expect(String(JSON.stringify(sendCardMock.mock.calls[0][2]))).toContain('要继续吗？');
 
     await bridge.handleCardAction(cfg, {
-      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', formValue: { answer: '继续' },
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', formValue: { in_note: '继续' },
     });
-    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q1', [['继续']]);
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q1', { note: '继续' });
+  });
+
+  it('选择题点选即答：全部作答后自动提交（✓ 标记）', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q2', requestID: 'q2', title: '修复方式', questions: [{ key: 'how', type: 'select', question: '怎么处理？', required: true, options: [{ label: '修，授权改功能', value: 'fix' }, { label: '只记录', value: 'record' }] }] }] }));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+    const card = sendCardMock.mock.calls[0][2] as Record<string, any>;
+    expect(JSON.stringify(card)).toContain('修，授权改功能');
+
+    // 点选项 1 → 单题全答 → 自动提交
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
+      value: { act: 'oc_form_pick', key: 'how', value: 'fix' },
+    });
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q2', { how: 'fix' });
+    const r1 = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
+      value: { act: 'oc_form_pick', key: 'how', value: 'fix' },
+    });
+    expect(JSON.stringify(r1)).toContain('已提交回答');
+  });
+
+  it('多题表单：逐题点选未答完时返回刷新卡（✓ 标记），不提交', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q3', requestID: 'q3', title: 'T', questions: [{ key: 'a', type: 'select', question: '题一', options: [{ label: 'x', value: 'x' }] }, { key: 'b', type: 'select', question: '题二', options: [{ label: 'y', value: 'y' }] }] }] }));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    // 点题一 → 未全答 → 返回刷新表单卡（不提交）
+    const r1 = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
+      value: { act: 'oc_form_pick', key: 'a', value: 'x' },
+    });
+    expect(deps.answerQuestion).not.toHaveBeenCalled();
+    const refreshed = (r1 as any).card as Record<string, any>;
+    expect(JSON.stringify(refreshed)).toContain('✅');
+    // 点题二 → 全答 → 自动提交
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
+      value: { act: 'oc_form_pick', key: 'b', value: 'y' },
+    });
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q3', { a: 'x', b: 'y' });
   });
 });
 

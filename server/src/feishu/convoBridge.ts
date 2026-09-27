@@ -191,10 +191,9 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         const approvalId = String(params.approval_id || '');
         const action = (params.action === 'always' ? 'always' : params.action === 'reject' ? 'reject' : 'once') as 'once' | 'always' | 'reject';
         const r = await deps.resolveApproval(convoId, approvalId, action);
-        const card = buildResultCard(r ? `✅ 已${action === 'once' ? '批准一次' : action === 'always' ? '总是批准' : '拒绝'}` : '⏱ 已处理', [`会话 ${convoId}`]);
-        if (input.messageId) await sendCard(cfg, input.chatId || '', card).catch(() => {});
+        // 结果卡只随响应帧返回（原地替换），不重复 sendCard
         void logger2;
-        return cardResponse(card);
+        return cardResponse(buildResultCard(r ? `✅ 已${action === 'once' ? '批准一次' : action === 'always' ? '总是批准' : '拒绝'}` : '⏱ 已处理', [`会话 ${convoId}`]));
       }
       if (act === 'convo_pick') {
         const targetId = String(params.convo_id || '');
