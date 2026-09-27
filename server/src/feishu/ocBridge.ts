@@ -93,7 +93,7 @@ function buildOcFormCard(state: OcFormState): Record<string, unknown> {
 }
 
 export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string }
-export interface OcSessionLite { id: string; title?: string }
+export interface OcSessionLite { id: string; title?: string; directory?: string }
 
 export interface OcBridgeDeps {
   listInstances: () => Promise<OcInstanceLite[]>;
@@ -370,18 +370,36 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       const target = await notifyChat(cfg0());
       if (!target) return;
       const now = Date.now();
+      const pushedSids = new Set<string>();
       for (const [key, ts] of [...alive]) {
         if (now - ts < minAgeMs) continue;
         alive.delete(key);
         const [instance, ...rest] = key.split(':');
         const sid = rest.join(':');
-        await sendCard(cfg, target.id, card2('orange', `🐢 OpenCode 疑似卡住 · ${instance}`, [
-          md(`会话 ${sid.slice(0, 12)} 已 ${Math.round((now - ts) / 60000)} 分钟无任何输出。`),
+        // 同一会话在多实例共享存储时只告警一次；2h 内不重复提醒
+        if (pushedSids.has(sid)) continue;
+        const dedup = `feishu:oc:stalled:${sid}`;
+        if (await busGet(dedup)) { pushedSids.add(sid); continue; }
+        await busSet(dedup, 1, 7200);
+        pushedSids.add(sid);
+        // 上下文：会话标题 + 目录 + 最近指令——让你能判断"该中止还是只是慢"
+        const sessions = await deps.listSessions(instance).catch(() => []);
+        const meta = sessions.find((s) => s.id === sid);
+        const title = meta?.title || sid.slice(0, 12);
+        const directory = String(meta?.directory || '');
+        const recent = await deps.readRecent(instance, sid, 4).catch(() => []);
+        const lastUser = recent.filter((m) => m.role === 'user').map((m) => m.text.replace(/\s+/g, ' ')).at(-1) || '';
+        await sendCard(cfg, target.id, card2('orange', `🐢 OpenCode 疑似卡住 · ${title.slice(0, 24)}`, [
+          md(`**会话** ${title}
+**目录** ${directory || '（未知）'}
+**最近指令** ${lastUser.slice(0, 120) || '（无记录）'}
+已 **${Math.round((now - ts) / 60000)} 分钟**无任何输出。`),
           btnRow(
-            { tag: 'button', text: { tag: 'plain_text', content: '中止执行' }, type: 'danger', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'oc_abort', instance, session_id: sid } }] },
-            { tag: 'button', text: { tag: 'plain_text', content: '忽略（它只是慢）' }, type: 'default', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'noop' } }] },
+            { tag: 'button', text: { tag: 'plain_text', content: '💬 切换到此会话' }, type: 'primary', size: 'small', behaviors: [{ type: 'callback', value: { act: 'oc_pick_session', instance, session_id: sid } }] },
+            { tag: 'button', text: { tag: 'plain_text', content: '中止执行' }, type: 'danger', size: 'small', behaviors: [{ type: 'callback', value: { act: 'oc_abort', instance, session_id: sid } }] },
           ),
-          note(`Co-Team · 卡住检测 · ${new Date().toLocaleString()}`),
+          { tag: 'button', text: { tag: 'plain_text', content: '忽略（它可能只是在跑长任务）' }, type: 'default', size: 'small', behaviors: [{ type: 'callback', value: { act: 'noop' } }] },
+          note(`Co-Team · 卡住检测 · ${instance} · ${new Date().toLocaleString()}`),
         ]), target.type);
       }
     },

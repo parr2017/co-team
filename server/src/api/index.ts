@@ -2106,7 +2106,7 @@ export function createApi(ctx: ApiContext): Hono {
       ]).then(([cards, gateway, notifyPush, decisions, convoMod, ocMod, inboxMod, stallMod, listCardsMod]) => {
         const ocSessions = async (instanceId: string) => {
           const r = await ctx.opencode?.listSessions(undefined, instanceId).catch(() => null);
-          return r?.ok && r.data ? r.data.map((s: any) => ({ id: s.id, title: s.title })) : [];
+          return r?.ok && r.data ? r.data.map((s: any) => ({ id: s.id, title: s.title, directory: s.directory })) : [];
         };
         const ocModels = async (instanceId: string) => {
           const r = await ctx.opencode?.listProviders(undefined, instanceId).catch(() => null);
