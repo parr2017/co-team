@@ -111,18 +111,39 @@ export function worktreeRoot(workspace: string): string {
   return path.join(path.resolve(workspace), '.coteam', 'worktrees');
 }
 
-/** 创建任务沙箱：git 仓库 → worktree 模式；否则回退 %TEMP% 全量拷贝（legacy） */
-export async function createSandbox(workspace: string, taskId = ''): Promise<string> {
+/** 创建任务沙箱：git 仓库 → worktree 模式；否则回退 %TEMP% 全量拷贝（legacy）。
+ *  onFallback：worktree 创建失败降级时的报警回调（orchestrator 传入做日志/journal/通知）——
+ *  降级此前只有一行 console.error，不进结构化日志，用户无从知晓任务跑在降级模式（09-27 实证）。 */
+export async function createSandbox(workspace: string, taskId = '', onFallback?: (reason: string) => void): Promise<string> {
   if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
   if (taskId && fs.existsSync(path.join(workspace, '.git'))) {
     try {
       return await createWorktreeSandbox(workspace, taskId);
     } catch (e) {
-      console.error('[sandbox] worktree creation failed, falling back to temp copy:', String((e as Error)?.message || e));
+      const reason = `worktree 创建失败: ${String((e as Error)?.message || e)}`;
+      console.error('[sandbox] worktree creation failed, falling back to temp copy:', reason);
+      try { onFallback?.(reason); } catch { /* 报警回调绝不影响兜底路径 */ }
     }
   }
   const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coteam-sbx-'));
   fs.cpSync(workspace, sandboxDir, { recursive: true, force: true, filter: (src) => !isIgnoredRelPath(path.relative(workspace, src)) });
+  // 兜底目录补 git init：没有 .git 时节点分支/全量提交/diff 存档全部静默失败，产物只是
+  // 裸文件——沙箱一丢（重启/清理）"已完成"节点的成果就永久失联（09-27 learn-english 假完成
+  // 根因）。init 后 createNodeBranch/commitAllOnBranch/captureNodeDiff 照常工作，产物可从
+  // 沙箱 .git 与节点 diff 存档双路恢复。mergeChanges/syncToWorkspace 均已排除 .git，不会泄漏。
+  try {
+    const g = simpleGit({ baseDir: sandboxDir });
+    await g.init();
+    await g.addConfig('user.name', 'co-team');
+    await g.addConfig('user.email', 'coteam@local');
+    await g.checkout(['--orphan', 'coteam/base']);
+    await g.add(['-A']);
+    const st = await g.status();
+    if (st.staged.length || st.files.length) await g.commit('coteam: task baseline (temp fallback)');
+  } catch (e) {
+    // init 失败维持旧"裸拷贝"行为（不比之前更糟）
+    console.warn('[sandbox] fallback sandbox git init failed (bare copy):', String((e as Error)?.message || e));
+  }
   return sandboxDir;
 }
 
@@ -131,17 +152,41 @@ async function createWorktreeSandbox(workspace: string, taskId: string): Promise
   const wtPath = path.join(worktreeRoot(workspace), safeId);
   const g = simpleGit({ baseDir: workspace });
 
-  // 先清扫本仓库内所有遗留任务 worktree（崩溃残留会占住 coteam/base 分支）
+  // 先清扫本仓库内所有遗留任务 worktree（崩溃残留会占住 coteam/base 分支）。
+  // 路径必须归一化后比较：git 输出正斜杠，worktreeRoot() 是 Windows 反斜杠——
+  // 2026-09-27 learn-english 根因：startsWith 直接比较在 Windows 上永远失败 →
+  // 遗留 worktree 从未被清扫 → coteam/base 被占住 → branch -f 必炸 → 该仓库
+  // 之后每一次沙箱创建都静默降级成无 .git 的 Temp 拷贝 → 节点产物失联 → 假完成。
+  // 单项删除失败只警告跳过：一个删不掉的残留不能毒化本仓库后续所有任务的创建。
+  const wtRootNorm = worktreeRoot(workspace).replace(/\\/g, '/');
   const wtList = await g.raw(['worktree', 'list', '--porcelain']).catch(() => '');
   for (const line of wtList.split('\n')) {
     if (!line.startsWith('worktree ')) continue;
     const p = line.slice('worktree '.length).trim();
-    if (path.resolve(p) !== path.resolve(workspace) && p.startsWith(worktreeRoot(workspace))) {
-      await g.raw(['worktree', 'remove', '--force', p]).catch(() => { fs.rmSync(p, { recursive: true, force: true }); });
+    const pNorm = p.replace(/\\/g, '/');
+    if (path.resolve(p) !== path.resolve(workspace) && pNorm.startsWith(wtRootNorm + '/')) {
+      try {
+        await g.raw(['worktree', 'remove', '--force', p]);
+      } catch {
+        // 锁定的 worktree（worktree lock）连 prune 都不清理——目录删了注册仍在，
+        // coteam/base 被永久占住，branch -f 必炸（2026-09-27 调试实证），先解锁再删
+        await g.raw(['worktree', 'unlock', p]).catch(() => {});
+        try {
+          fs.rmSync(p, { recursive: true, force: true });
+        } catch (e) {
+          console.warn(`[sandbox] 遗留 worktree 删除失败，跳过（不影响本次创建）: ${p}:`, String((e as Error)?.message || e));
+        }
+      }
     }
   }
   await g.raw(['worktree', 'prune']).catch(() => {});
-  if (fs.existsSync(wtPath)) fs.rmSync(wtPath, { recursive: true, force: true });
+  if (fs.existsSync(wtPath)) {
+    try {
+      fs.rmSync(wtPath, { recursive: true, force: true });
+    } catch (e) {
+      console.warn(`[sandbox] 同名 worktree 目录删除失败: ${wtPath}:`, String((e as Error)?.message || e));
+    }
+  }
 
   const taskBranch = `coteam/task-${safeId}`;
   const hasCommits = !!(await g.log({ maxCount: 1 }).catch(() => null))?.latest;

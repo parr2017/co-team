@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { simpleGit } from 'simple-git';
 import { createSandbox, cleanupSandbox, mergeChanges, worktreeRoot } from '../src/sandbox';
+import { commitAllOnBranch, createNodeBranch } from '../src/git';
 
 // worktree 沙箱迁移回归（o3xmkraj 复盘）：%TEMP% 全量拷贝绑定服务进程生命周期，
 // 重启即作废丢中间态——git 仓库改用项目目录内 worktree，重启安全、git 原生可审。
@@ -131,5 +132,67 @@ describe('worktree 沙箱：崩溃残留自锁（2026-09-16 o3xmkraj 实证）',
       await cleanupSandbox(sandbox);
     }
     expect(fs.existsSync(sandbox)).toBe(false);
+  });
+});
+
+describe('沙箱降级与容错（2026-09-27 learn-english 假完成根因）', () => {
+  it('遗留 worktree 被锁（worktree remove 失败）：清扫跳过不阻断，新沙箱仍走 worktree', async () => {
+    const { ws } = await makeGitWorkspace();
+    const stale = await createSandbox(ws, 'stale-lock');
+    // 锁定遗留 worktree：git worktree remove --force 对锁定 worktree 必然拒绝
+    await simpleGit({ baseDir: ws }).raw(['worktree', 'lock', stale]);
+    const sandbox = await createSandbox(ws, 'fresh-lock');
+    try {
+      // remove 失败 → rmSync 兜底删掉目录 → prune 释放 coteam/base → 新 worktree 正常创建
+      expect(sandbox).toBe(path.join(worktreeRoot(ws), 'fresh-lock'));
+    } finally {
+      await cleanupSandbox(sandbox).catch(() => {});
+      await simpleGit({ baseDir: ws }).raw(['worktree', 'unlock', stale]).catch(() => {});
+      await cleanupSandbox(stale).catch(() => {});
+    }
+  });
+
+  it('worktree 创建失败：onFallback 报警 + 兜底目录 git init（分支/全量提交可用）', async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-wt-bad-'));
+    dirs.push(ws);
+    fs.writeFileSync(path.join(ws, 'base.txt'), 'v1');
+    // 伪 .git 文件（非合法 gitdir 指针）——createWorktreeSandbox 内 git 操作必然抛错
+    fs.writeFileSync(path.join(ws, '.git'), 'gitdir: bogus-nonexistent');
+    const reasons: string[] = [];
+    const sandbox = await createSandbox(ws, 'task-fb', (r) => reasons.push(r));
+    try {
+      expect(reasons.length).toBe(1);
+      expect(reasons[0]).toContain('worktree');
+      expect(sandbox.startsWith(os.tmpdir())).toBe(true);
+      // 兜底 git init：基线在 coteam/base 上，节点分支与全量提交照常工作——
+      // 修复前兜底目录无 .git，commitAllOnBranch 静默失败，产物只是裸文件
+      const g = simpleGit({ baseDir: sandbox });
+      expect(await g.revparse(['HEAD'])).toBeTruthy();
+      const branches = await g.branchLocal();
+      expect(branches.all).toContain('coteam/base');
+      expect(await createNodeBranch(sandbox, 'coteam/n1-dev', 'coteam/base')).toBe(true);
+      fs.writeFileSync(path.join(sandbox, 'art.txt'), 'x');
+      expect(await commitAllOnBranch(sandbox, 'node work')).not.toBeNull();
+    } finally {
+      await cleanupSandbox(sandbox).catch(() => {});
+    }
+    expect(fs.existsSync(sandbox)).toBe(false);
+  });
+
+  it('遗留 worktree 被进程持有句柄：清扫删除不受阻（Node share-delete），新沙箱仍走 worktree', async () => {
+    const { ws } = await makeGitWorkspace();
+    const stale = await createSandbox(ws, 'stale-busy');
+    const fd = fs.openSync(path.join(stale, 'base.txt'), 'r'); // 模拟编辑器占用：Node 以 share-delete 打开，git 删除不受阻
+    const reasons: string[] = [];
+    let sandbox: string | null = null;
+    try {
+      sandbox = await createSandbox(ws, 'fresh-busy', (r) => reasons.push(r));
+      expect(sandbox).toBe(path.join(worktreeRoot(ws), 'fresh-busy'));
+      expect(reasons.length).toBe(0);
+    } finally {
+      fs.closeSync(fd);
+      if (sandbox) await cleanupSandbox(sandbox).catch(() => {});
+      await cleanupSandbox(stale).catch(() => {});
+    }
   });
 });
