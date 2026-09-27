@@ -195,6 +195,17 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         void logger2;
         return cardResponse(buildResultCard(r ? `✅ 已${action === 'once' ? '批准一次' : action === 'always' ? '总是批准' : '拒绝'}` : '⏱ 已处理', [`会话 ${convoId}`]));
       }
+      if (act === 'convo_new') {
+        // 一键新建协作会话：建好即绑
+        const convo = await deps.create({ title: '未命名会话', project_id: undefined });
+        const session = await getSession(input.operatorOpenId);
+        session.mode = 'convo';
+        session.convo_id = convo.id;
+        await bindChat(convo.id, convo.title, input.chatId || '');
+        await setSession(session);
+        await sendText(cfg, input.chatId || '', `✅ 已新建会话「${convo.title}」。直接发言开始对话。`);
+        return; // 列表卡保留
+      }
       if (act === 'convo_pick') {
         const targetId = String(params.convo_id || '');
         const convos = await deps.list();

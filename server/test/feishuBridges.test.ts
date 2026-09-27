@@ -517,3 +517,30 @@ describe('交互列表卡与翻页（listCards）', () => {
     expect(String(JSON.stringify(r.card))).toContain('t-1 详情');
   });
 });
+
+describe('一键新建会话（卡片按钮）', () => {
+  it('oc_new：新建会话并绑定，无需打 /new', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    await setSession({ user_id: 'ou_admin', last_active_time: '', mode: 'oc', oc_instance: 'main-exec', oc_session: 's-1' });
+    const r = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'oc_new', instance: 'main-exec' },
+    });
+    expect(deps.createSession).toHaveBeenCalledWith('main-exec', undefined);
+    const session = await (await import('../src/feishu/session')).getSession('ou_admin');
+    expect(session.oc_session).toBe('s-new');
+    expect(JSON.stringify(r)).toContain('已新建会话'); // 结果卡随响应帧返回
+  });
+
+  it('convo_new：新建协作会话并绑定', async () => {
+    const deps = makeConvoDeps();
+    const bridge = createConvoBridge(deps);
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'convo_new' },
+    });
+    expect(deps.create).toHaveBeenCalled();
+    const session = await (await import('../src/feishu/session')).getSession('ou_admin');
+    expect(session.convo_id).toBe('c9');
+    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('已新建会话'))).toBe(true);
+  });
+});

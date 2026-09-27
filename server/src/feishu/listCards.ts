@@ -109,7 +109,7 @@ export function buildConvoListCard(convos: { id: string; title: string; status: 
 export function buildOcSessionsCard(instance: string, sessions: { id: string; title?: string }[], page = 0, currentId?: string): Record<string, unknown> {
   const pages = totalPages(sessions.length);
   const p = clampPage(page, sessions.length);
-  const elements: CardElement[] = [md(`实例 ${instance}`)];
+  const elements: CardElement[] = [md(`实例 ${instance}`), actionBtn('🆕 新建会话', { act: 'oc_new', instance })];
   const shown = pageSlice(sessions, p);
   if (!shown.length) elements.push(md('（无会话）'));
   for (const s of shown) {
@@ -159,6 +159,7 @@ export function buildOcInstancesCard(instances: { id: string; label: string; kin
   }));
   if (instBtns.length === 2) elements.push(btnRow(instBtns[0], instBtns[1]));
   else instBtns.forEach((b) => elements.push(b));
+  elements.push(actionBtn('🆕 新建会话', { act: 'oc_new', instance: boundId || '' }));
   const shown = sessions.slice(0, 6);
   if (shown.length) elements.push(md(`**会话（${boundId || ''}）：**`));
   for (const s of shown) {
@@ -180,6 +181,7 @@ export function buildConvoEnterCard(convos: { id: string; title: string; status:
     elements.push(md(`${current ? `**${c.title}（当前）**` : `**${c.title}**`} · ${c.status}`));
     elements.push(actionBtn(current ? '📍 当前会话' : `💬 切换到「${c.title.slice(0, 10)}」`, { act: 'convo_pick', convo_id: c.id }, current ? 'default' : 'primary'));
   }
+  elements.push(actionBtn('🆕 新建会话', { act: 'convo_new' }, 'primary'));
   elements.push(note(`Co-Team · 会话列表 · 直接发言发往当前会话 · ${new Date().toLocaleString()}`));
   return card2('blue', '💬 协作会话', elements);
 }

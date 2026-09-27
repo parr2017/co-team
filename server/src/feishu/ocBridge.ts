@@ -376,6 +376,19 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         if (!cfg.approvers?.length || !cfg.approvers.includes(who)) {
           return reply('无权操作', [`操作人 ${who} 不在审批白名单内。`]);
         }
+        if (act === 'oc_new') {
+          // 一键新建会话：建好即绑，直接输入需求即可
+          const session = await getSession(input.operatorOpenId);
+          const instance = String(params.instance || session.oc_instance || '');
+          if (!instance) return reply('未绑定实例', ['先 /oc 进入并选择实例。']);
+          const s = await deps.createSession(instance, undefined).catch(() => null);
+          if (!s) return reply('⚠ 新建失败', ['实例可能不在线，稍后再试。']);
+          session.mode = 'oc';
+          session.oc_instance = instance;
+          session.oc_session = s.id;
+          await setSession(session);
+          return reply('✅ 已新建会话', [`${instance} · ${s.id.slice(0, 12)}${s.title ? ` · ${s.title}` : ''}`, '直接输入需求即可。']);
+        }
         if (act === 'oc_pick_session') {
           const session = await getSession(input.operatorOpenId);
           const instance = String(params.instance || session.oc_instance || '');
