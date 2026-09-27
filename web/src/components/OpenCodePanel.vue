@@ -83,6 +83,18 @@
         <div class="sm">从会话列表明确选择一个会话，或点击「新建并接管」创建全新会话。co-team 不再自动猜测当前对话。</div>
       </div>
     </section>
+
+    <!-- 新建会话：先选项目（会话登记到项目工作区） -->
+    <el-dialog v-model="projDlgVisible" title="新建会话 · 选择项目" width="440px">
+      <div class="proj-tip">会话将登记到项目工作区——agent 在该目录里读写代码。</div>
+      <el-radio-group v-model="projPick" class="proj-list">
+        <el-radio v-for="pr in projList" :key="pr.id" :value="pr.id" border>{{ pr.name }}</el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="projDlgVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!projPick" :loading="!!creatingSession" @click="confirmCreate">创建并接管</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -109,6 +121,10 @@ const scope = ref<'current' | 'all'>('current');
 const busyInstance = ref('');
 const busyAction = ref<'start' | 'stop' | ''>('');
 const creatingSession = ref('');
+const projDlgVisible = ref(false);
+const projDlgInst = ref<OcInstance | null>(null);
+const projPick = ref('');
+const projList = ref<{ id: string; name: string }[]>([]);
 const activeInstanceId = ref('');
 const activeSessionId = ref('');
 
@@ -221,11 +237,40 @@ function openSession(inst: OcInstance, s: OcSession) {
   activeSessionId.value = s.id;
 }
 
-/** 新建并接管：不碰 heuristic 选中的会话，从全新会话开始（co-team 派活的安全路径） */
+/** 新建并接管：不碰 heuristic 选中的会话；先选项目（会话登记到项目工作区） */
 async function createAndTakeover(inst: OcInstance) {
   creatingSession.value = inst.id;
   try {
-    const created = await api.ocCreateSession(inst.id, `co-team 接管 ${new Date().toISOString().slice(5, 16)}`);
+    const projects = await api.listProjects().catch(() => ({ projects: [] as { id: string; name: string }[] }));
+    projList.value = (projects.projects || []).map((p) => ({ id: p.id, name: p.name }));
+    projDlgInst.value = inst;
+    projPick.value = '';
+    if (!projList.value.length) {
+      // 无项目可选：退回直接创建（实例缺省目录）
+      await doCreate(inst, undefined, undefined);
+      return;
+    }
+    projDlgVisible.value = true;
+  } catch (e: any) {
+    showApiError(e);
+  } finally {
+    if (projDlgVisible.value !== true) creatingSession.value = '';
+  }
+}
+
+async function confirmCreate() {
+  const inst = projDlgInst.value;
+  const project = projList.value.find((p) => p.id === projPick.value);
+  if (!inst || !project) return;
+  await doCreate(inst, project.id, project.name);
+  projDlgVisible.value = false;
+}
+
+async function doCreate(inst: OcInstance, projectId?: string, projectName?: string) {
+  creatingSession.value = inst.id;
+  try {
+    const title = projectName ? `接管 · ${projectName}` : `co-team 接管 ${new Date().toISOString().slice(5, 16)}`;
+    const created = await api.ocCreateSession(inst.id, title, projectId);
     if (!created.ok || !created.session) {
       ElMessage.warning((created as any).error || '创建会话失败');
       return;
@@ -235,7 +280,7 @@ async function createAndTakeover(inst: OcInstance) {
       expandedId.value = inst.id;
       void loadSessions(inst);
     }
-    ElMessage.success('已创建新会话并接管');
+    ElMessage.success(`已创建新会话并接管${projectName ? `（${projectName}）` : ''}`);
   } catch (e: any) {
     showApiError(e);
   } finally {
@@ -367,4 +412,7 @@ onBeforeUnmount(() => {
 .chat-empty .big { font-size: var(--fs-title, 16px); font-weight: 600; color: var(--text-2); }
 .chat-empty .sm { font-size: var(--fs-aux); max-width: 420px; text-align: center; line-height: 1.8; }
 .mono { font-family: var(--font-mono); }
+.proj-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.proj-list .el-radio { margin-right: 0; width: 100%; }
+.proj-tip { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 10px; }
 </style>

@@ -1213,8 +1213,8 @@ export const api = {
     request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/select-session`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId }),
     }),
-  ocCreateSession: (instance: string, title?: string) =>
+  ocCreateSession: (instance: string, title?: string, project_id?: string) =>
     request<{ ok: boolean; session?: OcSession }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(title ? { title } : {}) }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(title ? { title } : {}), ...(project_id ? { project_id } : {}) }),
     }),
 };

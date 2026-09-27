@@ -88,8 +88,15 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
 
   /** 新建会话（control 档；"新建并接管"的安全路径——不碰 TUI 正在用的会话） */
   app.post('/api/opencode/instances/:id/sessions', async (c) => {
-    const body = await readJsonAuto<{ title?: string }>(c).catch(() => ({}) as { title?: string });
-    const r = await oc().createSession(undefined, c.req.param('id'), body.title ? String(body.title) : undefined);
+    const body = await readJsonAuto<{ title?: string; project_id?: string; directory?: string }>(c).catch(() => ({}) as { title?: string; project_id?: string; directory?: string });
+    // 指定项目：project_id → 解析项目工作区为会话目录（缺省=实例绑定目录）
+    let directory = body.directory ? String(body.directory) : undefined;
+    if (!directory && body.project_id) {
+      const { listProjects } = await import('../store');
+      const projects = await listProjects().catch(() => []);
+      directory = projects.find((p) => p.id === body.project_id)?.workspace || undefined;
+    }
+    const r = await oc().createSession(undefined, c.req.param('id'), body.title ? String(body.title) : undefined, directory);
     return c.json(r.ok ? { ok: true, session: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });
 

@@ -92,6 +92,7 @@
       </div>
     </van-pull-refresh>
   </div>
+  <van-action-sheet v-model:show="projSheet" :actions="projActions" close-on-click-action cancel-text="取消" @select="onProjSelect" @cancel="onProjCancel" />
 </template>
 
 <script setup lang="ts">
@@ -114,6 +115,12 @@ const loadingSessions = ref(false);
 const busyId = ref('');
 const busyAct = ref('');
 const creatingSession = ref('');
+/** 新建会话：项目选择（ActionSheet）状态 */
+const projSheet = ref(false);
+const projActions = ref<{ name: string }[]>([]);
+const projResolve = ref<((i: number) => void) | null>(null);
+function onProjSelect(_action: unknown, i: number) { projSheet.value = false; projResolve.value?.(i); }
+function onProjCancel() { projSheet.value = false; projResolve.value?.(-1); }
 /** 会话列表过滤器：本项目（实例 project_root 匹配）/ 全部 */
 const sessFilter = ref<'project' | 'all'>('project');
 let poll: number | undefined;
@@ -210,11 +217,26 @@ function openSession(instId: string, sessId: string) {
   router.push(`/opencode/session/${instId}/${sessId}`);
 }
 
-/** 新建并接管：不碰 heuristic 选中的会话，从全新会话开始（与 web 对齐的安全路径） */
+/** 新建并接管：不碰 heuristic 选中的会话；先选项目（会话登记到项目工作区） */
 async function createAndTakeOver(inst: OcInstance) {
   creatingSession.value = inst.id;
   try {
-    const created = await api.ocCreateSession(inst.id, 'co-team 接管 ' + new Date().toISOString().slice(5, 16));
+    const projects = await api.listProjects().catch(() => ({ projects: [] as { id: string; name: string }[] }));
+    const list = projects.projects || [];
+    let projectId: string | undefined;
+    let projectName: string | undefined;
+    if (list.length) {
+      const index = await new Promise<number>((resolve) => {
+        projResolve.value = resolve;
+        projActions.value = list.map((p) => ({ name: p.name }));
+        projSheet.value = true;
+      });
+      if (index < 0 || !Number.isInteger(index)) { creatingSession.value = ''; return; }
+      projectId = list[index].id;
+      projectName = list[index].name;
+    }
+    const title = projectName ? `接管 · ${projectName}` : 'co-team 接管 ' + new Date().toISOString().slice(5, 16);
+    const created = await api.ocCreateSession(inst.id, title, projectId);
     if (!created.ok || !created.session) {
       showFailToast((created as any).error || '创建会话失败');
       return;
@@ -224,7 +246,7 @@ async function createAndTakeOver(inst: OcInstance) {
       expandedId.value = inst.id;
       void loadSessions(inst);
     }
-    showSuccessToast('已创建新会话并接管');
+    showSuccessToast(`已创建新会话并接管${projectName ? `（${projectName}）` : ''}`);
   } catch (e: any) {
     showFailToast(e?.message || '创建失败');
   } finally {
