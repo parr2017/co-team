@@ -109,7 +109,7 @@ export function buildConvoListCard(convos: { id: string; title: string; status: 
 export function buildOcSessionsCard(instance: string, sessions: { id: string; title?: string }[], page = 0, currentId?: string): Record<string, unknown> {
   const pages = totalPages(sessions.length);
   const p = clampPage(page, sessions.length);
-  const elements: CardElement[] = [md(`实例 ${instance}`), actionBtn('🆕 新建会话', { act: 'oc_new', instance })];
+  const elements: CardElement[] = [md(`实例 ${instance}`), actionBtn('🆕 新建会话', { act: 'oc_new_pick', instance })];
   const shown = pageSlice(sessions, p);
   if (!shown.length) elements.push(md('（无会话）'));
   for (const s of shown) {
@@ -137,6 +137,23 @@ export function buildOcModelsCard(models: { id: string; label: string; is_defaul
   return card2('blue', '🧠 OpenCode 模型', elements);
 }
 
+/** 新建会话的项目选择卡（oc/convo 共用骨架，act 由调用方给）。 */
+export function buildProjectPickerCard(kind: 'oc' | 'convo', projects: { id?: string; name: string; workspace: string }[], instance?: string): Record<string, unknown> {
+  const elements: CardElement[] = [];
+  const shown = projects.slice(0, 8);
+  if (!shown.length) elements.push(md('（暂无项目——先在面板创建项目）'));
+  for (const pr of shown) {
+    elements.push(md(`**📁 ${pr.name}**`));
+    elements.push(actionBtn(
+      kind === 'oc' ? `🖥 在此项目新建会话` : `💬 在此项目新建会话`,
+      kind === 'oc' ? { act: 'oc_new_proj', instance, workspace: pr.workspace, project: pr.name } : { act: 'convo_new_proj', project_id: pr.id, project: pr.name },
+      'primary',
+    ));
+  }
+  elements.push(note(`Co-Team · 新建会话 · 会话将绑定项目工作区 · ${new Date().toLocaleString()}`));
+  return card2('blue', `📁 选择项目（${kind === 'oc' ? 'OpenCode' : '协作会话'}）`, elements);
+}
+
 export function buildOcAgentsCard(agents: { id: string; label: string }[], page = 0): Record<string, unknown> {
   const pages = totalPages(agents.length);
   const p = clampPage(page, agents.length);
@@ -159,7 +176,7 @@ export function buildOcInstancesCard(instances: { id: string; label: string; kin
   }));
   if (instBtns.length === 2) elements.push(btnRow(instBtns[0], instBtns[1]));
   else instBtns.forEach((b) => elements.push(b));
-  elements.push(actionBtn('🆕 新建会话', { act: 'oc_new', instance: boundId || '' }));
+  elements.push(actionBtn('🆕 新建会话', { act: 'oc_new_pick', instance: boundId || '' }));
   const shown = sessions.slice(0, 6);
   if (shown.length) elements.push(md(`**会话（${boundId || ''}）：**`));
   for (const s of shown) {

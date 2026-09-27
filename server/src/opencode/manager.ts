@@ -706,15 +706,15 @@ export class OpencodeManager implements OpencodeBridge {
     return { ok: true, data: sessions };
   }
 
-  async createSession(agent: string | undefined, instance: string, title?: string): Promise<OcCallResult<OcSession>> {
+  async createSession(agent: string | undefined, instance: string, title?: string, directory?: string): Promise<OcCallResult<OcSession>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
-    this.audit('create_session', st, { title });
-    // 会话登记到实例的项目目录：否则 opencode 把它放进全局项目，agent 的工作目录跑错项目，
-    // 面板「本项目」过滤也看不到
-    return st.client!.createSession(title, st.projectRoot || st.cfg.project_root);
+    this.audit('create_session', st, { title, directory: directory || st.projectRoot || st.cfg.project_root });
+    // 会话登记到项目目录（directory 缺省=实例绑定目录）：否则 opencode 把它放进全局项目，
+    // agent 的工作目录跑错项目，面板「本项目」过滤也看不到
+    return st.client!.createSession(title, directory || st.projectRoot || st.cfg.project_root);
   }
 
   /**

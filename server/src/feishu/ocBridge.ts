@@ -15,7 +15,7 @@ import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
 import { buildResultCard, btnRow, card2, cardResponse, form, inputField, md, note, submitBtn } from './cards';
-import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard, buildOcInstancesCard } from './listCards';
+import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard, buildOcInstancesCard, buildProjectPickerCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
 // ---------- oc 提问表单（question.asked 的飞书化：选择题点选、输入题表单、全答自动提交） ----------
@@ -90,7 +90,7 @@ export interface OcBridgeDeps {
   listInstances: () => Promise<OcInstanceLite[]>;
   activeSession: (instanceId: string) => Promise<OcSessionLite | null>;
   listSessions: (instanceId: string) => Promise<OcSessionLite[]>;
-  createSession: (instanceId: string, title?: string) => Promise<OcSessionLite | null>;
+  createSession: (instanceId: string, title?: string, directory?: string) => Promise<OcSessionLite | null>;
   sendPrompt: (instanceId: string, sessionId: string, prompt: string) => Promise<{ ok: boolean; error?: string }>;
   abort: (instanceId: string, sessionId: string) => Promise<boolean>;
   listModels: (instanceId: string) => Promise<{ id: string; label: string; is_default?: boolean }[]>;
@@ -100,6 +100,7 @@ export interface OcBridgeDeps {
   readLastReply: (instanceId: string, sessionId: string) => Promise<string | null>;
   /** 会话最近消息（切会话时预览当前内容用） */
   readRecent: (instanceId: string, sessionId: string, limit: number) => Promise<{ role: string; text: string }[]>;
+  listProjects: () => Promise<{ id?: string; name: string; workspace: string }[]>;
   pendingAll: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] };
   answerPermission: (instanceId: string, sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => Promise<boolean>;
   answerQuestion: (instanceId: string, requestID: string, answers: string[][] | Record<string, unknown>) => Promise<boolean>;
@@ -376,18 +377,26 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         if (!cfg.approvers?.length || !cfg.approvers.includes(who)) {
           return reply('无权操作', [`操作人 ${who} 不在审批白名单内。`]);
         }
-        if (act === 'oc_new') {
-          // 一键新建会话：建好即绑，直接输入需求即可
+        if (act === 'oc_new_pick') {
+          // 新建先选项目：会话登记到项目工作区，agent 才在正确的目录里干活
+          const projects = await deps.listProjects().catch(() => []);
+          return cardResponse(buildProjectPickerCard('oc', projects, String(params.instance || '')));
+        }
+        if (act === 'oc_new_proj') {
           const session = await getSession(input.operatorOpenId);
           const instance = String(params.instance || session.oc_instance || '');
-          if (!instance) return reply('未绑定实例', ['先 /oc 进入并选择实例。']);
-          const s = await deps.createSession(instance, undefined).catch(() => null);
+          const workspace = String(params.workspace || '');
+          if (!instance || !workspace) return reply('参数缺失', ['先 /oc 进入并选择实例。']);
+          const s = await deps.createSession(instance, undefined, workspace).catch(() => null);
           if (!s) return reply('⚠ 新建失败', ['实例可能不在线，稍后再试。']);
           session.mode = 'oc';
           session.oc_instance = instance;
           session.oc_session = s.id;
           await setSession(session);
-          return reply('✅ 已新建会话', [`${instance} · ${s.id.slice(0, 12)}${s.title ? ` · ${s.title}` : ''}`, '直接输入需求即可。']);
+          return reply(`✅ 已新建会话（项目：${String(params.project || '')}）`, [
+            `${instance} · ${s.id.slice(0, 12)}`,
+            '直接输入需求即可——agent 将在该项目工作区内执行。',
+          ]);
         }
         if (act === 'oc_pick_session') {
           const session = await getSession(input.operatorOpenId);

@@ -519,28 +519,46 @@ describe('交互列表卡与翻页（listCards）', () => {
 });
 
 describe('一键新建会话（卡片按钮）', () => {
-  it('oc_new：新建会话并绑定，无需打 /new', async () => {
+  it('oc_new 两段式：先项目选择卡，选项目后建会话并绑定目录', async () => {
     const deps = makeOcDeps();
+    deps.listProjects = vi.fn(async () => [{ id: 'p1', name: '人事系统', workspace: 'D:/pxx/projects/hr' }]);
     const bridge = createOcBridge(deps);
     await setSession({ user_id: 'ou_admin', last_active_time: '', mode: 'oc', oc_instance: 'main-exec', oc_session: 's-1' });
-    const r = await bridge.handleCardAction(cfg, {
-      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'oc_new', instance: 'main-exec' },
+
+    // 第一步：点 [🆕 新建会话] → 项目选择卡
+    const r1 = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'oc_new_pick', instance: 'main-exec' },
     });
-    expect(deps.createSession).toHaveBeenCalledWith('main-exec', undefined);
+    expect(String(JSON.stringify(r1))).toContain('选择项目');
+    expect(String(JSON.stringify(r1))).toContain('人事系统');
+
+    // 第二步：点项目 → 建会话（目录=项目工作区）并绑定
+    const r2 = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
+      value: { act: 'oc_new_proj', instance: 'main-exec', workspace: 'D:/pxx/projects/hr', project: '人事系统' },
+    });
+    expect(deps.createSession).toHaveBeenCalledWith('main-exec', undefined, 'D:/pxx/projects/hr');
     const session = await (await import('../src/feishu/session')).getSession('ou_admin');
     expect(session.oc_session).toBe('s-new');
-    expect(JSON.stringify(r)).toContain('已新建会话'); // 结果卡随响应帧返回
+    expect(String(JSON.stringify(r2))).toContain('人事系统');
   });
 
-  it('convo_new：新建协作会话并绑定', async () => {
+  it('convo_new 两段式：先项目选择卡，选项目后建会话（绑定项目）', async () => {
     const deps = makeConvoDeps();
+    deps.listProjects = vi.fn(async () => [{ id: 'p1', name: '人事系统', workspace: 'D:/pxx/projects/hr' }]);
     const bridge = createConvoBridge(deps);
-    await bridge.handleCardAction(cfg, {
+
+    const r1 = await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'convo_new' },
     });
-    expect(deps.create).toHaveBeenCalled();
+    expect(String(JSON.stringify(r1))).toContain('选择项目');
+
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', value: { act: 'convo_new_proj', project_id: 'p1', project: '人事系统' },
+    });
+    expect(deps.create).toHaveBeenCalledWith({ title: '人事系统 协作', project_id: 'p1' });
     const session = await (await import('../src/feishu/session')).getSession('ou_admin');
     expect(session.convo_id).toBe('c9');
-    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('已新建会话'))).toBe(true);
+    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('项目：人事系统'))).toBe(true);
   });
 });

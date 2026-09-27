@@ -15,7 +15,7 @@ import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
 import { buildResultCard, card2, cardResponse, form, inputField, md, note, submitBtn, btnRow } from './cards';
-import { buildConvoListCard, buildConvoEnterCard } from './listCards';
+import { buildConvoListCard, buildConvoEnterCard, buildProjectPickerCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
 export interface ConvoListItem {
@@ -32,6 +32,8 @@ export interface ConvoBridgeDeps {
   stop: (convoId: string) => Promise<void>;
   resolveApproval: (convoId: string, approvalId: string, action: 'once' | 'always' | 'reject') => Promise<unknown>;
   answerAsk: (convoId: string, askId: string, answer: string) => Promise<unknown>;
+  /** [v2] 新建会话项目选择卡的数据源 */
+  listProjects: () => Promise<{ id: string; name: string; workspace: string }[]>;
 }
 
 export interface ConvoBridge {
@@ -196,15 +198,20 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         return cardResponse(buildResultCard(r ? `✅ 已${action === 'once' ? '批准一次' : action === 'always' ? '总是批准' : '拒绝'}` : '⏱ 已处理', [`会话 ${convoId}`]));
       }
       if (act === 'convo_new') {
-        // 一键新建协作会话：建好即绑
-        const convo = await deps.create({ title: '未命名会话', project_id: undefined });
+        // 新建先选项目：会话绑定项目工作区，agent 才有读写上下文
+        return cardResponse(buildProjectPickerCard('convo', await deps.listProjects()));
+      }
+      if (act === 'convo_new_proj') {
+        const projectId = String(params.project_id || '');
+        const projectName = String(params.project || '');
+        const convo = await deps.create({ title: projectName ? `${projectName} 协作` : '未命名会话', project_id: projectId || undefined });
         const session = await getSession(input.operatorOpenId);
         session.mode = 'convo';
         session.convo_id = convo.id;
         await bindChat(convo.id, convo.title, input.chatId || '');
         await setSession(session);
-        await sendText(cfg, input.chatId || '', `✅ 已新建会话「${convo.title}」。直接发言开始对话。`);
-        return; // 列表卡保留
+        await sendText(cfg, input.chatId || '', `✅ 已新建会话「${convo.title}」（项目：${projectName}）。直接发言开始对话。`);
+        return; // 项目选择卡保留
       }
       if (act === 'convo_pick') {
         const targetId = String(params.convo_id || '');

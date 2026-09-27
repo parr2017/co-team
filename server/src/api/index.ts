@@ -2175,6 +2175,7 @@ export function createApi(ctx: ApiContext): Hono {
           stop: (convoId) => stopConvo(convoDeps(ctx), convoId),
           resolveApproval: (convoId, approvalId, action) => resolveConvoApproval(convoDeps(ctx), convoId, approvalId, action),
           answerAsk: (convoId, askId, answer) => answerConvoAsk(convoDeps(ctx), convoId, askId, answer),
+          listProjects: () => listProjects(),
         });
         if (ctx.opencode) {
           const oc = ctx.opencode;
@@ -2236,6 +2237,7 @@ export function createApi(ctx: ApiContext): Hono {
               }
               return out.slice(-4);
             },
+            listProjects: () => listProjects(),
             pendingAll: () => oc.pendingAll(),
             answerPermission: async (instanceId, sessionId, permissionId, response) => {
               const r = await oc.answerPermission(undefined, instanceId, sessionId, permissionId, response).catch(() => null);
