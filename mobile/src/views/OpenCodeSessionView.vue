@@ -56,20 +56,14 @@
         </div>
         <!-- assistant：左对齐，parts 按类型渲染（TUI 同构） -->
         <div v-else class="a-block">
-          <div class="a-head">
-            <span class="a-name">opencode</span>
-            <span v-if="m.modelID" class="a-model mono">{{ m.modelID }}<template v-if="m.providerID"> · {{ m.providerID }}</template></span>
-            <span v-if="usageText(m)" class="a-usage mono">{{ usageText(m) }}</span>
-            <span v-if="m.finish && m.finish !== 'stop'" class="a-fin mono">{{ m.finish }}</span>
-          </div>
           <div v-if="m.error" class="a-err">⚠ {{ errText(m.error) }}</div>
           <template v-for="(p, pi) in partsOf(m)" :key="p.id || pi">
             <!-- 正文 -->
             <div v-if="p.type === 'text' && p.text" class="a-text"><MdView :source="p.text" /></div>
             <!-- 思考：默认展开（TUI 同款），点击折叠 -->
             <div v-else-if="p.type === 'reasoning' && p.text" class="thinking" @click="toggleThink(pk(m, p, pi))">
-              <span class="lab">思考过程 {{ thinkClosed.has(pk(m, p, pi)) ? '▸' : '▾' }}</span>
-              <span v-if="!thinkClosed.has(pk(m, p, pi))" class="tb">{{ p.text }}</span>
+              <span class="lab">思考过程 {{ thinkOpen.has(pk(m, p, pi)) ? '▾' : '▸' }}</span>
+              <span v-if="thinkOpen.has(pk(m, p, pi))" class="tb">{{ p.text }}</span>
               <span v-else class="tb short">{{ p.text.slice(0, 80) }}…</span>
             </div>
             <!-- 工具四态卡 -->
@@ -104,9 +98,6 @@
                 </div>
               </div>
             </div>
-            <!-- 步骤边界 -->
-            <div v-else-if="p.type === 'step-start'" class="step-sep"><i /><span>步骤开始</span><i /></div>
-            <div v-else-if="p.type === 'step-finish'" class="step-sep"><i /><span>步骤完成</span><i /></div>
             <!-- 文件变更 -->
             <div v-else-if="p.type === 'patch'" class="patch-card">
               <div class="patch-head" @click="openPatch(p)">文件变更 · {{ patchFilesOf(p).length }} 个<span class="car">▸</span></div>
@@ -471,7 +462,7 @@ let stickBottom = true;
 // 展开态（按 part key 持久化：part.updated 全量校正换对象引用不丢展开）
 const toolOpen = reactive(new Set<string>());
 const toolOutFull = reactive(new Set<string>());
-const thinkClosed = ref(new Set<string>());
+const thinkOpen = ref(new Set<string>());
 
 // diff / patch
 const diffDlg = ref(false);
@@ -751,7 +742,7 @@ async function enterSession() {
   qBusy.value = {};
   toolOpen.clear();
   toolOutFull.clear();
-  thinkClosed.value = new Set();
+  thinkOpen.value = new Set();
   snap.value = stream.snapshot();
   stickBottom = true;
   loadingMessages.value = true;
@@ -1064,18 +1055,6 @@ function errText(e: any): string {
   if (e?.message) return String(e.message);
   return clipText(JSON.stringify(e), 200);
 }
-function fmtTok(n: number): string {
-  return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-}
-function usageText(m: any): string {
-  const t = m?.tokens || {};
-  const total = Number(t.total ?? (Number(t.input || 0) + Number(t.output || 0) + Number(t.reasoning || 0))) || 0;
-  const parts: string[] = [];
-  if (total) parts.push(`${fmtTok(total)} tok`);
-  const cost = Number(m?.cost || 0);
-  if (cost) parts.push(`$${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`);
-  return parts.join(' · ');
-}
 function todoMark(t: any): string {
   return t?.status === 'completed' ? '✓' : t?.status === 'in_progress' ? '●' : '○';
 }
@@ -1122,9 +1101,9 @@ function toggleOutFull(k: string) {
   if (toolOutFull.has(k)) toolOutFull.delete(k); else toolOutFull.add(k);
 }
 function toggleThink(k: string) {
-  const next = new Set(thinkClosed.value);
+  const next = new Set(thinkOpen.value);
   if (next.has(k)) next.delete(k); else next.add(k);
-  thinkClosed.value = next;
+  thinkOpen.value = next;
 }
 
 // ---------- 即时切换（TUI 同款：选中即生效，不等发送） ----------
@@ -1349,7 +1328,7 @@ onBeforeUnmount(() => {
 .u-bub .mini { font-size: 10.5px; opacity: .75; margin-top: 4px; }
 .u-bub .dim { opacity: .75; }
 
-.a-block { margin: 10px 0; }
+.a-block { margin: 4px 0; }
 .a-head { display: flex; align-items: center; gap: 8px; padding: 2px 2px 6px; flex-wrap: wrap; }
 .a-name { font-size: 13px; font-weight: 600; color: var(--text-1); }
 .a-model { font-size: 10px; color: var(--text-3); padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px; }
@@ -1359,13 +1338,13 @@ onBeforeUnmount(() => {
 .a-text { padding: 2px 2px 6px; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
 
 /* 思考折叠 */
-.thinking { margin: 6px 2px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-inset); }
+.thinking { margin: 2px 2px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-inset); }
 .thinking .lab { font-size: 11px; color: var(--text-3); letter-spacing: .1em; }
 .thinking .tb { display: block; font-size: 12px; line-height: 1.7; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; max-height: 240px; overflow-y: auto; }
 .thinking .tb.short { color: var(--text-3); }
 
 /* 工具四态卡 */
-.tool-card { margin: 6px 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-panel); overflow: hidden; }
+.tool-card { margin: 2px 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-panel); overflow: hidden; }
 .tool-card.running, .tool-card.pending { border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .tool-card.error { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .tool-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
