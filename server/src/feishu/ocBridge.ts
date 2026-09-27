@@ -93,7 +93,7 @@ function buildOcFormCard(state: OcFormState): Record<string, unknown> {
 }
 
 export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string }
-export interface OcSessionLite { id: string; title?: string; directory?: string }
+export interface OcSessionLite { id: string; title?: string; directory?: string; time?: { updated?: string; created?: string } }
 
 export interface OcBridgeDeps {
   listInstances: () => Promise<OcInstanceLite[]>;
@@ -112,6 +112,8 @@ export interface OcBridgeDeps {
   listProjects: () => Promise<{ id?: string; name: string; workspace: string }[]>;
   /** oc 涉及的所有项目目录（既有会话去重聚合；可选——缺省只用 co-team 项目） */
   workdirs?: () => Promise<{ label: string; workspace: string; instance?: string }[]>;
+  /** 会话状态表（busy/idle）——完成通知对账扫描的数据源 */
+  sessionStatus?: (instanceId: string) => Promise<Record<string, { type?: string }>>;
   pendingAll: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] };
   answerPermission: (instanceId: string, sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => Promise<boolean>;
   answerQuestion: (instanceId: string, requestID: string, answers: string[][] | Record<string, unknown>) => Promise<boolean>;
@@ -147,6 +149,8 @@ export interface OcBridge {
   scanPendingOnce(cfg: FeishuConfig): Promise<void>;
   /** 单次卡住检测（有活动但 N 分钟无事件 → 推提醒卡并清除跟踪） */
   scanStalled(cfg: FeishuConfig, minAgeMs?: number): Promise<void>;
+  /** [v2] busy→idle 对账扫描（兜底：事件丢了也能补推完成通知） */
+  scanReconcile(cfg: FeishuConfig): Promise<void>;
 }
 
 const BIND_TTL_SEC = 7 * 24 * 3600;
@@ -180,6 +184,39 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
   // cfg 由 start() 注入（通知落点用到 approvers 回落）
   let cfgRef: FeishuConfig | null = null;
   const cfg0 = () => cfgRef || ({ app_id: '', app_secret: '', approvers: [] } as FeishuConfig);
+
+  const notifyTarget = (chatId?: string) => notifyChat(cfg0(), chatId);
+
+  /** 完成推送（事件驱动与对账扫描共用）：按 sid+updated 去重——同回合双通道只推一次 */
+  async function pushCompletionOnce(cfg: FeishuConfig, target: { id: string; type: 'chat_id' | 'open_id' }, instance: string, sid: string, failed: boolean): Promise<boolean> {
+    const sessions = await deps.listSessions(instance).catch(() => null);
+    const meta = (sessions || []).find((s) => s.id === sid);
+    const updated = String(meta?.time?.updated || '');
+    const dedupKey = `feishu:oc:compushed:${sid}`;
+    const lastPushed = (await busGet<string>(dedupKey).catch(() => null)) || '';
+    if (updated && lastPushed === updated) return false;
+    await busSet(dedupKey, updated || String(Date.now()), 7200);
+    const title = meta?.title || sid.slice(0, 12);
+    const directory = String(meta?.directory || '');
+    const recent = await deps.readRecent(instance, sid, 4).catch(() => []);
+    const lastUser = recent.filter((m) => m.role === 'user').map((m) => m.text.replace(/\s+/g, ' ')).at(-1) || '';
+    const replyText = (await deps.readLastReply(instance, sid).catch(() => null)) || '';
+    const body = replyText
+      ? replyText.length > 2400 ? `${replyText.slice(0, 2400)}\n\n…（截断，完整内容回面板）` : replyText
+      : `会话 ${sid.slice(0, 12)} ${failed ? '执行出错' : '执行完成'}（无文本输出）`;
+    const card = card2(failed ? 'red' : 'green', `🖥 OpenCode · ${instance} · ${failed ? '出错' : '已完成'}`, [
+      md(`**会话** ${title}\n**目录** ${directory || '（未知）'}\n${body}`),
+      form(`ocr_${instance}_${sid}_${Date.now()}`, [inputField('reply', '继续此会话…'), submitBtn('发送', 'go')]),
+      note(`Co-Team · OpenCode 完成${deps.instanceKind(instance) === 'attached-desktop' ? '（桌面实例）' : ''} · 引用回复本卡亦可 · ${new Date().toLocaleString()}`),
+    ]);
+    const messageId = await sendCard(cfg, target.id, card, target.type);
+    logger.info('oc completion push result', { instance, sid: sid.slice(0, 16), ok: !!messageId, target: target.id, target_type: target.type, updated });
+    if (messageId) {
+      await busSet(`feishu:route:${messageId}`, { act: 'oc_reply', instance, session_id: sid }, BIND_TTL_SEC);
+      await busSet(`feishu:reply:${messageId}`, { kind: 'oc', instance, session_id: sid }, BIND_TTL_SEC);
+    }
+    return true;
+  }
 
   /** 会话活动时间（内存态：oc_event 到达即刷新；session.idle 清除）——卡住检测的数据源 */
   const alive = new Map<string, number>();
@@ -404,6 +441,28 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       }
     },
 
+    async scanReconcile(cfg) {
+      cfgRef = cfg;
+      const target = await notifyTarget();
+      if (!target) return;
+      const busySeen = ((await busGet<Record<string, boolean>>('feishu:oc:busyseen').catch(() => null)) || {}) as Record<string, boolean>;
+      for (const inst of await deps.listInstances()) {
+        if (inst.state !== 'connected' && inst.state !== 'running') continue;
+        const status = await deps.sessionStatus?.(inst.id).catch(() => null);
+        if (!status) continue;
+        for (const [sid, st] of Object.entries(status)) {
+          const busy = String((st as any)?.type || '') === 'busy';
+          const k = `${inst.id}:${sid}`;
+          if (busy) { busySeen[k] = true; continue; }
+          if (!busySeen[k]) continue;
+          delete busySeen[k];
+          // busy→idle 迁移：上一轮还在跑、这轮已收场——对账补推完成卡
+          await pushCompletionOnce(cfg, target, inst.id, sid, false);
+        }
+      }
+      await busSet('feishu:oc:busyseen', busySeen, 7200);
+    },
+
     async handleCardAction(cfg, input) {
       const who = input.operatorOpenId || 'unknown';
       let params: Record<string, unknown> | null = input.value && Object.keys(input.value).length ? input.value : null;
@@ -558,8 +617,6 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       const watch = cfg.oc_watch || 'all';
       const logger2 = logger;
 
-      const notifyTarget = async (): Promise<{ id: string; type: 'chat_id' | 'open_id' } | null> => notifyChat(cfg0());
-
       const watchInstance = (instanceId: string): boolean => {
         if (watch === 'all') return true;
         if (watch === 'managed') return deps.instanceKind(instanceId) === 'managed';
@@ -588,24 +645,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           await busSet(dedup, 1, 20);
           const target = await notifyTarget();
           if (!target) { logger2.warn('oc completion push skipped: no notify target', { instance, sid: sid.slice(0, 16) }); return; }
-          logger2.info('oc completion: pushing card', { instance, sid: sid.slice(0, 16), target: target.id });
-          const failed = event.type === 'session.error';
-          const replyText = (await deps.readLastReply(instance, sid).catch(() => null)) || '';
-          const body = replyText
-            ? replyText.length > 2400 ? `${replyText.slice(0, 2400)}\n\n…（截断，完整内容回面板）` : replyText
-            : `会话 ${sid.slice(0, 12)} ${failed ? '执行出错' : '执行完成'}（无文本输出）`;
-          // 完成卡带输入框：回复此卡 = 向该会话继续发 prompt（不受当前模式影响）
-          const card = card2(failed ? 'red' : 'green', `🖥 OpenCode · ${instance} · ${failed ? '出错' : '已完成'}`, [
-            md(`会话 ${sid.slice(0, 12)}\n${body}`),
-            form(`ocr_${instance}_${sid}_${Date.now()}`, [inputField('reply', '继续此会话…'), submitBtn('发送', 'go')]),
-            note(`Co-Team · OpenCode 完成${deps.instanceKind(instance) === 'attached-desktop' ? '（桌面实例）' : ''} · 引用回复本卡亦可 · ${new Date().toLocaleString()}`),
-          ]);
-          const messageId = await sendCard(cfg, target.id, card, target.type);
-          logger2.info('oc completion push result', { instance, sid: sid.slice(0, 16), ok: !!messageId, target: target.id, target_type: target.type });
-          if (messageId) {
-            await busSet(`feishu:route:${messageId}`, { act: 'oc_reply', instance, session_id: sid }, BIND_TTL_SEC);
-            await busSet(`feishu:reply:${messageId}`, { kind: 'oc', instance, session_id: sid }, BIND_TTL_SEC);
-          }
+          await pushCompletionOnce(cfg, target, instance, sid, event.type === 'session.error');
         })().catch((e) => logger2.warn('Feishu oc completion push failed', { error: String(e).slice(0, 200), instance }));
       });
 
@@ -613,6 +653,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       const timer = setInterval(() => {
         void this.scanPendingOnce(cfg).catch((e) => logger2.warn('Feishu oc pending scan failed', { error: String(e).slice(0, 200) }));
         void this.scanStalled(cfg).catch((e) => logger2.warn('Feishu oc stall scan failed', { error: String(e).slice(0, 200) }));
+        void this.scanReconcile(cfg).catch((e) => logger2.warn('Feishu oc reconcile failed', { error: String(e).slice(0, 200) }));
       }, 30_000);
 
       return () => {

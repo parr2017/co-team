@@ -920,7 +920,9 @@ export class OpencodeManager implements OpencodeBridge {
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
     this.audit('send_prompt', st, { session: sessionId, model, ocAgent, prompt_chars: prompt.length });
-    return st.client!.prompt(sessionId, prompt, model, ocAgent);
+    const r = await st.client!.prompt(sessionId, prompt, model, ocAgent);
+    if (!r.ok) this.logger.warn('oc sendPrompt failed', { instance, sessionId, error: String(r.error).slice(0, 200) });
+    return r;
   }
 
   async sendPromptAsync(agent: string | undefined, instance: string, sessionId: string, prompt: string, model?: { providerID: string; modelID: string }, ocAgent?: string): Promise<OcCallResult<{ messageID?: string }>> {
@@ -929,7 +931,9 @@ export class OpencodeManager implements OpencodeBridge {
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
     this.audit('send_prompt_async', st, { session: sessionId, model, ocAgent, prompt_chars: prompt.length });
-    return st.client!.promptAsync(sessionId, prompt, model, ocAgent);
+    const r = await st.client!.promptAsync(sessionId, prompt, model, ocAgent);
+    if (!r.ok) this.logger.warn('oc sendPromptAsync failed', { instance, sessionId, error: String(r.error).slice(0, 200) });
+    return r;
   }
 
   async abortSession(agent: string | undefined, instance: string, sessionId: string): Promise<OcCallResult<boolean>> {

@@ -2106,7 +2106,7 @@ export function createApi(ctx: ApiContext): Hono {
       ]).then(([cards, gateway, notifyPush, decisions, convoMod, ocMod, inboxMod, stallMod, listCardsMod]) => {
         const ocSessions = async (instanceId: string) => {
           const r = await ctx.opencode?.listSessions(undefined, instanceId).catch(() => null);
-          return r?.ok && r.data ? r.data.map((s: any) => ({ id: s.id, title: s.title, directory: s.directory })) : [];
+          return r?.ok && r.data ? r.data.map((s: any) => ({ id: s.id, title: s.title, directory: s.directory, time: s.time })) : [];
         };
         const ocModels = async (instanceId: string) => {
           const r = await ctx.opencode?.listProviders(undefined, instanceId).catch(() => null);
@@ -2239,6 +2239,10 @@ export function createApi(ctx: ApiContext): Hono {
             },
             listProjects: () => listProjects(),
             workdirs: () => oc.workdirs().catch(() => []),
+            sessionStatus: async (instanceId: string) => {
+              const r = await oc.sessionStatus(undefined, instanceId).catch(() => null);
+              return r?.ok && r.data ? r.data : {};
+            },
             pendingAll: () => oc.pendingAll(),
             answerPermission: async (instanceId, sessionId, permissionId, response) => {
               const r = await oc.answerPermission(undefined, instanceId, sessionId, permissionId, response).catch(() => null);
