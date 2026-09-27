@@ -47,12 +47,13 @@ export function btnRow(left: CardElement, right: CardElement): CardElement {
   };
 }
 
-/** 表单单行输入框（form_action_type:submit 的按钮提交后，回调 action.form_value 携带 {name: 值}）。 */
-export function inputField(name: string, placeholder: string, maxLength = 2000): CardElement {
+/** 表单单行输入框（form_action_type:submit 的按钮提交后，回调 action.form_value 携带 {name: 值}）。
+ *  注意：max_length 上限 1000——实测超限整卡被拒（230099 ErrCode 11310）。 */
+export function inputField(name: string, placeholder: string, maxLength = 1000): CardElement {
   return {
     tag: 'input',
     name,
-    max_length: maxLength,
+    max_length: Math.min(maxLength, 1000),
     placeholder: { tag: 'plain_text', content: placeholder },
   };
 }

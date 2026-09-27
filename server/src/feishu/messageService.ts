@@ -3,6 +3,7 @@
  * interactive cards over im/v1/messages, with 429 exponential backoff and
  * card dynamic-update (PATCH) so one task = one card that evolves.
  */
+import { getLogger } from '../logger';
 import { apiBase, getTenantToken } from './tokenManager';
 import type { FeishuConfig } from '../config';
 
@@ -50,8 +51,9 @@ async function sendContent(cfg: FeishuConfig, receiveId: string, msgType: string
       body: JSON.stringify({ receive_id: receiveId, msg_type: msgType, content }),
     });
     return data?.data?.message_id ?? null;
-  } catch {
-    // outbound notification is best-effort — never break the calling flow
+  } catch (e) {
+    // 失败可见：卡片被飞书拒绝时静默返回 null 曾导致"没有推送且无日志"（max_length 实测教训）
+    getLogger().warn('Feishu send failed', { receiveIdType, receiveId: String(receiveId).slice(0, 24), msgType, error: String((e as Error)?.message || e).slice(0, 200) });
     return null;
   }
 }

@@ -420,7 +420,8 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           if (await busGet(dedup)) return;
           await busSet(dedup, 1, 20);
           const target = await notifyTarget();
-          if (!target) return;
+          if (!target) { logger2.warn('oc completion push skipped: no notify target', { instance, sid: sid.slice(0, 16) }); return; }
+          logger2.info('oc completion: pushing card', { instance, sid: sid.slice(0, 16), target: target.id });
           const failed = event.type === 'session.error';
           const replyText = (await deps.readLastReply(instance, sid).catch(() => null)) || '';
           const body = replyText
@@ -433,6 +434,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
             note(`Co-Team · OpenCode 完成${deps.instanceKind(instance) === 'attached-desktop' ? '（桌面实例）' : ''} · 引用回复本卡亦可 · ${new Date().toLocaleString()}`),
           ]);
           const messageId = await sendCard(cfg, target.id, card, target.type);
+          logger2.info('oc completion push result', { instance, sid: sid.slice(0, 16), ok: !!messageId, target: target.id, target_type: target.type });
           if (messageId) {
             await busSet(`feishu:route:${messageId}`, { act: 'oc_reply', instance, session_id: sid }, BIND_TTL_SEC);
             await busSet(`feishu:reply:${messageId}`, { kind: 'oc', instance, session_id: sid }, BIND_TTL_SEC);
