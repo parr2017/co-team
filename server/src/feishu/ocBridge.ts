@@ -92,7 +92,7 @@ function buildOcFormCard(state: OcFormState): Record<string, unknown> {
   return card2('orange', `❓ OpenCode 提问 · ${state.instance}`, elements);
 }
 
-export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string }
+export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string; project_root?: string }
 export interface OcSessionLite { id: string; title?: string; directory?: string; time?: { updated?: string; created?: string } }
 
 export interface OcBridgeDeps {
@@ -188,7 +188,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
   const notifyTarget = (chatId?: string) => notifyChat(cfg0(), chatId);
 
   /** 完成推送（事件驱动与对账扫描共用）：按 sid+updated 去重——同回合双通道只推一次 */
-  async function pushCompletionOnce(cfg: FeishuConfig, target: { id: string; type: 'chat_id' | 'open_id' }, instance: string, sid: string, failed: boolean): Promise<boolean> {
+  async function pushCompletionOnce(cfg: FeishuConfig, target: { id: string; type: 'chat_id' | 'open_id' }, instance: string, sid: string, failed: boolean, noQuickReply = false): Promise<boolean> {
     const sessions = await deps.listSessions(instance).catch(() => null);
     const meta = (sessions || []).find((s) => s.id === sid);
     const updated = String(meta?.time?.updated || '');
@@ -206,7 +206,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       : `会话 ${sid.slice(0, 12)} ${failed ? '执行出错' : '执行完成'}（无文本输出）`;
     const card = card2(failed ? 'red' : 'green', `🖥 OpenCode · ${instance} · ${failed ? '出错' : '已完成'}`, [
       md(`**会话** ${title}\n**目录** ${directory || '（未知）'}\n${body}`),
-      form(`ocr_${instance}_${sid}_${Date.now()}`, [inputField('reply', '继续此会话…'), submitBtn('发送', 'go')]),
+      ...(noQuickReply ? [] : [form(`ocr_${instance}_${sid}_${Date.now()}`, [inputField('reply', '继续此会话…'), submitBtn('发送', 'go')])]),
       note(`Co-Team · OpenCode 完成${deps.instanceKind(instance) === 'attached-desktop' ? '（桌面实例）' : ''} · 引用回复本卡亦可 · ${new Date().toLocaleString()}`),
     ]);
     const messageId = await sendCard(cfg, target.id, card, target.type);
@@ -645,7 +645,15 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           await busSet(dedup, 1, 20);
           const target = await notifyTarget();
           if (!target) { logger2.warn('oc completion push skipped: no notify target', { instance, sid: sid.slice(0, 16) }); return; }
-          await pushCompletionOnce(cfg, target, instance, sid, event.type === 'session.error');
+          // 会话归属解析：目录与实例 project_root 匹配的执行器才是“家”；无匹配则完成卡不带快速回复
+          const sessions0 = await deps.listSessions(instance).catch(() => null);
+          const sdir = String(((sessions0 || []).find((s) => s.id === sid) || ({} as any)).directory || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+          let exec = '';
+          for (const i2 of await deps.listInstances()) {
+            if (sdir && String(i2.project_root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === sdir) { exec = i2.id; break; }
+          }
+          if (!exec) exec = instance;
+          await pushCompletionOnce(cfg, target, exec, sid, event.type === 'session.error', !sdir || !exec);
         })().catch((e) => logger2.warn('Feishu oc completion push failed', { error: String(e).slice(0, 200), instance }));
       });
 

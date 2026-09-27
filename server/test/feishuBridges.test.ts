@@ -43,11 +43,11 @@ function makeConvoDeps() {
 function makeOcDeps() {
   return {
     listInstances: vi.fn(async () => [
-      { id: 'main-exec', label: 'main-exec', kind: 'managed', state: 'running', mode: 'control' },
-      { id: 'desktop', label: 'desktop', kind: 'attached-desktop', state: 'running', mode: 'control' },
+      { id: 'main-exec', label: 'main-exec', kind: 'managed', state: 'running', mode: 'control', project_root: 'D:/main' },
+      { id: 'desktop', label: 'desktop', kind: 'attached-desktop', state: 'running', mode: 'control', project_root: 'D:/desk' },
     ]),
     activeSession: vi.fn(async () => ({ id: 's-1', title: '活跃会话' })),
-    listSessions: vi.fn(async () => [{ id: 's-1', title: '活跃会话' }, { id: 's-2', title: '旧会话' }]),
+    listSessions: vi.fn(async () => [{ id: 's-1', title: '活跃会话', directory: 'D:/main' }, { id: 's-2', title: '旧会话', directory: 'D:/main' }]),
     createSession: vi.fn(async (_instance: string, title?: string) => ({ id: 's-new', title: title || '新会话' })),
     sendPrompt: vi.fn(async () => ({ ok: true })),
     abort: vi.fn(async () => true),
