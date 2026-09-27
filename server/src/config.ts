@@ -28,6 +28,15 @@ export interface OrchestrationConfig {
   ask_timeout_sec?: number;
   /** 永续开发：infra 类失败的自动重排上限（缺省 3，超限锁车道转人工） */
   auto_requeue_max?: number;
+  /** 启动清扫：同一任务因服务重启被中断的 park 阈值（缺省 3）。优雅重启（SIGINT/SIGTERM）
+   *  不消耗该额度（2026-09-27：开发期反复 Ctrl+C 重启曾 4 次触发 park 误停任务） */
+  infra_retries_max?: number;
+  /** 假完成守卫动作（2026-09-27）：幻影申报/漏申报/虚假豁免在修复轮的处置——
+   *  repair=修复轮拦截（缺省）；log=只留痕不拦截（误伤回退开关） */
+  delivery_guard?: 'repair' | 'log';
+  /** 验收策略全局缺省（2026-09-27 起 strict）：strict=验收失败硬失败（不再 completed_with_warnings
+   *  计成功口径）；tolerant=恢复 B1 软门旧行为。任务显式声明（graph.acceptance_policy）始终优先 */
+  acceptance_policy?: 'strict' | 'tolerant';
   /** M3 监督者：事件驱动 + 周期心跳的有边界处置 */
   supervisor?: {
     enabled?: boolean;
@@ -255,6 +264,12 @@ export function loadConfig(root: string = PROJECT_ROOT): AppConfig {
       rolling_max_stages: raw.orchestrator?.rolling_max_stages ?? 5,
       // 永续开发（2026-09-15）：infra 类失败的自动重排上限（超限才锁车道转人工）
       auto_requeue_max: raw.orchestrator?.auto_requeue_max ?? 3,
+      // 启动清扫的重启中断 park 阈值（缺省 3；优雅重启不计数）
+      infra_retries_max: raw.orchestrator?.infra_retries_max ?? 3,
+      // 假完成守卫动作（缺省 repair：修复轮拦截；log 为误伤回退开关）
+      delivery_guard: raw.orchestrator?.delivery_guard === 'log' ? 'log' : 'repair',
+      // 验收策略全局缺省（2026-09-27 起 strict；显式配 tolerant 恢复旧行为）
+      acceptance_policy: raw.orchestrator?.acceptance_policy === 'tolerant' ? 'tolerant' : 'strict',
       self_mod_gate: {
         enabled: raw.orchestrator?.self_mod_gate?.enabled ?? true,
         test_command: raw.orchestrator?.self_mod_gate?.test_command || 'npm test',

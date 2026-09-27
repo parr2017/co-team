@@ -140,6 +140,94 @@ describe('startup sweep 重做（2026-09-15 永续开发语义）', () => {
     expect(journals).toContain('停止自动续跑');
   });
 
+  it('优雅重启标记：不消耗 infra_retries，照常自动续跑（2026-09-27 开发期反复 Ctrl+C 不再误停）', async () => {
+    const leaderDir = path.join(tmp, 'leader-data');
+    process.env.COTEAM_LEADER_DIR = leaderDir;
+    try {
+      const { writeGracefulShutdownMarker } = await import('../src/leaderLock');
+      writeGracefulShutdownMarker();
+      await saveTaskGraph('t-graceful', [makeNode('n1', 'completed'), makeNode('n2', 'running')], [], { description: 'g', workspace: tmp, status: 'running' });
+
+      const swept = await orchestrator.sweepInterruptedTasks();
+      expect(swept.resume).toContain('t-graceful');
+      const g = await getTaskGraph('t-graceful');
+      expect(g!.status).toBe('interrupted');
+      expect(g!.infra_retries).toBeUndefined(); // 优雅重启不计数
+      const journals = JSON.stringify(await getTaskJournals('t-graceful'));
+      expect(journals).toContain('优雅重启');
+      expect(fs.existsSync(path.join(leaderDir, 'graceful-shutdown.json'))).toBe(false); // 读后即删
+    } finally {
+      delete process.env.COTEAM_LEADER_DIR;
+    }
+  });
+
+  it('重启抢救：上一进程沙箱内已完成节点的成果拉回工作区（裸拷贝路径）', async () => {
+    const ws = path.join(tmp, 'ws-salvage');
+    fs.mkdirSync(ws, { recursive: true });
+    const sandboxDir = path.join(tmp, 'sbx-dead');
+    fs.mkdirSync(sandboxDir, { recursive: true });
+    fs.writeFileSync(path.join(sandboxDir, 'artifacts.txt'), 'precious');
+    await saveTaskGraph('t-salvage', [makeNode('n1', 'completed'), makeNode('n2', 'running')], [], { description: 's', workspace: ws, status: 'running' });
+    const g = (await getTaskGraph('t-salvage'))!;
+    g.sandbox_path = sandboxDir;
+    await persistForTest(g);
+
+    const swept = await orchestrator.sweepInterruptedTasks();
+    expect(swept.resume).toContain('t-salvage');
+    expect(fs.existsSync(path.join(ws, 'artifacts.txt'))).toBe(true); // 成果落工作区
+    expect(fs.existsSync(sandboxDir)).toBe(false); // 抢救后沙箱清理
+    const fresh = await getTaskGraph('t-salvage');
+    expect(fresh!.sandbox_path).toBeFalsy(); // 路径清空
+    const journals = JSON.stringify(await getTaskJournals('t-salvage'));
+    expect(journals).toContain('服务重启抢救');
+  }, 30_000);
+
+  it('重启抢救（git 兜底沙箱）：合并节点分支 → 同步工作区（保留为脏改动并入下次基线）', async () => {
+    const { simpleGit } = await import('simple-git');
+    const { ensureBase, createNodeBranch, commitOnBranch } = await import('../src/git');
+    const ws = path.join(tmp, 'ws-git-salvage');
+    fs.mkdirSync(ws, { recursive: true });
+    const gw = simpleGit({ baseDir: ws });
+    await gw.init();
+    await gw.addConfig('user.name', 't');
+    await gw.addConfig('user.email', 't@t');
+    fs.writeFileSync(path.join(ws, 'base.txt'), 'v1');
+    await gw.add(['-A']);
+    await gw.commit('init');
+
+    // 独立 .git 的兜底沙箱：基线 + 节点分支 + 已提交产物
+    const sbx = path.join(tmp, 'sbx-git');
+    fs.mkdirSync(sbx, { recursive: true });
+    await ensureBase(sbx);
+    await createNodeBranch(sbx, 'coteam/n1-dev', 'coteam/base');
+    fs.writeFileSync(path.join(sbx, 'g-artifact.txt'), 'git-salvaged');
+    expect(await commitOnBranch(sbx, 'node work', ['g-artifact.txt'])).not.toBeNull();
+
+    const node = makeNode('n1', 'completed');
+    node.branch = 'coteam/n1-dev';
+    node.branch_base = 'coteam/base';
+    await saveTaskGraph('t-gsalv', [node, makeNode('n2', 'running')], [], { description: 's', workspace: ws, status: 'running' });
+    const g = (await getTaskGraph('t-gsalv'))!;
+    g.sandbox_path = sbx;
+    await persistForTest(g);
+
+    const orch2 = new Orchestrator({
+      agentsDir: tmp, modelPool: null, policy: { whitelistCommands: null, maxTimeSec: 10 },
+      maxRetries: 2, sandboxEnabled: true, gitEnabled: true, branchWorkflow: true,
+    });
+    await orch2.loadAgents();
+    const swept = await orch2.sweepInterruptedTasks();
+    expect(swept.resume).toContain('t-gsalv');
+    // 成果保留为工作区未提交改动（commit=false：gitCommit 回切会抹掉工作树文件，
+    // 而续跑基线舞步只认脏改动——提交反而会被 branch -D 清掉）
+    expect(fs.existsSync(path.join(ws, 'g-artifact.txt'))).toBe(true);
+    const statusAfter = await simpleGit({ baseDir: ws }).status();
+    expect(statusAfter.files.map((f) => f.path)).toContain('g-artifact.txt');
+    expect(fs.existsSync(sbx)).toBe(false); // 抢救后沙箱清理
+    const journals = JSON.stringify(await getTaskJournals('t-gsalv'));
+    expect(journals).toContain('服务重启抢救');
+  }, 30_000);
+
   async function persistForTest(graph: NonNullable<Awaited<ReturnType<typeof getTaskGraph>>>) {
     const { persistGraph } = await import('../src/store');
     await persistGraph(graph);

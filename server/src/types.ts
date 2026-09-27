@@ -95,6 +95,9 @@ export interface AgentResult {
   defects?: DefectReport[];
   /** P0-1 self-modification gate: the mandatory self-test run on self-referential tasks */
   gate_test?: { command: string; returncode: number; passed: boolean; summary?: string };
+  /** 节点产物提交失败留痕（2026-09-27）：commitAllOnBranch 失败且沙箱仍有未提交变更——
+   *  兜底沙箱里最后一类隐性产物丢失，供审计与恢复路径识别 */
+  commit_failed?: string;
   /** quality metric: reported changes vs actual git working-tree changes */
   delivery_check?: {
     consistent: boolean;
@@ -197,8 +200,9 @@ export interface TaskGraph {
   auto_restarts?: number;
   /** M4 滚动规划：任务按阶段滚动规划与验收 */
   rolling?: boolean;
-  /** B1 验收策略（2026-09-17）：strict = 合并后验收失败即任务失败（旧行为）；
-   *  tolerant（缺省）= 验收有失败 → completed_with_warnings，验收报告照常产出留证 */
+  /** B1 验收策略：strict = 合并后验收失败即任务失败（2026-09-27 起的全局缺省）；
+   *  tolerant = 验收有失败 → completed_with_warnings（验收报告照常产出留证，计成功口径）。
+   *  任务显式声明优先；未声明时取全局配置 orchestrator.acceptance_policy（缺省 strict） */
   acceptance_policy?: 'strict' | 'tolerant';
   stage?: number;
   stage_count?: number;

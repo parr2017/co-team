@@ -5,9 +5,9 @@ import * as path from 'node:path';
 import { simpleGit } from 'simple-git';
 
 /**
- * B1 验收软门（2026-09-17）：合并后验收测试失败时——
- * tolerant（缺省）→ 任务 completed_with_warnings（不把主体完成的任务一刀切判死）；
- * strict → 保持旧硬失败语义。
+ * B1 验收软门：合并后验收测试失败时——
+ * strict（2026-09-27 起全局缺省）→ 任务硬失败，不再"带警告完成"计入成功口径；
+ * tolerant（显式配置/显式声明）→ completed_with_warnings（验收报告留证）。
  */
 const agentBehaviors: (() => { content: string })[] = [];
 
@@ -80,19 +80,19 @@ async function saveWithPolicy(taskId: string, policy: 'strict' | 'tolerant' | un
 }
 
 describe('B1 验收软门', () => {
-  it('policy 缺省（tolerant）→ 验收失败不判死，completed_with_warnings + 验收报告留证', async () => {
+  it('policy 显式 tolerant → 验收失败不判死，completed_with_warnings + 验收报告留证', async () => {
     // 内容级假完成守卫（jgfhfaux 复盘）后：真实交付走结构化 files 落盘，
     // 只申报不写盘的 changes 会被判假完成——本用例验证的是验收软门，不是交付守卫
     agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'feat.txt 已写', files: [{ path: 'feat.txt', content: 'x' }], changes: ['feat.txt: ok'], errors: [] }) }));
-    await saveWithPolicy('t-acc1', undefined);
+    await saveWithPolicy('t-acc1', 'tolerant');
     const result = await (orchestrator as any).execute('t-acc1', tmp);
     expect(result.status).toBe('completed_with_warnings');
     const g = (await getTaskGraph('t-acc1')) as TaskGraph;
     expect(g.status).toBe('completed_with_warnings');
     expect((result.acceptance as any).status).toBe('failed');
-  });
+  }, 30_000);
 
-  it('policy=strict → 保持硬失败语义', async () => {
+  it('policy=strict 显式 → 保持硬失败语义', async () => {
     // 内容级假完成守卫（jgfhfaux 复盘）后：真实交付走结构化 files 落盘，
     // 只申报不写盘的 changes 会被判假完成——本用例验证的是验收软门，不是交付守卫
     agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'feat.txt 已写', files: [{ path: 'feat.txt', content: 'x' }], changes: ['feat.txt: ok'], errors: [] }) }));
@@ -101,5 +101,14 @@ describe('B1 验收软门', () => {
     expect(result.status).toBe('failed');
     const g = (await getTaskGraph('t-acc2')) as TaskGraph;
     expect(g.status).toBe('failed');
-  });
+  }, 30_000);
+
+  it('policy 未声明 → 全局缺省 strict（2026-09-27 起）：验收失败即任务失败', async () => {
+    agentBehaviors.push(() => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'feat.txt 已写', files: [{ path: 'feat.txt', content: 'x' }], changes: ['feat.txt: ok'], errors: [] }) }));
+    await saveWithPolicy('t-acc3', undefined);
+    const result = await (orchestrator as any).execute('t-acc3', tmp);
+    expect(result.status).toBe('failed');
+    const g = (await getTaskGraph('t-acc3')) as TaskGraph;
+    expect(g.status).toBe('failed');
+  }, 30_000);
 });

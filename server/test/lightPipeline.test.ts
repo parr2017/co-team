@@ -19,11 +19,13 @@ vi.mock('../src/llm', async (importOriginal) => {
     chat: async (_entry: any, messages: { role: string; content: string }[]) => {
       const sys = messages.find((m) => m.role === 'system')?.content || '';
       chatSysCalls.push(sys);
-      // 规划器调用返回静态 1 节点整图；其余（节点 agent 调用）返回成功申报 base.txt
+      // 规划器调用返回静态 1 节点整图；其余（节点 agent 调用）返回成功申报 base.txt。
+      // files 携带真实内容（applyFinalOutput 落盘）——2026-09-27 起 light 档同样过
+      // 内容级假完成守卫，只申报不写盘会被 unchanged 拦截（本用例测管线形状，非守卫）
       if (sys.includes('task planner')) {
         return { content: JSON.stringify({ nodes: [{ id: 'n1', name: '改错别字', agent: 'dev', complexity: 'simple', goal_link: '完成' }], edges: [], summary: 'plan' }), promptTokens: 3, completionTokens: 4 };
       }
-      return { content: JSON.stringify({ status: 'success', summary: '完成', verification: '已核对', changes: ['base.txt'], errors: [] }), promptTokens: 3, completionTokens: 4 };
+      return { content: JSON.stringify({ status: 'success', summary: '完成', verification: '已核对', changes: ['base.txt'], files: [{ path: 'base.txt', content: 'v2\n' }], errors: [] }), promptTokens: 3, completionTokens: 4 };
     },
   };
 });

@@ -12,6 +12,7 @@ import { Orchestrator } from './orchestrator/orchestrator';
 import { ModelPool } from './scheduler';
 import { TaskQueueManager } from './taskQueue';
 import { policyFromConfig } from './sandbox';
+import { writeGracefulShutdownMarker } from './leaderLock';
 import { emitProgress } from './store';
 import { startClarifyTimeoutScanner } from './clarifyTimeout';
 import { startDailyReportScanner } from './dailyReport';
@@ -233,6 +234,9 @@ async function main(): Promise<void> {
     modelPool,
     policy: policyFromConfig(config.permissions),
     maxRetries: config.orchestrator.max_retries,
+    infraRetriesMax: config.orchestrator.infra_retries_max,
+    deliveryGuard: config.orchestrator.delivery_guard,
+    acceptancePolicyDefault: config.orchestrator.acceptance_policy,
     sandboxEnabled: config.orchestrator.sandbox,
     gitEnabled: config.orchestrator.git,
     branchWorkflow: config.orchestrator.branch_workflow,
@@ -418,6 +422,8 @@ async function main(): Promise<void> {
 
   const shutdown = () => {
     logger.info('Shutting down...');
+    // 优雅退出标记：启动清扫读到即视为优雅重启，不消耗任务的 infra_retries park 额度
+    writeGracefulShutdownMarker();
     closeBus();
     process.exit(0);
   };

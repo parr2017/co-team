@@ -45,6 +45,34 @@ function readLock(): LeaderInfo | null {
   }
 }
 
+// ---------- 优雅退出标记（2026-09-27）：区分开发期 Ctrl+C 重启与真崩溃 ----------
+// SIGINT/SIGTERM 退出前写标记，启动清扫读到即视为"优雅重启"——不消耗 infra_retries
+// park 额度（开发期反复重启曾 4 次触发 park 误停任务）；真崩溃无标记，原保护语义不变。
+
+function gracefulMarkerPath(): string {
+  const dir = process.env.COTEAM_LEADER_DIR || path.join(PROJECT_ROOT, 'data');
+  return path.join(dir, 'graceful-shutdown.json');
+}
+
+/** SIGINT/SIGTERM 退出前调用：写优雅退出标记（best effort，写失败按真崩溃语义处理） */
+export function writeGracefulShutdownMarker(): void {
+  try {
+    fs.mkdirSync(path.dirname(gracefulMarkerPath()), { recursive: true });
+    fs.writeFileSync(gracefulMarkerPath(), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  } catch { /* 标记写不进去不阻塞退出 */ }
+}
+
+/** 启动清扫调用：读并删除优雅退出标记（读后即删，残留最多影响一次计数）。返回是否存在。 */
+export function consumeGracefulShutdownMarker(): boolean {
+  try {
+    fs.readFileSync(gracefulMarkerPath(), 'utf-8');
+    fs.rmSync(gracefulMarkerPath(), { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function lockFresh(): boolean {
   try {
     const st = fs.statSync(lockPath());

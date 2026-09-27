@@ -16,6 +16,7 @@ import { analyzeImages, type VisionBridge } from '../vision';
 import { cancelAsks, consumeAskQueue, createAsk, flushAgentAsks, queueAskForAgent, resolveAsk, waitForAnswer, abandonAsk, settleTaskPendingAsks } from '../askGate';
 import { consumeAgentMessages, drainSystemMessages, flushUndelivered } from '../agentMessages';
 import * as gitTool from '../git';
+import { consumeGracefulShutdownMarker } from '../leaderLock';
 import { simpleGit } from 'simple-git';
 import { saveConversation } from '../transcript';
 import { notify } from '../notify';
@@ -84,6 +85,13 @@ export interface OrchestratorOptions {
   modelPool: ModelPool | null;
   policy: PermissionPolicy;
   maxRetries: number;
+  /** 启动清扫：任务因服务重启中断的 park 阈值（缺省 3；优雅重启不消耗额度） */
+  infraRetriesMax?: number;
+  /** 假完成守卫动作：repair=修复轮拦截（缺省）；log=只留痕（误伤回退开关） */
+  deliveryGuard?: 'repair' | 'log';
+  /** 验收策略全局缺省（2026-09-27 起 strict）：strict=验收失败硬失败；tolerant=completed_with_warnings 计成功口径。
+   *  任务显式声明（graph.acceptance_policy）始终优先 */
+  acceptancePolicyDefault?: 'strict' | 'tolerant';
   sandboxEnabled: boolean;
   gitEnabled: boolean;
   branchWorkflow?: boolean;
@@ -302,6 +310,9 @@ export class Orchestrator {
     return this.policy;
   }
   private maxRetries: number;
+  private infraRetriesMax: number;
+  private deliveryGuard: 'repair' | 'log';
+  private acceptancePolicyDefault: 'strict' | 'tolerant';
   private sandboxEnabled: boolean;
   private gitEnabled: boolean;
   private branchWorkflow: boolean;
@@ -370,6 +381,9 @@ export class Orchestrator {
     this.pool = opts.modelPool;
     this.policy = opts.policy;
     this.maxRetries = opts.maxRetries;
+    this.infraRetriesMax = Math.max(1, opts.infraRetriesMax ?? 3);
+    this.deliveryGuard = opts.deliveryGuard ?? 'repair';
+    this.acceptancePolicyDefault = opts.acceptancePolicyDefault ?? 'strict';
     this.sandboxEnabled = opts.sandboxEnabled;
     this.gitEnabled = opts.gitEnabled;
     this.branchWorkflow = opts.branchWorkflow ?? true;
@@ -432,6 +446,10 @@ export class Orchestrator {
     const resume: string[] = [];
     const queued: string[] = [];
     const planning: string[] = [];
+    // 优雅退出标记读后即删：SIGINT/SIGTERM 重启不消耗 infra_retries park 额度——
+    // 开发期反复 Ctrl+C 重启曾 4 次触发 park 把健康任务误停（09-27 us55tbhs 实证）；
+    // 真崩溃无标记，原"防重启死循环"保护语义不变
+    const graceful = consumeGracefulShutdownMarker();
     for (const graph of await listTaskGraphs()) {
       if (graph.status === 'queued') {
         // 车道状态纯内存（taskQueue），重启即丢——queued 任务重启后无人驱动，
@@ -454,12 +472,65 @@ export class Orchestrator {
           interruptedNodeIds.push(node.id);
         }
       }
+
+      // 重启抢救（先于 park 判定）：上一进程沙箱里已完成节点的成果拉回工作区并提交到
+      // 任务分支——"已完成 N 节点的成果保留"必须是真话。链接 worktree 跳过（节点分支
+      // 共享主仓库 .git，重启天然安全，合并交给末尾 merge 节点）；独立 .git 的兜底沙箱
+      // 与裸拷贝才需要救（09-27 us55tbhs：11 个完成节点成果困在即将失联的 Temp 目录）。
+      const sandboxPath = graph.sandbox_path;
+      if (sandboxPath && sandboxPath !== graph.workspace && fs.existsSync(sandboxPath)) {
+        const dotGit = path.join(sandboxPath, '.git');
+        let isLinkedWorktree = false;
+        try { isLinkedWorktree = fs.existsSync(dotGit) && fs.statSync(dotGit).isFile(); } catch { /* ignore */ }
+        try {
+          let salvaged: { files: string[]; commit: string | null } | null = null;
+          if (!isLinkedWorktree) {
+            // commit=false：成果保留为工作区未提交改动——续跑基线舞步/兜底拷贝会把它
+            // 收进新沙箱基线；gitCommit 的回切反而会把文件从工作树抹掉
+            salvaged = await this.salvageSandboxArtifacts(graph, sandboxPath, graph.workspace, 'server restart', false);
+          }
+          await cleanupSandbox(sandboxPath).catch(() => {});
+          graph.sandbox_path = '';
+          if (salvaged && salvaged.files.length > 0) {
+            await appendJournal(graph.task_id, 'orchestrator', {
+              role: 'master', kind: 'round',
+              text: `服务重启抢救：沙箱中 ${salvaged.files.length} 个文件已拉回工作区（保留为未提交改动，将并入下次执行的基线），已完成节点的成果落袋`,
+              ts: new Date().toISOString(), node_id: interruptedNodeIds[0] || '', node_name: '',
+              meta: { salvaged_files: salvaged.files.length, commit: salvaged.commit },
+            });
+          }
+        } catch (salvageError) {
+          this.logger.error('Restart salvage failed — sandbox path kept for manual recovery', { taskId: graph.task_id, sandboxPath, error: String(salvageError) });
+          await appendJournal(graph.task_id, 'orchestrator', {
+            role: 'master', kind: 'error',
+            text: `服务重启抢救失败：沙箱保留在 ${sandboxPath}，可人工恢复`,
+            ts: new Date().toISOString(), node_id: '', node_name: '',
+          }).catch(() => {});
+        }
+      }
+
+      if (graceful) {
+        graph.status = 'interrupted';
+        graph.updated_at = new Date().toISOString();
+        await persistGraph(graph);
+        await appendJournal(graph.task_id, 'orchestrator', {
+          role: 'master', kind: 'error',
+          text: `服务优雅重启（正常退出），执行中断不计入重启次数——已完成节点成果保留，中断节点将自动续跑`,
+          ts: new Date().toISOString(), node_id: interruptedNodeIds[0] || '', node_name: '',
+          meta: { interrupted_nodes: interruptedNodeIds, auto_resume: true, graceful: true },
+        });
+        notify('task_interrupted', { task_id: graph.task_id, reason: 'graceful_restart', auto_resume: true }, `[Co-Team] 任务 ${graph.task_id} 因服务优雅重启中断，将自动续跑（不计入重启次数）`);
+        this.logger.warn('Startup sweep marked interrupted task for auto-resume (graceful restart, retry count not consumed)', { taskId: graph.task_id, nodes: interruptedNodeIds.length });
+        resume.push(graph.task_id);
+        continue;
+      }
+
       const retries = (graph.infra_retries ?? 0) + 1;
       graph.infra_retries = retries;
       graph.status = 'interrupted';
       graph.updated_at = new Date().toISOString();
       await persistGraph(graph);
-      if (retries > 3) {
+      if (retries > this.infraRetriesMax) {
         // 重启死循环保护：连续多次中断不再自动续跑，诚实停靠人工
         graph.status = 'failed';
         await persistGraph(graph);
@@ -483,6 +554,41 @@ export class Orchestrator {
       resume.push(graph.task_id);
     }
     return { resume, queued, planning };
+  }
+
+  /** 沙箱成果抢救：把已完成节点的产物拉回工作区（独立于任务收尾路径，启动清扫在
+   *  park/续跑判定前同样调用）。git 可用走"丢弃未提交半成品 → 合并已完成节点分支 →
+   *  syncToWorkspace"（沙箱 .git 绝不泄漏进工作区仓库），否则整目录 mergeChanges 拷贝。
+   *  commit=true（终态任务收尾）→ 恢复提交落在任务分支后回切；commit=false（重启续跑）
+   *  → 保留为工作区未提交改动——gitCommit 回切会把文件从工作树抹掉，而续跑基线舞步
+   *  只认工作树脏改动，提交反而会被 branch -D 清掉（2026-09-27 调试实证）。
+   *  返回恢复的文件与恢复提交（commit=false 时恒 null）；无已完成节点返回 null。 */
+  private async salvageSandboxArtifacts(graph: TaskGraph, sandbox: string, execWorkspace: string, reason: string, commit = true): Promise<{ files: string[]; commit: string | null } | null> {
+    const completedNodes = graph.nodes.filter((n) => n.status === 'completed' && n.agent !== 'orchestrator').length;
+    if (completedNodes === 0) return null;
+    let changes: string[] = [];
+    if (this.branchWorkflow && this.gitEnabled && await gitTool.isGitRepo(sandbox)) {
+      // 丢弃失败节点未提交的半成品（节点分支链上祖先的已完成产物不受影响），再合并
+      // 全部已完成节点分支——并行兄弟分支不从 HEAD 可达，必须逐个 merge
+      await simpleGit({ baseDir: sandbox }).reset(['--hard', 'HEAD']).catch(() => {});
+      const branches = graph.nodes
+        .filter((n) => n.agent !== 'orchestrator' && n.branch && n.status === 'completed')
+        .map((n) => n.branch as string);
+      if (branches.length > 0) await gitTool.mergeAllNodes(sandbox, branches).catch(() => null);
+      // syncToWorkspace（不是 mergeChanges）：沙箱有自己的 .git，绝不能泄漏进工作区仓库
+      await gitTool.syncToWorkspace(sandbox, execWorkspace, 'coteam/base');
+      const dirty = await simpleGit({ baseDir: execWorkspace }).status();
+      changes = dirty.files.map((f) => f.path);
+    } else {
+      changes = mergeChanges(sandbox, execWorkspace);
+    }
+    if (changes.length === 0) return { files: [], commit: null };
+    let recoveryCommit: string | null = null;
+    if (commit && this.gitEnabled) {
+      recoveryCommit = (await this.gitCommit(graph.task_id, execWorkspace, changes, `coteam: task ${graph.task_id} partial recovery (${completedNodes} nodes, ${reason})`))?.commit ?? null;
+    }
+    this.logger.warn('Salvaged completed-node changes from sandbox', { taskId: graph.task_id, reason, nodes: completedNodes, files: changes.length, commit: recoveryCommit });
+    return { files: changes, commit: recoveryCommit };
   }
 
   /** planAsync 后台规划被打断的任务：重建规划流程（不自动执行，规划完等用户审阅/既有 autoRun 语义） */
@@ -1143,7 +1249,19 @@ export class Orchestrator {
     const useSandbox = this.sandboxEnabled && levelProfile.sandbox;
     let sandbox: string;
     try {
-      sandbox = useSandbox ? await createSandbox(execWorkspace, taskId) : execWorkspace;
+      sandbox = useSandbox
+        ? await createSandbox(execWorkspace, taskId, (reason) => {
+            // 沙箱降级大声报警（09-27 learn-english：降级曾只有 console.error，
+            // 结构化日志零痕迹，任务在无持久化能力的模式里跑完无人知晓）
+            this.logger.error('Sandbox degraded to temp-copy fallback', { taskId, reason });
+            void appendJournal(taskId, 'orchestrator', {
+              role: 'master', kind: 'error',
+              text: `⚠ 沙箱降级：${reason}——本轮在临时拷贝目录执行（已补 git init 兜底持久化），请留意任务频道的恢复告警`,
+              ts: new Date().toISOString(), node_id: '', node_name: '',
+            }).catch(() => {});
+            notify('task_sandbox_fallback', { task_id: taskId, reason }, `[Co-Team] 任务 ${taskId} 沙箱降级为临时拷贝（${reason}）`);
+          })
+        : execWorkspace;
       this.logger.debug('Sandbox created', { taskId, sandbox, sandboxEnabled: this.sandboxEnabled, useSandbox });
       // A1 实时产出视图: remember where the work is happening so the API can browse it
       graph.sandbox_path = sandbox;
@@ -1268,7 +1386,7 @@ export class Orchestrator {
               // 不再把 23/25 节点全完成的任务因测试有败一刀切判死）；strict → 保持硬失败
               if (graph.rolling) {
                 this.logger.warn('post-merge acceptance failed (rolling: deferred to final gate)', { taskId });
-              } else if ((graph.acceptance_policy ?? 'tolerant') === 'tolerant') {
+              } else if (this.acceptancePolicy(graph) === 'tolerant') {
                 this.logger.warn('post-merge acceptance failed (tolerant: completing with warnings)', { taskId, command: acc.command, exitCode: acc.exitCode });
               } else {
                 throw new Error(`post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`);
@@ -1301,31 +1419,10 @@ export class Orchestrator {
           let recovered = false;
           if (completedNodes > 0) {
             try {
-              let changes: string[] = [];
-              if (this.branchWorkflow && this.gitEnabled && await gitTool.isGitRepo(sandbox)) {
-                // drop the failed node's uncommitted partial edits (node branches chain their
-                // ancestors, so nothing completed is lost), then merge every completed node
-                // branch — parallel siblings are not reachable from HEAD alone
-                await simpleGit({ baseDir: sandbox }).reset(['--hard', 'HEAD']).catch(() => {});
-                const branches = graph.nodes
-                  .filter((n) => n.agent !== 'orchestrator' && n.branch && n.status === 'completed')
-                  .map((n) => n.branch as string);
-                if (branches.length > 0) await gitTool.mergeAllNodes(sandbox, branches).catch(() => null);
-                // syncToWorkspace (not mergeChanges): the sandbox here has its own .git,
-                // which must never leak into the workspace repo
-                await gitTool.syncToWorkspace(sandbox, execWorkspace, 'coteam/base');
-                const dirty = await simpleGit({ baseDir: execWorkspace }).status();
-                changes = dirty.files.map((f) => f.path);
-              } else {
-                changes = mergeChanges(sandbox, execWorkspace);
-              }
-              if (changes.length > 0) {
-                const commit = this.gitEnabled
-                  ? await this.gitCommit(taskId, execWorkspace, changes, `coteam: task ${taskId} partial recovery (${completedNodes} nodes, failed: ${String(result?.error || 'unknown').slice(0, 60)})`)
-                  : null;
-                result.merged_files = changes;
-                result.recovered_partial = { nodes: completedNodes, files: changes.length, commit: commit?.commit ?? null };
-                this.logger.warn('Recovered completed-node changes from non-success task', { taskId, status: result?.status, nodes: completedNodes, files: changes.length, commit: commit?.commit });
+              const salvaged = await this.salvageSandboxArtifacts(graph, sandbox, execWorkspace, `failed: ${String(result?.error || 'unknown').slice(0, 60)}`);
+              if (salvaged && salvaged.files.length > 0) {
+                result.merged_files = salvaged.files;
+                result.recovered_partial = { nodes: completedNodes, files: salvaged.files.length, commit: salvaged.commit };
               }
               recovered = true;
             } catch (recoverError) {
@@ -1353,7 +1450,7 @@ export class Orchestrator {
         if (acc.status === 'failed') {
           // M5：滚动任务延迟到最终闸统一裁决；静态按 acceptance_policy 裁决——
           // tolerant（缺省）不在此判死，留给下方软门转 completed_with_warnings；strict 硬失败
-          if (!graph.rolling && (graph.acceptance_policy ?? 'tolerant') === 'strict') {
+          if (!graph.rolling && this.acceptancePolicy(graph) === 'strict') {
             result = { status: 'failed', error: `post-merge acceptance: ${acc.command} exit ${acc.exitCode}\n${acc.tail.slice(-600)}`, changes: result.changes || [] };
           }
         } else if (acc.status === 'no-test-command') {
@@ -1375,7 +1472,7 @@ export class Orchestrator {
     // strict 任务在上方两条路径直接 throw/改 failed，不会走到这里
     if (result.status === 'success' && !graph.rolling
       && (result as Record<string, any>).acceptance?.status === 'failed'
-      && (graph.acceptance_policy ?? 'tolerant') === 'tolerant') {
+      && this.acceptancePolicy(graph) === 'tolerant') {
       result.status = 'completed_with_warnings';
       await emitProgress('task_completed_with_warnings', { task_id: taskId, acceptance: (result as Record<string, any>).acceptance });
     }
@@ -2085,7 +2182,12 @@ export class Orchestrator {
    */
   private async recordDeliveryCheck(graph: TaskGraph, node: TaskNode, sandbox: string, result: AgentResult): Promise<AgentResult['delivery_check'] | null> {
     try {
-      if (!this.gitEnabled || !this.sandboxEnabled || sandbox === graph.workspace) return null;
+      if (!this.gitEnabled || !this.sandboxEnabled) return null;
+      const directWorkspace = sandbox === graph.workspace;
+      // light 档守卫（2026-09-27）：direct 写用户工作区曾让本守卫整段跳过——phantom/
+      // unchanged 对 light 同样生效（unreported 除外，见下）。仅当沙箱是档级设计关闭
+      // （light）时补守卫；标准/重型档 direct 属异常配置或全局关沙箱，维持旧行为不强加。
+      if (directWorkspace && LEVEL_PROFILES[graph.level ?? 'standard'].sandbox) return null;
       const looksLikePath = (p: string) => /[/\\]/.test(p) || /\.[a-z0-9]{1,6}$/i.test(p);
       const reported = this.reportedPaths(result).map((p) => this.normalizeReportedPath(p)).filter(Boolean);
       const repSet = new Set(reported);
@@ -2096,7 +2198,9 @@ export class Orchestrator {
         .filter(Boolean);
 
       const covered = (actualPath: string) => [...repSet].some((r) => r === actualPath || actualPath.endsWith('/' + r) || r.endsWith('/' + actualPath));
-      const unreported = actual.filter((a) => !covered(a));
+      // unreported 只对沙箱模式计算——direct（light）写用户工作区，git status 混入
+      // 用户自己的脏文件，按申报对账必误报
+      const unreported = directWorkspace ? [] : actual.filter((a) => !covered(a));
 
       const phantom: string[] = [];
       const unchanged: string[] = [];
@@ -2242,28 +2346,72 @@ export class Orchestrator {
         violations.push(`规格点名的产物未落盘：${specMissing.slice(0, 3).join('、')}（用 write_file 真正写入工作区，别只在申报里写路径）`);
       }
     }
-    // 3b: 空申报空转。midRunWritten 在闸后由 applyFinalOutput 并入申报——闸内需显式豁免，
-    // 否则"写了文件忘申报"会被误拦；git status 失败（actual=null）跳过本核查。
-    // 执行期自动落盘的协同文档（SSOT docs / global_goal）不算"实际改动"——否则
-    // actual 恒 >0，守卫永不触发（实测：干净沙箱也带 3 个自动 md）。
+    // 3b/3c/豁免校验共用的 git 实际变更清单（null = git 不可用，相关校验整体优雅降级）。
+    // 执行期自动落盘的协同文档（SSOT docs / global_goal）与忽略路径（node_modules/.coteam 等）
+    // 不算"实际改动"——否则 actual 恒 >0，守卫永不触发。
     const AUTO_DOC_RE = /^(docs\/)?(task_spec|api_contract|status_report|global_goal)\.md$/i;
+    const norm = (p: string) => String(p).replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
     const declared = [...(parsed.changes || []), ...(parsed.files || []).map((f: any) => f?.path)].filter(Boolean);
     const noReason = String(parsed.no_changes_reason || '').trim();
-    if (declared.length === 0 && midRunWritten.length === 0 && !noReason) {
-      let actual: number | null = null;
-      try {
-        const st = await simpleGit({ baseDir: workspace }).status();
-        const all = [...st.modified, ...st.created, ...st.not_added, ...st.renamed.map((r: any) => r.to), ...st.deleted];
-        actual = all.filter((p) => !AUTO_DOC_RE.test(String(p).replace(/\\/g, '/').toLowerCase())).length;
-      } catch { actual = null; }
-      if (actual === 0) {
-        violations.push('零申报零改动却申报成功——若确有改动请用 changes 申报文件清单；若本节点确无需改动，请在最终 JSON 加 no_changes_reason 字段说明原因');
+    // 申报条目用 normalizeReportedPath（盘符申报 d:/x.dart 曾被 split(':') 切坏漏判）
+    const declaredNorm = declared.map((d: any) => this.normalizeReportedPath(String(d))).filter(Boolean);
+    let gitActual: string[] | null = null;
+    try {
+      const st = await simpleGit({ baseDir: workspace }).status();
+      gitActual = [...st.modified, ...st.created, ...st.not_added, ...st.renamed.map((r: any) => r.to), ...st.deleted]
+        .map((p) => norm(p))
+        .filter((p) => p && !AUTO_DOC_RE.test(p) && !isIgnoredRelPath(p));
+    } catch { gitActual = null; }
+    // light 档直接写用户工作区：git status 混入用户自己的脏文件，依赖"实际 vs 申报"全集
+    // 对比的校验（3c/豁免 git 侧）只对沙箱模式生效——幻影校验（3a'）方向安全，双模式都跑
+    let directWorkspace = false;
+    try {
+      const g = await getTaskGraph(node.task_id);
+      directWorkspace = !!g?.workspace && path.resolve(g.workspace) === path.resolve(workspace);
+    } catch { directWorkspace = false; }
+
+    // 3a'（幻影申报闸内修复轮）设计后撤回（2026-09-27 执行期偏差）：与收尾守卫
+    // applyPhantomGuard 的既有语义冲突——部分幻影剔除放行是 jgfhfaux 复盘的深思熟虑
+    // 决策（有 phantomGuard.test 锁定），且最终 JSON 的 files[]（带内容）由
+    // applyFinalOutput 在闸后落盘，闸内存在性检查必误判。幻影拦截维持收尾最后防线。
+    // 3b: 空申报空转。midRunWritten 在闸后由 applyFinalOutput 并入申报——闸内需显式豁免，
+    // 否则"写了文件忘申报"会被误拦；git status 失败（actual=null）跳过本核查。
+    if (declared.length === 0 && midRunWritten.length === 0 && !noReason && gitActual !== null && gitActual.length === 0) {
+      violations.push('零申报零改动却申报成功——若确有改动请用 changes 申报文件清单；若本节点确无需改动，请在最终 JSON 加 no_changes_reason 字段说明原因');
+    }
+    // 3c: 漏申报进修复轮（2026-09-27）：unreported 此前只置 consistent=false 零代价——
+    // "写了盘不申报"让下游拿不到交付契约（precondition blocker 温床）。midRunWritten
+    // 在闸后由 applyFinalOutput 并入申报，闸内先显式排除（否则写了文件忘申报被误拦）。
+    if (this.deliveryGuard === 'repair' && declared.length > 0 && !directWorkspace && gitActual) {
+      const midRunNorm = [...new Set(midRunWritten.map((p) => norm(p)).filter(Boolean))];
+      const covered = (a: string) =>
+        declaredNorm.some((d) => d === a || a.endsWith('/' + d) || d.endsWith('/' + a)) ||
+        midRunNorm.some((m) => m === a || a.endsWith('/' + m) || m.endsWith('/' + a));
+      const unreported = gitActual.filter((a) => !covered(a));
+      if (unreported.length > 0) {
+        violations.push(`实际写盘但未申报（${unreported.length} 个）：${unreported.slice(0, 5).join('、')}——把全部改动文件补进 changes 申报清单（下游节点按申报等待交付）`);
+      }
+    }
+    // 豁免一致性（2026-09-27）：no_changes_reason 曾是逃逸空申报守卫的后门——声明
+    // "本节点无改动"却写了文件/工作区有变更，豁免照单全收。现在拒绝虚假豁免。
+    if (this.deliveryGuard === 'repair' && noReason) {
+      const exemptWritten = midRunWritten.length > 0;
+      const exemptGit = !directWorkspace && gitActual !== null && gitActual.length > 0;
+      if (exemptWritten || exemptGit) {
+        violations.push(`no_changes_reason 声明"无改动"但与事实不符（${exemptWritten ? `轮内写过 ${midRunWritten.length} 个文件` : `工作区有 ${gitActual!.length} 个未提交变更`}）——要么用 changes 补全申报并删掉豁免说明，要么说明真实理由`);
       }
     }
     return { violations, specMissing };
   }
 
   // ---------- single node ----------
+
+  /** 验收策略（2026-09-27 起缺省 strict）：任务显式声明优先，否则取全局缺省。
+   *  strict=验收失败硬失败（静态任务 throw/改 failed，滚动任务交给最终闸）；
+   *  tolerant=completed_with_warnings 计成功口径（B1 软门，验收报告留证）。 */
+  private acceptancePolicy(graph: TaskGraph): 'strict' | 'tolerant' {
+    return graph.acceptance_policy ?? this.acceptancePolicyDefault;
+  }
 
   /** OBS-1 失败分型：把 node.error 归入结构化类别（供 /api/metrics 聚合失败构成） */
   private classifyNodeError(err: string): string {
@@ -2425,8 +2573,9 @@ export class Orchestrator {
 
     // 内容级假完成守卫基线：节点动手前给沙箱文件拍 (mtime,size) 指纹——收尾时
     // 申报"修改"的文件指纹未变即零变更幻影（jgfhfaux：申报改 ai_service.dart，
-    // 文件存在所以存在性 phantom 放行，实际从未写盘）
-    if (this.sandboxEnabled && sandbox !== graph.workspace) {
+    // 文件存在所以存在性 phantom 放行，实际从未写盘）。
+    // light 档（direct 写用户工作区）同样拍指纹——内容级校验不再漏掉 light 档。
+    if (this.sandboxEnabled && (sandbox !== graph.workspace || !LEVEL_PROFILES[graph.level ?? 'standard'].sandbox)) {
       try {
         this.nodeFileSnapshots.set(`${taskId}:${node.id}`, this.snapshotSandboxFiles(sandbox));
       } catch { /* best effort: 缺快照时内容校验自动降级为跳过 */ }
@@ -2730,6 +2879,21 @@ export class Orchestrator {
       // M2：全量提交节点工作树（不再依赖模型申报的 changes——漏报是常态，产物丢失才是灾难）
       const commit = await gitTool.commitAllOnBranch(sandbox, `coteam: ${node.name}${escalated ? ' (escalated)' : ''}`).catch(() => null);
       if (commit && node.result) (node.result as AgentResult).git_commit = { branch: node.branch, commit };
+      if (!commit && node.result) {
+        // 提交返回 null ≠ 无事可提交：沙箱 git 可用且确有变更时必须留痕——.catch(() => null)
+        // 会把真实提交失败吞成"零变更"（兜底沙箱里最后一类隐性产物丢失，09-27 补）
+        const st = await simpleGit({ baseDir: sandbox }).status().catch(() => null);
+        if (st && (st.staged.length || st.files.length)) {
+          const reason = `节点产物提交失败：沙箱内仍有 ${st.staged.length || st.files.length} 个未提交变更，成果未落分支`;
+          (node.result as AgentResult).commit_failed = reason;
+          await appendJournal(taskId, node.agent, {
+            role: 'master', kind: 'error',
+            text: `⚠ 节点「${node.name}」${reason}——请检查沙箱与节点 diff 存档`,
+            ts: new Date().toISOString(), node_id: node.id, node_name: node.name,
+          }).catch(() => {});
+          this.logger.warn('Node commit failed with uncommitted changes', { taskId, nodeId: node.id, files: st.files.length });
+        }
+      }
     } else if (useBranch && !node.branch) {
       // 分支缺失（创建失败）兜底：产物直提 base，绝不留在工作树等下一个节点 checkout 冲掉
       const docPaths = (((result as Record<string, any>).doc_updates || []) as { type: string }[]).map((u) => `docs/${u.type}.md`);
