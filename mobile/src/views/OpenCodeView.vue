@@ -228,7 +228,7 @@ async function createAndTakeOver(inst: OcInstance) {
     if (list.length) {
       const index = await new Promise<number>((resolve) => {
         projResolve.value = resolve;
-        projActions.value = list.map((p) => ({ name: p.name }));
+        projActions.value = list.map((p) => ({ name: p.label }));
         projSheet.value = true;
       });
       if (index < 0 || !Number.isInteger(index)) { creatingSession.value = ''; return; }

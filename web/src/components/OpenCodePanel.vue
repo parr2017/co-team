@@ -262,7 +262,7 @@ async function confirmCreate() {
   const inst = projDlgInst.value;
   const project = projList.value.find((p) => p.id === projPick.value);
   if (!inst || !project) return;
-  await doCreate(inst, project.workspace, project.name);
+  await doCreate(inst, project.id, project.name);
   projDlgVisible.value = false;
 }
 
