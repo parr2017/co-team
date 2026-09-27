@@ -37,6 +37,15 @@ export interface OcFormState {
   answers: Record<string, unknown>;
 }
 
+/** oc 目录 × co-team 项目 合并：会话目录打底（目录名标签），项目覆盖命名并补齐未涉及项目 */
+function mergeOcProjects(projects: { name: string; workspace: string }[], dirs: { label: string; workspace: string }[]): { name: string; workspace: string }[] {
+  const norm = (d: string) => d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const map = new Map<string, { name: string; workspace: string }>();
+  for (const d of dirs) map.set(norm(d.workspace), { name: `（会话目录）${d.label}`, workspace: d.workspace });
+  for (const p of projects) map.set(norm(p.workspace), { name: p.name, workspace: p.workspace });
+  return [...map.values()].slice(0, 14);
+}
+
 function buildOcFormCard(state: OcFormState): Record<string, unknown> {
   const elements: import('./cards').CardElement[] = [];
   if (state.title) elements.push(md(`**${state.title.slice(0, 80)}**`));
@@ -306,13 +315,8 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       const instances = await deps.listInstances();
       const bound = session.oc_instance || '';
       const projects = await deps.listProjects().catch(() => []);
-      const norm = (d: string) => d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-      const seen = new Set(projects.map((p) => norm(p.workspace)));
       const dirs = (await deps.workdirs?.().catch(() => [])) || [];
-      const merged = [
-        ...projects.map((p) => ({ name: p.name, workspace: p.workspace })),
-        ...dirs.filter((d) => !seen.has(norm(d.workspace))).map((d) => ({ name: `（会话目录）${d.label}`, workspace: d.workspace })),
-      ];
+      const merged = mergeOcProjects(projects, dirs);
       const sessions = bound ? await deps.listSessions(bound).catch(() => []) : [];
       return buildOcInstancesCard(instances, bound || undefined, sessions, session.oc_session || undefined) as any;
     },
@@ -410,15 +414,9 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         }
         if (act === 'oc_new_pick') {
           // 新建先选项目：co-team 项目 + oc 既有会话涉及的目录（去重合并，项目名优先）
-          const norm = (d: string) => d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
           const projects = await deps.listProjects().catch(() => []);
-          const seen = new Set(projects.map((p) => norm(p.workspace)));
           const dirs = (await deps.workdirs?.().catch(() => [])) || [];
-          const merged = [
-            ...projects.map((p) => ({ name: p.name, workspace: p.workspace })),
-            ...dirs.filter((d) => !seen.has(norm(d.workspace))).map((d) => ({ name: `（会话目录）${d.label}`, workspace: d.workspace })),
-          ].slice(0, 10);
-          return cardResponse(buildProjectPickerCard('oc', merged, String(params.instance || '')));
+          return cardResponse(buildProjectPickerCard('oc', mergeOcProjects(projects, dirs), String(params.instance || '')));
         }
         if (act === 'oc_new_proj') {
           const session = await getSession(input.operatorOpenId);
