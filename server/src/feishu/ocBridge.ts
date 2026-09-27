@@ -37,7 +37,7 @@ export interface OcBridgeDeps {
   readRecent: (instanceId: string, sessionId: string, limit: number) => Promise<{ role: string; text: string }[]>;
   pendingAll: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] };
   answerPermission: (instanceId: string, sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => Promise<boolean>;
-  answerQuestion: (instanceId: string, requestID: string, answers: string[][]) => Promise<boolean>;
+  answerQuestion: (instanceId: string, requestID: string, answers: string[][] | Record<string, unknown>) => Promise<boolean>;
   rejectQuestion: (instanceId: string, requestID: string) => Promise<boolean>;
   /** 会话归属提取（oc_event → session id），由挂载处用 events.eventSessionId 实现 */
   eventSessionId: (event: Record<string, any>) => string;
@@ -372,11 +372,25 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         if (act === 'oc_question') {
           const instance = String(params.instance || '');
           const requestID = String(params.request_id || '');
-          const answer = String(input.formValue?.answer || '').trim();
-          if (!answer) return reply('回答为空', ['请输入内容后再提交。']);
-          const ok = await deps.answerQuestion(instance, requestID, [[answer]]);
+          // OpenCode 回答格式：key-based Record<field.key, 值>（按 question.asked 的 questions[].key 组装；
+          // 此前发位置矩阵 [[text]] 与字段数不匹配 → OpenCode 400 Bad Request）。
+          // 判空在组装之后（表单字段名是 a1/a2…，不是 answer）
+          const pending = deps.pendingAll();
+          const q = (pending.questions || []).find((x) => String(x.requestID || x.id || '') === requestID);
+          const fields = (Array.isArray(q?.questions) ? q.questions : []) as { key: string }[];
+          const answers: Record<string, unknown> = {};
+          fields.forEach((f, i) => {
+            const v = String(input.formValue?.[`a${i + 1}`] ?? input.formValue?.[f.key] ?? '').trim();
+            if (v) answers[f.key || `f${i}`] = v;
+          });
+          if (!fields.length) {
+            const answer = String(input.formValue?.answer || '').trim();
+            if (answer) answers.answer = answer;
+          }
+          if (!Object.keys(answers).length) return reply('回答为空', ['请输入内容后再提交。']);
+          const ok = await deps.answerQuestion(instance, requestID, answers);
           return ok
-            ? reply('✅ 已回答', [answer.slice(0, 100)])
+            ? reply('✅ 已回答', [Object.values(answers).map((v) => String(v).slice(0, 60)).join('；').slice(0, 100)])
             : reply('⏱ 提问已失效', [`${instance} · ${requestID} 不在等待中。`]);
         }
         return;
@@ -485,10 +499,18 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const seenKey = `feishu:oc:qseen:${qid}`;
         if (await busGet(seenKey)) continue;
         await busSet(seenKey, 1, 3600);
-        const question = String(q.question || q.title || JSON.stringify(q).slice(0, 300));
+        // question.asked 归一结构：{title, questions:[{key,type,question,options,required}]}——
+        // 问题正文在 questions[] 里（此前误取 title="Questions" 导致卡片只有标题没有问题）
+        const fields = (Array.isArray(q.questions) ? q.questions : []) as { key: string; question?: string; type?: string; options?: { label?: string; value?: string }[]; required?: boolean }[];
+        const questionText = fields.length
+          ? fields.map((f, i) => `${i + 1}. ${f.question || f.key}${f.required ? '（必填）' : ''}`).join('\n')
+          : String(q.question || q.title || '需要你的输入');
         const card = card2('orange', `❓ OpenCode 提问 · ${instance}`, [
-          md(question.slice(0, 800)),
-          form(`oq_${qid}`, [inputField('answer', '输入你的回答…'), submitBtn('发送', 'go')]),
+          md(questionText.slice(0, 800)),
+          form(`oq_${qid}`, fields.slice(0, 3).map((f, i) => {
+            const optHint = (f.options || []).map((o) => o?.label || o?.value).filter(Boolean).slice(0, 5).join(' / ');
+            return inputField(`a${i + 1}`, optHint ? `${f.question?.slice(0, 24) || '回答'}（可选：${optHint}）` : `回答：${f.question?.slice(0, 24) || f.key}`);
+          }).concat([submitBtn('发送', 'go')])),
           note(`Co-Team · OpenCode 提问 · ${new Date().toLocaleString()}`),
         ]);
         const messageId = await sendCard(cfg, target.id, card, target.type);

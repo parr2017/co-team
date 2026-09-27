@@ -56,18 +56,9 @@
           </div>
           <!-- assistant -->
           <div v-else class="a-block">
-            <div class="a-head">
-              <span class="a-name">opencode</span>
-              <span v-if="m.providerID || m.modelID" class="mono dim mini">{{ m.providerID }}/{{ m.modelID }}</span>
-              <span v-if="m.tokens" class="mono dim mini" :title="JSON.stringify(m.tokens)">
-                ↑{{ fmtTokens(m.tokens.input) }} ↓{{ fmtTokens(m.tokens.output) }}
-              </span>
-              <span v-if="typeof m.cost === 'number' && m.cost > 0" class="mono dim mini">${{ m.cost.toFixed(4) }}</span>
-              <span v-if="m.finish" class="mono dim mini">{{ m.finish }}</span>
-            </div>
             <template v-for="(p, pi) in m.parts" :key="p.id || pi">
               <div v-if="p.type === 'text' && p.text" class="a-text"><MdView :source="p.text" /></div>
-              <details v-else-if="p.type === 'reasoning' && p.text" class="a-think" open>
+              <details v-else-if="p.type === 'reasoning' && p.text" class="a-think">
                 <summary><span class="car">▶</span><span class="tt">思考过程</span></summary>
                 <div class="think-body">{{ p.text }}</div>
               </details>
@@ -105,8 +96,6 @@
                   </div>
                 </div>
               </div>
-              <div v-else-if="p.type === 'step-start'" class="step-chip">— 步骤开始 —</div>
-              <div v-else-if="p.type === 'step-finish'" class="step-chip">— 步骤完成 —</div>
               <div v-else-if="p.type === 'patch'" class="patch-chip">
                 变更 {{ p.files?.length || 0 }} 个文件：{{ (p.files || []).map((f: any) => f.path || f.file).join('、') }}
               </div>
@@ -917,7 +906,7 @@ onBeforeUnmount(() => {
 .tdot.in_progress { background: var(--el-color-primary); animation: ocpulse 1s ease-in-out infinite; }
 .tdot.completed { background: var(--el-color-success); }
 .stream { flex: 1; overflow-y: auto; min-height: 0; }
-.col { max-width: 860px; margin: 0 auto; padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 14px; }
+.col { max-width: 860px; margin: 0 auto; padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 6px; }
 .stream-empty { text-align: center; color: var(--el-text-color-secondary); padding: 40px 0; font-size: 13px; }
 .page-head { text-align: center; padding: 4px 0 10px; }
 .ttrim { font-size: 10px; color: var(--el-color-warning); border: 1px solid var(--el-color-warning-light-5); border-radius: 4px; padding: 0 5px; cursor: pointer; flex: none; }
@@ -929,7 +918,7 @@ onBeforeUnmount(() => {
 .a-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .a-name { font-size: 12px; font-weight: 600; color: var(--el-text-color-primary); }
 .a-text { font-size: 14px; line-height: 1.7; }
-.a-think { margin: 6px 0; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 4px 10px; }
+.a-think { margin: 2px 0; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 4px 10px; }
 .a-think summary { cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--el-text-color-secondary); list-style: none; }
 .a-think summary::-webkit-details-marker { display: none; }
 .a-think .car { transition: transform 0.15s; display: inline-block; }
@@ -941,7 +930,7 @@ onBeforeUnmount(() => {
 .patch-chip { font-size: 12px; color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-radius: 6px; padding: 4px 8px; }
 .chip { font-size: 12px; color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-radius: 6px; padding: 2px 8px; display: inline-block; margin: 2px 0; }
 .chip.warn { background: var(--el-color-warning-light-9); color: var(--el-color-warning-darken-2); }
-.tool-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; margin: 6px 0; overflow: hidden; }
+.tool-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; margin: 2px 0; overflow: hidden; }
 .tool-card.running { border-color: var(--el-color-primary-light-5); }
 .tool-card.error { border-color: var(--el-color-danger-light-5); }
 .tc-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; background: var(--el-fill-color-lighter); }
