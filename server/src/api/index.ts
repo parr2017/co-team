@@ -2198,6 +2198,11 @@ export function createApi(ctx: ApiContext): Hono {
               return !!(r && r.data);
             },
             listModels: ocModels,
+            listAgents: async (instanceId: string) => {
+              const r = await oc.listAgents(undefined, instanceId).catch(() => null);
+              if (!r?.ok || !r.data) return [] as { id: string; label: string }[];
+              return (r.data as any[]).map((a) => ({ id: a.name, label: a.display || a.name }));
+            },
             switchModel: async (instanceId, sessionId, modelId) => {
               const model = (oc as any).resolveModel ? (oc as any).resolveModel(instanceId, modelId) : undefined;
               if (!model) return false;
