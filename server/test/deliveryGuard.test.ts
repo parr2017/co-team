@@ -18,13 +18,18 @@ vi.mock('../src/llm', async (importOriginal) => {
   return {
     ...actual,
     chat: async (_entry: any, _messages: { role: string; content: string }[]) => {
+      const sys = (_messages || []).find((m: any) => m.role === 'system')?.content || '';
+      // 规划器调用返回单节点整图（execution_policy 继承用例走 createTask 全流程）
+      if (sys.includes('task planner')) {
+        return { content: JSON.stringify({ nodes: [{ id: 'n1', name: '实现节点', agent: 'dev', complexity: 'simple', goal_link: '完成' }], edges: [], summary: 'plan' }), promptTokens: 3, completionTokens: 4 };
+      }
       const b = agentBehaviors.shift();
       return b ? { ...b(), promptTokens: 3, completionTokens: 4 } : { content: JSON.stringify({ status: 'success', summary: 'done', verification: 'ok', changes: [], errors: [] }), promptTokens: 3, completionTokens: 4 };
     },
   };
 });
 
-import { initBus, closeBus } from '../src/bus';
+import { initBus, closeBus, busGet } from '../src/bus';
 import { Orchestrator } from '../src/orchestrator/orchestrator';
 import { ModelPool } from '../src/scheduler';
 import { saveTaskGraph, getTaskGraph } from '../src/store';
@@ -138,4 +143,39 @@ describe('假完成守卫缺口修补（2026-09-27）', () => {
     expect(node.error).toContain('假完成拦截');
     expect(node.result!.delivery_check!.unchanged).toContain('base.txt');
   }, 30_000);
+
+  it('pending_commands 只收真正被 park 的命令：已实跑成功的命令在最终 JSON 里复述不再被误挂审批', async () => {
+    // us55tbhs 节点14 实证：flutter test/analyze 经 exec 实跑通过（returncode 0），
+    // 模型在最终 JSON commands 里复述了一遍，收尾合并把它们与真被 park 的
+    // `| tail -40` 一起登记审批——节点被误挂 waiting_approval
+    const orch2 = new Orchestrator({
+      agentsDir: tmp, modelPool: new ModelPool([{ name: 'fake-model', api_key: 'k', base_url: 'http://localhost:9', tags: ['code'] }]),
+      policy: { level: 'whitelist_auto', whitelistCommands: ['node', 'mkdir'], maxTimeSec: 10 },
+      maxRetries: 1, sandboxEnabled: true, gitEnabled: true, branchWorkflow: true,
+    });
+    await orch2.loadAgents();
+    agentBehaviors.push(
+      () => ({ content: JSON.stringify({ tool_calls: [
+        { tool: 'exec', command: 'node --version' },               // 白名单内：实跑成功
+        { tool: 'exec', command: 'node --version | tail -1' },     // 管道尾段 tail 不在白名单：park
+      ] }) }),
+      () => ({ content: JSON.stringify({ status: 'success', summary: '完成', verification: 'node --version 已实跑', changes: [], errors: [], commands: ['node --version'], no_changes_reason: '命令验证节点，无文件改动' }) }),
+    );
+    await saveTaskGraph('t-dg6', [makeNode('d6', { complexity: 'simple' })], [], { description: 'x', workspace: tmp, status: 'planned' });
+    await (orch2 as any).execute('t-dg6', tmp);
+    const node = (await getTaskGraph('t-dg6'))!.nodes.find((n) => n.id === 'd6')!;
+    // finalize 的 node.result 不携带 pending_commands——以待审批队列为准
+    expect(node.status).toBe('waiting_approval');
+    const q = (await busGet<any[]>('task:pending_commands:t-dg6')) || [];
+    expect(q.map((c) => c.command)).toEqual(['node --version | tail -1']);
+  }, 30_000);
+
+  it('派生任务继承源任务 execution_policy（unrestricted 不再在派生时丢失）', async () => {
+    const { taskId } = await (orchestrator as any).createTask('验证执行策略继承', tmp, undefined, {
+      skipClarification: true,
+      executionPolicy: { level: 'unrestricted' },
+    });
+    const g = (await getTaskGraph(taskId))!;
+    expect(g.execution_policy?.level).toBe('unrestricted');
+  });
 });

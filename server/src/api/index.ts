@@ -749,13 +749,15 @@ export function createApi(ctx: ApiContext): Hono {
           afterNodeId: String(proposal.after_node_id || graph.nodes[0]?.id || ''),
         });
       } else if (proposal.type === 'derive_task') {
-        // M5 一键批准全自动派生：创建派生修复任务（继承工作区/项目/经验，rolling 只修缺陷），
-        // planAsync + autoRun → 后台规划完成后自动入队执行（onTaskPlanned 钩子）
+        // M5 一键批准全自动派生：创建派生修复任务（继承工作区/项目/经验/执行策略，rolling 只修缺陷），
+        // planAsync + autoRun → 后台规划完成后自动入队执行（onTaskPlanned 钩子）。
+        // 执行策略必须继承：用户在源任务上开的 unrestricted/白名单若不随派生，修复任务
+        // 会静默回退全局 whitelist_auto，每个测试节点的命令都停靠审批（2026-09-28 us55tbhs 实证）
         const created = await ctx.orchestrator.createTask(
           String(proposal.description || proposal.reason || '派生修复任务'),
           graph.workspace,
           graph.project_id,
-          { autoRun: true, planAsync: true, skipClarification: true },
+          { autoRun: true, planAsync: true, skipClarification: true, executionPolicy: graph.execution_policy },
         );
         proposal.derived_task_id = created.taskId;
       } else {

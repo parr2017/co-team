@@ -4479,10 +4479,16 @@ export class Orchestrator {
         (result as Record<string, any>).changes = [...new Set([...((result as Record<string, any>).changes || []), ...midRunWritten])];
       }
       // 轮内 exec park 的待审批命令汇入申报——finalizeNodeSuccess 据此把节点挂到
-      // waiting_approval，批准后整节点续跑（命令结果回流），而不是带着"命令没跑"假完成
+      // waiting_approval，批准后整节点续跑（命令结果回流），而不是带着"命令没跑"假完成。
+      // 只汇"真正被 park"的命令：模型在最终 JSON commands 里复述的命令不并入——
+      // 白名单内命令已实跑成功（node14：flutter test 5/5 通过），复述进 pending 会
+      // 被误挂审批（2026-09-28 us55tbhs 实证）；approve_required 下该 park 的
+      // applyFinalOutput 已自行写入 pending_commands，无需在此重复。
       if (midRunPendingCommands.length) {
-        const declared = Array.isArray((result as Record<string, any>).commands) ? (result as Record<string, any>).commands.map(String) : [];
-        (result as Record<string, any>).pending_commands = [...new Set([...declared, ...midRunPendingCommands])];
+        const priorPending = Array.isArray((result as Record<string, any>).pending_commands)
+          ? ((result as Record<string, any>).pending_commands as string[]).map(String)
+          : [];
+        (result as Record<string, any>).pending_commands = [...new Set([...priorPending, ...midRunPendingCommands])];
       }
       result = plugin.handler.postRun ? plugin.handler.postRun(result) : result;
       delete (result as Record<string, any>).tool_calls;
