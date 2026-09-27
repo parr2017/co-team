@@ -138,9 +138,12 @@ export function buildOcModelsCard(models: { id: string; label: string; is_defaul
 }
 
 /** 新建会话的项目选择卡（oc/convo 共用骨架，act 由调用方给）。 */
-export function buildProjectPickerCard(kind: 'oc' | 'convo', projects: { id?: string; name: string; workspace: string }[], instance?: string): Record<string, unknown> {
+/** 新建会话的项目选择卡（oc/convo 共用骨架，act 由调用方给；支持翻页——页码在导航按钮 value 里） */
+export function buildProjectPickerCard(kind: 'oc' | 'convo', projects: { id?: string; name: string; workspace: string }[], instance?: string, page = 0): Record<string, unknown> {
+  const pages = Math.max(1, Math.ceil(projects.length / 6));
+  const p = Math.min(Math.max(0, page), pages - 1);
+  const shown = projects.slice(p * 6, (p + 1) * 6);
   const elements: CardElement[] = [];
-  const shown = projects.slice(0, 8);
   if (!shown.length) elements.push(md('（暂无项目——先在面板创建项目）'));
   for (const pr of shown) {
     elements.push(md(`**📁 ${pr.name}**`));
@@ -149,6 +152,21 @@ export function buildProjectPickerCard(kind: 'oc' | 'convo', projects: { id?: st
       kind === 'oc' ? { act: 'oc_new_proj', instance, workspace: pr.workspace, project: pr.name } : { act: 'convo_new_proj', project_id: pr.id, project: pr.name },
       'primary',
     ));
+  }
+  if (pages > 1) {
+    const navAct = `${kind}_new_page`;
+    const btn = (text: string, target: number): CardElement => ({
+      tag: 'button', text: { tag: 'plain_text', content: text }, type: 'default', size: 'small',
+      behaviors: [{ type: 'callback', value: { act: navAct, page: target, instance: instance || '' } }],
+    });
+    elements.push({
+      tag: 'column_set', flex_mode: 'trisect',
+      columns: [
+        { tag: 'column', width: 'weighted', weight: 1, elements: [p > 0 ? btn('◀ 上一页', p - 1) : { tag: 'markdown', content: ' ' }] },
+        { tag: 'column', width: 'weighted', weight: 1, elements: [{ tag: 'markdown', content: `**第 ${p + 1}/${pages} 页**` }] },
+        { tag: 'column', width: 'weighted', weight: 1, elements: [p < pages - 1 ? btn('下一页 ▶', p + 1) : { tag: 'markdown', content: ' ' }] },
+      ],
+    });
   }
   elements.push(note(`Co-Team · 新建会话 · 会话将绑定项目工作区 · ${new Date().toLocaleString()}`));
   return card2('blue', `📁 选择项目（${kind === 'oc' ? 'OpenCode' : '协作会话'}）`, elements);

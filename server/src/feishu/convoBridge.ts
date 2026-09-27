@@ -201,6 +201,10 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
         // 新建先选项目：会话绑定项目工作区，agent 才有读写上下文
         return cardResponse(buildProjectPickerCard('convo', await deps.listProjects()));
       }
+      if (act === 'convo_new_page') {
+        const projects = await deps.listProjects();
+        return cardResponse(buildProjectPickerCard('convo', projects, undefined, Number(params.page || 0) || 0));
+      }
       if (act === 'convo_new_proj') {
         const projectId = String(params.project_id || '');
         const projectName = String(params.project || '');

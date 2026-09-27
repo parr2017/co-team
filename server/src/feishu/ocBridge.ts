@@ -412,6 +412,13 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           await sendText(cfg, input.chatId || '', `${msg}${preview}`);
           return; // 进入卡保留可继续点
         }
+        if (act === 'oc_new_page') {
+          // 项目选择卡翻页：重拉数据渲染该页（页码在按钮 value 里，无状态）
+          const session = await getSession(input.operatorOpenId);
+          const projects = await deps.listProjects().catch(() => []);
+          const dirs = (await deps.workdirs?.().catch(() => [])) || [];
+          return cardResponse(buildProjectPickerCard('oc', mergeOcProjects(projects, dirs), session.oc_instance || String(params.instance || ''), Number(input.value?.page || 0) || 0));
+        }
         if (act === 'oc_new_pick') {
           // 新建先选项目：co-team 项目 + oc 既有会话涉及的目录（去重合并，项目名优先）
           const projects = await deps.listProjects().catch(() => []);

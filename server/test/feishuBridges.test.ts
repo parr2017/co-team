@@ -577,3 +577,29 @@ describe('实例切换（进入卡按钮）', () => {
     expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('desktop') && String(c[2]).includes('最近对话'))).toBe(true);
   });
 });
+
+describe('项目选择卡翻页', () => {
+  it('超过 6 个项目分页：第 0 页 6 条+下一页，翻页后显示余下条目', async () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({ name: `项目 ${i + 1}`, workspace: `D:/proj/${i + 1}` }));
+    const deps = makeOcDeps();
+    deps.listProjects = vi.fn(async () => many);
+    const bridge = createOcBridge(deps);
+    await setSession({ user_id: 'ou_admin', last_active_time: '', mode: 'oc', oc_instance: 'main-exec', oc_session: 's-1' });
+
+    const r1 = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'oc_new_pick', instance: 'main-exec' },
+    });
+    const c1 = (r1 as any).card.data;
+    expect(JSON.stringify(c1)).toContain('第 1/2 页');
+    expect(JSON.stringify(c1)).toContain('项目 6');
+    expect(JSON.stringify(c1)).not.toContain('项目 7');
+
+    const r2 = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1',
+      value: { act: 'oc_new_page', page: 1, instance: 'main-exec' },
+    });
+    const c2 = (r2 as any).card.data;
+    expect(JSON.stringify(c2)).toContain('第 2/2 页');
+    expect(JSON.stringify(c2)).toContain('项目 8');
+  });
+});
