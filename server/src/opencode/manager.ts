@@ -1145,11 +1145,11 @@ export class OpencodeManager implements OpencodeBridge {
     return { ok: true, data: { session: sorted[0], reason: 'recent' as const } };
   }
 
-  async listAgents(agent: string | undefined, instance: string): Promise<OcCallResult<{ name: string; display?: string; description?: string; mode?: string }[]>> {
+  async listAgents(agent: string | undefined, instance: string, location?: string): Promise<OcCallResult<{ name: string; display?: string; description?: string; mode?: string }[]>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     // client 层已做过滤（hidden/subagent）与投影（name=id 执行名，display=显示名），直接透传
-    return st.client!.listAgents();
+    return st.client!.listAgents(location);
   }
 
   async listProviders(agent: string | undefined, instance: string): Promise<OcCallResult<{ providers?: unknown[]; default?: Record<string, string> }>> {

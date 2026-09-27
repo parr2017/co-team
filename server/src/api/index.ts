@@ -2199,7 +2199,8 @@ export function createApi(ctx: ApiContext): Hono {
             },
             listModels: ocModels,
             listAgents: async (instanceId: string) => {
-              const r = await oc.listAgents(undefined, instanceId).catch(() => null);
+              const inst = oc.listInstances(undefined).find((i) => i.id === instanceId);
+              const r = await oc.listAgents(undefined, instanceId, inst?.project_root).catch(() => null);
               if (!r?.ok || !r.data) return [] as { id: string; label: string }[];
               return (r.data as any[]).map((a) => ({ id: a.name, label: a.display || a.name }));
             },

@@ -249,7 +249,8 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
     },
 
     async agentsCard(session) {
-      const agents = deps.listAgents ? await deps.listAgents(session.oc_instance || '').catch(() => []) : [];
+      let agents = deps.listAgents ? await deps.listAgents(session.oc_instance || '').catch(() => []) : [];
+      if (!agents.length) agents = [{ id: 'build', label: 'build（默认执行）' }, { id: 'plan', label: 'plan（只读规划）' }];
       session.last_list = agents.map((a) => ({ id: a.id, label: a.label }));
       session.last_list_kind = 'agent';
       await setSession(session);

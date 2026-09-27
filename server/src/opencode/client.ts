@@ -450,9 +450,9 @@ export class OpencodeClient {
     return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
 
-  listAgents(): Promise<OcCallResult<{ name: string; display?: string; description?: string; mode?: string }[]>> {
+  listAgents(location?: string): Promise<OcCallResult<{ name: string; display?: string; description?: string; mode?: string }[]>> {
     return this.call(async (client, options) => {
-      const response = await client.agent.list(undefined, options);
+      const response = await client.agent.list(location ? { location } : undefined, options);
       // v2：id 才是执行名（switchAgent 只认小写 id），name 是显示名；hidden（title/summary/compaction）
       // 与 subagent（general/explore）不能做会话执行模式，不进选择列表。
       // 教训：曾把大写 name 传给 switchAgent——入队成功、执行时 AgentNotFoundError 静默吞消息。
