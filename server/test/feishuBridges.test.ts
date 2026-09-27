@@ -562,3 +562,18 @@ describe('一键新建会话（卡片按钮）', () => {
     expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('项目：人事系统'))).toBe(true);
   });
 });
+
+describe('实例切换（进入卡按钮）', () => {
+  it('oc_pick_instance：切绑实例+自动绑活动会话+推预览', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    await setSession({ user_id: 'ou_admin', last_active_time: '', mode: 'oc', oc_instance: 'main-exec', oc_session: 's-1' });
+    await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'oc_pick_instance', instance: 'desktop' },
+    });
+    const session = await (await import('../src/feishu/session')).getSession('ou_admin');
+    expect(session.oc_instance).toBe('desktop');
+    expect(session.oc_session).toBe('s-1');
+    expect(sendTextMock.mock.calls.some((c) => String(c[2]).includes('desktop') && String(c[2]).includes('最近对话'))).toBe(true);
+  });
+});

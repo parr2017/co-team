@@ -396,6 +396,18 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         if (!cfg.approvers?.length || !cfg.approvers.includes(who)) {
           return reply('无权操作', [`操作人 ${who} 不在审批白名单内。`]);
         }
+        if (act === 'oc_pick_instance') {
+          // 进入卡上的实例按钮：切绑实例 + 自动绑定其活动会话 + 推最近对话预览
+          const instance = String(params.instance || '');
+          if (!instance) return reply('参数缺失', ['未指定实例。']);
+          const session = await getSession(input.operatorOpenId);
+          const msg = await bindInstance(instance, session, input.chatId || '');
+          const sid = session.oc_session || '';
+          const recent = sid ? await deps.readRecent(instance, sid, 4).catch(() => []) : [];
+          const preview = recent.length ? `\n最近对话：\n${recent.map((m) => `${m.role === 'user' ? '用户' : '助手'}：${m.text.replace(/\s+/g, ' ').slice(0, 120)}`).join('\n')}` : '';
+          await sendText(cfg, input.chatId || '', `${msg}${preview}`);
+          return; // 进入卡保留可继续点
+        }
         if (act === 'oc_new_pick') {
           // 新建先选项目：co-team 项目 + oc 既有会话涉及的目录（去重合并，项目名优先）
           const norm = (d: string) => d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
