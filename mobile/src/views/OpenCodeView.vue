@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <van-nav-bar title="外部运行时 · OpenCode" fixed placeholder>
+    <van-nav-bar title="外部运行时 · OpenCode" fixed placeholder left-arrow left-text="返回" @click-left="router.back()">
       <template #left>
         <van-icon name="arrow-left" size="18" @click="router.back()" />
       </template>

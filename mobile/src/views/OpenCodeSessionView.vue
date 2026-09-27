@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <van-nav-bar fixed placeholder @click-left="router.back()">
+    <van-nav-bar fixed placeholder left-arrow left-text="返回" @click-left="router.back()">
       <template #title>
         <span class="nav-title">{{ sessionTitle }}</span>
       </template>
