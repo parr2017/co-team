@@ -241,8 +241,8 @@ function openSession(inst: OcInstance, s: OcSession) {
 async function createAndTakeover(inst: OcInstance) {
   creatingSession.value = inst.id;
   try {
-    const projects = await api.listProjects().catch(() => ({ projects: [] as { id: string; name: string }[] }));
-    projList.value = (projects.projects || []).map((p) => ({ id: p.id, name: p.name }));
+    const dirs = await api.ocWorkdirs().catch(() => ({ items: [] as { label: string; workspace: string }[] }));
+    projList.value = (dirs.items || []).map((d) => ({ id: d.workspace, name: d.label }));
     projDlgInst.value = inst;
     projPick.value = '';
     if (!projList.value.length) {
@@ -262,15 +262,15 @@ async function confirmCreate() {
   const inst = projDlgInst.value;
   const project = projList.value.find((p) => p.id === projPick.value);
   if (!inst || !project) return;
-  await doCreate(inst, project.id, project.name);
+  await doCreate(inst, project.workspace, project.name);
   projDlgVisible.value = false;
 }
 
-async function doCreate(inst: OcInstance, projectId?: string, projectName?: string) {
+async function doCreate(inst: OcInstance, directory?: string, projectName?: string) {
   creatingSession.value = inst.id;
   try {
     const title = projectName ? `接管 · ${projectName}` : `co-team 接管 ${new Date().toISOString().slice(5, 16)}`;
-    const created = await api.ocCreateSession(inst.id, title, projectId);
+    const created = await api.ocCreateSession(inst.id, title, directory);
     if (!created.ok || !created.session) {
       ElMessage.warning((created as any).error || '创建会话失败');
       return;

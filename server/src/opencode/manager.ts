@@ -1145,6 +1145,28 @@ export class OpencodeManager implements OpencodeBridge {
     return { ok: true, data: { session: sorted[0], reason: 'recent' as const } };
   }
 
+  /** oc 涉及的所有项目目录：各实例既有会话的 directory 去重（新建会话项目选择的数据源） */
+  async workdirs(): Promise<{ label: string; workspace: string; instance: string }[]> {
+    const out: { label: string; workspace: string; instance: string }[] = [];
+    const seen = new Set<string>();
+    for (const inst of this.listInstances(undefined)) {
+      if (inst.state !== 'connected' && inst.state !== 'running') continue;
+      const r = await this.listSessions(undefined, inst.id).catch(() => null);
+      if (!r?.ok || !r.data) continue;
+      for (const s of r.data) {
+        const dir = String((s as any).directory || '').trim();
+        if (!dir) continue;
+        const uni = dir.replace(/\\/g, '/');
+        const key = uni.replace(/\/+$/, '').toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const base = uni.split('/').filter(Boolean).pop() || dir;
+        out.push({ label: base, workspace: dir, instance: inst.id });
+      }
+    }
+    return out;
+  }
+
   async listAgents(agent: string | undefined, instance: string, location?: string): Promise<OcCallResult<{ name: string; display?: string; description?: string; mode?: string }[]>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };

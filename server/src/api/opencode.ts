@@ -257,6 +257,12 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
   });
 
   /** agent 清单（composer 的 agent 下拉；opencode 内置 + 自定义） */
+  /** oc 涉及的所有项目目录（既有会话去重聚合）——新建会话项目选择数据源 */
+  app.get('/api/opencode/workdirs', async (c) => {
+    const items = await oc().workdirs().catch(() => []);
+    return c.json({ items });
+  });
+
   app.get('/api/opencode/instances/:id/agents', async (c) => {
     const r = await oc().listAgents(undefined, c.req.param('id'));
     return c.json(r.ok ? { agents: r.data } : { agents: [], error: r.error }, 200);

@@ -101,6 +101,8 @@ export interface OcBridgeDeps {
   /** 会话最近消息（切会话时预览当前内容用） */
   readRecent: (instanceId: string, sessionId: string, limit: number) => Promise<{ role: string; text: string }[]>;
   listProjects: () => Promise<{ id?: string; name: string; workspace: string }[]>;
+  /** oc 涉及的所有项目目录（既有会话去重聚合；可选——缺省只用 co-team 项目） */
+  workdirs?: () => Promise<{ label: string; workspace: string; instance?: string }[]>;
   pendingAll: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] };
   answerPermission: (instanceId: string, sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => Promise<boolean>;
   answerQuestion: (instanceId: string, requestID: string, answers: string[][] | Record<string, unknown>) => Promise<boolean>;
@@ -378,9 +380,16 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           return reply('无权操作', [`操作人 ${who} 不在审批白名单内。`]);
         }
         if (act === 'oc_new_pick') {
-          // 新建先选项目：会话登记到项目工作区，agent 才在正确的目录里干活
+          // 新建先选项目：co-team 项目 + oc 既有会话涉及的目录（去重合并，项目名优先）
+          const norm = (d: string) => d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
           const projects = await deps.listProjects().catch(() => []);
-          return cardResponse(buildProjectPickerCard('oc', projects, String(params.instance || '')));
+          const seen = new Set(projects.map((p) => norm(p.workspace)));
+          const dirs = (await deps.workdirs?.().catch(() => [])) || [];
+          const merged = [
+            ...projects.map((p) => ({ name: p.name, workspace: p.workspace })),
+            ...dirs.filter((d) => !seen.has(norm(d.workspace))).map((d) => ({ name: `（会话目录）${d.label}`, workspace: d.workspace })),
+          ].slice(0, 10);
+          return cardResponse(buildProjectPickerCard('oc', merged, String(params.instance || '')));
         }
         if (act === 'oc_new_proj') {
           const session = await getSession(input.operatorOpenId);

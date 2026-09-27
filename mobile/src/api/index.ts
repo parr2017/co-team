@@ -573,10 +573,11 @@ export const api = {
     post<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, { permission_id, response }),
   // ---------- TUI 同构会话页（agents/models/status/todo/command/pty） ----------
   /** 新建会话（让位式接管给 TUI 建承接会话用） */
-  ocCreateSession: (instance: string, title?: string, project_id?: string) =>
+  ocCreateSession: (instance: string, title?: string, directory?: string) =>
     request<{ ok: boolean; session?: { id: string; title?: string }; error?: string }>(`/api/opencode/instances/${encodeURIComponent(instance)}/sessions`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(title ? { title } : {}), ...(project_id ? { project_id } : {}) }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(title ? { title } : {}), ...(directory ? { directory } : {}) }),
     }),
+  ocWorkdirs: () => request<{ items: { label: string; workspace: string }[] }>('/api/opencode/workdirs'),
   /** 向 TUI 弹 toast（接管透明化：让对方知道 co-team 在看/管这条对话） */
   ocTuiToast: (instance: string, message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info') =>
     request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/toast`, {

@@ -221,8 +221,8 @@ function openSession(instId: string, sessId: string) {
 async function createAndTakeOver(inst: OcInstance) {
   creatingSession.value = inst.id;
   try {
-    const projects = await api.listProjects().catch(() => ({ projects: [] as { id: string; name: string }[] }));
-    const list = projects.projects || [];
+    const dirs = await api.ocWorkdirs().catch(() => ({ items: [] as { label: string; workspace: string }[] }));
+    const list = dirs.items || [];
     let projectId: string | undefined;
     let projectName: string | undefined;
     if (list.length) {
@@ -232,8 +232,8 @@ async function createAndTakeOver(inst: OcInstance) {
         projSheet.value = true;
       });
       if (index < 0 || !Number.isInteger(index)) { creatingSession.value = ''; return; }
-      projectId = list[index].id;
-      projectName = list[index].name;
+      projectId = list[index].workspace;
+      projectName = list[index].label;
     }
     const title = projectName ? `接管 · ${projectName}` : 'co-team 接管 ' + new Date().toISOString().slice(5, 16);
     const created = await api.ocCreateSession(inst.id, title, projectId);
