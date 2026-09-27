@@ -197,6 +197,12 @@ async function refreshStats() {
       failed: all.filter((t) => t.status === 'failed').length,
       done: all.filter((t) => ['success', 'completed', 'completed_with_warnings'].includes(t.status)).length,
     };
+    // 智能默认（2026-09-28）：默认看"执行中"；没有执行中的看"待处理"——与 web 任务中心同口径；
+    // 用户手动点过筛选后尊重其选择，不再自动切换
+    if (!filterTouched.value) {
+      const auto = stats.value.running > 0 ? 'running' : stats.value.waiting > 0 ? 'waiting' : '';
+      if (statusFilter.value !== auto) statusFilter.value = auto;
+    }
   } catch { /* server unreachable — keep last snapshot */ }
 }
 
@@ -217,7 +223,9 @@ function matchesFilter(t: TaskGraph): boolean {
   return true;
 }
 
+const filterTouched = ref(false);
 function toggleFilter(key: string) {
+  filterTouched.value = true;
   statusFilter.value = statusFilter.value === key ? '' : key;
 }
 

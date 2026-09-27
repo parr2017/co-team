@@ -147,6 +147,17 @@ async function refreshStats() {
       all: includeProjects.value ? main.total : other.total,
       external: includeProjects.value ? other.total : main.total,
     };
+    // 智能默认（2026-09-28）：默认看"进行中"的任务；没有进行中的看"待审批"——
+    // 打开任务中心直接看到现在在跑什么/在等什么，而不是混着一堆历史任务。
+    // 用户手动点过筛选卡后尊重其选择，不再自动切换。
+    if (!filterTouched.value) {
+      const auto = stats.value.running > 0
+        ? 'running,retrying,finalizing,interrupted'
+        : stats.value.waiting > 0
+          ? 'waiting_approval'
+          : '';
+      if (filterStatus.value !== auto) filterStatus.value = auto;
+    }
   } catch { /* server unreachable — keep last snapshot */ }
 }
 
@@ -154,6 +165,8 @@ async function refreshStats() {
 
 const filterStatus = ref('');
 const keyword = ref('');
+/** 用户是否手动选过筛选——手动选过后尊重其选择，不再自动切换 */
+const filterTouched = ref(false);
 
 const statCards = computed(() => [
   { key: 'all', label: '全部', count: stats.value.total, value: '', rail: 'idle', sub: includeProjects.value ? '当前口径 · 含项目任务' : '当前口径 · 仅外部下发' },
@@ -166,6 +179,7 @@ const statCards = computed(() => [
 ]);
 
 function toggleFilter(value: string) {
+  filterTouched.value = true;
   filterStatus.value = filterStatus.value === value ? '' : value;
 }
 
