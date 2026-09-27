@@ -683,9 +683,13 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const seenKey = `feishu:oc:permseen:${pid}`;
         if (await busGet(seenKey)) continue;
         await busSet(seenKey, 1, 3600);
-        const title = String(p.title || p.type || '权限请求');
+        // 权限详情（对齐 mobile permDetailOf）：pattern 数组/命令串，metadata 附注
+        const pat = Array.isArray(p.pattern) ? p.pattern.join(' , ') : p.pattern;
+        const detail = String(pat || p.command || p.title || p.type || '权限请求');
+        const meta = p.metadata && typeof p.metadata === 'object' ? JSON.stringify(p.metadata).slice(0, 200) : '';
+        const permMd = `**会话** ${sid.slice(0, 12)}\n**请求** ${detail.slice(0, 300)}${meta ? `\n**详情** ${meta}` : ''}`;
         await sendCard(cfg, target.id, card2('orange', `⛔ OpenCode 权限待确认 · ${instance}`, [
-          md(`**会话** ${sid.slice(0, 12)}\n**请求** ${title.slice(0, 300)}`),
+          md(permMd),
           btnRow(
             { tag: 'button', text: { tag: 'plain_text', content: '批准一次' }, type: 'primary', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'once' } }] },
             { tag: 'button', text: { tag: 'plain_text', content: '总是批准' }, type: 'default', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'always' } }] },
