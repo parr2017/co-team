@@ -124,6 +124,8 @@ export interface OcBridge {
   replyTo(instanceId: string, sessionId: string, text: string, chatId?: string): Promise<string>;
   /** [v2] 进入卡：实例 + 会话点选（无参 /oc 渲染） */
   enterCard(arg: string, session: FeishuSession, chatId: string): Promise<Record<string, unknown>>;
+  /** [v2] /new 命令的选择卡（项目+会话点选） */
+  newCard(session: FeishuSession): Promise<Record<string, unknown>>;
   /** [v2] 会话列表交互卡（点按钮切换） */
   listSessionsCard(session: FeishuSession): Promise<Record<string, unknown>>;
   /** [v2] 模型列表交互卡（点按钮切换） */
@@ -298,6 +300,21 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       session.last_list_kind = 'oc_session';
       await setSession(session);
       return buildOcInstancesCard(instances, bound || undefined, sessions, session.oc_session || undefined);
+    },
+
+    async newCard(session) {
+      const instances = await deps.listInstances();
+      const bound = session.oc_instance || '';
+      const projects = await deps.listProjects().catch(() => []);
+      const norm = (d: string) => d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+      const seen = new Set(projects.map((p) => norm(p.workspace)));
+      const dirs = (await deps.workdirs?.().catch(() => [])) || [];
+      const merged = [
+        ...projects.map((p) => ({ name: p.name, workspace: p.workspace })),
+        ...dirs.filter((d) => !seen.has(norm(d.workspace))).map((d) => ({ name: `（会话目录）${d.label}`, workspace: d.workspace })),
+      ];
+      const sessions = bound ? await deps.listSessions(bound).catch(() => []) : [];
+      return buildOcInstancesCard(instances, bound || undefined, sessions, session.oc_session || undefined) as any;
     },
 
     async listSessionsCard(session) {

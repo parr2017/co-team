@@ -2238,6 +2238,7 @@ export function createApi(ctx: ApiContext): Hono {
               return out.slice(-4);
             },
             listProjects: () => listProjects(),
+            workdirs: () => oc.workdirs().catch(() => []),
             pendingAll: () => oc.pendingAll(),
             answerPermission: async (instanceId, sessionId, permissionId, response) => {
               const r = await oc.answerPermission(undefined, instanceId, sessionId, permissionId, response).catch(() => null);

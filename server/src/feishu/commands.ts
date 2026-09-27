@@ -163,6 +163,7 @@ export async function handleCommand(text: string, session: FeishuSession, deps: 
         if (deps.oc.listSessionsCard) return { reply: 'OpenCode 会话：', card: await deps.oc.listSessionsCard(session), session };
         return { reply: await deps.oc.listSessions(session), session };
       case '/new':
+        if (!arg && deps.oc.newCard) return { reply: 'OpenCode 新建：', card: await deps.oc.newCard(session), session };
         return { reply: await deps.oc.createSession(arg, session, chatId || ''), session };
       case '/switch':
         return { reply: await deps.oc.switchTo(arg, session, chatId || ''), session };
