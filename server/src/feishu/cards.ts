@@ -28,13 +28,15 @@ export function note(content: string): CardElement {
 
 /**
  * 折叠面板（2.0 `collapsible_panel`）：长命令/多资源时收纳，避免主卡被撑爆。
- * 红线：老租户卡片版本不支持该组件会整卡被拒（230099），所以只用于"正文放不下"的场景，
- * 常规短内容一律走 md()。
+ * 实测红线（探针 scripts/probe-collapse-panel.cjs 逐字段试出来的，踩错整卡被拒 230099/200621）：
+ * - 没有 `expand` 属性（塞顶层或 header 都报 unknown property），默认就是折叠态；
+ * - header 只吃 title / background_color / vertical_align，`padding` 会报 "invalid panel header padding"；
+ * - border 吃 color / corner_radius。
  */
 export function collapse(title: string, elements: CardElement[]): CardElement {
   return {
     tag: 'collapsible_panel',
-    header: { title: { tag: 'plain_text', content: title }, background_color: 'grey', expand: true },
+    header: { title: { tag: 'plain_text', content: title }, background_color: 'grey', vertical_align: 'center' },
     border: { color: 'grey', corner_radius: '6px' },
     elements,
   };
