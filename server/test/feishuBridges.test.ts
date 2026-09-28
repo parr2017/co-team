@@ -265,26 +265,64 @@ describe('oc 桥', () => {
     stop();
   });
 
-  it('pending 权限扫描推三按钮卡；批准动作转发 answerPermission', async () => {
+  it('pending 权限扫描推三按钮卡（动作/目标/总是批准规则可见）；批准动作转发 answerPermission', async () => {
     const deps = makeOcDeps();
-    deps.pendingAll = vi.fn(() => ({ permissions: [{ instance: 'main-exec', id: 'perm1', sessionID: 's-1', title: 'rm -rf dist' }], questions: [] }));
+    // 实盘载荷（GET /api/opencode/pending）：v2 是 {action, resources, save}，没有 title/pattern
+    deps.pendingAll = vi.fn(() => ({
+      permissions: [{ instance: 'main-exec', id: 'perm1', sessionID: 's-1', action: 'bash', resources: ['rm -rf dist'], save: ['rm -rf *'] }],
+      questions: [],
+    }));
     const bridge = createOcBridge(deps);
     await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
     await bridge.scanPendingOnce(cfg);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
     const card = sendCardMock.mock.calls[0][2] as Record<string, any>;
+    const body = JSON.stringify(card);
     expect(card.header.title.content).toContain('权限待确认');
-    expect(JSON.stringify(card)).toContain('perm1');
+    // 关键回归：申请内容必须出现在卡上（旧实现只读到「权限请求」四个字）
+    expect(card.header.title.content).toContain('执行命令');
+    expect(body).toContain('rm -rf dist');
+    expect(body).toContain('总是批准将记住');
+    expect(body).toContain('rm -rf *');
+    expect(body).not.toContain('权限请求 · ·');
+    // 会话上下文：标题 + 目录
+    expect(body).toContain('活跃会话');
+    expect(body).toContain('D:/main');
 
     // 再次扫描 → 去重不重推
     await bridge.scanPendingOnce(cfg);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
 
-    await bridge.handleCardAction(cfg, {
+    const r = await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1',
-      value: { act: 'oc_perm', instance: 'main-exec', session_id: 's-1', permission_id: 'perm1', response: 'once' },
+      value: { act: 'oc_perm', instance: 'main-exec', session_id: 's-1', permission_id: 'perm1', response: 'once', brief: '执行命令 rm -rf dist' },
     });
     expect(deps.answerPermission).toHaveBeenCalledWith('main-exec', 's-1', 'perm1', 'once');
+    // 回执带申请内容，不再是一串 id
+    expect(JSON.stringify(r)).toContain('rm -rf dist');
+  });
+
+  it('pending 权限卡：多条/超长资源进折叠面板，单条不展开', async () => {
+    const deps = makeOcDeps();
+    const many = Array.from({ length: 8 }, (_, i) => `src/file-${i}.ts`);
+    deps.pendingAll = vi.fn(() => ({
+      permissions: [
+        { instance: 'main-exec', id: 'perm-many', sessionID: 's-1', action: 'write', resources: many },
+        { instance: 'main-exec', id: 'perm-one', sessionID: 's-1', action: 'read', resources: ['a.ts'] },
+      ],
+      questions: [],
+    }));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(2);
+    const manyBody = JSON.stringify(sendCardMock.mock.calls[0][2]);
+    expect(manyBody).toContain('collapsible_panel');
+    expect(manyBody).toContain('src/file-7.ts');
+    const oneBody = JSON.stringify(sendCardMock.mock.calls[1][2]);
+    expect(oneBody).toContain('读取文件');
+    expect(oneBody).toContain('a.ts');
+    expect(oneBody).not.toContain('collapsible_panel');
   });
 
   it('pending 提问扫描推表单卡（问题正文+输入框）并注册路由；表单提交转发 answerQuestion', async () => {

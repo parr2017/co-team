@@ -112,14 +112,24 @@
         </template>
 
         <!-- 行内审批卡：opencode 等待放行 -->
-        <div v-for="perm in snap.pendingPermissions" :key="perm.id" class="perm-card">
+        <div v-for="row in permRows" :key="row.id" class="perm-card">
           <div class="perm-l1">权限请求 · opencode 等待审批</div>
-          <div v-if="perm.title" class="perm-title">{{ perm.title }}</div>
-          <div class="perm-cmd mono" :title="permDetail(perm)">{{ permDetail(perm) }}</div>
+          <template v-if="row.view">
+            <div class="perm-title">{{ row.view.label }}<span v-if="row.view.action && row.view.label !== row.view.action" class="perm-raw"> · {{ row.view.action }}</span></div>
+            <div v-for="(l, li) in row.view.lines.slice(1)" :key="li" class="perm-cmd" :title="l.value">
+              <b>{{ l.label }}</b> {{ l.value }}
+            </div>
+            <details v-if="row.view.resources.length > 5 || row.view.extra" class="perm-more">
+              <summary>展开全部</summary>
+              <div v-for="(r, ri) in row.view.resources" :key="ri" class="perm-cmd mono">{{ ri + 1 }}. {{ r }}</div>
+              <div v-if="row.view.extra" class="perm-cmd mono">更多细节：{{ row.view.extra }}</div>
+            </details>
+          </template>
+          <div v-else class="perm-cmd mono">opencode 请求执行一个操作</div>
           <div class="perm-acts">
-            <el-button size="small" @click="answerPerm(perm.id, 'reject')">拒绝</el-button>
-            <el-button size="small" @click="answerPerm(perm.id, 'always')">总是允许</el-button>
-            <el-button size="small" type="primary" @click="answerPerm(perm.id, 'once')">批准一次</el-button>
+            <el-button size="small" @click="answerPerm(row.id, 'reject')">拒绝</el-button>
+            <el-button size="small" @click="answerPerm(row.id, 'always')">总是允许</el-button>
+            <el-button size="small" type="primary" @click="answerPerm(row.id, 'once')">批准一次</el-button>
           </div>
         </div>
       </div>
@@ -238,6 +248,7 @@ import {
   initialFormValues,
   loadFormDraft,
   missingRequiredKeys,
+  permViewOf,
   saveFormDraft,
   serializeFormAsJson,
   serializeFormAsMarkdown,
@@ -257,6 +268,8 @@ const canControl = computed(() => props.instance.mode === 'control');
 
 const stream = new SessionStream();
 const snap = ref(stream.snapshot());
+/** 权限卡行：id + 归一化视图（v2 的 {action, resources, save}，旧字段兜底——见 opencode-sync/perm） */
+const permRows = computed(() => snap.value.pendingPermissions.map((p) => ({ id: String(p.id), view: permViewOf(p) })));
 const loading = ref(false);
 const sending = ref(false);
 const draft = ref('');
@@ -322,11 +335,6 @@ function isLastPart(m: Record<string, any>, p: Record<string, any>): boolean {
 function lineClass(l: string): string {
   return l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : 'ctx';
 }
-function permDetail(perm: Record<string, any>): string {
-  const md = perm.metadata || {};
-  return String(perm.pattern || perm.title || md.command || md.pattern || (Array.isArray(perm.pattern) ? perm.pattern.join(' ') : '') || 'opencode 请求执行一个操作');
-}
-
 /** 事件归属当前会话才应用（防其他会话幽灵消息）；无 sessionID 的帧放行（本地帧） */
 function belongsToSession(ev: { properties?: Record<string, any> }): boolean {
   const p = ev.properties || {};
@@ -961,8 +969,12 @@ onBeforeUnmount(() => {
 .q-err { font-size: 11px; color: var(--el-color-danger); }
 .perm-card { border: 1px solid var(--el-color-warning); border-radius: 8px; padding: 10px 12px; background: var(--el-color-warning-light-9); }
 .perm-l1 { font-size: 12px; color: var(--el-color-warning-darken-2); font-weight: 600; }
-.perm-title { font-size: 13px; margin-top: 2px; }
+.perm-title { font-size: 13px; margin-top: 2px; font-weight: 600; }
+.perm-raw { font-weight: 400; color: var(--el-text-color-placeholder); }
 .perm-cmd { font-size: 12px; color: var(--el-text-secondary); margin-top: 4px; word-break: break-all; }
+.perm-cmd b { color: var(--el-text-color-regular); font-weight: 600; margin-right: 4px; }
+.perm-more { margin-top: 6px; font-size: 12px; color: var(--el-text-color-placeholder); }
+.perm-more summary { cursor: pointer; user-select: none; }
 .perm-acts { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
 .pty-strip { display: flex; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--el-border-color-lighter); overflow-x: auto; }
 .pty-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 10px; border-radius: 10px; background: var(--el-fill-color-light); cursor: pointer; }

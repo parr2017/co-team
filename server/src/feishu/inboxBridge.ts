@@ -19,6 +19,8 @@ import type { FeishuSession } from './session';
 import { setSession } from './session';
 import { sendCard } from './messageService';
 import { buildNodeApprovalCard, buildCommandApprovalCard } from './approvalCards';
+import { buildOcPermissionCard } from './ocBridge';
+import { permSummaryOf } from '@co-team/opencode-sync';
 import { askCard, proposalCard, clarifyCard, nodeClarifyCard } from './decisionCards';
 import { card2, md, note, btnRow } from './cards';
 import { buildInboxListCard } from './listCards';
@@ -135,19 +137,23 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
         const instance = String(p.instance || '');
         const sid = String(p.sessionID || p.session_id || p.sessionId || '');
         if (!pid || !instance || !sid) continue;
-        const title = String(p.title || p.type || '权限请求');
-        push('oc_perm', pid, `OC 权限：${title.slice(0, 60)} · ${instance}`, card2('orange', `⛔ OpenCode 权限待确认 · ${instance}`, [
-          md(`**会话** ${sid.slice(0, 12)}\n**请求** ${title.slice(0, 300)}`),
-          note(`Co-Team · 收件箱 · 完整审批卡以实时推送为准`),
-        ]));
+        // 与实时推送同一张卡构造（permView 归一 + 可点按钮）——收件箱点进来即能拍板
+        const card = buildOcPermissionCard(p, { instance, sessionId: sid, instanceLabel: p.instance_label });
+        const brief = permSummaryOf(p);
+        push('oc_perm', pid, `OC 权限：${brief.slice(0, 60)} · ${instance}`, card);
       }
       for (const q of pending.questions || []) {
         const qid = String(q.requestID || q.id || '');
         const instance = String(q.instance || '');
         if (!qid || !instance) continue;
         const { form, inputField, submitBtn } = await import('./cards');
+        // 提问正文在 questions[]（question/title 只是标题字段，早前直读 q.question 永远空）
+        const qs: any[] = Array.isArray(q.questions) ? q.questions : [];
+        const body = qs.length
+          ? qs.map((f, i) => `${qs.length > 1 ? `${i + 1}. ` : ''}${f.header ? `【${f.header}】` : ''}${f.question || f.key || ''}${(f.options || []).length ? `\n   选项：${(f.options || []).map((o: any) => o.label || o.value).join(' / ')}` : ''}`).join('\n')
+          : String(q.title || '').slice(0, 600);
         push('oc_question', qid, `OC 提问 · ${instance}`, card2('orange', `❓ OpenCode 提问 · ${instance}`, [
-          md(String(q.question || q.title || '').slice(0, 600) || '（详见面板）'),
+          md([String(q.title || '').slice(0, 80), body].filter(Boolean).join('\n').slice(0, 1200) || '（详见面板）'),
           form(`ibi_${qid}`, [inputField('answer', '输入你的回答…'), submitBtn('发送', 'go')]),
           note(`Co-Team · 收件箱 · ${new Date().toLocaleString()}`),
         ]), { act: 'oc_question', instance, request_id: qid });

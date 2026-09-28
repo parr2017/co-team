@@ -60,6 +60,20 @@ const server = http.createServer((req, res) => {
     }
     return json(200, { ok: true });
   }
+  if (req.method === 'POST' && u.pathname === '/api/test/emit-perm') {
+    // 2.x 真实载荷：asked data = {id, sessionID, action, resources, save}，replied data = {sessionID, requestID, reply}
+    if (sseRes) {
+      sseRes.write('data: ' + JSON.stringify({ id: 'e10', type: 'permission.asked', data: { id: 'per_test1', sessionID: 's1', action: 'read', resources: ['backend/.env'], save: ['*'] } }) + '\\n\\n');
+      sseRes.write('data: ' + JSON.stringify({ id: 'e11', type: 'permission.asked', data: { id: 'per_test2', sessionID: 's1', action: 'bash', resources: ['rm -rf dist'] } }) + '\\n\\n');
+    }
+    return json(200, { ok: true });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/test/reply-perm') {
+    if (sseRes) {
+      sseRes.write('data: ' + JSON.stringify({ id: 'e12', type: 'permission.replied', data: { sessionID: 's1', requestID: 'per_test1', reply: 'once' } }) + '\\n\\n');
+    }
+    return json(200, { ok: true });
+  }
   if (req.method === 'GET' && u.pathname === '/notfound') return json(404, { error: 'nope' });
   empty(204);
 });
@@ -576,6 +590,37 @@ describe('OpencodeManager', () => {
         const ids = (after.data!.messages as any[]).map((m) => m.info?.id ?? m.id);
         return ids.includes('m-new') && JSON.stringify(after.data!.messages).includes('PATCHED_NEW_MSG');
       })).toBe(true);
+    } finally {
+      child.kill('SIGTERM');
+    }
+  }, 20000);
+
+  it('attached：pending 聚合按 2.x 字段出入队（asked 入队 → replied 出队），action/resources 原样保留', async () => {
+    const port = 38117;
+    const child = spawn('node', [fakeOcFile, 'serve', '--port', String(port)], { stdio: 'ignore', shell: true });
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) {
+      try { up = (await fetch(`http://127.0.0.1:${port}/api/info`)).ok; } catch { /* 未起 */ }
+      if (!up) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(up).toBe(true);
+    try {
+      const mgr = new OpencodeManager([
+        { id: 'perm', kind: 'attached-cli', url: `http://127.0.0.1:${port}`, mode: 'control' },
+      ], silent);
+      managers.push(mgr);
+      mgr.start();
+      expect(await waitFor(() => mgr.listInstances()[0]?.state === 'connected')).toBe(true);
+
+      await fetch(`http://127.0.0.1:${port}/api/test/emit-perm`, { method: 'POST' });
+      expect(await waitFor(() => mgr.pendingAll().permissions.length === 2)).toBe(true);
+      const perms = mgr.pendingAll().permissions;
+      expect(perms[0]).toMatchObject({ instance: 'perm', action: 'read', resources: ['backend/.env'], save: ['*'] });
+
+      // replied 携带的是 requestID——只认 permissionID/id 会导致批完仍挂在待批列表里
+      await fetch(`http://127.0.0.1:${port}/api/test/reply-perm`, { method: 'POST' });
+      expect(await waitFor(() => mgr.pendingAll().permissions.length === 1)).toBe(true);
+      expect(mgr.pendingAll().permissions[0].id).toBe('per_test2');
     } finally {
       child.kill('SIGTERM');
     }

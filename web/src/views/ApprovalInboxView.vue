@@ -10,6 +10,7 @@ import { api } from '../api';
 import { useDashboard } from '../composables/useDashboard';
 import { showApiError } from '../utils/apiError';
 import { fmtDateTime, relativeTime } from '../utils/time';
+import { permViewOf } from '../opencode-stream';
 
 const { tasks, connected } = useDashboard();
 const router = useRouter();
@@ -130,13 +131,17 @@ async function load() {
     try {
       const pending = await api.ocPending();
       for (const p of pending.permissions || []) {
-        const pattern = Array.isArray(p.pattern) ? p.pattern.join(' ') : String(p.pattern || '');
+        // v2 载荷是 {action, resources, save}，旧字段只作兜底（见 opencode-sync/perm）
+        const v = permViewOf(p);
         out.push({
           key: `oc-perm:${p.instance}:${p.id}`,
           kind: 'oc-permission',
           taskId: '',
-          title: `OpenCode 权限申请 · ${p.title || '执行操作'}`,
-          detail: [p.instance_label || p.instance, p.sessionID ? String(p.sessionID).slice(0, 14) : '', pattern].filter(Boolean).join(' · '),
+          title: `OpenCode 权限申请 · ${v?.label || '执行操作'}`,
+          detail: [
+            ...(v ? v.lines.map((l) => `${l.label}：${l.value}`) : []),
+            [p.instance_label || p.instance, p.sessionID ? String(p.sessionID).slice(0, 14) : ''].filter(Boolean).join(' · '),
+          ].join('\n'),
           act: async ({ approved }) => {
             await api.ocResolvePermission(String(p.instance), String(p.sessionID || ''), String(p.id), approved ? 'once' : 'reject');
           },

@@ -143,15 +143,24 @@
       </div>
 
       <!-- 审批卡：消息流末尾内嵌（readonly 也可人工放行） -->
-      <div v-for="pm in livePermissions" :key="pm.id" class="perm-card">
+      <div v-for="row in permRows" :key="row.id" class="perm-card">
         <div class="l1">权限请求 · opencode 等待审批</div>
-        <div v-if="pm.title" class="perm-title">{{ pm.title }}</div>
-        <div class="cmd mono">{{ permDetailOf(pm) }}</div>
-        <div v-if="permMetaText(pm)" class="cmd meta mono">{{ permMetaText(pm) }}</div>
+        <template v-if="row.view">
+          <div class="perm-title">{{ row.view.label }}<span v-if="row.view.action && row.view.label !== row.view.action" class="raw"> · {{ row.view.action }}</span></div>
+          <div v-for="(l, li) in row.view.lines.slice(1)" :key="li" class="cmd">
+            <b>{{ l.label }}</b> {{ l.value }}
+          </div>
+          <details v-if="row.view.resources.length > 5 || row.view.extra" class="more">
+            <summary>展开全部</summary>
+            <div v-for="(r, ri) in row.view.resources" :key="ri" class="cmd mono">{{ ri + 1 }}. {{ r }}</div>
+            <div v-if="row.view.extra" class="cmd meta mono">更多细节：{{ row.view.extra }}</div>
+          </details>
+        </template>
+        <div v-else class="cmd mono">opencode 请求执行一个操作</div>
         <div class="acts">
-          <button @click="resolvePermission(pm.id, 'reject')">拒绝</button>
-          <button @click="resolvePermission(pm.id, 'always')">总是允许</button>
-          <button class="p" @click="resolvePermission(pm.id, 'once')">批准一次</button>
+          <button @click="resolvePermission(row.id, 'reject')">拒绝</button>
+          <button @click="resolvePermission(row.id, 'always')">总是允许</button>
+          <button class="p" @click="resolvePermission(row.id, 'once')">批准一次</button>
         </div>
       </div>
     </div>
@@ -307,6 +316,7 @@ import {
   initialFormValues,
   loadFormDraft,
   missingRequiredKeys,
+  permViewOf,
   saveFormDraft,
   visibleFields,
   toolOutputText as toolOutputOf,
@@ -349,6 +359,8 @@ const fullMessages = ref(new Map<string, any>());
 /** 本地已决权限（服务端 permission.replied 事件到达前先移除，双保险） */
 const resolvedPerms = reactive(new Set<string>());
 const livePermissions = computed(() => snap.value.pendingPermissions.filter((p) => !resolvedPerms.has(String(p.id))));
+/** 权限卡行：id + 归一化视图（v2 的 {action, resources, save}，旧字段兜底——见 opencode-sync/perm） */
+const permRows = computed(() => livePermissions.value.map((p) => ({ id: String(p.id), view: permViewOf(p) })));
 /** 本地已答提问（question.replied/rejected 事件到达前先移除，双保险）；qSel 逐题点选 / qDraft 自定义输入 */
 const resolvedQuestions = reactive(new Set<string>());
 const liveQuestions = computed(() => snap.value.pendingQuestions.filter((q) => !resolvedQuestions.has(String(q.id))));
@@ -1211,16 +1223,6 @@ function chipTextOf(p: any): string {
   }
 }
 
-function permDetailOf(p: any): string {
-  const pat = Array.isArray(p?.pattern) ? p.pattern.join(' , ') : p?.pattern;
-  return String(pat || p?.command || 'opencode 请求执行一个操作');
-}
-function permMetaText(p: any): string {
-  const md = p?.metadata;
-  if (!md || typeof md !== 'object') return '';
-  return clipText(JSON.stringify(md), 400);
-}
-
 // ---------- 生命周期 ----------
 
 let pollTimer: number | undefined;
@@ -1413,7 +1415,11 @@ onBeforeUnmount(() => {
 .q-bar .qb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); animation: qbarpulse 1.6s ease-in-out infinite; }
 @keyframes qbarpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .perm-card .l1 { font-size: 12px; font-weight: 600; color: var(--danger); }
-.perm-title { font-size: 11px; color: var(--text-2); margin-top: 3px; }
+.perm-title { font-size: 12px; font-weight: 600; color: var(--text-1); margin-top: 3px; }
+.perm-title .raw { font-weight: 400; color: var(--text-3); }
+.perm-card .cmd b { color: var(--text-2); font-weight: 600; margin-right: 4px; }
+.perm-card .more { margin-top: 6px; font-size: 11px; color: var(--text-3); }
+.perm-card .more summary { cursor: pointer; user-select: none; padding: 4px 0; }
 .perm-card .cmd { margin-top: 6px; font-size: 11px; color: var(--text-1); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
 .perm-card .cmd.meta { color: var(--text-3); max-height: 80px; }
 .perm-card .acts { display: flex; gap: 8px; margin-top: 9px; }

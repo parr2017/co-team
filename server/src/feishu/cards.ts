@@ -26,6 +26,20 @@ export function note(content: string): CardElement {
   return md(content);
 }
 
+/**
+ * 折叠面板（2.0 `collapsible_panel`）：长命令/多资源时收纳，避免主卡被撑爆。
+ * 红线：老租户卡片版本不支持该组件会整卡被拒（230099），所以只用于"正文放不下"的场景，
+ * 常规短内容一律走 md()。
+ */
+export function collapse(title: string, elements: CardElement[]): CardElement {
+  return {
+    tag: 'collapsible_panel',
+    header: { title: { tag: 'plain_text', content: title }, background_color: 'grey', expand: true },
+    border: { color: 'grey', corner_radius: '6px' },
+    elements,
+  };
+}
+
 export function btn(text: string, type: 'primary' | 'default' | 'danger', value: Record<string, unknown>): CardElement {
   return {
     tag: 'button',

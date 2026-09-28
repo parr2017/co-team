@@ -134,7 +134,7 @@ describe('/api/opencode 路由', () => {
       config: { opencode: { instances: [{ id: 't1', kind: 'managed', label: '执行器' }] } },
       opencode: {
         listInstances: () => [],
-        pendingAll: () => ({ permissions: [{ instance: 't1', id: 'per_1', sessionID: 's1', title: '运行 ls', pattern: ['ls'] }], questions: [{ instance: 't1', id: 'q1', sessionID: 's1', questions: [{ question: '开始？', header: '确认', options: [{ label: '开始' }] }] }] }),
+        pendingAll: () => ({ permissions: [{ instance: 't1', id: 'per_1', sessionID: 's1', action: 'bash', resources: ['rm -rf dist'], save: ['rm -rf *'] }], questions: [{ instance: 't1', id: 'q1', sessionID: 's1', questions: [{ question: '开始？', header: '确认', options: [{ label: '开始' }] }] }] }),
         answerQuestion: async () => ({ ok: true }),
         rejectQuestion: async () => ({ ok: true }),
       },
@@ -144,6 +144,9 @@ describe('/api/opencode 路由', () => {
     const body = (await (await a.request('/api/opencode/pending')).json()) as { permissions: Record<string, any>[]; questions: Record<string, any>[] };
     expect(body.permissions.length).toBe(1);
     expect(body.permissions[0].instance_label).toBe('执行器'); // 实例 label 装饰
+    // 2.x 权限载荷原样透出（action/resources/save），前端据此渲染可读申请内容
+    expect(body.permissions[0].action).toBe('bash');
+    expect(body.permissions[0].resources).toEqual(['rm -rf dist']);
     expect(body.questions.length).toBe(1);
   });
 

@@ -815,7 +815,8 @@ export class OpencodeManager implements OpencodeBridge {
         m.set(id, p);
         this.pendingPerms.set(st.cfg.id, m);
       } else if (ev.type === 'permission.replied') {
-        const id = String(p.permissionID || p.id || '');
+        // 2.x replied data = { sessionID, requestID, reply }——requestID 才是被回应的那条
+        const id = String(p.requestID || p.permissionID || p.id || '');
         this.pendingPerms.get(st.cfg.id)?.delete(id);
       } else if (ev.type === 'question.asked') {
         const id = String(p.id || '');

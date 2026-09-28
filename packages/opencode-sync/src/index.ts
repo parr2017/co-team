@@ -1,12 +1,31 @@
 export * from './form';
+export * from './perm';
 
+/**
+ * 待批权限条目 = opencode 2.x permission.asked 的 data 原样。
+ * 字段以 v2 为准（action/resources/save/message），v1 的 permission/patterns/title 保留兜底。
+ * 展示一律走 permViewOf()，别再直接读 title/pattern（那是 v1 形状，2.x 恒为空）。
+ */
 export interface StreamPermission {
   id: string;
-  title?: string;
-  pattern?: string | string[];
-  metadata?: Record<string, unknown>;
-  messageID?: string;
   sessionID?: string;
+  /** v2 动作名（read / write / bash / external_directory …） */
+  action?: string;
+  /** v2 被请求的资源（文件路径 / 命令 / glob） */
+  resources?: string[];
+  /** v2「总是批准」时被记住的规则 */
+  save?: string[];
+  /** v2 上游可读描述 */
+  message?: string;
+  source?: { type?: string; messageID?: string; id?: string };
+  metadata?: Record<string, unknown>;
+  // —— v1 / 更早字段，兜底用 ——
+  permission?: string;
+  patterns?: string[];
+  pattern?: string | string[];
+  command?: string;
+  title?: string;
+  type?: string;
 }
 
 export interface StreamQuestion {
@@ -219,7 +238,8 @@ export class SessionStream {
           break;
         }
         case 'permission.replied': {
-          const permissionID = String(properties.permissionID || properties.id || '');
+          // 2.x replied data = { sessionID, requestID, reply }——requestID 才是被回应的那条
+          const permissionID = String(properties.requestID || properties.permissionID || properties.id || '');
           if (permissionID) this.perms.delete(permissionID);
           break;
         }

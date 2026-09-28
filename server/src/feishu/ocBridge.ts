@@ -14,7 +14,8 @@ import type { FeishuConfig } from '../config';
 import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
-import { buildResultCard, btnRow, card2, cardResponse, form, inputField, md, note, submitBtn } from './cards';
+import { btn, buildResultCard, btnRow, card2, cardResponse, collapse, form, inputField, md, note, submitBtn } from './cards';
+import { clipText, permViewOf } from '@co-team/opencode-sync';
 import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard, buildOcInstancesCard, buildProjectPickerCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
@@ -166,6 +167,56 @@ async function notifyChat(cfg: FeishuConfig, chatId?: string): Promise<{ id: str
 function sessionMarker(s: FeishuSession, instanceId: string, sessionId?: string): string {
   if (s.oc_instance !== instanceId) return '';
   return sessionId && s.oc_session === sessionId ? ' ✓当前' : sessionId ? '' : '';
+}
+
+/** 折叠阈值：资源条数 / 单条长度超过任一就进折叠面板（面板在老租户可能被拒，只用于真放不下的内容） */
+const PERM_FOLD_MAX = 5;
+const PERM_FOLD_LEN = 300;
+
+/**
+ * OpenCode 权限申请卡（实时推送与 /inbox 共用）。
+ * 内容一律经 permViewOf 归一：v2 真载荷是 {action, resources, save, message}，
+ * 早前按 v1 的 {title, pattern, command, type} 取值导致卡片永远只显示「权限请求」。
+ */
+export function buildOcPermissionCard(p: Record<string, any>, ctx: {
+  instance: string;
+  instanceLabel?: string;
+  sessionId: string;
+  sessionTitle?: string;
+  directory?: string;
+}): Record<string, unknown> {
+  const view = permViewOf(p);
+  const instance = ctx.instance || String(p.instance || '');
+  const who = ctx.instanceLabel || instance;
+  const sid = ctx.sessionId || String(p.sessionID || '');
+  const lines = view
+    ? view.lines.map((l) => `**${l.label}** ${l.value}`)
+    : [`**动作** ${String(p.title || p.type || '权限请求').slice(0, 120)}`];
+
+  // 会话上下文：批准"写文件/跑命令"之前得知道是哪个会话在哪个项目里干的
+  const sessionBits = [ctx.sessionTitle || `会话 ${sid.slice(0, 12)}`, ctx.directory].filter(Boolean);
+  lines.push(`**会话** ${sessionBits.join(' · ')}`);
+
+  const elems: import('./cards').CardElement[] = [md(lines.join('\n'))];
+
+  // 放不下的部分进折叠面板：全量资源 + metadata 剩余项
+  const rest: import('./cards').CardElement[] = [];
+  const heavy = view ? view.resources.length > PERM_FOLD_MAX || view.resources.some((r) => r.length > PERM_FOLD_LEN) : false;
+  if (heavy && view) {
+    rest.push(md(view.resources.slice(0, 40).map((r, i) => `${i + 1}. ${r.slice(0, 800)}`).join('\n')));
+  }
+  if (view?.extra) rest.push(md(`更多细节：${view.extra}`));
+  if (rest.length) elems.push(collapse(heavy ? `全部目标（${view?.resources.length} 项）` : '更多细节', rest));
+
+  const pid = String(p.id || p.permissionID || '');
+  const brief = view ? clipText(view.summary, 60) : '';
+  elems.push(btnRow(
+    btn('✅ 批准一次', 'primary', { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'once', brief }),
+    btn(view?.alwaysRule ? `总是批准（记住 ${clipText(view.alwaysRule, 24)}）` : '总是批准', 'default', { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'always', brief }),
+  ));
+  elems.push(btn('✖ 拒绝', 'danger', { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'reject', brief }));
+  elems.push(note(`Co-Team · OpenCode 权限 · ${new Date().toLocaleString()}`));
+  return card2('orange', `⛔ 权限待确认 · ${view?.label || '权限请求'} · ${who}`, elems);
 }
 
 export function createOcBridge(deps: OcBridgeDeps): OcBridge {
@@ -571,10 +622,12 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           const sessionId = String(params.session_id || '');
           const permissionId = String(params.permission_id || '');
           const response = (params.response === 'always' ? 'always' : params.response === 'reject' ? 'reject' : 'once') as 'once' | 'always' | 'reject';
+          // 回执带上申请内容（按钮 value 里的 brief）——否则批完只剩一串 id
+          const brief = String(params.brief || '');
           const ok = await deps.answerPermission(instance, sessionId, permissionId, response);
           return ok
-            ? reply(`✅ 权限已${response === 'reject' ? '拒绝' : '批准'}`, [`${instance} · ${permissionId}`])
-            : reply('⏱ 权限已失效', [`${instance} · ${permissionId} 不在等待中。`]);
+            ? reply(`✅ 权限已${response === 'reject' ? '拒绝' : '批准'}`, [brief || `${instance} · ${permissionId}`])
+            : reply('⏱ 权限已失效', [brief ? `${brief}（${instance}）不在等待中。` : `${instance} · ${permissionId} 不在等待中。`]);
         }
         if (act === 'oc_form' || act === 'oc_form_pick') {
           // 提问表单状态机：状态存 feishu:route:{message_id}。
@@ -683,20 +736,17 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const seenKey = `feishu:oc:permseen:${pid}`;
         if (await busGet(seenKey)) continue;
         await busSet(seenKey, 1, 3600);
-        // 权限详情（对齐 mobile permDetailOf）：pattern 数组/命令串，metadata 附注
-        const pat = Array.isArray(p.pattern) ? p.pattern.join(' , ') : p.pattern;
-        const detail = String(pat || p.command || p.title || p.type || '权限请求');
-        const meta = p.metadata && typeof p.metadata === 'object' ? JSON.stringify(p.metadata).slice(0, 200) : '';
-        const permMd = `**会话** ${sid.slice(0, 12)}\n**请求** ${detail.slice(0, 300)}${meta ? `\n**详情** ${meta}` : ''}`;
-        await sendCard(cfg, target.id, card2('orange', `⛔ OpenCode 权限待确认 · ${instance}`, [
-          md(permMd),
-          btnRow(
-            { tag: 'button', text: { tag: 'plain_text', content: '批准一次' }, type: 'primary', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'once' } }] },
-            { tag: 'button', text: { tag: 'plain_text', content: '总是批准' }, type: 'default', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'always' } }] },
-          ),
-          { tag: 'button', text: { tag: 'plain_text', content: '✖ 拒绝' }, type: 'danger', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'reject' } }] },
-          note(`Co-Team · OpenCode 权限 · ${new Date().toLocaleString()}`),
-        ]), target.type);
+        // 会话上下文：实例中文名 + 会话标题/目录（列表与卡片对账已有同款查询）
+        const insts = await deps.listInstances().catch(() => [] as OcInstanceLite[]);
+        const inst = insts.find((i) => i.id === instance);
+        const sess = (await deps.listSessions(instance).catch(() => [] as OcSessionLite[])).find((s) => s.id === sid);
+        await sendCard(cfg, target.id, buildOcPermissionCard(p, {
+          instance,
+          instanceLabel: inst?.label,
+          sessionId: sid,
+          sessionTitle: sess?.title,
+          directory: sess?.directory,
+        }), target.type);
       }
       for (const q of pending.questions || []) {
         const qid = String(q.requestID || q.id || '');

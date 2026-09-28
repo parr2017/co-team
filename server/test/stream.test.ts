@@ -78,12 +78,13 @@ describe('SessionStream 流式状态机', () => {
     expect(s.snapshot().error).toBe('boom');
   });
 
-  it('permission.asked/replied：待批队列进出', () => {
+  it('permission.asked/replied：待批队列进出（2.x 载荷：action/resources/save + requestID）', () => {
     const s = new SessionStream();
-    s.applyEvent(ev('permission.asked', { id: 'per_1', sessionID: 's', title: '运行 ls', pattern: ['ls'], metadata: {} }));
-    s.applyEvent(ev('permission.asked', { id: 'per_2', sessionID: 's', title: '写文件', metadata: {} }));
+    s.applyEvent(ev('permission.asked', { id: 'per_1', sessionID: 's', action: 'read', resources: ['backend/.env'], save: ['*'] }));
+    s.applyEvent(ev('permission.asked', { id: 'per_2', sessionID: 's', action: 'bash', resources: ['rm -rf dist'] }));
     expect(s.snapshot().pendingPermissions.map((p) => p.id)).toEqual(['per_1', 'per_2']);
-    s.applyEvent(ev('permission.replied', { permissionID: 'per_1', response: 'once' }));
+    // replied 的 data 是 { sessionID, requestID, reply }——requestID 才是被回应的那条
+    s.applyEvent(ev('permission.replied', { sessionID: 's', requestID: 'per_1', reply: 'once' }));
     expect(s.snapshot().pendingPermissions.map((p) => p.id)).toEqual(['per_2']);
   });
 
