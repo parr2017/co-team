@@ -121,6 +121,32 @@ describe('startup sweep 重做（2026-09-15 永续开发语义）', () => {
     expect((await getTaskGraph('t-fin'))!.status).toBe('interrupted');
   });
 
+  it('waiting_approval 任务跨重启且队列有命令：重发审批提醒，状态不动（2026-09-28 us55tbhs 实证补）', async () => {
+    const { busSet } = await import('../src/bus');
+    await saveTaskGraph('t-gate', [makeNode('n1', 'completed'), makeNode('n2', 'waiting_approval')], [], { description: 'g', workspace: tmp, status: 'waiting_approval' });
+    await busSet('task:pending_commands:t-gate', [{ id: 'c1', node_id: 'n2', node_name: 'n2', command: 'flutter test', ts: new Date().toISOString() }]);
+    const swept = await orchestrator.sweepInterruptedTasks();
+    expect(swept.resume).not.toContain('t-gate'); // 人工门不自动续跑
+    const g = await getTaskGraph('t-gate');
+    expect(g!.status).toBe('waiting_approval'); // 状态不动，等人工拍板
+    expect(g!.nodes[1].status).toBe('waiting_approval');
+    const journals = JSON.stringify(await getTaskJournals('t-gate'));
+    expect(journals).toContain('审批提醒已重发');
+  });
+
+  it('waiting_approval 任务跨重启且队列已空（状态脱节）：自愈复位续跑，不消耗 infra_retries', async () => {
+    await saveTaskGraph('t-desync', [makeNode('n1', 'completed'), makeNode('n2', 'waiting_approval')], [], { description: 'd', workspace: tmp, status: 'waiting_approval' });
+    // 队列本来就空（bus 无此 key）——正是 us55tbhs 节点16 的脱节形态
+    const swept = await orchestrator.sweepInterruptedTasks();
+    expect(swept.resume).toContain('t-desync');
+    const g = await getTaskGraph('t-desync');
+    expect(g!.status).toBe('interrupted'); // 走既有续跑链（index.ts 重新入队）
+    expect(g!.nodes[1].status).toBe('pending'); // 审批门节点复位
+    expect(g!.infra_retries).toBeUndefined(); // 审批门跨重启不计中断额度
+    const journals = JSON.stringify(await getTaskJournals('t-desync'));
+    expect(journals).toContain('状态脱节');
+  });
+
   it('反复中断达上限（infra_retries>3）：停靠人工 failed，不再自动续跑', async () => {
     await saveTaskGraph('t-looper', [makeNode('n1', 'running')], [], { description: 'l', workspace: tmp, status: 'running', });
     const g = await getTaskGraph('t-looper');

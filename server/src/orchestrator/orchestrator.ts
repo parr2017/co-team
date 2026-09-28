@@ -462,6 +462,42 @@ export class Orchestrator {
         planning.push(graph.task_id);
         continue;
       }
+      if (graph.status === 'waiting_approval') {
+        // 审批门跨重启（2026-09-28 us55tbhs 实证）：任务停在 waiting_approval 等人工，
+        // 服务重启后清扫曾直接跳过——审批提醒不再有，节点永久悬空。分两路：
+        // ① 队列里仍有待审批命令 → 重发审批通知（人工门语义不变）；
+        // ② 队列已空（状态与队列脱节，多为重启前的残留状态）→ 自愈：节点复位 pending
+        //    重新入队续跑（不计 infra_retries——审批门跨重启不是执行中断）。
+        const pendingCmds = (await busGet<{ id: string }[]>(`task:pending_commands:${graph.task_id}`)) || [];
+        if (pendingCmds.length > 0) {
+          const node = graph.nodes.find((n) => n.status === 'waiting_approval');
+          notify('command_pending_approval', { task_id: graph.task_id, restarted: true },
+            `[Co-Team] 任务 ${graph.task_id} 服务重启前有 ${pendingCmds.length} 条命令等待审批——仍在等你拍板，请在审批收件箱处理`);
+          await appendJournal(graph.task_id, 'orchestrator', {
+            role: 'master', kind: 'error',
+            text: `服务重启：任务停在审批门（${pendingCmds.length} 条命令待批）——审批提醒已重发，请到审批收件箱处理`,
+            ts: new Date().toISOString(), node_id: node?.id || '', node_name: node?.name || '',
+          });
+          this.logger.warn('Startup sweep re-notified approval-gate task across restart', { taskId: graph.task_id, pending: pendingCmds.length });
+          continue;
+        }
+        const gateNode = graph.nodes.find((n) => n.status === 'waiting_approval');
+        if (!gateNode) continue;
+        gateNode.status = 'pending';
+        gateNode.error = gateNode.error || '审批门跨重启脱节（待审批队列已空），自动复位续跑';
+        graph.status = 'interrupted';
+        graph.updated_at = new Date().toISOString();
+        await persistGraph(graph);
+        await appendJournal(graph.task_id, 'orchestrator', {
+          role: 'master', kind: 'error',
+          text: `服务重启自愈：节点「${gateNode.name}」停在审批门但待审批队列已空（状态脱节）——已复位重新入队续跑`,
+          ts: new Date().toISOString(), node_id: gateNode.id, node_name: gateNode.name,
+        });
+        notify('task_interrupted', { task_id: graph.task_id, reason: 'approval_gate_desync' }, `[Co-Team] 任务 ${graph.task_id} 审批门状态跨重启脱节，节点已自动复位续跑`);
+        this.logger.warn('Startup sweep healed approval-gate desync (empty queue)', { taskId: graph.task_id, node: gateNode.id });
+        resume.push(graph.task_id);
+        continue;
+      }
       if (graph.status !== 'running' && graph.status !== 'finalizing') continue;
       const interruptedNodeIds: string[] = [];
       for (const node of graph.nodes) {
