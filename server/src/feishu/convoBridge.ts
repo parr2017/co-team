@@ -14,7 +14,7 @@ import type { FeishuConfig } from '../config';
 import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
-import { buildResultCard, card2, cardResponse, form, inputField, md, note, submitBtn, btnRow } from './cards';
+import { buildResultCard, card2, cardResponse, form, inputField, md, note, projectLabelOf, sourceLine, submitBtn, btnRow } from './cards';
 import { buildConvoListCard, buildConvoEnterCard, buildProjectPickerCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
@@ -23,6 +23,9 @@ export interface ConvoListItem {
   title: string;
   status: string;
   updated_at: string;
+  /** 通知卡上标项目名用（api 侧传的是完整会话记录；极简挂载可缺） */
+  workspace?: string;
+  project_id?: string;
 }
 
 export interface ConvoBridgeDeps {
@@ -71,6 +74,17 @@ function renderList(convos: ConvoListItem[], currentId?: string): { text: string
 
 export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
   const logger = getLogger();
+
+  /** 项目表（极简挂载可能不提供）：拿不到就退回目录名 */
+  const projectsOf = async (): Promise<{ name: string; workspace: string }[]> => {
+    try { return (await deps.listProjects()) || []; } catch { return []; }
+  };
+
+  /** 会话所属项目名（通知卡上的「这是哪个项目的事」） */
+  const projectOf = async (convoId: string): Promise<string> => {
+    const hit = (await deps.list().catch(() => [] as ConvoListItem[])).find((c) => c.id === convoId);
+    return projectLabelOf(hit?.workspace, await projectsOf());
+  };
 
   const bindAndEnter = async (convo: { id: string; title: string; status: string; updated_at: string }, session: FeishuSession, chatId: string): Promise<string> => {
     session.mode = 'convo';
@@ -281,7 +295,9 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
           } else if (type === 'convo_approval') {
             const approval = env!.payload!.approval as { id: string; command: string; reason?: string; status?: string };
             if (!approval?.id || approval.status !== 'pending') return;
+            const project = await projectOf(convoId);
             const card = card2('orange', '⛔ 会话命令待审批', [
+              sourceLine('Co-Team 协作会话', { project }),
               md(`**会话** ${bound.title || convoId}\n**命令** \`${String(approval.command).slice(0, 200)}\`${approval.reason ? `\n**原因** ${approval.reason}` : ''}`),
               btnRow(
                 { tag: 'button', text: { tag: 'plain_text', content: '批准一次' }, type: 'primary', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'convo_approve', convo_id: convoId, approval_id: approval.id, action: 'once' } }] },
@@ -296,6 +312,7 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
             const ask = env!.payload!.ask as { id: string; question: string; status?: string };
             if (!ask?.id || ask.status !== 'pending') return;
             const card = card2('orange', '❓ 会话提问', [
+              sourceLine('Co-Team 协作会话', { project: await projectOf(convoId), session: bound.title || convoId }),
               md(ask.question.slice(0, 800)),
               form(`ca_${convoId}_${ask.id}`, [inputField('answer', '输入你的回答…'), submitBtn('发送', 'go')]),
               note(`Co-Team · 会话提问 · ${new Date().toLocaleString()}`),

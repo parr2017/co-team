@@ -19,7 +19,7 @@ import { appendJournal } from '../store';
 import type { FeishuConfig } from '../config';
 import type { TaskGraph } from '../types';
 import { sendCard, updateCard } from './messageService';
-import { buildResultCard, btn, btnRow, card2, md, note, cardResponse, type CardElement } from './cards';
+import { buildResultCard, btn, btnRow, card2, md, note, projectLabelOf, sourceLine, cardResponse, type CardElement } from './cards';
 
 /** 与 HTTP 审批端点同源的动作原语（由 api 挂载处从 ctx 注入）。 */
 export interface ApprovalActionDeps {
@@ -73,10 +73,20 @@ function actionButtons(deps: { taskId: string; nodeId?: string; commandId?: stri
 
 const NO_APPROVERS_NOTE = '未配置审批白名单（config.feishu.approvers），暂不可卡片审批——请在面板操作';
 
+/** 任务所属项目名（卡上的「这是哪个项目的事」；任务 id 对人没意义） */
+async function projectOfTask(taskId: string, deps: Pick<ApprovalActionDeps, 'getTaskGraph'>): Promise<string> {
+  const graph = await deps.getTaskGraph(taskId).catch(() => null);
+  if (!graph) return '';
+  const { listProjects } = await import('../store');
+  return projectLabelOf(graph.workspace, await listProjects().catch(() => []));
+}
+
 /** 节点审批卡：waiting_approval 停靠（含自修改门禁）。 */
-export function buildNodeApprovalCard(payload: { taskId: string; nodeId: string; name?: string; reason?: string; approvers: boolean }): Record<string, unknown> {
-  const title = `⛔ 节点等待审批：${payload.name || payload.nodeId}`;
+export function buildNodeApprovalCard(payload: { taskId: string; nodeId: string; name?: string; reason?: string; approvers: boolean; project?: string }): Record<string, unknown> {
+  const project = String(payload.project || '');
+  const title = `⛔ 节点等待审批：${payload.name || payload.nodeId}${project ? ` · ${project}` : ''}`;
   const elements: Record<string, unknown>[] = [
+    sourceLine('Co-Team 任务', { project }),
     md(`**任务** ${payload.taskId}\n**节点** ${payload.nodeId}${payload.reason ? `\n**原因** ${payload.reason}` : ''}`),
   ];
   if (payload.approvers) elements.push(...actionButtons({ taskId: payload.taskId, nodeId: payload.nodeId }, 'node'));
@@ -86,11 +96,14 @@ export function buildNodeApprovalCard(payload: { taskId: string; nodeId: string;
 }
 
 /** 命令审批卡：approve_required 策略停靠（每条命令一组批准/拒绝）。 */
-export async function buildCommandApprovalCard(taskId: string, approvers: boolean, max = 5): Promise<Record<string, unknown> | null> {
+export async function buildCommandApprovalCard(taskId: string, approvers: boolean, max = 5, project = ''): Promise<Record<string, unknown> | null> {
   const queue = (await busGet<{ id: string; node_name: string; command: string; ts: string }[]>(`task:pending_commands:${taskId}`)) || [];
   if (!queue.length) return null;
   const shown = queue.slice(0, max);
-  const elements: Record<string, unknown>[] = [md(`**任务** ${taskId}\n**待审命令** ${queue.length} 条`)];
+  const elements: Record<string, unknown>[] = [
+    sourceLine('Co-Team 任务', { project }),
+    md(`**任务** ${taskId}${project ? `\n**项目** ${project}` : ''}\n**待审命令** ${queue.length} 条`),
+  ];
   for (const item of shown) {
     elements.push(md(`\`${item.command.slice(0, 160)}\`\n节点：${item.node_name}`));
     if (approvers) elements.push(...actionButtons({ taskId, commandId: item.id }, 'command'));
@@ -98,18 +111,20 @@ export async function buildCommandApprovalCard(taskId: string, approvers: boolea
   if (queue.length > shown.length) elements.push(note(`其余 ${queue.length - shown.length} 条命令请在面板处理`));
   if (!approvers) elements.push(note(NO_APPROVERS_NOTE));
   elements.push(note(`Co-Team · 命令审批 · ${new Date().toLocaleString()}`));
-  return card2('orange', '⛔ 命令等待审批', elements);
+  return card2('orange', `⛔ 命令等待审批${project ? ` · ${project}` : ''}`, elements);
 }
 
 /** 人工门提示卡（车道阻塞/环境修复类）：信息 + 取消任务按钮。 */
-export function buildQueueGateCard(payload: { taskId: string; message?: string; approvers: boolean }): Record<string, unknown> {
+export function buildQueueGateCard(payload: { taskId: string; message?: string; approvers: boolean; project?: string }): Record<string, unknown> {
+  const project = String(payload.project || '');
   const elements: Record<string, unknown>[] = [
-    md(`**任务** ${payload.taskId}${payload.message ? `\n${payload.message}` : ''}`),
+    sourceLine('Co-Team 任务', { project }),
+    md(`**任务** ${payload.taskId}${project ? `\n**项目** ${project}` : ''}${payload.message ? `\n${payload.message}` : ''}`),
   ];
   if (payload.approvers) elements.push(btn('✖ 取消任务', 'danger', { task_id: payload.taskId, act: 'cancel_task' }));
   else elements.push(note(NO_APPROVERS_NOTE));
   elements.push(note(`Co-Team · 人工门 · ${new Date().toLocaleString()}`));
-  return card2('red', '⛔ 任务停靠人工门', elements);
+  return card2('red', `⛔ 任务停靠人工门${project ? ` · ${project}` : ''}`, elements);
 }
 
 // ---------- 渲染侧：TASK 频道订阅 ----------
@@ -139,15 +154,17 @@ export function startApprovalCards(cfg: FeishuConfig, deps: ApprovalActionDeps):
       if (type === 'node_waiting_approval') {
         const nodeId = String(payload.node_id || '');
         if (!nodeId || (await seen(`${taskId}:${nodeId}`))) return;
-        const card = buildNodeApprovalCard({ taskId, nodeId, name: payload.name ? String(payload.name) : undefined, reason: payload.reason ? String(payload.reason) : undefined, approvers: canApprove });
+        const project = await projectOfTask(taskId, deps);
+        const card = buildNodeApprovalCard({ taskId, nodeId, name: payload.name ? String(payload.name) : undefined, reason: payload.reason ? String(payload.reason) : undefined, approvers: canApprove, project });
         await sendCard(cfg, chatId, card);
       } else if (type === 'command_pending_approval') {
         if (await seen(`${taskId}:commands`)) return;
-        const card = await buildCommandApprovalCard(taskId, canApprove);
+        const card = await buildCommandApprovalCard(taskId, canApprove, 5, await projectOfTask(taskId, deps));
         if (card) await sendCard(cfg, chatId, card);
       } else if (type === 'queue_human_gate') {
         if (await seen(`${taskId}:gate`)) return;
-        const card = buildQueueGateCard({ taskId, message: payload.message ? String(payload.message) : undefined, approvers: canApprove });
+        const project = await projectOfTask(taskId, deps);
+        const card = buildQueueGateCard({ taskId, message: payload.message ? String(payload.message) : undefined, approvers: canApprove, project });
         await sendCard(cfg, chatId, card);
       }
     })().catch((e) => logger.warn('Feishu approval card render failed', { error: String(e).slice(0, 300) }));

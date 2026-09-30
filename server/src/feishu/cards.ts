@@ -27,6 +27,31 @@ export function note(content: string): CardElement {
 }
 
 /**
+ * 工作区路径 → 项目名。通知卡上的「这是哪个项目的事」——路径太长，项目名才是人的索引。
+ * 未登记为项目的目录退回最后一段目录名；空路径返回空串（调用方自行决定回落文案）。
+ */
+export function projectLabelOf(workspace: string | null | undefined, projects?: { name: string; workspace: string }[]): string {
+  const norm = (d: string | null | undefined) => String(d || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const w = norm(workspace);
+  if (!w) return '';
+  const hit = (projects || []).find((p) => norm(p.workspace) === w);
+  if (hit?.name) return hit.name;
+  return w.split('/').filter(Boolean).at(-1) || '';
+}
+
+/**
+ * 「来源」行：引擎 + 可选上下文。审批/提问卡在同一个群里混排时，一眼分清
+ * 这张是 OpenCode（外部编码引擎）提的还是 Co-Team 内置 agent 提的，属于哪个项目。
+ */
+export function sourceLine(engine: string, ctx?: { instance?: string; project?: string; session?: string }): CardElement {
+  const bits = [engine];
+  if (ctx?.instance) bits.push(`实例 ${ctx.instance}`);
+  if (ctx?.project) bits.push(`项目 ${ctx.project}`);
+  if (ctx?.session) bits.push(`会话 ${ctx.session}`);
+  return md(`**来源** ${bits.join(' · ')}`);
+}
+
+/**
  * 折叠面板（2.0 `collapsible_panel`）：长命令/多资源时收纳，避免主卡被撑爆。
  * 实测红线（探针 scripts/probe-collapse-panel.cjs 逐字段试出来的，踩错整卡被拒 230099/200621）：
  * - 没有 `expand` 属性（塞顶层或 header 都报 unknown property），默认就是折叠态；

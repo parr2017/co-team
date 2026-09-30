@@ -10,7 +10,7 @@
  */
 import { busGet, busSet } from '../bus';
 import { getLogger } from '../logger';
-import { getTaskGraph, listTaskGraphs } from '../store';
+import { getTaskGraph, listTaskGraphs, listProjects } from '../store';
 import { listAsks } from '../askGate';
 import { listConvos } from '../convo';
 import { getDailyReport } from '../dailyReport';
@@ -19,10 +19,10 @@ import type { FeishuSession } from './session';
 import { setSession } from './session';
 import { sendCard } from './messageService';
 import { buildNodeApprovalCard, buildCommandApprovalCard } from './approvalCards';
-import { buildOcPermissionCard } from './ocBridge';
+import { buildOcPermissionCard, buildOcFormCard, type OcFormState } from './ocBridge';
 import { permSummaryOf } from '@co-team/opencode-sync';
 import { askCard, proposalCard, clarifyCard, nodeClarifyCard } from './decisionCards';
-import { card2, md, note, btnRow } from './cards';
+import { card2, md, note, btnRow, projectLabelOf, sourceLine } from './cards';
 import { buildInboxListCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
@@ -58,7 +58,11 @@ const KIND_LABEL: Record<string, string> = {
 
 const MAX_ITEMS = 12;
 
-export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] } }): InboxBridge {
+export function createInboxBridge(cfg: FeishuConfig, opts?: {
+  ocPending?: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] };
+  /** oc 会话元信息（实例 + 会话 id → 标题/目录）：卡上标项目名用；缺省则不标 */
+  ocSession?: (instanceId: string, sessionId: string) => Promise<{ title?: string; directory?: string } | null>;
+}): InboxBridge {
   const logger = getLogger();
   const canApprove = !!cfg.approvers?.length;
 
@@ -67,13 +71,20 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
     const push = (kind: string, id: string, title: string, card: Record<string, unknown>, route?: Record<string, unknown>) => {
       if (items.length < MAX_ITEMS) items.push({ kind, id, title, card, route });
     };
+    // 项目表：卡上标「哪个项目」（任务/会话/oc 卡都要用），聚合一次即可
+    const projects = await listProjects().catch(() => [] as { name: string; workspace: string }[]);
+    const ocSessionOf = async (instance: string, sid: string) => {
+      if (!sid || !opts?.ocSession) return null;
+      return opts.ocSession(instance, sid).catch(() => null);
+    };
 
     // ---- 任务域 ----
     for (const g of await listTaskGraphs()) {
       if (items.length >= MAX_ITEMS) break;
+      const project = projectLabelOf(g.workspace, projects);
       for (const n of g.nodes) {
         if (n.status === 'waiting_approval') {
-          push('node_approval', `${g.task_id}:${n.id}`, `节点「${n.name}」等待审批 · ${g.task_id}`, buildNodeApprovalCard({ taskId: g.task_id, nodeId: n.id, name: n.name, approvers: canApprove }));
+          push('node_approval', `${g.task_id}:${n.id}`, `节点「${n.name}」等待审批 · ${g.task_id}`, buildNodeApprovalCard({ taskId: g.task_id, nodeId: n.id, name: n.name, approvers: canApprove, project }));
         }
         if (n.status === 'waiting_clarify') {
           const brief = await busGet<{ brief?: { approach?: string; files?: string[]; risks?: string[] } }>(`task:node:clarify:${g.task_id}:${n.id}`).catch(() => null);
@@ -82,7 +93,7 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
       }
       const pendCmds = (await busGet<{ id: string }[]>(`task:pending_commands:${g.task_id}`).catch(() => null)) || [];
       if (pendCmds.length) {
-        const card = await buildCommandApprovalCard(g.task_id, canApprove).catch(() => null);
+        const card = await buildCommandApprovalCard(g.task_id, canApprove, 5, project).catch(() => null);
         if (card) push('command_approval', `${g.task_id}:commands`, `「${g.task_id}」有 ${pendCmds.length} 条命令待审批`, card);
       }
       for (const a of await listAsks(g.task_id).catch(() => [])) {
@@ -103,10 +114,12 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
     // ---- convo 域 ----
     for (const c of await listConvos().catch(() => [])) {
       if (items.length >= MAX_ITEMS) break;
+      const project = projectLabelOf(c.workspace, projects);
       const approvals = (await busGet<any[]>(`convo:${c.id}:approvals`).catch(() => null)) || [];
       for (const a of approvals) {
         if (a.status !== 'pending') continue;
         const card = card2('orange', `⛔ 会话命令待审批 · ${c.title}`, [
+          sourceLine('Co-Team 协作会话', { project }),
           md(`**命令** \`${String(a.command).slice(0, 200)}\`${a.reason ? `\n**原因** ${a.reason}` : ''}`),
           btnRow(
             { tag: 'button', text: { tag: 'plain_text', content: '批准一次' }, type: 'primary', size: 'medium', behaviors: [{ type: 'callback', value: { act: 'convo_approve', convo_id: c.id, approval_id: a.id, action: 'once' } }] },
@@ -121,6 +134,7 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
         if (a.status !== 'pending') continue;
         const { form, inputField, submitBtn } = await import('./cards');
         const card = card2('orange', `❓ 会话提问 · ${c.title}`, [
+          sourceLine('Co-Team 协作会话', { project }),
           md(String(a.question || '').slice(0, 600)),
           form(`ib_${c.id}_${a.id}`, [inputField('answer', '输入你的回答…'), submitBtn('发送', 'go')]),
           note(`Co-Team · 收件箱 · ${new Date().toLocaleString()}`),
@@ -138,7 +152,12 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
         const sid = String(p.sessionID || p.session_id || p.sessionId || '');
         if (!pid || !instance || !sid) continue;
         // 与实时推送同一张卡构造（permView 归一 + 可点按钮）——收件箱点进来即能拍板
-        const card = buildOcPermissionCard(p, { instance, sessionId: sid, instanceLabel: p.instance_label });
+        const sess = await ocSessionOf(instance, sid);
+        const card = buildOcPermissionCard(p, {
+          instance, sessionId: sid, instanceLabel: p.instance_label,
+          sessionTitle: sess?.title, directory: sess?.directory,
+          project: projectLabelOf(sess?.directory, projects),
+        });
         const brief = permSummaryOf(p);
         push('oc_perm', pid, `OC 权限：${brief.slice(0, 60)} · ${instance}`, card);
       }
@@ -146,17 +165,20 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: { ocPending?: () => 
         const qid = String(q.requestID || q.id || '');
         const instance = String(q.instance || '');
         if (!qid || !instance) continue;
-        const { form, inputField, submitBtn } = await import('./cards');
-        // 提问正文在 questions[]（question/title 只是标题字段，早前直读 q.question 永远空）
-        const qs: any[] = Array.isArray(q.questions) ? q.questions : [];
-        const body = qs.length
-          ? qs.map((f, i) => `${qs.length > 1 ? `${i + 1}. ` : ''}${f.header ? `【${f.header}】` : ''}${f.question || f.key || ''}${(f.options || []).length ? `\n   选项：${(f.options || []).map((o: any) => o.label || o.value).join(' / ')}` : ''}`).join('\n')
-          : String(q.title || '').slice(0, 600);
-        push('oc_question', qid, `OC 提问 · ${instance}`, card2('orange', `❓ OpenCode 提问 · ${instance}`, [
-          md([String(q.title || '').slice(0, 80), body].filter(Boolean).join('\n').slice(0, 1200) || '（详见面板）'),
-          form(`ibi_${qid}`, [inputField('answer', '输入你的回答…'), submitBtn('发送', 'go')]),
-          note(`Co-Team · 收件箱 · ${new Date().toLocaleString()}`),
-        ]), { act: 'oc_question', instance, request_id: qid });
+        // 与实时推送同一张卡构造（选择题点选/输入框表单/全答自动提交）——两处渲染必须同源，
+        // 否则收件箱这张卡的提交按钮落在没人处理的 act 上（点了没反应）
+        const sid = String(q.sessionID || q.session_id || '');
+        const sess = await ocSessionOf(instance, sid);
+        const state: OcFormState = {
+          act: 'oc_form', instance, request_id: qid,
+          title: String(q.title || ''),
+          fields: (Array.isArray(q.questions) ? q.questions : []) as OcFormState['fields'],
+          answers: {},
+          instanceLabel: String(q.instance_label || instance),
+          project: projectLabelOf(sess?.directory, projects),
+          sessionTitle: sess?.title,
+        };
+        push('oc_question', qid, `OC 提问 · ${instance}`, buildOcFormCard(state), { ...state });
       }
     }
 

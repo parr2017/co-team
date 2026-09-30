@@ -11,7 +11,7 @@ vi.mock('../src/feishu/messageService', () => ({
 }));
 
 import { closeBus, busGet, busSet, initBus } from '../src/bus';
-import { emitEvent, saveTaskGraph } from '../src/store';
+import { emitEvent, saveProject, saveTaskGraph } from '../src/store';
 import { CHANNELS } from '../src/types';
 import { createConvoBridge } from '../src/feishu/convoBridge';
 import { createOcBridge } from '../src/feishu/ocBridge';
@@ -29,14 +29,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function makeConvoDeps() {
   return {
     list: vi.fn(async () => [
-      { id: 'c1', title: '登录方案', status: 'idle', updated_at: '2026-09-26T10:00:00Z' },
-      { id: 'c2', title: '数据库选型', status: 'running', updated_at: '2026-09-26T09:00:00Z' },
+      { id: 'c1', title: '登录方案', status: 'idle', updated_at: '2026-09-26T10:00:00Z', workspace: 'D:/convo' },
+      { id: 'c2', title: '数据库选型', status: 'running', updated_at: '2026-09-26T09:00:00Z', workspace: 'D:/convo' },
     ]),
     create: vi.fn(async (input: { title?: string }) => ({ id: 'c9', title: input.title || '未命名会话', status: 'idle', updated_at: '' })),
     send: vi.fn(async () => ({ queued: false })),
     stop: vi.fn(async () => {}),
     resolveApproval: vi.fn(async () => ({ id: 'ap1' })),
     answerAsk: vi.fn(async () => ({ id: 'ak1' })),
+    listProjects: vi.fn(async () => [{ id: 'p1', name: 'co-team', workspace: 'D:/convo' }]),
   };
 }
 
@@ -57,7 +58,9 @@ function makeOcDeps() {
     switchAgent: vi.fn(async () => true),
     readLastReply: vi.fn(async () => '已修复登录报错'),
     readRecent: vi.fn(async () => [{ role: 'user', text: '把登录页的报错修一下' }, { role: 'assistant', text: '已修复，改了 auth 模块' }]),
+    listProjects: vi.fn(async () => [{ id: 'p1', name: 'co-team', workspace: 'D:/main' }]),
     pendingAll: vi.fn(() => ({ permissions: [], questions: [] })),
+    sessionAlive: vi.fn(async () => true),
     answerPermission: vi.fn(async () => true),
     answerQuestion: vi.fn(async () => true),
     rejectQuestion: vi.fn(async () => true),
@@ -167,6 +170,26 @@ describe('convo 桥', () => {
       value: { act: 'convo_approve', convo_id: 'c1', approval_id: 'ap1', action: 'once' },
     });
     expect(deps.resolveApproval).toHaveBeenCalledWith('c1', 'ap1', 'once');
+    stop();
+  });
+
+  it('convo 审批/提问卡带来源（Co-Team 协作会话）与项目名——别和 OpenCode 的卡混了', async () => {
+    await busSet('feishu:chat:convo:c1', { chat_id: 'oc1', title: '登录方案' }, 3600);
+    const deps = makeConvoDeps();
+    const bridge = createConvoBridge(deps);
+    const stop = bridge.start(cfg);
+    await emitEvent(CHANNELS.DASHBOARD, 'convo_approval', { convo_id: 'c1', approval: { id: 'ap1', command: 'npm publish', status: 'pending' } });
+    await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(1));
+    const approveBody = JSON.stringify(sendCardMock.mock.calls[0][2]);
+    expect(approveBody).toContain('Co-Team 协作会话');
+    expect(approveBody).toContain('项目 co-team');
+
+    sendCardMock.mockClear();
+    await emitEvent(CHANNELS.DASHBOARD, 'convo_ask', { convo_id: 'c1', ask: { id: 'ak1', question: '用哪个端口？', status: 'pending' } });
+    await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(1));
+    const askBody = JSON.stringify(sendCardMock.mock.calls[0][2]);
+    expect(askBody).toContain('Co-Team 协作会话');
+    expect(askBody).toContain('项目 co-team · 会话 登录方案');
     stop();
   });
 });
@@ -288,6 +311,10 @@ describe('oc 桥', () => {
     // 会话上下文：标题 + 目录
     expect(body).toContain('活跃会话');
     expect(body).toContain('D:/main');
+    // 来源与项目：OpenCode 外部引擎提的，卡上要能看出是哪个项目（实例退到来源行）
+    expect(body).toContain('来源');
+    expect(body).toContain('OpenCode · 实例 main-exec · 项目 co-team');
+    expect(card.header.title.content).toContain('co-team');
 
     // 再次扫描 → 去重不重推
     await bridge.scanPendingOnce(cfg);
@@ -343,6 +370,43 @@ describe('oc 桥', () => {
     expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q1', { note: '继续' });
   });
 
+  it('pending 提问：会话已不存在时不推卡，且不烧去重键——会话回来仍会提醒', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'desktop', id: 'q9', requestID: 'q9', sessionID: 's-gone', title: 'Questions', questions: [{ key: 'db', type: 'select', question: '选择数据库', options: [{ label: 'SQLite', value: 'sqlite' }] }] }] }));
+    deps.sessionAlive = vi.fn(async () => false); // 幽灵会话：按 id 读消息 404（删库没杀内存会话）
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).not.toHaveBeenCalled();
+    // 关键：跳过不等于已提醒——去重键不能烧，否则会话恢复后永远等不到这张卡
+    expect(await busGet('feishu:oc:qseen:q9')).toBeNull();
+
+    // 会话恢复（或探针改判活着）→ 下一轮照常推，且只推一次
+    deps.sessionAlive = vi.fn(async () => true);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('pending 权限：会话已不存在时不推卡；探针未知（null）不拦截，保持原行为', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({
+      permissions: [
+        { instance: 'desktop', id: 'per-gone', permissionID: 'per-gone', sessionID: 's-gone', action: 'external_directory' },
+        { instance: 'desktop', id: 'per-unknown', permissionID: 'per-unknown', sessionID: 's-unknown', action: 'external_directory' },
+      ],
+      questions: [],
+    }));
+    deps.sessionAlive = vi.fn(async (_i: string, sid: string) => (sid === 's-gone' ? false : null));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(1); // 只剩「未知」那条
+    expect(await busGet('feishu:oc:permseen:per-gone')).toBeNull();
+    expect(await busGet('feishu:oc:permseen:per-unknown')).not.toBeNull();
+  });
+
   it('选择题点选即答：全部作答后自动提交（✓ 标记）', async () => {
     const deps = makeOcDeps();
     deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q2', requestID: 'q2', title: '修复方式', questions: [{ key: 'how', type: 'select', question: '怎么处理？', required: true, options: [{ label: '修，授权改功能', value: 'fix' }, { label: '只记录', value: 'record' }] }] }] }));
@@ -387,6 +451,38 @@ describe('oc 桥', () => {
     });
     expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q3', { a: 'x', b: 'y' });
   });
+
+  it('提问卡带来源/项目（会话目录 → 项目名）；标题不再只挂实例 id', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q4', requestID: 'q4', title: '数据库选型', sessionID: 's-1', questions: [{ key: 'db', type: 'input', question: '用哪个库？' }] }] }));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+    const card = sendCardMock.mock.calls[0][2] as Record<string, any>;
+    const body = JSON.stringify(card);
+    expect(card.header.title.content).toContain('co-team');
+    expect(body).toContain('来源');
+    expect(body).toContain('OpenCode · 实例 main-exec · 项目 co-team · 会话 活跃会话');
+    // 上下文要跟路由状态一起存：点选刷新后项目名不丢
+    const route = await busGet<any>('feishu:route:om_new1');
+    expect(route).toMatchObject({ act: 'oc_form', project: 'co-team', sessionTitle: '活跃会话' });
+  });
+
+  it('纯选择题卡上的「提交回答」按钮已接线（回归：act=oc_form_submit 曾无人处理，点了没反应）', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:route:om_card', {
+      act: 'oc_form', instance: 'main-exec', request_id: 'q9', title: 'T',
+      fields: [{ key: 'db', type: 'select', question: '库?', options: [{ label: 'pg', value: 'pg' }] }],
+      answers: { db: 'pg' },
+    }, 3600);
+    const r = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'oc_form_submit' },
+    });
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q9', { db: 'pg' });
+    expect(JSON.stringify(r)).toContain('已提交回答');
+  });
 });
 
 describe('收件箱（/inbox）', () => {
@@ -419,6 +515,28 @@ describe('收件箱（/inbox）', () => {
     const bridge = createInboxBridge(cfg);
     const r = await handleCommand('/inbox', freshSession(), { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
     expect(String(JSON.stringify(r.card))).toContain('没有等你拍板');
+  });
+
+  it('收件箱 oc 提问卡与实时卡同源：来源/项目上卡，route 可作答（回归：act=oc_question 曾无人处理）', async () => {
+    await saveProject({ id: 'p-oc', name: 'co-team', workspace: 'D:/main', created_at: new Date().toISOString() });
+    const ocDeps = makeOcDeps();
+    ocDeps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q7', requestID: 'q7', sessionID: 's-1', title: 'T', questions: [{ key: 'db', type: 'select', question: '用哪个库？', options: [{ label: 'pg', value: 'pg' }] }] }] }));
+    const bridge = createInboxBridge(cfg, {
+      ocPending: () => ocDeps.pendingAll(),
+      ocSession: async () => ({ title: '活跃会话', directory: 'D:/main' }),
+    });
+    const session = freshSession();
+    await handleCommand('/inbox', session, { listProjects: async () => [], listAgentNames: () => [], inbox: bridge }, 'oc1');
+    // 无任务/会话待办 → 第 0 条是 oc 提问；点 [处理] 重推表单卡
+    sendCardMock.mockClear();
+    await bridge.handleCardAction(cfg, { operatorOpenId: session.user_id, messageId: 'om_card', chatId: 'oc1', value: { act: 'inbox_open', index: 0 } });
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+    const body = JSON.stringify(sendCardMock.mock.calls[0][2]);
+    expect(body).toContain('来源');
+    expect(body).toContain('OpenCode · 实例 main-exec · 项目 co-team · 会话 活跃会话');
+    // route 注册的是表单状态（act=oc_form）——选项点选与提交都能落进 ocBridge 状态机
+    const route = await busGet<any>('feishu:route:om_new1');
+    expect(route).toMatchObject({ act: 'oc_form', instance: 'main-exec', request_id: 'q7' });
   });
 });
 
@@ -467,6 +585,129 @@ describe('oc 卡住检测', () => {
     await bridge.scanStalled(cfg, 0);
     await sleep(25);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  // 2026-09-28 排障：D:\pxx\opencode-mobile 下 12 个空会话（rpc-probe）连环误报
+  it('生命周期事件不上电——session.created/updated 不是"在跑"的证据', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'desktop', event: { type: 'session.created', properties: { sessionID: 's-empty' }, id: 'e1' } });
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'desktop', event: { type: 'session.updated', properties: { sessionID: 's-empty' }, id: 'e2' } });
+    await bridge.scanStalled(cfg, 0);
+    await sleep(25);
+    expect(sendCardMock).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('复核 A：会话没有任何消息 → 不推卡（空会话兜底）', async () => {
+    const deps = { ...makeOcDeps(), readRecent: vi.fn(async () => []) };
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id: 'd1' } });
+    await bridge.scanStalled(cfg, 0);
+    await sleep(25);
+    expect(sendCardMock).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('复核 B：状态表已不 busy → 不推卡（idle 事件丢了也不误报）', async () => {
+    const deps = { ...makeOcDeps(), sessionStatus: vi.fn(async () => ({ 's-1': { type: 'idle' } })) };
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id: 'd1' } });
+    await bridge.scanStalled(cfg, 0);
+    await sleep(25);
+    expect(sendCardMock).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('复核 B：状态表里查无此会话（已收场）→ 不推卡', async () => {
+    const deps = { ...makeOcDeps(), sessionStatus: vi.fn(async () => ({ 's-other': { type: 'running' } })) };
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id: 'd1' } });
+    await bridge.scanStalled(cfg, 0);
+    await sleep(25);
+    expect(sendCardMock).not.toHaveBeenCalled();
+    stop();
+  });
+
+  // 2.0.16 实测 GET /api/session/active 的值是 'running'（不是 'busy'）——写死 'busy' 会静默废掉复核
+  it('复核 B：真实形态 status={\'running\'} → 仍推卡（不因字面量差异误杀）', async () => {
+    const deps = { ...makeOcDeps(), sessionStatus: vi.fn(async () => ({ 's-1': { type: 'running' } })) };
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id: 'd1' } });
+    await bridge.scanStalled(cfg, 0);
+    await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(1));
+    stop();
+  });
+
+  it('「忽略」只压这一轮静默：本次不再提醒，会话再有新活动照常提醒', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    const arm = (id: string) => emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id } });
+
+    // 第一轮：活动后静默 → 推卡（同时写下会话级去重键）
+    await arm('d1');
+    await bridge.scanStalled(cfg, 0);
+    await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(1));
+    expect(await busGet('feishu:oc:stalled:s-1')).not.toBeNull();
+
+    // 会话又闪了一下（新事件），用户此时点「忽略」
+    await sleep(5);
+    await arm('d2');
+    const r = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
+      value: { act: 'oc_stall_ignore', instance: 'main-exec', session_id: 's-1' },
+    });
+    expect(JSON.stringify(r)).toContain('已忽略本次卡住提醒');
+    // 去重键被撤掉——否则忽略之后的新一轮卡住会被旧键吃掉
+    expect(await busGet('feishu:oc:stalled:s-1')).toBeNull();
+
+    // 忽略时刻之前的静默：不再提醒
+    await bridge.scanStalled(cfg, 0);
+    await sleep(25);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+
+    // 忽略之后又有新活动 → 重新静默 → 照常提醒
+    await sleep(5);
+    await arm('d3');
+    await bridge.scanStalled(cfg, 0);
+    await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(2));
+    stop();
+  });
+
+  it('状态表查不到（实例不可达）→ 不误杀真卡住，仍推卡', async () => {
+    const deps = { ...makeOcDeps(), sessionStatus: vi.fn(async () => null) };
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id: 'd1' } });
+    await bridge.scanStalled(cfg, 0);
+    await vi.waitFor(() => expect(sendCardMock).toHaveBeenCalledTimes(1));
+    stop();
+  });
+
+  it('提问/审批在等人工 → 收场不上电（人答完后事件会重新上电）', async () => {
+    const deps = makeOcDeps();
+    const bridge = createOcBridge(deps);
+    const stop = bridge.start(cfg);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'message.part.delta', properties: { sessionID: 's-1' }, id: 'd1' } });
+    await emitEvent(CHANNELS.DASHBOARD, 'oc_event', { instance: 'main-exec', event: { type: 'question.asked', properties: { sessionID: 's-1' }, id: 'q1' } });
+    await bridge.scanStalled(cfg, 0);
+    await sleep(25);
+    expect(sendCardMock).not.toHaveBeenCalled();
     stop();
   });
 });

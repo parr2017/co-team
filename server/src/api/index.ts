@@ -2239,11 +2239,20 @@ export function createApi(ctx: ApiContext): Hono {
               }
               return out.slice(-4);
             },
+            // 会话存活探针：只把「会话不存在」判死（删库不杀内存会话——幽灵会话还会继续吐事件）；
+            // 其余错误/实例不可达返回 null，交给调用方按未知放行，不误杀真提醒
+            sessionAlive: async (instanceId: string, sessionId: string) => {
+              const r = await oc.readMessages(undefined, instanceId, sessionId, { limit: 1 }).catch(() => null);
+              if (!r) return null;
+              if (r.ok) return true;
+              return /not found/i.test(String(r.error || '')) ? false : null;
+            },
             listProjects: () => listProjects(),
             workdirs: () => oc.workdirs().catch(() => []),
             sessionStatus: async (instanceId: string) => {
               const r = await oc.sessionStatus(undefined, instanceId).catch(() => null);
-              return r?.ok && r.data ? r.data : {};
+              // null = 查不到（实例不可达）；空对象 = 确实没有 busy 会话——调用方靠这个区分
+              return r?.ok ? (r.data || {}) : null;
             },
             pendingAll: () => oc.pendingAll(),
             answerPermission: async (instanceId, sessionId, permissionId, response) => {
@@ -2263,7 +2272,11 @@ export function createApi(ctx: ApiContext): Hono {
           });
         }
         try {
-          inboxBridge = inboxMod.createInboxBridge(ctx.config.feishu!, ctx.opencode ? { ocPending: () => ctx.opencode!.pendingAll() } : undefined);
+          inboxBridge = inboxMod.createInboxBridge(ctx.config.feishu!, ctx.opencode ? {
+            ocPending: () => ctx.opencode!.pendingAll(),
+            // 收件箱卡与实时推送同款：项目名要靠会话目录解析
+            ocSession: async (instanceId: string, sessionId: string) => (await ocSessions(instanceId)).find((s) => s.id === sessionId) || null,
+          } : undefined);
         } catch { /* oc 缺失时收件箱仍可用（无 oc 分区） */ }
         cards.startApprovalCards(ctx.config.feishu!, approvalDeps);
         notifyPush.startNotifyPush(ctx.config.feishu!);

@@ -7,14 +7,14 @@
  * 噪音阀门：config.feishu.oc_watch = all（默认）/ managed / bound。
  * 权限响应 readonly 实例也可用（answerPermission 是 readonly 唯一写操作）。
  */
-import { busGet, busSet, getBus } from '../bus';
+import { busDel, busGet, busSet, getBus } from '../bus';
 import { CHANNELS } from '../types';
 import { getLogger } from '../logger';
 import type { FeishuConfig } from '../config';
 import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
-import { btn, buildResultCard, btnRow, card2, cardResponse, collapse, form, inputField, md, note, submitBtn } from './cards';
+import { btn, buildResultCard, btnRow, card2, cardResponse, collapse, form, inputField, md, note, projectLabelOf, sourceLine, submitBtn } from './cards';
 import { clipText, permViewOf } from '@co-team/opencode-sync';
 import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard, buildOcInstancesCard, buildProjectPickerCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
@@ -36,6 +36,10 @@ export interface OcFormState {
   title: string;
   fields: OcFormField[];
   answers: Record<string, unknown>;
+  /** 展示上下文（来源/实例/项目）——提问卡点选刷新后仍要带着，否则卡上项目名会丢 */
+  instanceLabel?: string;
+  project?: string;
+  sessionTitle?: string;
 }
 
 /** oc 目录 × co-team 项目 合并：会话目录打底（目录名标签），项目覆盖命名并补齐未涉及项目 */
@@ -47,9 +51,15 @@ function mergeOcProjects(projects: { name: string; workspace: string }[], dirs: 
   return [...map.values()].slice(0, 14);
 }
 
-function buildOcFormCard(state: OcFormState): Record<string, unknown> {
+export function buildOcFormCard(state: OcFormState): Record<string, unknown> {
   const elements: import('./cards').CardElement[] = [];
   if (state.title) elements.push(md(`**${state.title.slice(0, 80)}**`));
+  // 来源行：OpenCode 外部引擎提的，属于哪个实例/项目/会话——别和 Co-Team 内置 agent 的提问混了
+  elements.push(sourceLine('OpenCode', {
+    instance: state.instanceLabel || state.instance,
+    project: state.project,
+    session: state.sessionTitle,
+  }));
   const missing: string[] = [];
   const inputEls: import('./cards').CardElement[] = [];
   for (const f of state.fields) {
@@ -90,7 +100,7 @@ function buildOcFormCard(state: OcFormState): Record<string, unknown> {
   }
   if (missing.length) elements.push(note(`⚠ 必填未作答：${missing.join('、').slice(0, 120)}`));
   elements.push(note(`Co-Team · OpenCode 提问 · ${new Date().toLocaleString()}`));
-  return card2('orange', `❓ OpenCode 提问 · ${state.instance}`, elements);
+  return card2('orange', `❓ OpenCode 提问 · ${state.project || state.instance}`, elements);
 }
 
 export interface OcInstanceLite { id: string; label: string; kind: string; state: string; mode: string; project_root?: string }
@@ -113,9 +123,16 @@ export interface OcBridgeDeps {
   listProjects: () => Promise<{ id?: string; name: string; workspace: string }[]>;
   /** oc 涉及的所有项目目录（既有会话去重聚合；可选——缺省只用 co-team 项目） */
   workdirs?: () => Promise<{ label: string; workspace: string; instance?: string }[]>;
-  /** 会话状态表（busy/idle）——完成通知对账扫描的数据源 */
-  sessionStatus?: (instanceId: string) => Promise<Record<string, { type?: string }>>;
+  /** 会话状态表（busy/idle）——完成通知对账 + 卡住复核的数据源；null = 查不到（实例不可达） */
+  sessionStatus?: (instanceId: string) => Promise<Record<string, { type?: string }> | null>;
   pendingAll: () => { permissions: Record<string, any>[]; questions: Record<string, any>[] };
+  /**
+   * 会话存活核对（推 pending 卡前的最后一道闸）。
+   * 事件可能来自实例内存里残留的已删会话——删了会话不等于杀掉内存里的回合，它还会继续吐
+   * question.asked/permission.asked，而按 id 读消息只会 404（2026-09-28 幽灵会话反复推卡的根因）。
+   * true=活着；false=会话确已不存在（不推）；null=探针不可用/未知错误（不拦截，保持原行为）。
+   */
+  sessionAlive?: (instanceId: string, sessionId: string) => Promise<boolean | null>;
   answerPermission: (instanceId: string, sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => Promise<boolean>;
   answerQuestion: (instanceId: string, requestID: string, answers: string[][] | Record<string, unknown>) => Promise<boolean>;
   rejectQuestion: (instanceId: string, requestID: string) => Promise<boolean>;
@@ -184,11 +201,14 @@ export function buildOcPermissionCard(p: Record<string, any>, ctx: {
   sessionId: string;
   sessionTitle?: string;
   directory?: string;
+  /** co-team 项目名（会话目录 → 项目表解析；缺省回落目录名） */
+  project?: string;
 }): Record<string, unknown> {
   const view = permViewOf(p);
   const instance = ctx.instance || String(p.instance || '');
   const who = ctx.instanceLabel || instance;
   const sid = ctx.sessionId || String(p.sessionID || '');
+  const project = String(ctx.project || '') || projectLabelOf(ctx.directory, []);
   const lines = view
     ? view.lines.map((l) => `**${l.label}** ${l.value}`)
     : [`**动作** ${String(p.title || p.type || '权限请求').slice(0, 120)}`];
@@ -197,7 +217,11 @@ export function buildOcPermissionCard(p: Record<string, any>, ctx: {
   const sessionBits = [ctx.sessionTitle || `会话 ${sid.slice(0, 12)}`, ctx.directory].filter(Boolean);
   lines.push(`**会话** ${sessionBits.join(' · ')}`);
 
-  const elems: import('./cards').CardElement[] = [md(lines.join('\n'))];
+  const elems: import('./cards').CardElement[] = [
+    // 来源行放最前：这张卡是 OpenCode 外部引擎提的，别和 Co-Team 内置 agent 的审批混了
+    sourceLine('OpenCode', { instance: who, project }),
+    md(lines.join('\n')),
+  ];
 
   // 放不下的部分进折叠面板：全量资源 + metadata 剩余项
   const rest: import('./cards').CardElement[] = [];
@@ -216,7 +240,7 @@ export function buildOcPermissionCard(p: Record<string, any>, ctx: {
   ));
   elems.push(btn('✖ 拒绝', 'danger', { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'reject', brief }));
   elems.push(note(`Co-Team · OpenCode 权限 · ${new Date().toLocaleString()}`));
-  return card2('orange', `⛔ 权限待确认 · ${view?.label || '权限请求'} · ${who}`, elems);
+  return card2('orange', `⛔ 权限待确认 · ${view?.label || '权限请求'} · ${project || who}`, elems);
 }
 
 export function createOcBridge(deps: OcBridgeDeps): OcBridge {
@@ -237,6 +261,11 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
   const cfg0 = () => cfgRef || ({ app_id: '', app_secret: '', approvers: [] } as FeishuConfig);
 
   const notifyTarget = (chatId?: string) => notifyChat(cfg0(), chatId);
+
+  /** 项目表（极简挂载可能不提供）：拿不到就退回目录名，卡上绝不因此少一行 */
+  const projectsOf = async (): Promise<{ name: string; workspace: string }[]> => {
+    try { return (await deps.listProjects()) || []; } catch { return []; }
+  };
 
   /** 完成推送（事件驱动与对账扫描共用）：按 sid+updated 去重——同回合双通道只推一次 */
   async function pushCompletionOnce(cfg: FeishuConfig, target: { id: string; type: 'chat_id' | 'open_id' }, instance: string, sid: string, failed: boolean, noQuickReply = false): Promise<boolean> {
@@ -272,6 +301,25 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
   /** 会话活动时间（内存态：oc_event 到达即刷新；session.idle 清除）——卡住检测的数据源 */
   const alive = new Map<string, number>();
   const OC_STALL_MS = 10 * 60 * 1000;
+  /** 「忽略」记录的存活上限：够覆盖当前这轮长任务；到点即使仍无新活动也恢复提醒 */
+  const STALL_IGNORE_SEC = 12 * 3600;
+
+  /**
+   * 上电白名单：只有这些事件能证明「回合正在跑」（session.status 还要求 status.type==='busy'）。
+   * 生命周期事件（session.created/session.updated）不上电——建了却没发过指令的空会话永远等不到
+   * session.idle 清除，10 分钟后必然误报（2026-09-28 rpc-probe 空会话连环误报的根因）。
+   */
+  const OC_ARM_TYPES = new Set([
+    'session.status',
+    'message.updated',
+    'message.part.updated',
+    'message.part.delta',
+    'message.part.removed',
+    'session.compacted',
+  ]);
+
+  /** 收场白名单：在等人作答/等审批，不是卡住；人答完后事件会重新上电 */
+  const OC_SETTLE_TYPES = new Set(['question.asked', 'permission.asked']);
 
   /** 切会话后的"当前内容"预览：最近几轮对话（用户/助手各一行截断）。 */
   async function renderOcPreview(instanceId: string, sessionId: string): Promise<string> {
@@ -459,6 +507,13 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       if (!target) return;
       const now = Date.now();
       const pushedSids = new Set<string>();
+      // 状态表按实例查一次（复核 B 用）；null = 查不到（实例不可达），此时保持原行为不误杀真卡住
+      const statusCache = new Map<string, Record<string, { type?: string }> | null>();
+      const statusOf = async (instance: string): Promise<Record<string, { type?: string }> | null> => {
+        if (!deps.sessionStatus) return null;
+        if (!statusCache.has(instance)) statusCache.set(instance, await deps.sessionStatus(instance).catch(() => null));
+        return statusCache.get(instance)!;
+      };
       for (const [key, ts] of [...alive]) {
         if (now - ts < minAgeMs) continue;
         alive.delete(key);
@@ -466,8 +521,23 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const sid = rest.join(':');
         // 同一会话在多实例共享存储时只告警一次；2h 内不重复提醒
         if (pushedSids.has(sid)) continue;
+        // 复核 A：会话里必须真的有消息——「建了但没发过指令」的空会话不上卡（误报根因，且不烧去重键）
+        const recent = await deps.readRecent(instance, sid, 4).catch(() => []);
+        if (!recent.length) continue;
+        // 复核 B：此刻必须仍在跑——不在表里 / 明确 idle 说明回合已收场（idle 事件丢了也不该报卡住）。
+        // 口径与 manager.activeSession 一致（非 idle 即在跑）：2.0.16 实测该表用 'running'、事件面用
+        // 'busy'，写死 'busy' 会让复核永远不通过（scanReconcile 就是踩了这个坑）。
+        const status = await statusOf(instance);
+        if (status) {
+          const st0 = String(status[sid]?.type || '');
+          if (!st0 || st0 === 'idle') continue;
+        }
         const dedup = `feishu:oc:stalled:${sid}`;
         if (await busGet(dedup)) { pushedSids.add(sid); continue; }
+        // 显式忽略（卡上「忽略」按钮）：只压掉「忽略时刻之前」这段静默——本条不再提醒；
+        // 之后会话再有新活动（ts 被事件刷新到忽略时刻之后）照常提醒，不是把整个会话静音。
+        const ignoredAt = Number((await busGet<number>(`feishu:oc:stalled:ignore:${instance}:${sid}`).catch(() => null)) || 0);
+        if (ignoredAt && ts <= ignoredAt) continue;
         await busSet(dedup, 1, 7200);
         pushedSids.add(sid);
         // 上下文：会话标题 + 目录 + 最近指令——让你能判断"该中止还是只是慢"
@@ -475,7 +545,6 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const meta = sessions.find((s) => s.id === sid);
         const title = meta?.title || sid.slice(0, 12);
         const directory = String(meta?.directory || '');
-        const recent = await deps.readRecent(instance, sid, 4).catch(() => []);
         const lastUser = recent.filter((m) => m.role === 'user').map((m) => m.text.replace(/\s+/g, ' ')).at(-1) || '';
         await sendCard(cfg, target.id, card2('orange', `🐢 OpenCode 疑似卡住 · ${title.slice(0, 24)}`, [
           md(`**会话** ${title}
@@ -486,7 +555,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
             { tag: 'button', text: { tag: 'plain_text', content: '💬 切换到此会话' }, type: 'primary', size: 'small', behaviors: [{ type: 'callback', value: { act: 'oc_pick_session', instance, session_id: sid } }] },
             { tag: 'button', text: { tag: 'plain_text', content: '中止执行' }, type: 'danger', size: 'small', behaviors: [{ type: 'callback', value: { act: 'oc_abort', instance, session_id: sid } }] },
           ),
-          { tag: 'button', text: { tag: 'plain_text', content: '忽略（它可能只是在跑长任务）' }, type: 'default', size: 'small', behaviors: [{ type: 'callback', value: { act: 'noop' } }] },
+          { tag: 'button', text: { tag: 'plain_text', content: '忽略（它可能只是在跑长任务）' }, type: 'default', size: 'small', behaviors: [{ type: 'callback', value: { act: 'oc_stall_ignore', instance, session_id: sid } }] },
           note(`Co-Team · 卡住检测 · ${instance} · ${new Date().toLocaleString()}`),
         ]), target.type);
       }
@@ -629,10 +698,12 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
             ? reply(`✅ 权限已${response === 'reject' ? '拒绝' : '批准'}`, [brief || `${instance} · ${permissionId}`])
             : reply('⏱ 权限已失效', [brief ? `${brief}（${instance}）不在等待中。` : `${instance} · ${permissionId} 不在等待中。`]);
         }
-        if (act === 'oc_form' || act === 'oc_form_pick') {
+        if (act === 'oc_form' || act === 'oc_form_submit' || act === 'oc_form_pick') {
           // 提问表单状态机：状态存 feishu:route:{message_id}。
-          // act='oc_form'（表单提交）：合并输入框值并提交；act='oc_form_pick'（选项点选）：
+          // act='oc_form'（表单提交）：合并输入框值并提交；act='oc_form_submit'（纯选择题的
+          // 提交按钮，按钮 value 只有 act，状态同样从路由取）；act='oc_form_pick'（选项点选）：
           // 记录该题答案，全部作答后自动提交，未答完返回刷新卡（✓ 标记已选）。
+          const submitAct = act === 'oc_form' || act === 'oc_form_submit';
           const state: OcFormState | null = act === 'oc_form'
             ? (params as unknown as OcFormState)
             : (input.messageId ? await busGet<OcFormState>(`feishu:route:${input.messageId}`).catch(() => null) : null);
@@ -649,7 +720,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           if (input.messageId) await busSet(`feishu:route:${input.messageId}`, state, BIND_TTL_SEC).catch(() => {});
           const allAnswered = state.fields.length > 0 && state.fields.every((f) => state.answers[f.key] !== undefined);
           const missingRequired = state.fields.filter((f) => f.required && state.answers[f.key] === undefined);
-          const readyToSubmit = (act === 'oc_form' && !missingRequired.length && Object.keys(state.answers).length > 0) || (act === 'oc_form_pick' && allAnswered);
+          const readyToSubmit = (submitAct && !missingRequired.length && Object.keys(state.answers).length > 0) || (act === 'oc_form_pick' && allAnswered);
           if (readyToSubmit) {
             const ok = await deps.answerQuestion(state.instance, state.request_id, state.answers);
             return ok
@@ -657,6 +728,16 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
               : reply('⏱ 提问已失效', [`${state.instance} · ${state.request_id} 不在等待中。`]);
           }
           return cardResponse(buildOcFormCard(state));
+        }
+        if (act === 'oc_stall_ignore') {
+          // 「忽略」= 这轮静默不再提醒（不是把这个会话静音）：记下忽略时刻，之后有新活动照常提醒
+          const instance = String(params.instance || '');
+          const sid = String(params.session_id || '');
+          if (!instance || !sid) return reply('参数缺失', ['未指定会话。']);
+          await busSet(`feishu:oc:stalled:ignore:${instance}:${sid}`, Date.now(), STALL_IGNORE_SEC);
+          // 会话级去重键一并撤掉——否则忽略之后的新一轮卡住会被旧去重键吃掉，违背「有新活动继续提醒」
+          await busDel(`feishu:oc:stalled:${sid}`).catch(() => {});
+          return reply('✅ 已忽略本次卡住提醒', [`${sid.slice(0, 12)} 之后再有新活动（并重新静默）仍会提醒。`]);
         }
         return;
       } catch (e) {
@@ -683,11 +764,21 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const instance = String(env.payload?.instance || '');
         const event = env.payload?.event || {};
         if (!watchInstance(instance)) return;
-        // 卡住检测数据源：会话事件刷新活动时间（idle/error 清除——回合已收场）
+        // 卡住检测数据源：只认「回合真的在跑」的事件（见 OC_ARM_TYPES / OC_SETTLE_TYPES）
         const sid0 = deps.eventSessionId(event);
         if (sid0) {
-          if (event.type === 'session.idle' || event.type === 'session.error') alive.delete(`${instance}:${sid0}`);
-          else alive.set(`${instance}:${sid0}`, Date.now());
+          const key0 = `${instance}:${sid0}`;
+          const statusType = String(((event.properties as Record<string, any> | undefined)?.status as { type?: unknown } | undefined)?.type ?? '');
+          if (
+            event.type === 'session.idle' ||
+            event.type === 'session.error' ||
+            OC_SETTLE_TYPES.has(event.type) ||
+            (event.type === 'session.status' && statusType && statusType !== 'busy')
+          ) {
+            alive.delete(key0);
+          } else if (OC_ARM_TYPES.has(event.type)) {
+            alive.set(key0, Date.now());
+          }
         }
         if (event.type !== 'session.idle' && event.type !== 'session.error') return;
         void (async () => {
@@ -728,37 +819,63 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
       const pending = deps.pendingAll();
       const target = await notifyChat(cfg0());
       if (!target) return;
+      if (!(pending.permissions || []).length && !(pending.questions || []).length) return;
+      // 卡上要标「哪个实例/项目」——实例表与项目表每轮只查一次（30s 一轮，空转不查）
+      const insts = await deps.listInstances().catch(() => [] as OcInstanceLite[]);
+      const projects = await projectsOf();
+      const sessCache = new Map<string, OcSessionLite[]>();
+      const sessionsOf = async (instance: string): Promise<OcSessionLite[]> => {
+        if (!sessCache.has(instance)) sessCache.set(instance, await deps.listSessions(instance).catch(() => [] as OcSessionLite[]));
+        return sessCache.get(instance)!;
+      };
+      // 存活核对按「实例:会话」每轮只探一次；跳过时不烧去重键——下一轮再试，会话真回来还会提醒
+      const aliveCache = new Map<string, boolean | null>();
+      const aliveOf = async (instance: string, sid: string): Promise<boolean | null> => {
+        if (!deps.sessionAlive || !sid) return null;
+        const key = `${instance}:${sid}`;
+        if (!aliveCache.has(key)) aliveCache.set(key, await deps.sessionAlive(instance, sid).catch(() => null));
+        return aliveCache.get(key)!;
+      };
       for (const p of pending.permissions || []) {
         const pid = String(p.permissionID || p.id || '');
         const instance = String(p.instance || '');
         const sid = String(p.sessionID || p.session_id || p.sessionId || '');
         if (!pid || !instance || !sid) continue;
+        if ((await aliveOf(instance, sid)) === false) continue;
         const seenKey = `feishu:oc:permseen:${pid}`;
         if (await busGet(seenKey)) continue;
         await busSet(seenKey, 1, 3600);
-        // 会话上下文：实例中文名 + 会话标题/目录（列表与卡片对账已有同款查询）
-        const insts = await deps.listInstances().catch(() => [] as OcInstanceLite[]);
+        // 会话上下文：实例中文名 + 会话标题/目录 + 项目名
         const inst = insts.find((i) => i.id === instance);
-        const sess = (await deps.listSessions(instance).catch(() => [] as OcSessionLite[])).find((s) => s.id === sid);
+        const sess = (await sessionsOf(instance)).find((s) => s.id === sid);
         await sendCard(cfg, target.id, buildOcPermissionCard(p, {
           instance,
           instanceLabel: inst?.label,
           sessionId: sid,
           sessionTitle: sess?.title,
           directory: sess?.directory,
+          project: projectLabelOf(sess?.directory, projects),
         }), target.type);
       }
       for (const q of pending.questions || []) {
         const qid = String(q.requestID || q.id || '');
         const instance = String(q.instance || '');
+        const sid = String(q.sessionID || q.session_id || '');
         if (!qid || !instance) continue;
+        if ((await aliveOf(instance, sid)) === false) continue;
         const seenKey = `feishu:oc:qseen:${qid}`;
         if (await busGet(seenKey)) continue;
         await busSet(seenKey, 1, 3600);
         // question.asked 归一结构：{title, questions:[{key,type,question,options,required}]}
         // 选择题渲染选项按钮（点选即答、✓标记），输入题渲染输入框，全部作答后自动提交
         const fields = (Array.isArray(q.questions) ? q.questions : []) as OcFormField[];
-        const state: OcFormState = { act: 'oc_form', instance, request_id: qid, title: String(q.title || ''), fields, answers: {} };
+        const sess = sid ? (await sessionsOf(instance)).find((s) => s.id === sid) : undefined;
+        const state: OcFormState = {
+          act: 'oc_form', instance, request_id: qid, title: String(q.title || ''), fields, answers: {},
+          instanceLabel: insts.find((i) => i.id === instance)?.label || instance,
+          project: projectLabelOf(sess?.directory, projects),
+          sessionTitle: sess?.title,
+        };
         const card = buildOcFormCard(state);
         const messageId = await sendCard(cfg, target.id, card, target.type);
         if (messageId) await busSet(`feishu:route:${messageId}`, state, BIND_TTL_SEC);
