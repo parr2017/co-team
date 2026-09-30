@@ -36,6 +36,8 @@ export interface OcFormState {
   title: string;
   fields: OcFormField[];
   answers: Record<string, unknown>;
+  /** 提问所属会话：作答时作 form.list 定界扫描的 hint（跨目录表单定位） */
+  session_id?: string;
   /** 展示上下文（来源/实例/项目）——提问卡点选刷新后仍要带着，否则卡上项目名会丢 */
   instanceLabel?: string;
   project?: string;
@@ -98,6 +100,8 @@ export function buildOcFormCard(state: OcFormState): Record<string, unknown> {
       behaviors: [{ type: 'callback', value: { act: 'oc_form_submit' } }],
     });
   }
+  // 忽略 = 此卡不再推送（这条与本会话不想在飞书处理）；不动 oc 侧状态，面板里仍可作答
+  elements.push(btn('忽略此提问', 'default', { act: 'oc_ignore', instance: state.instance, request_id: state.request_id }));
   if (missing.length) elements.push(note(`⚠ 必填未作答：${missing.join('、').slice(0, 120)}`));
   elements.push(note(`Co-Team · OpenCode 提问 · ${new Date().toLocaleString()}`));
   return card2('orange', `❓ OpenCode 提问 · ${state.project || state.instance}`, elements);
@@ -134,7 +138,7 @@ export interface OcBridgeDeps {
    */
   sessionAlive?: (instanceId: string, sessionId: string) => Promise<boolean | null>;
   answerPermission: (instanceId: string, sessionId: string, permissionId: string, response: 'once' | 'always' | 'reject') => Promise<boolean>;
-  answerQuestion: (instanceId: string, requestID: string, answers: string[][] | Record<string, unknown>) => Promise<boolean>;
+  answerQuestion: (instanceId: string, requestID: string, answers: string[][] | Record<string, unknown>, sessionId?: string) => Promise<boolean>;
   rejectQuestion: (instanceId: string, requestID: string) => Promise<boolean>;
   /** 会话归属提取（oc_event → session id），由挂载处用 events.eventSessionId 实现 */
   eventSessionId: (event: Record<string, any>) => string;
@@ -239,6 +243,8 @@ export function buildOcPermissionCard(p: Record<string, any>, ctx: {
     btn(view?.alwaysRule ? `总是批准（记住 ${clipText(view.alwaysRule, 24)}）` : '总是批准', 'default', { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'always', brief }),
   ));
   elems.push(btn('✖ 拒绝', 'danger', { act: 'oc_perm', instance, session_id: sid, permission_id: pid, response: 'reject', brief }));
+  // 忽略 = 此卡不再推送（不想在飞书处理这条）；不动 oc 侧权限状态，面板里仍可拍板
+  elems.push(btn('忽略此审批', 'default', { act: 'oc_perm_ignore', instance, session_id: sid, permission_id: pid }));
   elems.push(note(`Co-Team · OpenCode 权限 · ${new Date().toLocaleString()}`));
   return card2('orange', `⛔ 权限待确认 · ${view?.label || '权限请求'} · ${project || who}`, elems);
 }
@@ -722,12 +728,29 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
           const missingRequired = state.fields.filter((f) => f.required && state.answers[f.key] === undefined);
           const readyToSubmit = (submitAct && !missingRequired.length && Object.keys(state.answers).length > 0) || (act === 'oc_form_pick' && allAnswered);
           if (readyToSubmit) {
-            const ok = await deps.answerQuestion(state.instance, state.request_id, state.answers);
+            // session_id 作 hint：form.list 按 location 定界，把提问所属会话的目录排扫描最前
+            const ok = await deps.answerQuestion(state.instance, state.request_id, state.answers, state.session_id);
             return ok
               ? reply('✅ 已提交回答', ['opencode 将继续执行。'])
               : reply('⏱ 提问已失效', [`${state.instance} · ${state.request_id} 不在等待中。`]);
           }
           return cardResponse(buildOcFormCard(state));
+        }
+        if (act === 'oc_ignore') {
+          // 「忽略此提问」：这张卡不再推送（7 天 TTL）；不动 oc 侧 form 状态——面板里仍可作答
+          const qid = String(params.request_id || '');
+          const instance = String(params.instance || '');
+          if (!qid || !instance) return reply('参数缺失', ['未指定提问。']);
+          await busSet(`feishu:oc:qignore:${qid}`, 1, BIND_TTL_SEC);
+          return reply('✅ 已忽略此提问', ['这条不再推送到飞书；面板里仍可查看与作答。']);
+        }
+        if (act === 'oc_perm_ignore') {
+          // 「忽略此审批」：这张卡不再推送（7 天 TTL）；不动 oc 侧权限状态——面板里仍可拍板
+          const pid = String(params.permission_id || '');
+          const instance = String(params.instance || '');
+          if (!pid || !instance) return reply('参数缺失', ['未指定权限申请。']);
+          await busSet(`feishu:oc:permignore:${pid}`, 1, BIND_TTL_SEC);
+          return reply('✅ 已忽略此权限申请', ['这条不再推送到飞书；面板里仍可批准/拒绝。']);
         }
         if (act === 'oc_stall_ignore') {
           // 「忽略」= 这轮静默不再提醒（不是把这个会话静音）：记下忽略时刻，之后有新活动照常提醒
@@ -842,6 +865,8 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const sid = String(p.sessionID || p.session_id || p.sessionId || '');
         if (!pid || !instance || !sid) continue;
         if ((await aliveOf(instance, sid)) === false) continue;
+        // 用户点过「忽略此审批」的不再推送（7 天 TTL；面板里仍可见可拍板）
+        if (await busGet(`feishu:oc:permignore:${pid}`).catch(() => null)) continue;
         const seenKey = `feishu:oc:permseen:${pid}`;
         if (await busGet(seenKey)) continue;
         await busSet(seenKey, 1, 3600);
@@ -863,15 +888,26 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
         const sid = String(q.sessionID || q.session_id || '');
         if (!qid || !instance) continue;
         if ((await aliveOf(instance, sid)) === false) continue;
+        // 用户点过「忽略此提问」的不再推送（7 天 TTL；面板里仍可见可作答）
+        if (await busGet(`feishu:oc:qignore:${qid}`).catch(() => null)) continue;
         const seenKey = `feishu:oc:qseen:${qid}`;
         if (await busGet(seenKey)) continue;
-        await busSet(seenKey, 1, 3600);
         // question.asked 归一结构：{title, questions:[{key,type,question,options,required}]}
         // 选择题渲染选项按钮（点选即答、✓标记），输入题渲染输入框，全部作答后自动提交
         const fields = (Array.isArray(q.questions) ? q.questions : []) as OcFormField[];
+        // 空内容表单守卫：零字段的卡既没法作答、点提交也永远过不了校验（answers 为空）——
+        // 就是"没有任何内容的提问 + 回答了没反应"的形态。不推卡但烧去重键（1h 一提醒的节奏），
+        // 载荷落日志留现场，供追查这类表单是哪来的。
+        if (!fields.length) {
+          await busSet(seenKey, 1, 3600);
+          logger.warn('oc pending 提问无内容字段，跳过推送', { instance, sid: sid.slice(0, 20), qid, title: String(q.title || ''), raw: JSON.stringify(q).slice(0, 400) });
+          continue;
+        }
+        await busSet(seenKey, 1, 3600);
         const sess = sid ? (await sessionsOf(instance)).find((s) => s.id === sid) : undefined;
         const state: OcFormState = {
           act: 'oc_form', instance, request_id: qid, title: String(q.title || ''), fields, answers: {},
+          session_id: sid || undefined,
           instanceLabel: insts.find((i) => i.id === instance)?.label || instance,
           project: projectLabelOf(sess?.directory, projects),
           sessionTitle: sess?.title,

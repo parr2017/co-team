@@ -866,9 +866,8 @@ export class OpencodeManager implements OpencodeBridge {
     // 目录全集先行：form.list/permission.request.list 按 location 定界，漏扫目录会把活条目
     // 误判成"权威没有"而误清（2026-09-30 实测桌面版默认 location=HOME，跨项目表单全部不可见）。
     // 会话列表拿不到 = 无法做完整扫描 = 本拍不对账（漏推可由下一拍补回，误清不可挽回）。
-    const listed = await st.client.listSessions().catch(() => null);
-    if (!listed?.ok || !Array.isArray(listed.data)) return;
-    const directories = [...new Set((listed.data as Array<{ directory?: string }>).map((s) => String(s.directory || '')).filter(Boolean))];
+    const directories = await this.instanceDirectories(st);
+    if (!directories) return;
     const [forms, perms] = await Promise.all([
       st.client.listPendingForms(directories).catch(() => null),
       st.client.listPendingPermissions(directories).catch(() => null),
@@ -1095,6 +1094,7 @@ export class OpencodeManager implements OpencodeBridge {
     if (gate) return { ok: false, error: gate };
     this.audit('answer_question', st, { request: requestID, answers });
     const directories = await this.instanceDirectories(st, hintSessionId);
+    if (!directories) return { ok: false, error: '无法读取实例会话列表——定位表单需要扫描全部目录，请稍后重试' };
     return st.client!.answerQuestion(requestID, answers, { directories });
   }
 
@@ -1106,19 +1106,20 @@ export class OpencodeManager implements OpencodeBridge {
     if (gate) return { ok: false, error: gate };
     this.audit('reject_question', st, { request: requestID });
     const directories = await this.instanceDirectories(st);
+    if (!directories) return { ok: false, error: '无法读取实例会话列表——定位表单需要扫描全部目录，请稍后重试' };
     return st.client!.rejectQuestion(requestID, { directories });
   }
 
   /**
    * 实例会话目录全集：form.list / permission.request.list 都按 location 定界（不带 location 只查
    * serve 默认目录——桌面版是 HOME，跨项目条目全部不可见），定位/对账都需要扫全目录。
-   * hintSessionId 的目录排最前；列表拿不到返回空数组（调用方按"只扫默认 scope"降级，
-   * 对账侧必须把空集当"不完整扫描"拒绝清理）。
+   * hintSessionId 的目录排最前。走 manager.listSessions 做 location.directory → 顶层 directory 归一。
+   * 返回 null = 会话列表拿不到（无法做完整扫描）：定位侧必须拒绝作答（不能把"没扫到"当 settled），
+   * 对账侧必须跳过本拍（不能把活条目误清）。
    */
-  private async instanceDirectories(st: InstanceState, hintSessionId?: string): Promise<string[]> {
-    if (!st.client) return [];
-    const r = await st.client.listSessions().catch(() => null);
-    if (!r?.ok || !Array.isArray(r.data)) return [];
+  private async instanceDirectories(st: InstanceState, hintSessionId?: string): Promise<string[] | null> {
+    const r = await this.listSessions(undefined, st.cfg.id).catch(() => null);
+    if (!r?.ok || !Array.isArray(r.data)) return null;
     const dirs: string[] = [];
     for (const s of r.data as Array<{ id?: string; directory?: string }>) {
       const d = String(s.directory || '');

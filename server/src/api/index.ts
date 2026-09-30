@@ -2259,8 +2259,9 @@ export function createApi(ctx: ApiContext): Hono {
               const r = await oc.answerPermission(undefined, instanceId, sessionId, permissionId, response).catch(() => null);
               return !!(r && r.ok && r.data);
             },
-            answerQuestion: async (instanceId, requestID, answers) => {
-              const r = await oc.answerQuestion(undefined, instanceId, requestID, answers).catch(() => null);
+            answerQuestion: async (instanceId, requestID, answers, sessionId) => {
+              // sessionId（可选 hint）：提问所属会话——form.list 按 location 定界，hint 目录排扫描最前
+              const r = await oc.answerQuestion(undefined, instanceId, requestID, answers, sessionId).catch(() => null);
               return !!(r && r.ok && r.data);
             },
             rejectQuestion: async (instanceId, requestID) => {

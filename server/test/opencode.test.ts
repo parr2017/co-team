@@ -21,10 +21,13 @@ const FAKE_OC = `
 const http = require('http');
 const port = Number(process.argv[process.argv.indexOf('--port') + 1] || 0);
 let sseRes = null;
-// pending 对账测试态：权威 form/permission 列表（真实 oc 里 form.list / permission.request.list 的返回）
-const formsState = [];
-const permReqState = [];
+// pending 对账/定位测试态：权威 form/permission 列表按 location[directory] 定界
+// （实测 2.0.16：不带 location 只查 serve 默认目录，跨项目条目全部不可见）
+const formsByDir = new Map();
+const permsByDir = new Map();
 let failFormList = false;
+const pushScoped = (store, dir, item) => { if (!store.has(dir)) store.set(dir, []); store.get(dir).push(item); };
+const removeScoped = (store, id) => { for (const arr of store.values()) { const i = arr.findIndex((x) => x.id === id); if (i >= 0) { arr.splice(i, 1); return true; } } return false; };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://127.0.0.1');
   const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -49,9 +52,9 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && u.pathname === '/api/location') return json(200, { directory: 'C:/fake-project', project: { id: 'p1', directory: 'C:/fake-project', canonical: 'C:/fake-project' } });
   if (req.method === 'GET' && u.pathname === '/api/event') {
     // 新 SSE 连接 = 新一轮测试：重置测试态。假服务进程在 Windows 下可能被 shell 陷阱泄漏而长存，
-    // 重跑测试会连上旧进程——状态不重置的话，上一轮的 formsState/permReqState 会污染本轮断言
-    formsState.length = 0;
-    permReqState.length = 0;
+    // 重跑测试会连上旧进程——状态不重置的话，上一轮的 formsByDir/permsByDir 会污染本轮断言
+    formsByDir.clear();
+    permsByDir.clear();
     failFormList = false;
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write('data: ' + JSON.stringify({ id: 'e0', type: 'server.connected', data: {} }) + '\\n\\n');
@@ -83,38 +86,58 @@ const server = http.createServer((req, res) => {
     }
     return json(200, { ok: true });
   }
-  // ---- pending 对账：权威列表 + 事件丢失模拟 ----
+  // ---- pending 对账/跨目录定位：权威列表按 location 定界 + 事件丢失模拟 ----
   if (req.method === 'GET' && u.pathname === '/api/form') {
     if (failFormList) return json(500, { error: 'form list boom' });
-    return json(200, { data: formsState });
+    const dir = u.searchParams.get('location[directory]') || '';
+    return json(200, { location: { directory: dir || 'C:/Users/nw02' }, data: formsByDir.get(dir) || [] });
   }
-  if (req.method === 'GET' && u.pathname === '/api/permission/request') return json(200, { data: permReqState });
+  if (req.method === 'GET' && u.pathname === '/api/permission/request') {
+    const dir = u.searchParams.get('location[directory]') || '';
+    return json(200, { location: { directory: dir || 'C:/Users/nw02' }, data: permsByDir.get(dir) || [] });
+  }
+  // form.get / reply / cancel（任意会话）——answerQuestion 跨目录定位后的详情与作答
+  const mform = u.pathname.match(/^\\/api\\/session\\/([^/]+)\\/form\\/([^/]+)(\\/reply|\\/cancel)?$/);
+  if (mform && req.method === 'GET' && !mform[3]) {
+    let hit = null;
+    for (const arr of formsByDir.values()) { hit = arr.find((f) => f.id === mform[2]) || hit; }
+    if (!hit) return json(404, { error: 'form not found: ' + mform[2] });
+    return json(200, { data: hit });
+  }
+  if (mform && mform[3] === '/reply' && req.method === 'POST') { removeScoped(formsByDir, mform[2]); return empty(204); }
+  if (mform && mform[3] === '/cancel' && req.method === 'POST') { removeScoped(formsByDir, mform[2]); return empty(204); }
   if (req.method === 'POST' && u.pathname === '/api/test/emit-form') {
-    // 正常路径：asked 事件与权威列表同增（真 oc 行为）
+    // 正常路径：asked 事件与权威列表同增（真 oc 行为）；s1 在 C:/fake-project scope
     const form = { id: 'form-9', sessionID: 's1', title: '怎么继续？', fields: [{ key: 'how', type: 'string', title: '修复方式', options: [{ value: 'fix', label: '修' }] }] };
-    formsState.push(form);
+    pushScoped(formsByDir, 'C:/fake-project', form);
     if (sseRes) sseRes.write('data: ' + JSON.stringify({ id: 'e20', type: 'form.created', data: { form } }) + '\\n\\n');
+    return json(200, { ok: true });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/test/emit-form-other') {
+    // 跨目录提问：表单在 C:/other scope（s2 的目录）——默认 scope 与 C:/fake-project 都看不到
+    const form = { id: 'form-11', sessionID: 's2', title: '跨目录提问', fields: [{ key: 'q0', type: 'string', title: '选一个', options: [{ value: 'a', label: '甲' }, { value: 'b', label: '乙' }] }] };
+    pushScoped(formsByDir, 'C:/other', form);
+    if (sseRes) sseRes.write('data: ' + JSON.stringify({ id: 'e22', type: 'form.created', data: { form } }) + '\\n\\n');
     return json(200, { ok: true });
   }
   if (req.method === 'POST' && u.pathname === '/api/test/form-replied-lost') {
     // 已回答但 replied 事件在 SSE 断流死窗丢失：权威列表已无此表单，事件帧不出
-    const i = formsState.findIndex((f) => f.id === 'form-9');
-    if (i >= 0) formsState.splice(i, 1);
+    removeScoped(formsByDir, 'form-9');
     return json(200, { ok: true });
   }
   if (req.method === 'POST' && u.pathname === '/api/test/form-asked-lost') {
-    // asked 事件丢失：权威列表里有，事件帧不出——对账应回填补漏
-    formsState.push({ id: 'form-10', sessionID: 's1', title: '数据库选型', fields: [{ key: 'db', type: 'string', title: '用哪个库', required: true, options: [{ value: 'sqlite', label: 'SQLite' }] }] });
+    // asked 事件丢失：权威列表里有（在 C:/other scope），事件帧不出——对账应跨目录回填补漏
+    pushScoped(formsByDir, 'C:/other', { id: 'form-10', sessionID: 's2', title: '数据库选型', fields: [{ key: 'db', type: 'string', title: '用哪个库', required: true, options: [{ value: 'sqlite', label: 'SQLite' }] }] });
     return json(200, { ok: true });
   }
   if (req.method === 'POST' && u.pathname === '/api/test/form-list-fail') {
-    // 权威列表探针 500：对账不得清本地表（漏推可补回，误清不可挽回）
+    // 权威列表探针 500：对账不得清本地表；定位不得下 settled 结论（漏推可补回，误判不可挽回）
     failFormList = !failFormList;
     return json(200, { ok: true, failFormList });
   }
   if (req.method === 'POST' && u.pathname === '/api/test/perm-req-lost') {
-    // 权限申请只出现在权威列表（事件丢失）——对账应回填
-    permReqState.push({ id: 'per_req1', sessionID: 's1', action: 'read', resources: ['backend/.env'] });
+    // 权限申请只出现在权威列表（事件丢失，在 C:/other scope）——对账应跨目录回填
+    pushScoped(permsByDir, 'C:/other', { id: 'per_req1', sessionID: 's2', action: 'read', resources: ['backend/.env'] });
     return json(200, { ok: true });
   }
   if (req.method === 'GET' && u.pathname === '/notfound') return json(404, { error: 'nope' });
@@ -759,13 +782,13 @@ describe('OpencodeManager', () => {
       await mgr.reconcilePending();
       expect(mgr.pendingAll().questions.some((q) => q.id === 'form-9')).toBe(false);
 
-      // asked 事件丢失（权威有、本地无）——对账回填，载荷与事件同源归一（卡渲染契约不变）
+      // asked 事件丢失（权威有、本地无，且在 C:/other scope）——对账跨目录回填，载荷与事件同源归一
       await fetch(`http://127.0.0.1:${port}/api/test/form-asked-lost`, { method: 'POST' });
       await mgr.reconcilePending();
       const q = mgr.pendingAll().questions.find((x) => x.id === 'form-10');
       expect(q).toBeTruthy();
       expect(q.title).toBe('数据库选型');
-      expect(q.sessionID).toBe('s1');
+      expect(q.sessionID).toBe('s2');
       expect(q.questions[0]).toMatchObject({ key: 'db', type: 'select', question: '用哪个库', required: true });
 
       // 权限侧：只出现在权威列表的申请回填
@@ -782,6 +805,63 @@ describe('OpencodeManager', () => {
       await fetch(`http://127.0.0.1:${port}/api/test/form-list-fail`, { method: 'POST' }); // 恢复探针
       await mgr.reconcilePending();
       expect(mgr.pendingAll().questions.some((x) => x.id === 'form-9')).toBe(true); // 恢复后 form-9 仍在权威列表，不剪
+    } finally {
+      killFakeServe(child);
+    }
+  }, 20000);
+
+  it('attached：form.list 按 location 定界——跨目录活表单对账不误清、作答可定位、探针失败不下 settled', async () => {
+    const port = 38119;
+    const child = spawn('node', [fakeOcFile, 'serve', '--port', String(port)], { stdio: 'ignore', shell: true });
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) {
+      try { up = (await fetch(`http://127.0.0.1:${port}/api/info`)).ok; } catch { /* 未起 */ }
+      if (!up) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(up).toBe(true);
+    try {
+      const mgr = new OpencodeManager([
+        { id: 'xdir', kind: 'attached-cli', url: `http://127.0.0.1:${port}`, mode: 'control' },
+      ], silent);
+      managers.push(mgr);
+      mgr.start();
+      expect(await waitFor(() => mgr.listInstances()[0]?.state === 'connected')).toBe(true);
+
+      // 跨目录提问：form-11 在 C:/other（s2 的目录），默认 scope 与 s1 的目录都看不到。
+      // 回归护栏：不带目录的对账扫描会把这条活表单误判成"权威没有"而误清
+      await fetch(`http://127.0.0.1:${port}/api/test/emit-form-other`, { method: 'POST' });
+      expect(await waitFor(() => mgr.pendingAll().questions.some((q) => q.id === 'form-11'))).toBe(true);
+      await mgr.reconcilePending();
+      expect(mgr.pendingAll().questions.some((q) => q.id === 'form-11')).toBe(true);
+
+      // 跨目录作答：hint 会话目录排扫描最前——答案必须落到表单上（此前 form.list 不带 location
+      // 只查默认目录，跨项目表单永远"未找到"，用户怎么答都 400 = "回答了没反应"）
+      const replied = await mgr.answerQuestion(undefined, 'xdir', 'form-11', { q0: '甲' }, 's2');
+      expect(replied.ok).toBe(true);
+      expect(replied.data).toBe(true);
+      // 作答成功 → oc 侧已定局 → 权威列表无此表 → 对账清掉本地条目
+      await mgr.reconcilePending();
+      expect(mgr.pendingAll().questions.some((q) => q.id === 'form-11')).toBe(false);
+
+      // 不带 hint 的作答同样能靠目录全集定位（web/HTTP 端点没有会话上下文）
+      await fetch(`http://127.0.0.1:${port}/api/test/emit-form-other`, { method: 'POST' });
+      expect(await waitFor(() => mgr.pendingAll().questions.some((q) => q.id === 'form-11'))).toBe(true);
+      const replied2 = await mgr.answerQuestion(undefined, 'xdir', 'form-11', { q0: '乙' });
+      expect(replied2.ok).toBe(true);
+      expect(replied2.data).toBe(true);
+
+      // 已定局语义：全目录扫描都没有的表单 = 已回答/已取消 → ok+settled，调用端撤卡不报错
+      const settled = await mgr.answerQuestion(undefined, 'xdir', 'form-nope', {});
+      expect(settled.ok).toBe(true);
+      expect(settled.data).toBe(false);
+      expect(settled.settled).toBe(true);
+
+      // 探针失败 ≠ 已定局：任何目录探针 500 时不得宣称 settled（漏扫的 scope 里可能有活表单）
+      await fetch(`http://127.0.0.1:${port}/api/test/form-list-fail`, { method: 'POST' });
+      const unknown = await mgr.answerQuestion(undefined, 'xdir', 'form-nope', {});
+      expect(unknown.ok).toBe(false);
+      expect(unknown.settled).toBeFalsy();
+      await fetch(`http://127.0.0.1:${port}/api/test/form-list-fail`, { method: 'POST' }); // 恢复
     } finally {
       killFakeServe(child);
     }

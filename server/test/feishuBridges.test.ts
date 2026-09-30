@@ -10,7 +10,7 @@ vi.mock('../src/feishu/messageService', () => ({
   buildTaskCard: () => ({}),
 }));
 
-import { closeBus, busGet, busSet, initBus } from '../src/bus';
+import { closeBus, busGet, busSet, busDel, initBus } from '../src/bus';
 import { emitEvent, saveProject, saveTaskGraph } from '../src/store';
 import { CHANNELS } from '../src/types';
 import { createConvoBridge } from '../src/feishu/convoBridge';
@@ -352,22 +352,75 @@ describe('oc 桥', () => {
     expect(oneBody).not.toContain('collapsible_panel');
   });
 
-  it('pending 提问扫描推表单卡（问题正文+输入框）并注册路由；表单提交转发 answerQuestion', async () => {
+  it('pending 提问扫描推表单卡（问题正文+输入框）并注册路由；表单提交转发 answerQuestion（带会话 hint）', async () => {
     const deps = makeOcDeps();
-    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q1', requestID: 'q1', title: 'Questions', questions: [{ key: 'note', type: 'input', question: '要继续吗？' }] }] }));
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q1', requestID: 'q1', sessionID: 's-1', title: 'Questions', questions: [{ key: 'note', type: 'input', question: '要继续吗？' }] }] }));
     const bridge = createOcBridge(deps);
     await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
     await bridge.scanPendingOnce(cfg);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
     const route = await busGet<any>('feishu:route:om_new1');
-    expect(route).toMatchObject({ act: 'oc_form', instance: 'main-exec', request_id: 'q1' });
+    expect(route).toMatchObject({ act: 'oc_form', instance: 'main-exec', request_id: 'q1', session_id: 's-1' });
     // 问题正文来自 questions[].question（此前误取 title="Questions" 导致卡片空白）
     expect(String(JSON.stringify(sendCardMock.mock.calls[0][2]))).toContain('要继续吗？');
 
     await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', formValue: { in_note: '继续' },
     });
-    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q1', { note: '继续' });
+    // 第 4 参 = 会话 hint：form.list 按 location 定界，跨目录表单靠它排扫描最前（"回答了没反应"根因）
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q1', { note: '继续' }, 's-1');
+  });
+
+  it('提问卡「忽略此提问」：置忽略键，之后即使去重键过期也不再推送', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q9', requestID: 'q9', sessionID: 's-1', title: 'T', questions: [{ key: 'a', type: 'input', question: '问题？' }] }] }));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+
+    await bridge.handleCardAction(cfg, { operatorOpenId: 'ou_admin', value: { act: 'oc_ignore', instance: 'main-exec', request_id: 'q9' } });
+    expect(await busGet('feishu:oc:qignore:q9')).toBeTruthy();
+
+    // 模拟去重键过期：qseen 撤掉后，若没有忽略键会 1h 重推一次（"已回答过的问题反复出现"的同款节奏）
+    await busDel('feishu:oc:qseen:q9');
+    sendCardMock.mockClear();
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).not.toHaveBeenCalled();
+  });
+
+  it('权限卡「忽略此审批」：置忽略键，之后即使去重键过期也不再推送', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({
+      permissions: [{ id: 'p9', permissionID: 'p9', instance: 'main-exec', sessionID: 's-1', action: 'bash', resources: ['rm -rf dist'] }],
+      questions: [],
+    }));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).toHaveBeenCalledTimes(1);
+
+    await bridge.handleCardAction(cfg, { operatorOpenId: 'ou_admin', value: { act: 'oc_perm_ignore', instance: 'main-exec', session_id: 's-1', permission_id: 'p9' } });
+    expect(await busGet('feishu:oc:permignore:p9')).toBeTruthy();
+
+    await busDel('feishu:oc:permseen:p9');
+    sendCardMock.mockClear();
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).not.toHaveBeenCalled();
+  });
+
+  it('空内容提问不推卡（零字段没法作答，点了提交也永远过不了校验）；去重键照烧防 30s 连环刷', async () => {
+    const deps = makeOcDeps();
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'qe', requestID: 'qe', sessionID: 's-1', title: 'Questions', questions: [] }] }));
+    const bridge = createOcBridge(deps);
+    await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
+    await bridge.scanPendingOnce(cfg);
+    expect(sendCardMock).not.toHaveBeenCalled();
+    expect(await busGet('feishu:oc:qseen:qe')).toBeTruthy();
+    // 收件箱同款守卫：空提问也不进收件箱列表卡
+    const inbox = createInboxBridge(cfg, { ocPending: () => deps.pendingAll() });
+    const card = await inbox.listCard('u1');
+    expect(String(JSON.stringify(card))).not.toContain('OC 提问');
   });
 
   it('pending 提问：会话已不存在时不推卡，且不烧去重键——会话回来仍会提醒', async () => {
@@ -422,7 +475,7 @@ describe('oc 桥', () => {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
       value: { act: 'oc_form_pick', key: 'how', value: 'fix' },
     });
-    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q2', { how: 'fix' });
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q2', { how: 'fix' }, undefined);
     const r1 = await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
       value: { act: 'oc_form_pick', key: 'how', value: 'fix' },
@@ -449,7 +502,7 @@ describe('oc 桥', () => {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
       value: { act: 'oc_form_pick', key: 'b', value: 'y' },
     });
-    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q3', { a: 'x', b: 'y' });
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q3', { a: 'x', b: 'y' }, undefined);
   });
 
   it('提问卡带来源/项目（会话目录 → 项目名）；标题不再只挂实例 id', async () => {
@@ -480,7 +533,7 @@ describe('oc 桥', () => {
     const r = await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_card', chatId: 'oc1', value: { act: 'oc_form_submit' },
     });
-    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q9', { db: 'pg' });
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q9', { db: 'pg' }, undefined);
     expect(JSON.stringify(r)).toContain('已提交回答');
   });
 });

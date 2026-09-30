@@ -482,7 +482,10 @@ export class OpencodeClient {
         formID: form.form!.id,
       }, options));
       if (!detail.ok || !detail.data) return { ok: false, error: detail.error || '读取 form 失败' };
-      const fields = ((detail.data as { fields?: Array<{ key: string; type: string; options?: Array<{ value?: string; label?: string }> }> }).fields) || [];
+      // 实测 2.0.16：form.get 响应体带 {data:{...}} 信封（form.list 同款）——不拆包 fields 永远
+      // 读不到，coerce 变空转，提交给 oc 的是空答案（"回答了没反应"的第二个根因）
+      const detailBody = ((detail.data as { data?: unknown })?.data ?? detail.data) as { fields?: Array<{ key: string; type: string; options?: Array<{ value?: string; label?: string }> }> };
+      const fields = detailBody.fields || [];
       const answer: Record<string, unknown> = {};
       if (answers && !Array.isArray(answers)) {
         for (const field of fields) {

@@ -151,6 +151,8 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: {
         const instance = String(p.instance || '');
         const sid = String(p.sessionID || p.session_id || p.sessionId || '');
         if (!pid || !instance || !sid) continue;
+        // 与实时推送同款过滤：卡上点过「忽略此审批」的不再出现（7 天 TTL；面板里仍可拍板）
+        if (await busGet(`feishu:oc:permignore:${pid}`).catch(() => null)) continue;
         // 与实时推送同一张卡构造（permView 归一 + 可点按钮）——收件箱点进来即能拍板
         const sess = await ocSessionOf(instance, sid);
         const card = buildOcPermissionCard(p, {
@@ -165,6 +167,9 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: {
         const qid = String(q.requestID || q.id || '');
         const instance = String(q.instance || '');
         if (!qid || !instance) continue;
+        // 与实时推送同款过滤：卡上点过「忽略此提问」的不再出现；零字段空表单守卫同款
+        if (await busGet(`feishu:oc:qignore:${qid}`).catch(() => null)) continue;
+        if (!(Array.isArray(q.questions) ? q.questions : []).length) continue;
         // 与实时推送同一张卡构造（选择题点选/输入框表单/全答自动提交）——两处渲染必须同源，
         // 否则收件箱这张卡的提交按钮落在没人处理的 act 上（点了没反应）
         const sid = String(q.sessionID || q.session_id || '');
@@ -174,6 +179,7 @@ export function createInboxBridge(cfg: FeishuConfig, opts?: {
           title: String(q.title || ''),
           fields: (Array.isArray(q.questions) ? q.questions : []) as OcFormState['fields'],
           answers: {},
+          session_id: sid || undefined,
           instanceLabel: String(q.instance_label || instance),
           project: projectLabelOf(sess?.directory, projects),
           sessionTitle: sess?.title,
