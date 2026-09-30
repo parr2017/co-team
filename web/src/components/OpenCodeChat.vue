@@ -453,6 +453,7 @@ async function reloadAll(): Promise<void> {
     const todos = await api.ocTodos(props.instance.id, props.sessionId).catch(() => null);
     if (todos?.todos) stream.applyEvent({ type: 'todo.updated', properties: { todos: todos.todos } });
     lastFrameAt = Date.now();
+    void loadPending();
     flush();
     void loadChildren();
     if (isNearEnd()) await nextTick(() => scrollEnd());
@@ -461,6 +462,24 @@ async function reloadAll(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+/** 权威 pending 水合：把「打开面板前就已挂起」的提问/审批补进本地流。
+ *  question.asked/permission.asked 是纯事件驱动——事件发生在订阅之前就永远不会渲染，
+ *  表现为「模型在等你拍板、面板上却没有卡可答」，对话就此卡死（与移动端同款修复）。 */
+async function loadPending(): Promise<void> {
+  try {
+    const d = await api.ocPending();
+    for (const q of d.questions || []) {
+      if (String(q.instance || '') !== props.instance.id || String(q.sessionID || '') !== props.sessionId) continue;
+      stream.applyEvent({ type: 'question.asked', properties: q });
+    }
+    for (const p of d.permissions || []) {
+      if (String(p.instance || '') !== props.instance.id || String(p.sessionID || '') !== props.sessionId) continue;
+      stream.applyEvent({ type: 'permission.asked', properties: p });
+    }
+    flush();
+  } catch { /* 软错误：权威对账下一拍再补 */ }
 }
 
 /** Load more earlier messages：上游 before 翻页 + prepend + 滚动位置补偿（不跳动） */

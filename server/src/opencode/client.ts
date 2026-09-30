@@ -17,6 +17,8 @@ export interface OpencodeClientOptions {
 
 const MIN_VERSION = { major: 2, minor: 0, patch: 15 } as const;
 const UNSUPPORTED_ERROR = 'OpenCode 2.0.15 官方客户端不提供该能力';
+/** 工具调用上下文的跟踪上限（LRU 淘汰；单实例长跑数周也不涨内存） */
+const TOOL_CALL_TRACK_MAX = 1024;
 
 type OfficialClient = any;
 type RequestOptions = { signal?: AbortSignal };
@@ -102,6 +104,11 @@ export class OpencodeClient {
   private readonly password?: string;
   private readonly timeoutMs: number;
   private readonly maxResultChars: number;
+  /** session.tool.* 事件只有 input.started 带 name（2.x schema），后续事件一律不带——
+   *  按 callID 记住工具名与最近一次 input，后续事件合成 part 时补齐；
+   *  否则补出来的是 tool:"tool" 贫信息分片，message.part.updated 会把它顶进消息缓存，
+   *  盖掉上游富信息分片（前端工具卡只剩 "tool" 标题、没有输入框内容）。 */
+  private toolCalls = new Map<string, { name: string; input?: unknown }>();
 
   constructor(opts: OpencodeClientOptions) {
     this.baseUrl = new URL(opts.baseUrl).origin;
@@ -637,6 +644,44 @@ export class OpencodeClient {
     };
   }
 
+  /** 记录（或补齐）一次工具调用的上下文；后续事件靠它补 name/input */
+  private rememberToolCall(callID: string, name?: string): { name: string; input?: unknown } {
+    let record = this.toolCalls.get(callID);
+    if (!record) {
+      record = { name: name || 'tool' };
+      this.toolCalls.set(callID, record);
+      while (this.toolCalls.size > TOOL_CALL_TRACK_MAX) {
+        const oldest = this.toolCalls.keys().next().value;
+        if (oldest === undefined) break;
+        this.toolCalls.delete(oldest);
+      }
+    } else if (name && record.name !== name) {
+      record.name = name;
+    }
+    return record;
+  }
+
+  /** session.tool.* 事件 → message.part.updated 的 tool part：工具名/输入/时间全链路携带 */
+  private toolPart(
+    partID: string,
+    messageID: string,
+    record: { name: string; input?: unknown },
+    event: OfficialEvent,
+    state: Record<string, unknown>,
+    completed = false,
+  ): Record<string, unknown> {
+    const created = Number(event.created || 0) || undefined;
+    return {
+      id: partID,
+      messageID,
+      callID: partID,
+      type: 'tool',
+      tool: record.name,
+      ...(created ? { time: { created, ...(completed ? { completed: created } : {}) } } : {}),
+      state,
+    };
+  }
+
   /** 一条官方事件 → 0..n 条 OcEvent。v2 事件流没有全量 message.updated：用户消息只能从 inbox.enqueued 自建，
    *  interrupted（shutdown 以外）要等价于 idle 结算，否则 run_task 的空闲等待会干等到超时。 */
   private convertEvents(event: OfficialEvent): OcEvent[] {
@@ -716,33 +761,54 @@ export class OpencodeClient {
         return this.eventEnvelope(event, 'message.part.updated', {
           part: { id: reasoningPartId, messageID, type: 'reasoning', text: String(data.text || '') },
         });
-      case 'session.tool.input.started':
+      case 'session.tool.input.started': {
+        const record = this.rememberToolCall(toolPartId, String(data.name || 'tool'));
         return this.eventEnvelope(event, 'message.part.updated', {
-          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'pending', input: {} } },
-        });
-      case 'session.tool.input.ended': {
-        let input: unknown = data.text;
-        try { input = JSON.parse(String(data.text || '{}')); } catch { input = { text: String(data.text || '') }; }
-        return this.eventEnvelope(event, 'message.part.updated', {
-          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'pending', input } },
+          part: this.toolPart(toolPartId, messageID, record, event, { status: 'pending', input: {} }),
         });
       }
-      case 'session.tool.called':
+      case 'session.tool.input.ended': {
+        const record = this.rememberToolCall(toolPartId);
+        let input: unknown = data.text;
+        try { input = JSON.parse(String(data.text || '{}')); } catch { input = { text: String(data.text || '') }; }
+        if (input && typeof input === 'object') record.input = input;
         return this.eventEnvelope(event, 'message.part.updated', {
-          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'running', input: data.input || {} } },
+          part: this.toolPart(toolPartId, messageID, record, event, { status: 'pending', input }),
         });
-      case 'session.tool.progress':
+      }
+      case 'session.tool.called': {
+        const record = this.rememberToolCall(toolPartId);
+        if (data.input && typeof data.input === 'object') record.input = data.input;
         return this.eventEnvelope(event, 'message.part.updated', {
-          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'running', metadata: data.metadata || {} } },
+          part: this.toolPart(toolPartId, messageID, record, event, { status: 'running', input: record.input ?? {} }),
         });
-      case 'session.tool.success':
+      }
+      case 'session.tool.progress': {
+        const record = this.rememberToolCall(toolPartId);
+        const state: Record<string, unknown> = { status: 'running', input: record.input ?? {} };
+        if (data.metadata && typeof data.metadata === 'object') state.metadata = data.metadata;
         return this.eventEnvelope(event, 'message.part.updated', {
-          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'completed', output: data.content || '' } },
+          part: this.toolPart(toolPartId, messageID, record, event, state),
         });
-      case 'session.tool.failed':
+      }
+      case 'session.tool.success': {
+        const record = this.rememberToolCall(toolPartId);
+        const state: Record<string, unknown> = { status: 'completed', input: record.input ?? {}, output: data.content || '' };
+        if (data.metadata && typeof data.metadata === 'object') state.metadata = data.metadata;
         return this.eventEnvelope(event, 'message.part.updated', {
-          part: { id: toolPartId, messageID, callID: toolPartId, type: 'tool', tool: String(data.name || 'tool'), state: { status: 'error', error: data.error || '工具执行失败' } },
+          part: this.toolPart(toolPartId, messageID, record, event, state, true),
         });
+      }
+      case 'session.tool.failed': {
+        const record = this.rememberToolCall(toolPartId);
+        const rawError = data.error;
+        const error = typeof rawError === 'string'
+          ? rawError
+          : String((rawError as { message?: unknown; name?: unknown } | undefined)?.message || (rawError as { name?: unknown } | undefined)?.name || '工具执行失败');
+        return this.eventEnvelope(event, 'message.part.updated', {
+          part: this.toolPart(toolPartId, messageID, record, event, { status: 'error', input: record.input ?? {}, error }, true),
+        });
+      }
       case 'session.execution.started':
         return this.eventEnvelope(event, 'session.status', {
           ...data,

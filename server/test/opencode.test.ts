@@ -466,8 +466,36 @@ describe('OpencodeClient', () => {
     expect((await events.next()).done).toBe(true);
   });
 
-  it('event.subscribe：inbox.enqueued 投影为用户消息（骨架+text part），interrupted 映射 idle 但 shutdown 除外', async () => {
-    vi.stubGlobal('fetch', async (_url: string | URL | Request, init?: RequestInit) => {
+  it('session.tool.* 合成分片全程补 name/input——2.x 只有 input.started 带 name，后续事件回落 tool:"tool" 会顶掉缓存富分片', () => {
+    const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
+    const convert = (client as unknown as { convertEvents: (e: unknown) => Array<{ type: string; properties: Record<string, any> }> }).convertEvents.bind(client);
+    const mk = (id: string, type: string, data: Record<string, unknown>) => ({
+      id,
+      type,
+      created: 1790776000000,
+      data: { sessionID: 's1', assistantMessageID: 'm2', id: 'call-1', ...data },
+    });
+    const parts = [
+      ...convert(mk('e1', 'session.tool.input.started', { name: 'edit' })),
+      ...convert(mk('e2', 'session.tool.input.ended', { text: '{"path":"a.py"}' })),
+      ...convert(mk('e3', 'session.tool.called', { input: { path: 'a.py' } })),
+      ...convert(mk('e4', 'session.tool.progress', { metadata: { preview: 'diff…' } })),
+      ...convert(mk('e5', 'session.tool.success', { content: [{ type: 'text', text: 'Edited a.py' }] })),
+    ].map((e) => e.properties.part);
+    expect(parts).toHaveLength(5);
+    for (const p of parts) expect(p.tool).toBe('edit');
+    expect(parts[1].state.input).toEqual({ path: 'a.py' });
+    // progress 事件不带 input 也不能丢——否则 message.part.updated 补丁会把输入冲掉
+    expect(parts[3].state.input).toEqual({ path: 'a.py' });
+    expect(parts[3].state.metadata).toEqual({ preview: 'diff…' });
+    expect(parts[4].state).toMatchObject({ status: 'completed', input: { path: 'a.py' }, output: [{ type: 'text', text: 'Edited a.py' }] });
+    expect(parts[4].time).toEqual({ created: 1790776000000, completed: 1790776000000 });
+    // failed 的 error 归一为可读字符串（渲染端直接 String()，吃对象会变 [object Object]）
+    const failed = convert(mk('e6', 'session.tool.failed', { error: { message: 'boom' } }))[0].properties.part;
+    expect(failed.state).toMatchObject({ status: 'error', error: 'boom', input: { path: 'a.py' } });
+  });
+
+  it('event.subscribe：inbox.enqueued 投影为用户消息（骨架+text part），interrupted 映射 idle 但 shutdown 除外', async () => {    vi.stubGlobal('fetch', async (_url: string | URL | Request, init?: RequestInit) => {
       const stream = new ReadableStream({
         start(controller) {
           const encoder = new TextEncoder();

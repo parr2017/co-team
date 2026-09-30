@@ -2,7 +2,7 @@
   <div class="page">
     <van-nav-bar fixed placeholder left-arrow left-text="返回" @click-left="router.back()">
       <template #title>
-        <span class="nav-title">{{ sessionTitle }}</span>
+        <span class="nav-title" @click="openSwitcher">{{ sessionTitle }}<van-icon name="wap-nav" size="12" class="nav-caret" /></span>
       </template>
       <template #right>
         <span class="nav-badge mono" @click="onBadgeClick">{{ modelBadge }}</span>
@@ -211,6 +211,22 @@
       </div>
     </van-popup>
 
+    <!-- 会话切换：同实例会话页内直达，免去 聊天页 ↔ 列表页 来回跳 -->
+    <van-popup v-model:show="switchSheet" position="bottom" round :style="{ maxHeight: '72%' }">
+      <div class="sheet sw-sheet">
+        <div class="sh-h"><span>切换会话 · {{ instance?.label || instanceId }}</span><span class="x" @click="switchSheet = false">✕</span></div>
+        <div v-if="switchLoading" class="sh">加载会话列表…</div>
+        <div v-else-if="!switchSessions.length" class="sh">该实例暂无会话</div>
+        <div v-else class="sw-list">
+          <div v-for="s in switchSessions" :key="s.id" class="si" :class="{ cur: String(s.id) === sessionId }" @click="switchTo(s)">
+            <span class="si-nm">{{ s.title || '（未命名会话）' }}</span>
+            <span v-if="s.parentID" class="sw-child">子</span>
+            <span class="si-tg">{{ relTimeOf(s) }}</span>
+          </div>
+        </div>
+      </div>
+    </van-popup>
+
     <!-- diff：按文件展示 additions/deletions 与 patch -->
     <van-popup v-model:show="diffDlg" position="bottom" :style="{ height: '80%' }" round>
       <div class="sheet diffsheet">
@@ -306,6 +322,7 @@ import {
   type OcInstance,
   type OcModelsInfo,
   type OcPty,
+  type OcSession,
 } from '../api';
 import {
   SessionStream,
@@ -733,9 +750,30 @@ async function loadPtys() {
   } catch { /* 软错误 */ }
 }
 
+/** 权威 pending 水合：把「打开页面前就已挂起」的提问/审批补进本地流。
+ *  question.asked/permission.asked 是纯事件驱动——事件发生在订阅之前就永远不会渲染，
+ *  表现为「模型在等你拍板、页面上却没有卡可答」，对话就此卡死。 */
+async function loadPending() {
+  const my = gen;
+  try {
+    const d = await api.ocPending();
+    if (my !== gen) return;
+    for (const q of d.questions || []) {
+      if (String(q.instance || '') !== instanceId.value || String(q.sessionID || '') !== sessionId.value) continue;
+      if (resolvedQuestions.has(String(q.id))) continue;
+      stream.applyEvent({ type: 'question.asked', properties: q });
+    }
+    for (const p of d.permissions || []) {
+      if (String(p.instance || '') !== instanceId.value || String(p.sessionID || '') !== sessionId.value) continue;
+      if (resolvedPerms.has(String(p.id))) continue;
+      stream.applyEvent({ type: 'permission.asked', properties: p });
+    }
+  } catch { /* 软错误：权威对账下一拍再补 */ }
+}
+
 async function reloadAll() {
   const my = gen;
-  await Promise.all([loadMessages(), loadStatus(), loadTodos(), loadPtys()]);
+  await Promise.all([loadMessages(), loadStatus(), loadTodos(), loadPtys(), loadPending()]);
   if (my === gen) flushNow();
 }
 
@@ -762,7 +800,7 @@ async function enterSession() {
   void loadInstanceAndTitle();
   await loadMessages();
   if (my !== gen) return;
-  await Promise.all([loadStatus(), loadTodos(), loadPtys()]);
+  await Promise.all([loadStatus(), loadTodos(), loadPtys(), loadPending()]);
   if (my !== gen) return;
   flushNow();
 }
@@ -1118,8 +1156,48 @@ function toggleThink(k: string) {
   thinkOpen.value = next;
 }
 
-// ---------- 即时切换（TUI 同款：选中即生效，不等发送） ----------
+// ---------- 会话切换（页内直达：免去 聊天页 ↔ 列表页 来回跳） ----------
 
+const switchSheet = ref(false);
+const switchSessions = ref<OcSession[]>([]);
+const switchLoading = ref(false);
+
+function sessionTsOf(s: OcSession): number {
+  const t = s.time as Record<string, unknown> | undefined;
+  return Number(t?.updated || t?.created || 0);
+}
+function relTimeOf(s: OcSession): string {
+  const ts = sessionTsOf(s);
+  if (!ts) return '';
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分钟前';
+  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + ' 小时前';
+  if (diff < 7 * 86_400_000) return Math.floor(diff / 86_400_000) + ' 天前';
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+async function openSwitcher() {
+  switchSheet.value = true;
+  switchLoading.value = true;
+  try {
+    const d = await api.ocSessions(instanceId.value);
+    // 最新更新的排前面；当前会话置顶一眼可见
+    switchSessions.value = (d.sessions || []).sort((a, b) => sessionTsOf(b) - sessionTsOf(a));
+  } catch (e: any) {
+    showFailToast(e?.message || '会话列表加载失败');
+  } finally {
+    switchLoading.value = false;
+  }
+}
+function switchTo(s: OcSession) {
+  switchSheet.value = false;
+  if (String(s.id) === sessionId.value) return;
+  // replace 不堆路由栈：切换完 back 一步回到原入口，而不是穿回上一个会话
+  void router.replace(`/opencode/session/${instanceId.value}/${s.id}`);
+}
+
+// ---------- 即时切换（TUI 同款：选中即生效，不等发送） ----------
 async function pickAgent(name: string) {
   selectedAgent.value = name;
   agentSheet.value = false;
@@ -1296,7 +1374,8 @@ onBeforeUnmount(() => {
 /* 填满 app-root 的动态视口（100dvh），不要用 100vh——手机浏览器 100vh 含地址栏高度，
    会把底部输入栏推出屏幕外（实测输入不了）；flex:1 + min-height:0 让流内滚动、输入栏常驻可视区 */
 .page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.nav-title { font-size: 15px; font-weight: 600; }
+.nav-title { font-size: 15px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; max-width: 52vw; }
+.nav-title .nav-caret { color: var(--text-3); flex: none; }
 .nav-badge { font-size: 10px; color: var(--text-3); border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px; margin-right: 4px; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-abort { font-size: 12px; color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); border-radius: 99px; padding: 2px 9px; margin-right: 6px; }
 .nav-abort:active { background: color-mix(in srgb, var(--danger) 10%, transparent); }
@@ -1469,6 +1548,9 @@ onBeforeUnmount(() => {
 .si .si-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .si .si-tg { flex: none; font-size: 10px; color: var(--text-3); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gap { height: 8px; }
+/* 会话切换弹层 */
+.sw-list { max-height: 54vh; overflow-y: auto; }
+.sw-child { flex: none; font-size: 9.5px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 4px; padding: 1px 5px; }
 .diffsheet { height: 100%; display: flex; flex-direction: column; }
 .diff-file { margin-bottom: 14px; }
 .diff-file-head { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--line); }
