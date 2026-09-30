@@ -19,11 +19,20 @@ export class RedisBus implements MessageBus {
   private client: Redis;
   private sub: Redis;
   private handlers = new Map<string, Set<(msg: unknown) => void>>();
+  private watchdogTimer?: NodeJS.Timeout;
+  /** 看门狗周期：幂等重订全部已注册频道，自愈「SUBSCRIBE 命令静默失败后永不重试」的失聪 */
+  private static readonly SUB_WATCHDOG_MS = 60_000;
 
   constructor(host: string, port: number, db: number, password?: string) {
+    const logger = getLogger();
     const auth = password ? { password } : {};
     this.client = new Redis({ host, port, db, ...auth, lazyConnect: false, maxRetriesPerRequest: 1 });
     this.sub = new Redis({ host, port, db, ...auth });
+    // 订阅连接的事件必须可见——2026-10-01 故障：sub 侧 SUBSCRIBE 失败被静默吞掉，
+    // 事件驱动推送（convo 消息/审批、任务审批卡）全哑而扫描驱动（oc 对账）照常，无从排查
+    this.sub.on('error', (e) => logger.warn('Redis pub/sub 连接错误（自动重连中，重连后会自动恢复订阅）', { error: String(e?.message || e).slice(0, 200) }));
+    this.sub.on('reconnecting', (delay: number) => logger.warn('Redis pub/sub 重连中', { delayMs: delay }));
+    this.sub.on('ready', () => logger.info('Redis pub/sub 连接就绪'));
     this.sub.on('message', (_channel, data) => {
       const handlers = this.handlers.get(_channel);
       if (!handlers) return;
@@ -37,6 +46,24 @@ export class RedisBus implements MessageBus {
     });
   }
 
+  /**
+   * 订阅看门狗：对 handlers 里登记的全部频道周期性重发 SUBSCRIBE（Redis 语义幂等，重复订阅无副作用）。
+   * 修复两类静默失聪：①启动时 SUBSCRIBE 命令失败被吞（handlers 已登记但 Redis 层没订上）；
+   * ②ioredis 重连后 autoResubscribe 覆盖不到"断连窗口内注册"的频道。发现丢失即补订，无需重启。
+   */
+  private ensureWatchdog(): void {
+    if (this.watchdogTimer) return;
+    const logger = getLogger();
+    this.watchdogTimer = setInterval(() => {
+      const channels = [...this.handlers.keys()];
+      if (!channels.length || this.sub.status !== 'ready') return;
+      this.sub.subscribe(...channels).catch((e) => {
+        logger.warn('Redis 订阅看门狗重发 SUBSCRIBE 失败（下一周期重试）', { error: String(e?.message || e).slice(0, 200), channels: channels.length });
+      });
+    }, RedisBus.SUB_WATCHDOG_MS);
+    if (typeof this.watchdogTimer.unref === 'function') this.watchdogTimer.unref();
+  }
+
   async ping(): Promise<void> {
     await this.client.ping();
   }
@@ -46,9 +73,15 @@ export class RedisBus implements MessageBus {
   }
 
   subscribe(channel: string, listener: (msg: unknown) => void): () => void {
+    const logger = getLogger();
     if (!this.handlers.has(channel)) {
       this.handlers.set(channel, new Set());
-      this.sub.subscribe(channel).catch(() => {});
+      // 失败不许静默：handlers 已登记但 Redis 层没订上 = 永久失聪（故障形态：事件驱动推送全哑、
+      // 扫描驱动照常，无任何日志可查）。告警交给 60s 看门狗幂等补订，这里只留现场。
+      this.sub.subscribe(channel).catch((e) => {
+        logger.warn('Redis SUBSCRIBE 失败——看门狗将自动补订', { error: String(e?.message || e).slice(0, 200), channel, subStatus: this.sub.status });
+      });
+      this.ensureWatchdog();
     }
     this.handlers.get(channel)!.add(listener);
     return () => {
@@ -104,6 +137,7 @@ export class RedisBus implements MessageBus {
   }
 
   close(): void {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.client.disconnect();
     this.sub.disconnect();
   }
