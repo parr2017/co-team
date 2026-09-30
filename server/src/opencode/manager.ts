@@ -18,7 +18,7 @@ import * as os from 'node:os';
 import { getLogger, type Logger } from '../logger';
 import type { ModelConfig } from '../types';
 import { resolveModelRef } from './modelInjection';
-import { OpencodeClient } from './client';
+import { OpencodeClient, formInfoToQuestionPayload } from './client';
 import { EventBatcher, isDroppedEvent, eventSessionId } from './events';
 import { OpencodeEventHub } from './eventHub';
 import {
@@ -36,6 +36,8 @@ import {
 
 const HEALTH_INTERVAL_MS = 15_000;
 const HEALTH_WAIT_MS = 20_000;
+/** pending 对账限频：巡检 15s 一拍，每实例至多 1 分钟对一次账（两个轻量只读端点，负载可忽略） */
+const PENDING_RECONCILE_MS = 60_000;
 const SERVE_PASSWORD_WAIT_MS = 8_000;
 const SSE_BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000];
 const RESTART_BACKOFF_MS = [2_000, 5_000, 15_000, 60_000];
@@ -63,6 +65,8 @@ interface InstanceState {
   discoveredPassword?: string;
   /** sessionId → idle/error 等待器（run_task 复合工具；SSE session.idle/error 唤醒） */
   idleWaiters?: Map<string, { resolve: (v: 'idle' | 'error') => void; timer: NodeJS.Timeout }>;
+  /** 上次 pending 对账时刻（healthTick 按 PENDING_RECONCILE_MS 限频触发 reconcilePendingFor） */
+  lastPendingReconcileAt?: number;
   /** delta 微批器（TUI 同构镜像：token 级事件 50ms 合并，防 WS burst 上限） */
   batcher?: EventBatcher;
   hub: OpencodeEventHub;
@@ -479,6 +483,11 @@ export class OpencodeManager implements OpencodeBridge {
         st.capabilities = await st.client.probe().catch(() => st.capabilities);
         this.subscribeEvents(st);
       }
+      // pending 对账（限频）：SSE 断流死窗丢事件后 pending 表唯一收敛途径，详见 reconcilePendingFor
+      if (Date.now() - (st.lastPendingReconcileAt || 0) > PENDING_RECONCILE_MS) {
+        st.lastPendingReconcileAt = Date.now();
+        void this.reconcilePendingFor(st).catch(() => {});
+      }
       return;
     }
     st.state = 'error';
@@ -842,6 +851,70 @@ export class OpencodeManager implements OpencodeBridge {
       for (const [id, p] of m) questions.push({ instance: instId, id, ...p });
     }
     return { permissions: perms, questions };
+  }
+
+  /**
+   * pending 聚合态对账（单实例）：与 oc 权威 pending 列表（form.list / permission.request.list）收敛。
+   * trackPending 只由 SSE 事件驱动（asked 入队、replied/rejected 出队），而 SSE 断流死窗期间的事件帧
+   * 不可补放——丢一次 replied/rejected，条目就永久滞留，表现为"已回答/已过期的问题每隔一段时间
+   * 被重推一次"（feishu qseen 去重键 TTL 兜不住滞留条目）。权威列表是对账的唯一事实源：
+   * 权威没有的删掉（已回答/已取消/已失效），权威有的补上（asked 丢失、co-team 重启后漏收）。
+   * 探针失败绝不清表：漏推可由下一拍对账补回，误清则真 pending 再也推不出来。
+   */
+  private async reconcilePendingFor(st: InstanceState): Promise<void> {
+    if (!st.client) return;
+    const [forms, perms] = await Promise.all([
+      st.client.listPendingForms().catch(() => null),
+      st.client.listPendingPermissions().catch(() => null),
+    ]);
+    if (forms?.ok && Array.isArray(forms.data)) {
+      const rows = forms.data as Record<string, any>[];
+      const live = new Set(rows.map((f) => String(f?.id || '')));
+      let m = this.pendingQuestions.get(st.cfg.id);
+      let pruned = 0;
+      if (m) {
+        for (const id of [...m.keys()]) {
+          if (!live.has(id)) { m.delete(id); pruned += 1; }
+        }
+      }
+      let added = 0;
+      for (const f of rows) {
+        const id = String(f?.id || '');
+        if (!id || m?.has(id)) continue;
+        // 回填载荷与 form.created 事件同源归一——两处形状不一致会让补漏卡渲染走样
+        (m ??= this.pendingQuestions.set(st.cfg.id, new Map()).get(st.cfg.id)!).set(id, formInfoToQuestionPayload(f));
+        added += 1;
+      }
+      if (pruned || added) this.logger.info('Opencode pending 对账：提问表与权威列表收敛', { id: st.cfg.id, pruned, added });
+    }
+    if (perms?.ok && Array.isArray(perms.data)) {
+      const rows = perms.data as Record<string, any>[];
+      const live = new Set(rows.map((p) => String(p?.id || '')));
+      let m = this.pendingPerms.get(st.cfg.id);
+      let pruned = 0;
+      if (m) {
+        for (const id of [...m.keys()]) {
+          if (!live.has(id)) { m.delete(id); pruned += 1; }
+        }
+      }
+      let added = 0;
+      for (const p of rows) {
+        const id = String(p?.id || '');
+        if (!id || m?.has(id)) continue;
+        // Permission.Request 即 asked 事件载荷原样（id/sessionID/action/resources/...），无需归一
+        (m ??= this.pendingPerms.set(st.cfg.id, new Map()).get(st.cfg.id)!).set(id, p);
+        added += 1;
+      }
+      if (pruned || added) this.logger.info('Opencode pending 对账：权限表与权威列表收敛', { id: st.cfg.id, pruned, added });
+    }
+  }
+
+  /** 全实例 pending 对账（测试/手动入口；healthTick 每 PENDING_RECONCILE_MS 限频自动触发单实例版） */
+  async reconcilePending(): Promise<void> {
+    for (const st of this.instances.values()) {
+      if (st.state !== 'connected' || !st.client) continue;
+      await this.reconcilePendingFor(st);
+    }
   }
 
   /** SSE 增量 patch 缓存（只维护已加载过的会话；delta 不 patch——part.updated 会带全量覆盖） */

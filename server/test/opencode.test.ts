@@ -21,6 +21,10 @@ const FAKE_OC = `
 const http = require('http');
 const port = Number(process.argv[process.argv.indexOf('--port') + 1] || 0);
 let sseRes = null;
+// pending 对账测试态：权威 form/permission 列表（真实 oc 里 form.list / permission.request.list 的返回）
+const formsState = [];
+const permReqState = [];
+let failFormList = false;
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://127.0.0.1');
   const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -44,6 +48,11 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && u.pathname === '/api/session/s1/permission/p1/reply') return empty(204);
   if (req.method === 'GET' && u.pathname === '/api/location') return json(200, { directory: 'C:/fake-project', project: { id: 'p1', directory: 'C:/fake-project', canonical: 'C:/fake-project' } });
   if (req.method === 'GET' && u.pathname === '/api/event') {
+    // 新 SSE 连接 = 新一轮测试：重置测试态。假服务进程在 Windows 下可能被 shell 陷阱泄漏而长存，
+    // 重跑测试会连上旧进程——状态不重置的话，上一轮的 formsState/permReqState 会污染本轮断言
+    formsState.length = 0;
+    permReqState.length = 0;
+    failFormList = false;
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write('data: ' + JSON.stringify({ id: 'e0', type: 'server.connected', data: {} }) + '\\n\\n');
     res.write('data: ' + JSON.stringify({ id: 'e1', type: 'session.idle', data: { sessionID: 's1' } }) + '\\n\\n');
@@ -74,6 +83,40 @@ const server = http.createServer((req, res) => {
     }
     return json(200, { ok: true });
   }
+  // ---- pending 对账：权威列表 + 事件丢失模拟 ----
+  if (req.method === 'GET' && u.pathname === '/api/form') {
+    if (failFormList) return json(500, { error: 'form list boom' });
+    return json(200, { data: formsState });
+  }
+  if (req.method === 'GET' && u.pathname === '/api/permission/request') return json(200, { data: permReqState });
+  if (req.method === 'POST' && u.pathname === '/api/test/emit-form') {
+    // 正常路径：asked 事件与权威列表同增（真 oc 行为）
+    const form = { id: 'form-9', sessionID: 's1', title: '怎么继续？', fields: [{ key: 'how', type: 'string', title: '修复方式', options: [{ value: 'fix', label: '修' }] }] };
+    formsState.push(form);
+    if (sseRes) sseRes.write('data: ' + JSON.stringify({ id: 'e20', type: 'form.created', data: { form } }) + '\\n\\n');
+    return json(200, { ok: true });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/test/form-replied-lost') {
+    // 已回答但 replied 事件在 SSE 断流死窗丢失：权威列表已无此表单，事件帧不出
+    const i = formsState.findIndex((f) => f.id === 'form-9');
+    if (i >= 0) formsState.splice(i, 1);
+    return json(200, { ok: true });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/test/form-asked-lost') {
+    // asked 事件丢失：权威列表里有，事件帧不出——对账应回填补漏
+    formsState.push({ id: 'form-10', sessionID: 's1', title: '数据库选型', fields: [{ key: 'db', type: 'string', title: '用哪个库', required: true, options: [{ value: 'sqlite', label: 'SQLite' }] }] });
+    return json(200, { ok: true });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/test/form-list-fail') {
+    // 权威列表探针 500：对账不得清本地表（漏推可补回，误清不可挽回）
+    failFormList = !failFormList;
+    return json(200, { ok: true, failFormList });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/test/perm-req-lost') {
+    // 权限申请只出现在权威列表（事件丢失）——对账应回填
+    permReqState.push({ id: 'per_req1', sessionID: 's1', action: 'read', resources: ['backend/.env'] });
+    return json(200, { ok: true });
+  }
   if (req.method === 'GET' && u.pathname === '/notfound') return json(404, { error: 'nope' });
   empty(204);
 });
@@ -87,6 +130,17 @@ async function waitFor(fn: () => boolean | Promise<boolean>, timeoutMs = 15000):
     if (Date.now() - begin > timeoutMs) return false;
     await new Promise((r) => setTimeout(r, 100));
   }
+}
+
+/** Windows 下 child.kill 对 shell:true 只杀 cmd.exe 不杀 node 孙子——按进程树强杀，防假服务泄漏占端口 */
+function killFakeServe(child: { pid?: number; kill(sig?: string): boolean }): void {
+  if (child.pid) {
+    try {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      return;
+    } catch { /* taskkill 不可用再回退 */ }
+  }
+  killFakeServe(child);
 }
 
 // ---------- client（mock fetch，不打真服务） ----------
@@ -555,7 +609,7 @@ describe('OpencodeManager', () => {
       expect(shell.ok).toBe(false);
       expect(shell.error).toContain('allow_shell');
     } finally {
-      child.kill('SIGTERM');
+      killFakeServe(child);
     }
   }, 20000);
 
@@ -591,7 +645,7 @@ describe('OpencodeManager', () => {
         return ids.includes('m-new') && JSON.stringify(after.data!.messages).includes('PATCHED_NEW_MSG');
       })).toBe(true);
     } finally {
-      child.kill('SIGTERM');
+      killFakeServe(child);
     }
   }, 20000);
 
@@ -622,7 +676,63 @@ describe('OpencodeManager', () => {
       expect(await waitFor(() => mgr.pendingAll().permissions.length === 1)).toBe(true);
       expect(mgr.pendingAll().permissions[0].id).toBe('per_test2');
     } finally {
-      child.kill('SIGTERM');
+      killFakeServe(child);
+    }
+  }, 20000);
+
+  it('attached：pending 对账与权威列表收敛——answered 事件丢失的滞留条目被清、漏收的 asked 回填、探针失败不清表', async () => {
+    const port = 38118;
+    const child = spawn('node', [fakeOcFile, 'serve', '--port', String(port)], { stdio: 'ignore', shell: true });
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) {
+      try { up = (await fetch(`http://127.0.0.1:${port}/api/info`)).ok; } catch { /* 未起 */ }
+      if (!up) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(up).toBe(true);
+    try {
+      const mgr = new OpencodeManager([
+        { id: 'rec', kind: 'attached-cli', url: `http://127.0.0.1:${port}`, mode: 'control' },
+      ], silent);
+      managers.push(mgr);
+      mgr.start();
+      expect(await waitFor(() => mgr.listInstances()[0]?.state === 'connected')).toBe(true);
+
+      // 正常路径：asked 事件入队（权威列表同增）
+      await fetch(`http://127.0.0.1:${port}/api/test/emit-form`, { method: 'POST' });
+      expect(await waitFor(() => mgr.pendingAll().questions.some((q) => q.id === 'form-9'))).toBe(true);
+
+      // 主场景：已回答但 replied 事件在 SSE 断流死窗丢失——本地滞留、权威已无。
+      // 对账前一直滞留（就是"已回答过的问题反复出现"），对账后清掉
+      await fetch(`http://127.0.0.1:${port}/api/test/form-replied-lost`, { method: 'POST' });
+      expect(mgr.pendingAll().questions.some((q) => q.id === 'form-9')).toBe(true);
+      await mgr.reconcilePending();
+      expect(mgr.pendingAll().questions.some((q) => q.id === 'form-9')).toBe(false);
+
+      // asked 事件丢失（权威有、本地无）——对账回填，载荷与事件同源归一（卡渲染契约不变）
+      await fetch(`http://127.0.0.1:${port}/api/test/form-asked-lost`, { method: 'POST' });
+      await mgr.reconcilePending();
+      const q = mgr.pendingAll().questions.find((x) => x.id === 'form-10');
+      expect(q).toBeTruthy();
+      expect(q.title).toBe('数据库选型');
+      expect(q.sessionID).toBe('s1');
+      expect(q.questions[0]).toMatchObject({ key: 'db', type: 'select', question: '用哪个库', required: true });
+
+      // 权限侧：只出现在权威列表的申请回填
+      await fetch(`http://127.0.0.1:${port}/api/test/perm-req-lost`, { method: 'POST' });
+      await mgr.reconcilePending();
+      expect(mgr.pendingAll().permissions.find((p) => p.id === 'per_req1')).toMatchObject({ action: 'read', resources: ['backend/.env'] });
+
+      // 权威探针 500：对账不得清本地表（漏推可由下一拍补回，误清不可挽回）
+      await fetch(`http://127.0.0.1:${port}/api/test/emit-form`, { method: 'POST' });
+      expect(await waitFor(() => mgr.pendingAll().questions.some((x) => x.id === 'form-9'))).toBe(true);
+      await fetch(`http://127.0.0.1:${port}/api/test/form-list-fail`, { method: 'POST' });
+      await mgr.reconcilePending();
+      expect(mgr.pendingAll().questions.some((x) => x.id === 'form-9')).toBe(true);
+      await fetch(`http://127.0.0.1:${port}/api/test/form-list-fail`, { method: 'POST' }); // 恢复探针
+      await mgr.reconcilePending();
+      expect(mgr.pendingAll().questions.some((x) => x.id === 'form-9')).toBe(true); // 恢复后 form-9 仍在权威列表，不剪
+    } finally {
+      killFakeServe(child);
     }
   }, 20000);
 

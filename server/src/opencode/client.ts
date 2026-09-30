@@ -25,6 +25,64 @@ type OpenCodeFactory = { make(options: { baseUrl: string; headers: Record<string
 
 const loadOpenCode = require('./officialClientLoader.cjs') as () => Promise<{ OpenCode: OpenCodeFactory }>;
 
+/**
+ * Form.Info / form.created 事件的 form 载荷 → question.asked 归一结构（提问卡渲染契约）。
+ * 事件流（convertEvents）与权威对账回填（manager.reconcilePending 的 form.list 结果）
+ * 共用同一份归一化——两处形状必须一致，否则补漏回来的卡渲染走样。
+ */
+export function formInfoToQuestionPayload(formInput: unknown): Record<string, unknown> {
+  const form = formInput && typeof formInput === 'object' ? formInput as Record<string, unknown> : {};
+  const fields = Array.isArray(form.fields) ? form.fields : [];
+  return {
+    id: String(form.id || ''),
+    sessionID: String(form.sessionID || ''),
+    title: form.title === undefined || form.title === null ? undefined : String(form.title),
+    questions: fields.map((value) => {
+      const field = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+      const rawOptions = Array.isArray(field.options) ? field.options : [];
+      const rawType = String(field.type || 'string');
+      const maxItems = Number(field.maxItems);
+      // 归一化视图类型：string+options=单选，string=自由输入；其余类型直通
+      const normType = rawType === 'multiselect' ? 'multiselect'
+        : rawType === 'number' || rawType === 'integer' ? 'number'
+        : rawType === 'boolean' ? 'boolean'
+        : rawType === 'external' ? 'external'
+        : rawOptions.length ? 'select' : 'input';
+      const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+      const when = Array.isArray(field.when) ? field.when : [];
+      return {
+        key: String(field.key || ''),
+        type: normType,
+        question: String(field.question || field.title || field.description || field.key || ''),
+        header: field.header === undefined ? undefined : String(field.header),
+        description: field.description === undefined ? undefined : String(field.description),
+        placeholder: field.placeholder === undefined ? undefined : String(field.placeholder),
+        required: field.required === true,
+        hidden: field.hidden === true,
+        when: when.length ? (when as Record<string, unknown>[]).map((w) => ({
+          key: String(w.key || ''),
+          op: w.op === 'neq' ? 'neq' as const : 'eq' as const,
+          value: w.value as string | number | boolean,
+        })) : undefined,
+        minimum: num(field.minimum),
+        maximum: num(field.maximum),
+        // multiselect 且未限定"只选 1 项"→ 视为多选；字段自带 custom（如"其他"自填）也算自定义入口
+        multiple: normType === 'multiselect' && !(maxItems === 1),
+        custom: field.custom === true,
+        externalUrl: rawType === 'external' ? String(field.url || '') : undefined,
+        options: rawOptions.map((option) => {
+          const entry = option && typeof option === 'object' ? option as Record<string, unknown> : {};
+          return {
+            value: String(entry.value ?? entry.label ?? ''),
+            label: String(entry.label || entry.value || ''),
+            description: entry.description === undefined ? undefined : String(entry.description),
+          };
+        }),
+      };
+    }),
+  };
+}
+
 function versionParts(version: string): { major: number; minor: number; patch: number } | undefined {
   const match = /^[v=\s]*(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\s*$/.exec(version);
   if (!match) return undefined;
@@ -426,6 +484,26 @@ export class OpencodeClient {
     }
   }
 
+  /**
+   * oc 侧权威 pending 提问列表（form.list）：还在等人作答的表单。
+   * 服务端 pending 聚合态只由 SSE 事件驱动（asked 入队/replied 出队），断流死窗丢一次
+   * replied 事件条目就永久滞留——对账以这里为准收敛（已回答/已取消的不再出现在飞书）。
+   */
+  listPendingForms(): Promise<OcCallResult<Record<string, any>[]>> {
+    return this.call(async (client, options) => {
+      const r = await client.form.list(undefined, options);
+      return (((r as { data?: Record<string, any>[] }) || {}).data || []) as Record<string, any>[];
+    });
+  }
+
+  /** oc 侧权威 pending 权限申请列表（permission.request.list）：还在等人拍板的权限。 */
+  listPendingPermissions(): Promise<OcCallResult<Record<string, any>[]>> {
+    return this.call(async (client, options) => {
+      const r = await client.permission.request.list(undefined, options);
+      return (((r as { data?: Record<string, any>[] }) || {}).data || []) as Record<string, any>[];
+    });
+  }
+
   appendPrompt(_text: string): Promise<OcCallResult<boolean>> {
     return Promise.resolve({ ok: false, error: UNSUPPORTED_ERROR });
   }
@@ -702,55 +780,9 @@ export class OpencodeClient {
         return this.eventEnvelope(event, 'session.compacted', data);
       case 'form.created': {
         const form = data.form && typeof data.form === 'object' ? data.form as Record<string, unknown> : {};
-        const fields = Array.isArray(form.fields) ? form.fields : [];
-        return this.eventEnvelope(event, 'question.asked', {
-          id: String(form.id || event.id),
-          sessionID: String(form.sessionID || ''),
-          title: form.title === undefined || form.title === null ? undefined : String(form.title),
-          questions: fields.map((value) => {
-            const field = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-            const rawOptions = Array.isArray(field.options) ? field.options : [];
-            const rawType = String(field.type || 'string');
-            const maxItems = Number(field.maxItems);
-            // 归一化视图类型：string+options=单选，string=自由输入；其余类型直通
-            const normType = rawType === 'multiselect' ? 'multiselect'
-              : rawType === 'number' || rawType === 'integer' ? 'number'
-              : rawType === 'boolean' ? 'boolean'
-              : rawType === 'external' ? 'external'
-              : rawOptions.length ? 'select' : 'input';
-            const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
-            const when = Array.isArray(field.when) ? field.when : [];
-            return {
-              key: String(field.key || ''),
-              type: normType,
-              question: String(field.question || field.title || field.description || field.key || ''),
-              header: field.header === undefined ? undefined : String(field.header),
-              description: field.description === undefined ? undefined : String(field.description),
-              placeholder: field.placeholder === undefined ? undefined : String(field.placeholder),
-              required: field.required === true,
-              hidden: field.hidden === true,
-              when: when.length ? (when as Record<string, unknown>[]).map((w) => ({
-                key: String(w.key || ''),
-                op: w.op === 'neq' ? 'neq' as const : 'eq' as const,
-                value: w.value as string | number | boolean,
-              })) : undefined,
-              minimum: num(field.minimum),
-              maximum: num(field.maximum),
-              // multiselect 且未限定"只选 1 项"→ 视为多选；字段自带 custom（如"其他"自填）也算自定义入口
-              multiple: normType === 'multiselect' && !(maxItems === 1),
-              custom: field.custom === true,
-              externalUrl: rawType === 'external' ? String(field.url || '') : undefined,
-              options: rawOptions.map((option) => {
-                const entry = option && typeof option === 'object' ? option as Record<string, unknown> : {};
-                return {
-                  value: String(entry.value ?? entry.label ?? ''),
-                  label: String(entry.label || entry.value || ''),
-                  description: entry.description === undefined ? undefined : String(entry.description),
-                };
-              }),
-            };
-          }),
-        });
+        const payload = formInfoToQuestionPayload(form);
+        if (!payload.id) payload.id = String(event.id || '');
+        return this.eventEnvelope(event, 'question.asked', payload);
       }
       case 'form.replied':
       case 'form.cancelled':
