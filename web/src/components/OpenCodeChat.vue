@@ -62,12 +62,12 @@
                 <summary><span class="car">▶</span><span class="tt">思考过程</span></summary>
                 <div class="think-body">{{ p.text }}</div>
               </details>
-              <div v-else-if="p.type === 'tool'" class="tool-card" :class="p.state?.status">
+              <div v-else-if="p.type === 'tool'" class="tool-card" :class="toolStatusOf(m, p)">
                 <div class="tc-head" @click="toggleTool(p)">
-                  <i class="ticon" :class="p.state?.status">{{ toolIcon(p) }}</i>
+                  <i class="ticon" :class="toolStatusOf(m, p)">{{ toolIcon(p) }}</i>
                   <span class="tname">{{ p.tool || 'tool' }}</span>
                   <span class="targs" :title="toolArgs(p)">{{ p.state?.title || toolArgs(p) }}</span>
-                  <span class="tstate mono mini">{{ p.state?.status || '' }}</span>
+                  <span class="tstate mono mini">{{ toolStatusOf(m, p) }}</span>
                   <span v-if="trimmedParts.has(String(p.id))" class="ttrim" @click.stop="openFullMessage(m.id)">已裁剪·原文</span>
                   <span class="tcar">{{ p.__open ? '▾' : '▸' }}</span>
                 </div>
@@ -551,6 +551,30 @@ function partsOf(m: Record<string, any>): any[] {
 /** 工具输出文本（v2 内容块数组解包；50k 上限防 DOM 爆炸，更长仍可走完整原文） */
 function toolText(p: any): string {
   return toolOutputOf(p, 50_000);
+}
+
+/** 僵尸工具卡：分片停在 running/pending 但其回合已被更新的用户消息取代（实测提问表单被他端
+ *  答掉后上游不回写工具分片终态，页面上永远显示 running）——降级为 completed 展示。
+ *  口径与移动端一致：只有最后一条用户消息之前的才算僵尸；窗口里没有用户消息时不判定。 */
+const zombieToolKeys = computed(() => {
+  const msgs = snap.value.messages;
+  let lastUser = -1;
+  for (let i = 0; i < msgs.length; i++) {
+    if (String(msgs[i]?.role) === 'user') lastUser = i;
+  }
+  if (lastUser < 0) return new Set<string>();
+  const set = new Set<string>();
+  for (let i = 0; i < lastUser; i++) {
+    for (const p of msgs[i].parts || []) {
+      if (p?.type === 'tool') set.add(`${String(msgs[i].id || '')}:${String(p.id || '')}`);
+    }
+  }
+  return set;
+});
+function toolStatusOf(m: Record<string, any>, p: any): string {
+  const status = String(p?.state?.status || '');
+  if ((status === 'running' || status === 'pending') && zombieToolKeys.value.has(`${String(m?.id || '')}:${String(p?.id || '')}`)) return 'completed';
+  return status;
 }
 
 // ---------- 即时切换（TUI 同款：选中即生效，不等发送） ----------

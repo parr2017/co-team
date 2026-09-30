@@ -67,10 +67,10 @@
               <span v-else class="tb short">{{ p.text.slice(0, 80) }}…</span>
             </div>
             <!-- 工具四态卡 -->
-            <div v-else-if="p.type === 'tool'" class="tool-card" :class="toolStateOf(p).status">
+            <div v-else-if="p.type === 'tool'" class="tool-card" :class="toolStatusOf(m, p)">
               <div class="tool-head" @click="toggleTool(pk(m, p, pi))">
-                <span v-if="isToolLive(toolStateOf(p).status)" class="spin" />
-                <span v-else-if="toolStateOf(p).status === 'error'" class="dot err" />
+                <span v-if="isToolLive(toolStatusOf(m, p))" class="spin" />
+                <span v-else-if="toolStatusOf(m, p) === 'error'" class="dot err" />
                 <span v-else class="dot ok" />
                 <span class="tool-name mono">{{ toolStateOf(p).title }}</span>
                 <span v-if="trimmedParts.has(String(p.id))" class="tool-trim" @click.stop="openFullMessage(m.id)">已裁剪·原文</span>
@@ -1141,6 +1141,30 @@ function toolStateOf(p: any): ToolView {
 }
 function isToolLive(status: string): boolean {
   return status === 'pending' || status === 'running';
+}
+/** 僵尸工具卡：分片停在 running/pending 但其回合已被更新的用户消息取代（实测提问表单被他端
+ *  答掉后上游不回写工具分片终态，页面上永远转圈）——降级为 completed 展示。
+ *  口径与 TUI 活动回合一致：只有最后一条用户消息之前的才算僵尸；窗口里没有用户消息
+ *  （可能在更早分页里）时不判定，一律视为活着。 */
+const zombieToolKeys = computed(() => {
+  const msgs = snap.value.messages;
+  let lastUser = -1;
+  for (let i = 0; i < msgs.length; i++) {
+    if (String(msgs[i]?.role) === 'user') lastUser = i;
+  }
+  if (lastUser < 0) return new Set<string>();
+  const set = new Set<string>();
+  for (let i = 0; i < lastUser; i++) {
+    for (const p of msgs[i].parts || []) {
+      if (p?.type === 'tool') set.add(`${String(msgs[i].id || '')}:${String(p.id || '')}`);
+    }
+  }
+  return set;
+});
+function toolStatusOf(m: any, p: any): string {
+  const status = toolStateOf(p).status;
+  if (isToolLive(status) && zombieToolKeys.value.has(`${String(m?.id || '')}:${String(p?.id || '')}`)) return 'completed';
+  return status;
 }
 function toText(v: any): string {
   if (v === undefined || v === null || v === '') return '';
