@@ -62,36 +62,69 @@ async function poll(): Promise<void> {
   }
 }
 
-/** busy 会话展开为可点行（按最近更新排序） */
-const busyList = computed<OcBusySession[]>(() => {
-  const out: OcBusySession[] = [];
+/**
+ * 会话去重与归属（2026-10-01）：opencode 2.x 的会话库是全机共享的（~/.local/share/opencode），
+ * 桌面版与托管实例两个进程返回同一份会话列表——按实例逐个聚合会把每条会话出两遍。
+ * 去重后归属实例的优先级：正在跑它的实例（busy 归属，abort/prompt 必须打到该进程）>
+ * project_root 匹配的实例 > 配置顺序里第一个在线实例。
+ */
+const sessionRows = computed<OcSessionRow[]>(() => {
+  const busyOwner = new Map<string, string>();
   for (const [instId, ids] of busyByInst.value) {
-    if (!ids.size) continue;
-    const inst = instances.value.find((i) => i.id === instId);
-    const label = String(inst?.label || instId);
-    for (const s of sessionsByInst.value.get(instId) || []) {
-      if (!ids.has(String(s.id))) continue;
-      const t = (s.time || {}) as Record<string, unknown> | undefined;
-      out.push({
-        instance: instId,
-        instanceLabel: label,
-        sessionID: String(s.id),
-        title: String(s.title || '（未命名会话）'),
-        directory: String(s.directory || ''),
-        updatedAt: Number(t?.updated || t?.created || 0),
-      });
+    for (const sid of ids) if (!busyOwner.has(sid)) busyOwner.set(sid, instId);
+  }
+  const live = instances.value.filter((i) => i.enabled && (i.state === 'connected' || i.state === 'running'));
+  const bySid = new Map<string, { s: OcSession; instId: string }>();
+  for (const inst of live) {
+    for (const s of sessionsByInst.value.get(inst.id) || []) {
+      const sid = String(s.id);
+      const prev = bySid.get(sid);
+      if (!prev) {
+        bySid.set(sid, { s, instId: inst.id });
+        continue;
+      }
+      if (busyOwner.get(sid) === inst.id) { prev.instId = inst.id; continue; }
+      if (busyOwner.get(sid) === prev.instId) continue;
+      if (normDir(inst.project_root) === normDir(String(s.directory || ''))) prev.instId = inst.id;
     }
   }
-  return out.sort((a, b) => b.updatedAt - a.updatedAt);
+  const rows: OcSessionRow[] = [];
+  for (const [sid, { s, instId }] of bySid) {
+    const inst = instances.value.find((i) => i.id === instId);
+    const t = (s.time || {}) as Record<string, unknown>;
+    rows.push({
+      instId,
+      instLabel: String(inst?.label || instId),
+      id: sid,
+      title: String(s.title || ''),
+      directory: String(s.directory || ''),
+      parentID: s.parentID ? String(s.parentID) : undefined,
+      updatedAt: Number(t.updated || t.created || 0),
+      busy: busyOwner.get(sid) === instId,
+    });
+  }
+  return rows.sort((a, b) => b.updatedAt - a.updatedAt);
+});
+
+const busyList = computed<OcBusySession[]>(() => {
+  const rows = sessionRows.value.filter((r) => r.busy);
+  return rows.map((r) => ({
+    instance: r.instId,
+    instanceLabel: r.instLabel,
+    sessionID: r.id,
+    title: r.title || '（未命名会话）',
+    directory: r.directory,
+    updatedAt: r.updatedAt,
+  }));
 });
 
 const busyCount = computed(() => busyList.value.length);
 
-/** 项目聚合（OC 首页卡片）：normDir 归组，busy 数与最近会话一并算好 */
+/** 项目聚合（OC 首页卡片）：去重后的会话按 normDir 归组，busy 数与最近会话一并算好 */
 export interface OcProjectCard {
   dir: string;
   name: string;
-  instances: OcInstance[];
+  instanceLabels: string[];
   busyCount: number;
   lastTitle: string;
   lastUpdated: number;
@@ -100,24 +133,19 @@ export interface OcProjectCard {
 
 const projects = computed<OcProjectCard[]>(() => {
   const map = new Map<string, OcProjectCard>();
-  for (const [instId, list] of sessionsByInst.value) {
-    const inst = instances.value.find((i) => i.id === instId);
-    for (const s of list) {
-      const dir = normDir(s.directory);
-      if (!dir) continue;
-      let card = map.get(dir);
-      if (!card) {
-        card = { dir, name: dirBase(dir), instances: [], busyCount: 0, lastTitle: '', lastUpdated: 0, sessionCount: 0 };
-        map.set(dir, card);
-      }
-      if (!card.instances.some((i) => i.id === instId)) card.instances.push(inst!);
-      card.sessionCount += 1;
-      const t = s.time as Record<string, unknown> | undefined;
-      const ts = Number(t?.updated || t?.created || 0);
-      if (ts > card.lastUpdated) {
-        card.lastUpdated = ts;
-        card.lastTitle = String(s.title || '（未命名会话）');
-      }
+  for (const r of sessionRows.value) {
+    const dir = normDir(r.directory);
+    if (!dir) continue;
+    let card = map.get(dir);
+    if (!card) {
+      card = { dir, name: dirBase(dir), instanceLabels: [], busyCount: 0, lastTitle: '', lastUpdated: 0, sessionCount: 0 };
+      map.set(dir, card);
+    }
+    if (!card.instanceLabels.includes(r.instLabel)) card.instanceLabels.push(r.instLabel);
+    card.sessionCount += 1;
+    if (r.updatedAt > card.lastUpdated) {
+      card.lastUpdated = r.updatedAt;
+      card.lastTitle = r.title || '（未命名会话）';
     }
   }
   const cards = [...map.values()];
@@ -127,12 +155,15 @@ const projects = computed<OcProjectCard[]>(() => {
   return cards.sort((a, b) => b.lastUpdated - a.lastUpdated);
 });
 
+/** 去重后的全会话行（归属实例已定）——项目会话列表页直接消费 */
+export interface OcSessionRow { instId: string; instLabel: string; id: string; title: string; directory: string; parentID?: string; updatedAt: number; busy: boolean }
+
 export function useOcBusy() {
   if (timer === undefined) {
     void poll();
     timer = window.setInterval(poll, 12_000);
   }
-  return { instances, busyList, busyCount, projects, sessionsByInst, loaded, refresh: poll };
+  return { instances, busyList, busyCount, projects, sessionRows, loaded, refresh: poll };
 }
 
 export function relTime(ts: number): string {

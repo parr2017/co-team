@@ -25,7 +25,7 @@
           <div class="pbody">
             <div class="pname">{{ p.name }}</div>
             <div class="psub">
-              <span v-for="i in p.instances" :key="i.id" class="tag" :class="{ mg: i.kind === 'managed' }">{{ shortKind(i.kind) }}</span>
+              <span v-for="lb in p.instanceLabels" :key="lb" class="tag">{{ shortLabel(lb) }}</span>
               <span v-if="p.busyCount" class="tag run">● {{ p.busyCount }} 活跃</span>
               <span class="last">{{ p.lastTitle }}<template v-if="p.lastUpdated"> · {{ relTime(p.lastUpdated) }}</template></span>
             </div>
@@ -85,6 +85,11 @@ const STATE_LABEL: Record<string, string> = { stopped: '未启动', starting: '�
 
 function shortKind(kind: string): string {
   return kind === 'managed' ? '托管' : kind === 'attached-desktop' ? '桌面版' : 'CLI';
+}
+function shortLabel(label: string): string {
+  if (/桌面/.test(label)) return '桌面版';
+  if (/托管|本机/.test(label)) return '托管';
+  return label.length > 6 ? label.slice(0, 6) : label;
 }
 function stateLabel(inst: OcInstance): string {
   return inst.enabled ? STATE_LABEL[inst.state] || inst.state : '未启用';

@@ -16,7 +16,7 @@
         </div>
 
         <template v-if="visibleRows.length">
-          <div v-for="row in visibleRows" :key="row.key" class="sess" @click="openSession(row)">
+          <div v-for="row in visibleRows" :key="row.instId + ':' + row.id" class="sess" @click="openSession(row)">
             <span class="dot" :class="{ pulse: row.busy }" />
             <span class="st">{{ row.title || '（未命名会话）' }}</span>
             <span v-if="row.parentID" class="child" title="子会话（任务/子代理派生）">子</span>
@@ -53,11 +53,11 @@ import { computed, onActivated, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showFailToast, showSuccessToast } from 'vant';
 import { api, type OcInstance } from '../api';
-import { useOcBusy, dirBase, normDir, relTime } from '../composables/useOcBusy';
+import { useOcBusy, dirBase, normDir, relTime, type OcSessionRow } from '../composables/useOcBusy';
 
 const route = useRoute();
 const router = useRouter();
-const { instances, busyList, sessionsByInst, refresh } = useOcBusy();
+const { instances, sessionRows, refresh } = useOcBusy();
 
 const decodedDir = computed(() => decodeURIComponent(String(route.params.dir || '')));
 const projectKey = computed(() => normDir(decodedDir.value));
@@ -68,30 +68,7 @@ const scope = ref<'project' | 'all'>('project');
 const creating = ref(false);
 const instPickSheet = ref(false);
 
-interface SessionRow { key: string; instId: string; instLabel: string; id: string; title: string; directory: string; parentID?: string; updatedAt: number; busy: boolean }
-
-const allRows = computed<SessionRow[]>(() => {
-  const busyKeys = new Set(busyList.value.map((b) => `${b.instance}:${b.sessionID}`));
-  const rows: SessionRow[] = [];
-  for (const inst of instances.value) {
-    const label = String(inst.label || inst.id);
-    for (const s of sessionsByInst.value.get(inst.id) || []) {
-      const t = (s.time || {}) as Record<string, number>;
-      rows.push({
-        key: `${inst.id}:${s.id}`,
-        instId: inst.id,
-        instLabel: label,
-        id: String(s.id),
-        title: String(s.title || ''),
-        directory: String(s.directory || ''),
-        parentID: s.parentID ? String(s.parentID) : undefined,
-        updatedAt: Number(t.updated || t.created || 0),
-        busy: busyKeys.has(`${inst.id}:${s.id}`),
-      });
-    }
-  }
-  return rows.sort((a, b) => b.updatedAt - a.updatedAt);
-});
+const allRows = computed<OcSessionRow[]>(() => sessionRows.value);
 const projectRows = computed(() => allRows.value.filter((r) => normDir(r.directory) === projectKey.value));
 const visibleRows = computed(() => (scope.value === 'project' ? projectRows.value : allRows.value));
 
@@ -101,7 +78,7 @@ async function onRefresh(): Promise<void> {
   refreshing.value = false;
 }
 
-function openSession(row: SessionRow): void {
+function openSession(row: OcSessionRow): void {
   void router.push(`/opencode/session/${row.instId}/${row.id}`);
 }
 
@@ -112,7 +89,7 @@ const servingInstances = computed<OcInstance[]>(() => {
     if (!inst.enabled || (inst.state !== 'connected' && inst.state !== 'running')) continue;
     const root = normDir(inst.project_root);
     const serves = root === projectKey.value
-      || (sessionsByInst.value.get(inst.id) || []).some((s) => normDir(s.directory) === projectKey.value);
+      || allRows.value.some((r) => r.instId === inst.id && normDir(r.directory) === projectKey.value);
     if (serves) out.push(inst);
   }
   return out;
