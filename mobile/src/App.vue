@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import { useDashboard } from './composables/useDashboard';
 import { useWs } from './composables/useWs';
 import { useOcBusy } from './composables/useOcBusy';
+import { isGateStale } from './utils/time';
 import { setApiToken } from './api';
 import { tokenGateVisible, resolveTokenGate } from './tokenGate';
 
@@ -23,7 +24,7 @@ const showTabbar = computed(() => !!route.meta.tab);
 
 // M10-C tabbar 未读徽标：等待人工处理（节点审批/澄清）的任务数
 const humanGateCount = computed(() =>
-  Object.values(tasks.value).filter((t) => ['waiting_approval', 'clarifying', 'waiting_clarify'].includes(t.status)).length
+  Object.values(tasks.value).filter((t) => ['waiting_approval', 'clarifying', 'waiting_clarify'].includes(t.status) && !isGateStale(t.updated_at)).length
 );
 
 // SEC-P0 Token 门禁：401 → 全局输入层 → 保存后立即以新凭据重连 WS（API 请求各自自动重试）

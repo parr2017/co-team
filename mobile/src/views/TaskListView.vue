@@ -7,7 +7,7 @@ import { useTheme } from '../composables/useTheme';
 import StatusTag from '../components/StatusTag.vue';
 import type { TaskGraph, QueueSnapshot } from '../api';
 import { useDashboard } from '../composables/useDashboard';
-import { relativeTime } from '../utils/time';
+import { relativeTime, isGateStale } from '../utils/time';
 
 defineOptions({ name: 'TaskListView' });
 
@@ -24,7 +24,8 @@ onMounted(() => {
 onUnmounted(() => { if (sysTimer) clearInterval(sysTimer); });
 function fmtTok(n: number): string { return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
 const runningCount = computed(() => Object.values(tasks.value).filter((t) => ['running', 'retrying'].includes(t.status)).length);
-const humanCount = computed(() => Object.values(tasks.value).filter((t) => ['waiting_approval', 'clarifying'].includes(t.status)).length);
+// 与 tabbar 角标同口径：超 3 天的僵尸审批门不计入「待我处理」
+const humanCount = computed(() => Object.values(tasks.value).filter((t) => ['waiting_approval', 'clarifying'].includes(t.status) && !isGateStale(t.updated_at)).length);
 const { loadTasks, tasks } = useDashboard();
 
 const keyword = ref('');

@@ -11,13 +11,14 @@ import StatusTag from '../components/StatusTag.vue';
 import MdView from '../components/MdView.vue';
 import { useDashboard } from '../composables/useDashboard';
 import { permViewOf } from '../opencode-stream';
+import { isGateStale } from '../utils/time';
 
 const router = useRouter();
 const { tasks, connected } = useDashboard();
 
 interface ApprovalItem {
   key: string;
-  kind: 'node' | 'proposal' | 'command' | 'ask' | 'clarify' | 'oc-permission' | 'oc-question';
+  kind: 'node' | 'proposal' | 'command' | 'ask' | 'clarify' | 'gate' | 'oc-permission' | 'oc-question';
   taskId: string;
   title: string;
   detail: string;
@@ -43,7 +44,8 @@ const NEED_HUMAN_STATUSES = ['waiting_approval', 'clarifying', 'running', 'retry
 async function load() {
   loading.value = true;
   const out: ApprovalItem[] = [];
-  const graphs = Object.values(tasks.value).filter((t) => NEED_HUMAN_STATUSES.includes(t.status) && !!t.task_id);
+  // 超 3 天的停靠审批不再进收件箱（与角标同口径豁免）；任务本身仍可在任务列表处理
+  const graphs = Object.values(tasks.value).filter((t) => NEED_HUMAN_STATUSES.includes(t.status) && !!t.task_id && !isGateStale(t.updated_at));
   try {
     await Promise.all(
       graphs.map(async (t) => {
@@ -72,6 +74,17 @@ async function load() {
               detail: n.result?.summary || 'agent 已提交实施简报，等待你确认或补充',
             });
           }
+        }
+        // 1b) 任务级验收门（M5 final gate）：任务停在 waiting_approval 但没有节点卡审批——
+        // 修复"角标有数、收件箱看不见"的错位；处理入口在任务详情（验收报告/派生提案）
+        if (t.status === 'waiting_approval' && !(t.nodes || []).some((n) => n.status === 'waiting_approval')) {
+          out.push({
+            key: `gate:${t.task_id}`,
+            kind: 'gate',
+            taskId: t.task_id,
+            title: '任务停靠验收门，等待处理',
+            detail: '最终验收未全绿（红灯/待补证据），任务停在人工门。去任务详情查看验收报告与派生提案。',
+          });
         }
         // 2) 监督者提案
         try {
@@ -190,12 +203,12 @@ timer = setInterval(() => { if (document.visibilityState === 'visible') void ref
 onUnmounted(() => { if (timer) clearInterval(timer); });
 
 const presentKinds = computed(() => {
-  const order = ['node', 'proposal', 'command', 'ask', 'clarify', 'oc-permission', 'oc-question'];
+  const order = ['node', 'gate', 'proposal', 'command', 'ask', 'clarify', 'oc-permission', 'oc-question'];
   return order.filter((k) => items.value.some((x) => x.kind === k));
 });
-const kindLabel: Record<string, string> = { node: '节点审批', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清', 'oc-permission': 'OpenCode 权限', 'oc-question': 'OpenCode 提问' };
+const kindLabel: Record<string, string> = { node: '节点审批', gate: '验收门', proposal: '提案', command: '命令审批', ask: '提问', clarify: '澄清', 'oc-permission': 'OpenCode 权限', 'oc-question': 'OpenCode 提问' };
 /** kind 不在 StatusTag 语义表内，映射到相近的审批语义色 */
-const kindTone: Record<string, string> = { node: 'waiting_approval', proposal: 'waiting_approval', command: 'waiting_approval', ask: 'waiting_approval', clarify: 'waiting_clarify', 'oc-permission': 'waiting_approval', 'oc-question': 'waiting_clarify' };
+const kindTone: Record<string, string> = { node: 'waiting_approval', gate: 'waiting_approval', proposal: 'waiting_approval', command: 'waiting_approval', ask: 'waiting_approval', clarify: 'waiting_clarify', 'oc-permission': 'waiting_approval', 'oc-question': 'waiting_clarify' };
 const busy = (key: string) => busyKey.value === key;
 async function decide(item: ApprovalItem, approved: boolean) {
   if (item.kind === 'oc-question') return; // 提问走选项按钮（answerOcQuestion），不落 decide

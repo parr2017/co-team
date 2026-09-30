@@ -28,3 +28,14 @@ export function relativeTime(ts?: TimeInput): string {
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
   return fmtDateTime(d);
 }
+
+/** 审批门滞留豁免（2026-10-01）：waiting_approval/clarify 停靠超过 3 天视为陈年僵尸，
+ *  不再计入角标、不再进审批收件箱——任务本身不受影响，仍可在任务列表里手动处理。 */
+export const GATE_STALE_MS = 3 * 24 * 3_600_000;
+
+export function isGateStale(updatedAt?: string | number | null): boolean {
+  if (!updatedAt) return false;
+  const ts = typeof updatedAt === 'number' ? updatedAt : Date.parse(updatedAt);
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  return Date.now() - ts > GATE_STALE_MS;
+}
