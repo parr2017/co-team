@@ -143,7 +143,7 @@
       </div>
 
       <!-- 审批卡：消息流末尾内嵌（readonly 也可人工放行） -->
-      <div v-for="row in permRows" :key="row.id" class="perm-card">
+      <div v-for="row in permRows" :id="'perm-' + row.id" :key="row.id" class="perm-card">
         <div class="l1">权限请求 · opencode 等待审批</div>
         <template v-if="row.view">
           <div class="perm-title">{{ row.view.label }}<span v-if="row.view.action && row.view.label !== row.view.action" class="raw"> · {{ row.view.action }}</span></div>
@@ -423,11 +423,27 @@ watch(() => snap.value.pendingQuestions, (qs) => {
 
 /** 常驻入口条：滚到第一张提问卡并高亮 */
 function jumpToQuestion(id: string): void {
-  const el = document.getElementById('qcard-' + id);
+  locateCard('qcard-' + id);
+}
+/** 审批卡定位（任务页 OC 待办跳转 ?p= 用） */
+function jumpToPermission(id: string): void {
+  locateCard('perm-' + id);
+}
+/** 滚到目标卡并高亮 */
+function locateCard(domId: string): void {
+  const el = document.getElementById(domId);
   if (!el) return;
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 1600);
+}
+/** 任务页 OC 待办带来的定位参数（?q=提问id / ?p=审批id）：入场渲染完定位一次 */
+async function locateFromQuery(): Promise<void> {
+  await nextTick();
+  const q = String(route.query.q || '');
+  const p = String(route.query.p || '');
+  if (q) jumpToQuestion(q);
+  else if (p) jumpToPermission(p);
 }
 
 /** 提交：必填拦截 → key-based 作答；失败保留卡片可重试 */
@@ -820,6 +836,7 @@ async function enterSession() {
   await Promise.all([loadStatus(), loadTodos(), loadPtys(), loadPending()]);
   if (my !== gen) return;
   flushNow();
+  void locateFromQuery();
 }
 
 // ---------- 操作 ----------
@@ -1518,6 +1535,7 @@ onBeforeUnmount(() => {
 
 /* 审批卡 */
 .perm-card { border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--bg-panel)); border-radius: 10px; padding: 10px 12px; margin: 10px 0 6px; }
+.perm-card.flash { animation: qflash 1.6s ease-out; }
 /* 提问卡（对齐 web 端 q-card）：选项按钮 + 自定义输入 + 逐题提交 */
 .q-card { border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 8%, var(--bg-panel)); border-radius: 10px; padding: 10px 12px; margin: 10px 0 6px; }
 .q-card.flash { animation: qflash 1.6s ease-out; }

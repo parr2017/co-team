@@ -266,6 +266,12 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
     return c.json(r.ok ? { ok: true, ...r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
   });
 
+  /** 全会话状态映射（sessionID → {type}）：移动端 OC 首页活动会话聚合（只读） */
+  app.get('/api/opencode/instances/:id/session-statuses', async (c) => {
+    const r = await oc().sessionStatuses(undefined, c.req.param('id'));
+    return c.json(r.ok ? { ok: true, statuses: r.data } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+  });
+
   /** agent 清单（composer 的 agent 下拉；opencode 内置 + 自定义） */
   /** oc 涉及的所有项目目录（既有会话去重聚合）——新建会话项目选择数据源 */
   app.get('/api/opencode/workdirs', async (c) => {

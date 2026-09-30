@@ -38,12 +38,12 @@
       />
     </van-popup>
 
-    <!-- 外部运行时 · OpenCode 接管面板入口（W4；tabbar 已满 7 项，入口落设置页） -->
+    <!-- 团队：成员 / 指标（2026-10 自 tabbar 收纳至此，OC 升为一级 tab） -->
     <div class="section">
-      <div class="section-title">外部运行时</div>
-      <div class="section-desc">接管 opencode：托管实例由 co-team 拉起，attached 接管你已在跑的 CLI / 桌面版；可看会话、批权限，control 档可直接发号施令。</div>
+      <div class="section-title">团队</div>
       <van-cell-group inset>
-        <van-cell title="OpenCode 实例与会话" is-link to="/opencode" />
+        <van-cell title="成员" is-link to="/agents" icon="manager-o" />
+        <van-cell title="指标" is-link to="/metrics" icon="bar-chart-o" />
       </van-cell-group>
     </div>
   </div>

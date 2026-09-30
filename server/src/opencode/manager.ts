@@ -1358,6 +1358,13 @@ export class OpencodeManager implements OpencodeBridge {
     return { ok: true, data: { session: sorted[0], reason: 'recent' as const } };
   }
 
+  /** 全实例会话状态映射（sessionID → {type}）：移动端 OC 首页活动会话聚合的数据源（只读，无需 control） */
+  async sessionStatuses(agent: string | undefined, instance: string): Promise<OcCallResult<Record<string, unknown>>> {
+    const { st, err } = this.resolve(agent, instance);
+    if (err || !st) return { ok: false, error: err };
+    return st.client!.sessionStatus();
+  }
+
   /** oc 涉及的所有项目目录：各实例既有会话的 directory 去重（新建会话项目选择的数据源） */
   async workdirs(): Promise<{ label: string; workspace: string; instance: string }[]> {
     const out: { label: string; workspace: string; instance: string }[] = [];

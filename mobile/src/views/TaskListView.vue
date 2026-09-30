@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showToast, showConfirmDialog } from 'vant';
 import { api } from '../api';
@@ -276,10 +276,76 @@ onMounted(() => {
   refreshQueues();
   refreshStats();
   queueTimer = window.setInterval(() => { refreshQueues(); refreshStats(); }, 5000);
+  ocTimer = window.setInterval(() => { if (document.visibilityState === 'visible') void fetchOcPending(); }, 15000);
+  void fetchOcPending();
 });
 onUnmounted(() => {
   if (queueTimer !== null) window.clearInterval(queueTimer);
+  if (ocTimer !== null) window.clearInterval(ocTimer);
 });
+onActivated(() => { void fetchOcPending(); });
+
+// ---------- OC 待我处理（独立分区）：/api/opencode/pending 跨实例聚合，与 co-team 待办分开计 ----------
+
+interface OcPendingRow { key: string; kind: 'question' | 'permission'; kindLabel: string; title: string; instance: string; instanceLabel: string; sessionID: string; id: string }
+const ocPendingRows = ref<OcPendingRow[]>([]);
+/** 首次见到该待办的时间（内存级）——oc pending 载荷不带时间戳，展示"发现于多久前" */
+const ocFirstSeen = new Map<string, number>();
+let ocTimer: number | null = null;
+
+async function fetchOcPending(): Promise<void> {
+  try {
+    const d = await api.ocPending();
+    const rows: OcPendingRow[] = [];
+    for (const q of d.questions || []) {
+      const id = String(q.id || '');
+      if (!id || !q.sessionID) continue;
+      const firstQ = (q.questions || [])[0] as { question?: string; header?: string } | undefined;
+      rows.push({
+        key: `q:${id}`,
+        kind: 'question',
+        kindLabel: '提问',
+        // opencode 的 AskUserQuestion 表单 title 恒为 "Questions"——优先取题目文本
+        title: String(firstQ?.question || firstQ?.header || q.title || 'opencode 等你回答'),
+        instance: String(q.instance || ''),
+        instanceLabel: String(q.instance_label || q.instance || ''),
+        sessionID: String(q.sessionID),
+        id,
+      });
+    }
+    for (const p of d.permissions || []) {
+      const id = String(p.id || '');
+      if (!id || !p.sessionID) continue;
+      const res = (p.resources || [])[0] ? `「${String((p.resources as string[])[0]).slice(0, 40)}」` : '';
+      rows.push({
+        key: `p:${id}`,
+        kind: 'permission',
+        kindLabel: '审批',
+        title: p.message ? String(p.message) : `权限请求 · ${p.action || '操作'}${res}`,
+        instance: String(p.instance || ''),
+        instanceLabel: String(p.instance_label || p.instance || ''),
+        sessionID: String(p.sessionID),
+        id,
+      });
+    }
+    for (const r of rows) if (!ocFirstSeen.has(r.key)) ocFirstSeen.set(r.key, Date.now());
+    ocPendingRows.value = rows;
+  } catch { /* 软失败：下一拍再拉 */ }
+}
+
+function sinceSeen(key: string): string {
+  const t = ocFirstSeen.get(key);
+  if (!t) return '刚刚';
+  const diff = Date.now() - t;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分钟前';
+  return Math.floor(diff / 3_600_000) + ' 小时前';
+}
+
+function openOcPending(row: OcPendingRow): void {
+  const locate = row.kind === 'question' ? `?q=${encodeURIComponent(row.id)}` : `?p=${encodeURIComponent(row.id)}`;
+  void router.push(`/opencode/session/${row.instance}/${row.sessionID}${locate}`);
+}
 </script>
 
 <template>
@@ -317,6 +383,19 @@ onUnmounted(() => {
           <span class="v mono">{{ sys?.cost_total != null ? '¥' + Number(sys.cost_total).toFixed(2) : '—' }}</span>
           <span class="k">成本</span>
         </div>
+      </div>
+    </div>
+
+    <!-- OC 待我处理（独立分区）：opencode 的提问/权限审批，跨实例聚合，与 co-team 任务审批互不混淆 -->
+    <div v-if="ocPendingRows.length" class="oc-pending">
+      <div class="op-head"><span class="op-dot" /><b>OC 待我处理 · {{ ocPendingRows.length }}</b><span class="op-note">opencode 等你拍板 · 独立计数</span></div>
+      <div v-for="row in ocPendingRows" :key="row.key" class="op-row" @click="openOcPending(row)">
+        <span class="op-ic" :class="row.kind === 'question' ? 'q' : 'p'">{{ row.kind === 'question' ? '?' : '!' }}</span>
+        <div class="op-st">
+          <div class="op-t">{{ row.title }}</div>
+          <div class="op-sub"><span class="op-tag">{{ row.instanceLabel }}</span>{{ row.kindLabel }} · {{ sinceSeen(row.key) }}</div>
+        </div>
+        <span class="op-chev">›</span>
       </div>
     </div>
 
@@ -520,4 +599,22 @@ onUnmounted(() => {
 .h-item { flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .h-item .v { font-family: var(--font-mono); font-size: 16px; font-weight: 600; color: var(--text-1); line-height: 1; font-variant-numeric: tabular-nums; }
 .h-item .k { font-size: 10.5px; color: var(--text-3); }
+
+/* OC 待我处理（独立分区）：warn 描边卡区，行式布局，与 co-team hero 数字分离 */
+.oc-pending { margin: 10px 12px 0; border: 1px solid rgba(210, 153, 34, 0.4); background: rgba(210, 153, 34, 0.06); border-radius: 12px; overflow: hidden; }
+.op-head { display: flex; align-items: center; gap: 7px; padding: 9px 12px; font-size: 12px; color: var(--warn); border-bottom: 1px solid rgba(210, 153, 34, 0.25); }
+.op-head b { font-size: 12.5px; }
+.op-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); animation: heroBlink 1.6s infinite; flex: none; }
+.op-note { font-size: 9.5px; color: var(--text-3); flex: 1; text-align: right; }
+.op-row { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; background: var(--bg-panel); }
+.op-row:last-child { border-bottom: none; }
+.op-row:active { background: var(--bg-raised); }
+.op-ic { flex: none; width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.op-ic.q { color: var(--warn); background: rgba(210, 153, 34, 0.12); border: 1px solid rgba(210, 153, 34, 0.35); }
+.op-ic.p { color: var(--danger); background: rgba(229, 83, 75, 0.1); border: 1px solid rgba(229, 83, 75, 0.35); }
+.op-st { flex: 1; min-width: 0; }
+.op-t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.op-sub { font-size: 10px; color: var(--text-3); margin-top: 2px; }
+.op-tag { display: inline-block; font-size: 9px; border: 1px solid var(--line-strong); color: var(--text-2); border-radius: 4px; padding: 0 5px; margin-right: 5px; }
+.op-chev { color: var(--text-3); flex: none; }
 </style>

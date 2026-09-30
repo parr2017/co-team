@@ -580,6 +580,9 @@ export const api = {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(title ? { title } : {}), ...(directory ? { directory } : {}) }),
     }),
   ocWorkdirs: () => request<{ items: { label: string; workspace: string }[] }>('/api/opencode/workdirs'),
+  /** 全会话状态映射（sessionID → {type}）：OC 首页活动会话聚合（busy = type 非 idle） */
+  ocSessionStatuses: (instance: string) =>
+    request<{ ok: boolean; statuses: Record<string, { type: string }> }>(`/api/opencode/instances/${encodeURIComponent(instance)}/session-statuses`),
   /** 向 TUI 弹 toast（接管透明化：让对方知道 co-team 在看/管这条对话） */
   ocTuiToast: (instance: string, message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info') =>
     request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/toast`, {

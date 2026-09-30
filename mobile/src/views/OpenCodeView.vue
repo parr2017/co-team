@@ -1,359 +1,191 @@
 <template>
   <div class="page">
-    <van-nav-bar title="外部运行时 · OpenCode" fixed placeholder left-arrow left-text="返回" @click-left="router.back()">
+    <van-nav-bar title="OC" fixed placeholder>
       <template #left>
-        <van-icon name="arrow-left" size="18" @click="router.back()" />
+        <span class="nav-act" @click="instSheet = true">实例</span>
       </template>
       <template #right>
-        <van-icon name="replay" size="18" @click="load" />
+        <van-icon name="replay" size="17" @click="refresh" />
       </template>
     </van-nav-bar>
 
-    <div class="tip-bar">接管 opencode：managed 由 co-team 托管拉起，attached 接管你已在跑的 CLI / 桌面版</div>
+    <!-- 活动会话横幅：跨实例聚合 busy 会话，点击直达任意活动会话 -->
+    <div v-if="busyCount" class="active-banner" @click="openActiveSheet">
+      <span class="dot pulse" /><span><b>{{ busyCount }}</b> 个活动会话 · 点击切换</span><span class="arr">›</span>
+    </div>
+    <div v-else-if="loaded" class="active-banner idle"><span class="dot off" />暂无活动会话</div>
+
+    <div class="tip-bar">接管 opencode：托管实例由 co-team 拉起，attached 接管你已在跑的 CLI / 桌面版</div>
 
     <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
       <div class="cards">
-        <div v-for="inst in instances" :key="inst.id" class="inst-card" :class="{ disabled: !inst.enabled }">
-          <div class="head" @click="toggle(inst)">
-            <span class="dot" :class="inst.enabled ? inst.state : 'off'" />
-            <span class="nm">{{ inst.label || inst.id }}</span>
-            <span class="kind-tag" :class="inst.kind">{{ KIND_LABEL[inst.kind] || inst.kind }}</span>
-            <span class="mode-tag" :class="inst.mode">{{ inst.mode === 'control' ? '可控制' : '只读' }}</span>
-            <span class="sp" />
-            <van-icon name="arrow-down" :class="{ open: expandedId === inst.id }" />
-          </div>
-          <div class="meta">
-            <span class="state-text" :class="inst.enabled ? inst.state : 'off'">{{ inst.enabled ? STATE_LABEL[inst.state] || inst.state : '未启用' }}</span>
-            <span class="mono dim">v{{ inst.version || '?' }}</span>
-            <span v-if="inst.project_root" class="mono root" :title="inst.project_root">{{ inst.project_root }}</span>
-          </div>
-          <div v-if="inst.error" class="err">⚠ {{ inst.error }}</div>
-          <!-- managed 启停 + 接管当前对话 -->
-          <div v-if="inst.kind === 'managed' && inst.enabled || canTakeOver(inst)" class="ops">
-            <template v-if="inst.kind === 'managed' && inst.enabled">
-              <van-button
-                size="small"
-                :loading="busyId === inst.id && busyAct === 'start'"
-                :disabled="busyId === inst.id || inst.state === 'starting' || inst.state === 'running' || inst.state === 'connected'"
-                @click.stop="start(inst)"
-              >启动</van-button>
-              <van-button
-                size="small"
-                :loading="busyId === inst.id && busyAct === 'stop'"
-                :disabled="busyId === inst.id || inst.state === 'stopped'"
-                @click.stop="stop(inst)"
-              >停止</van-button>
-            </template>
-            <!-- 新建并接管 -->
-            <van-button
-              v-if="canTakeOver(inst)"
-              size="small"
-              :loading="creatingSession === inst.id"
-              :disabled="!!busyId"
-              @click.stop="createAndTakeOver(inst)"
-            >新建并接管</van-button>
-          </div>
-          <!-- 会话列表：点实例卡展开；按 directory 分组（本项目 / 其他项目） -->
-          <div v-if="expandedId === inst.id" class="sess" @click.stop>
-            <div class="sess-head">
-              <span class="sess-lab">会话</span>
-              <span class="refresh" @click.stop="loadSessions(inst)">{{ loadingSessions ? '加载中…' : '刷新' }}</span>
-            </div>
-            <div v-if="sessions.length" class="sess-switch">
-              <span :class="{ cur: sessFilter === 'project' }" @click.stop="sessFilter = 'project'">本项目({{ projectSessions.length }})</span>
-              <span :class="{ cur: sessFilter === 'all' }" @click.stop="sessFilter = 'all'">全部({{ sessions.length }})</span>
-            </div>
-            <div v-if="!sessions.length && !loadingSessions" class="sess-empty">该实例暂无会话</div>
-            <div v-else-if="!visibleSessions.length && !loadingSessions" class="sess-empty">
-              本项目暂无会话——在 opencode 里发一条消息即会出现在这里，或切换到「全部」看其他项目
-            </div>
-            <div v-for="s in visibleSessions" :key="s.id" class="sess-item" @click.stop="openSession(inst.id, s.id)">
-              <span class="st">{{ s.title || '（未命名会话）' }}</span>
-              <span v-if="s.parentID" class="child-tag" title="子会话（任务/子代理派生）">子</span>
-              <span v-if="showDirBadge(s)" class="dir-badge mono" :title="String(s.directory || '')">{{ dirBase(String(s.directory || '')) }}</span>
-              <span class="sid mono">{{ shortId(s.id) }}</span>
-              <span class="sess-time" :title="fullTime(s)">{{ relTime(s) }}</span>
-              <van-icon name="arrow" />
+        <div class="sec-title">项目 · {{ projects.length }}</div>
+        <div v-for="p in projects" :key="p.dir" class="proj-card" @click="openProject(p.dir)">
+          <div class="picon"><span>{{ p.name.slice(0, 1).toUpperCase() }}</span><span v-if="p.busyCount" class="pdot" /></div>
+          <div class="pbody">
+            <div class="pname">{{ p.name }}</div>
+            <div class="psub">
+              <span v-for="i in p.instances" :key="i.id" class="tag" :class="{ mg: i.kind === 'managed' }">{{ shortKind(i.kind) }}</span>
+              <span v-if="p.busyCount" class="tag run">● {{ p.busyCount }} 活跃</span>
+              <span class="last">{{ p.lastTitle }}<template v-if="p.lastUpdated"> · {{ relTime(p.lastUpdated) }}</template></span>
             </div>
           </div>
+          <span class="chev">›</span>
         </div>
-
-        <van-empty v-if="!instances.length && !loading" image="search" description="">
-          <template #description>
-            <div class="empty-desc">
-              还没有接入任何 opencode 实例<br />
-              在 <b>config/config.yaml</b> 的 <b>opencode.instances</b> 下添加：<br />
-              managed = co-team 托管拉起（模型由 co-team 注入）<br />
-              attached-cli / attached-desktop = 接管已在跑的 opencode<br />
-              保存后重启服务生效
-            </div>
-          </template>
-        </van-empty>
+        <div v-if="loaded && !projects.length" class="empty">暂无项目——在 opencode 里发一条消息，或点右上「实例」新建会话</div>
       </div>
     </van-pull-refresh>
+
+    <!-- 活动会话直达弹层 -->
+    <van-action-sheet v-model:show="activeSheet" :title="'活动会话 · ' + busyCount" :actions="activeActions" @select="onActiveSelect" cancel-text="取消" />
+    <!-- 实例管理（从首屏收进入口） -->
+    <van-popup v-model:show="instSheet" position="bottom" round :style="{ maxHeight: '72%' }">
+      <div class="sheet">
+        <div class="sh-h"><span>opencode 实例</span><span class="x" @click="instSheet = false">✕</span></div>
+        <div v-for="inst in instances" :key="inst.id" class="inst-row" :class="{ disabled: !inst.enabled }">
+          <span class="dot" :class="inst.enabled ? inst.state : 'off'" />
+          <div class="ibody">
+            <div class="iname">{{ inst.label || inst.id }} <span class="tag" :class="{ mg: inst.kind === 'managed' }">{{ shortKind(inst.kind) }}</span> <span class="tag">{{ inst.mode === 'control' ? '可控制' : '只读' }}</span></div>
+            <div class="isub">{{ stateLabel(inst) }} <template v-if="inst.project_root">· {{ dirBase(inst.project_root) }}</template></div>
+          </div>
+          <template v-if="inst.kind === 'managed' && inst.enabled">
+            <van-button v-if="inst.state === 'stopped'" size="mini" :loading="busyId === inst.id" @click.stop="startInst(inst)">启动</van-button>
+            <van-button v-else size="mini" plain :loading="busyId === inst.id" @click.stop="stopInst(inst)">停止</van-button>
+          </template>
+        </div>
+        <div v-if="!instances.length" class="empty">还没有接入 opencode 实例——在 config.yaml 的 opencode.instances 下添加</div>
+      </div>
+    </van-popup>
   </div>
-  <van-action-sheet v-model:show="projSheet" :actions="projActions" close-on-click-action cancel-text="取消" @select="onProjSelect" @cancel="onProjCancel" />
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onMounted, ref } from 'vue';
+/**
+ * OC 首页（2026-10 一级 tab 改版）：按项目聚合所有 opencode 会话。
+ * - 顶部活动会话横幅：跨实例 busy 聚合，点击 ActionSheet 直达任意活动会话；
+ * - 项目卡片：normDir 归组（useOcBusy），活跃数/最近会话/实例标签，点击进项目会话列表；
+ * - 实例启停管理收进右上「实例」弹层，不占首屏。
+ * 数据源：useOcBusy 单例轮询（12s）+ 下拉刷新即时拉。
+ */
+import { computed, onActivated, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showFailToast, showSuccessToast } from 'vant';
-import { api, type OcInstance, type OcSession } from '../api';
+import { api, type OcInstance } from '../api';
+import { useOcBusy, dirBase, relTime } from '../composables/useOcBusy';
 
 const router = useRouter();
+const { instances, busyList, busyCount, projects, loaded, refresh } = useOcBusy();
 
-const KIND_LABEL: Record<string, string> = { managed: '托管', 'attached-cli': '接管·CLI', 'attached-desktop': '接管·桌面' };
+const refreshing = ref(false);
+const activeSheet = ref(false);
+const instSheet = ref(false);
+const busyId = ref('');
+
 const STATE_LABEL: Record<string, string> = { stopped: '未启动', starting: '启动中', running: '运行中', connected: '已连接', error: '异常' };
 
-const instances = ref<OcInstance[]>([]);
-const loading = ref(false);
-const refreshing = ref(false);
-const expandedId = ref('');
-const sessions = ref<OcSession[]>([]);
-const loadingSessions = ref(false);
-const busyId = ref('');
-const busyAct = ref('');
-const creatingSession = ref('');
-/** 新建会话：项目选择（ActionSheet）状态 */
-const projSheet = ref(false);
-const projActions = ref<{ name: string }[]>([]);
-const projResolve = ref<((i: number) => void) | null>(null);
-function onProjSelect(_action: unknown, i: number) { projSheet.value = false; projResolve.value?.(i); }
-function onProjCancel() { projSheet.value = false; projResolve.value?.(-1); }
-/** 会话列表过滤器：本项目（实例 project_root 匹配）/ 全部 */
-const sessFilter = ref<'project' | 'all'>('project');
-let poll: number | undefined;
-
-function shortId(id: string): string {
-  return id.length > 12 ? id.slice(0, 8) + '…' : id;
+function shortKind(kind: string): string {
+  return kind === 'managed' ? '托管' : kind === 'attached-desktop' ? '桌面版' : 'CLI';
+}
+function stateLabel(inst: OcInstance): string {
+  return inst.enabled ? STATE_LABEL[inst.state] || inst.state : '未启用';
 }
 
-/** 归一化目录（反斜杠→正斜杠、去尾部斜杠、小写）后与实例 project_root 比较
- *  （opencode 的 session.directory 在 Windows 下是 D:\x\y，project_root 配置常写 D:/x/y） */
-function normDir(d: string): string {
-  return d.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-}
-function isThisProject(s: OcSession): boolean {
-  const inst = instances.value.find((x) => x.id === expandedId.value);
-  const root = normDir(String(inst?.project_root || ''));
-  if (!root) return false;
-  return normDir(String(s.directory || '')) === root;
-}
-function dirBase(d: string): string {
-  const seg = d.split(/[\\/]/).filter(Boolean);
-  return seg.length ? seg[seg.length - 1] : d;
-}
-/** 会话最近更新时间（v2 SessionInfo.time.updated；兜底 created） */
-function sessionTs(s: OcSession): number {
-  const t = s.time as Record<string, unknown> | undefined;
-  return Number(t?.updated || t?.created || 0);
-}
-function relTime(s: OcSession): string {
-  const ts = sessionTs(s);
-  if (!ts) return '';
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分钟前';
-  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + ' 小时前';
-  if (diff < 7 * 86_400_000) return Math.floor(diff / 86_400_000) + ' 天前';
-  const d = new Date(ts);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-function fullTime(s: OcSession): string {
-  const ts = sessionTs(s);
-  return ts ? new Date(ts).toLocaleString() : '';
-}
-/** 实例没有 project_root（attached 未探测到）时不做分组，全部展示且不带徽标 */
-const canGroup = computed(() => {
-  const inst = instances.value.find((x) => x.id === expandedId.value);
-  return !!String(inst?.project_root || '');
-});
-const projectSessions = computed(() => sessions.value.filter(isThisProject));
-const visibleSessions = computed(() => (canGroup.value && sessFilter.value === 'project' ? projectSessions.value : sessions.value));
-function showDirBadge(s: OcSession): boolean {
-  return canGroup.value && !isThisProject(s);
+function openProject(dir: string): void {
+  void router.push(`/oc/project/${encodeURIComponent(dir)}`);
 }
 
-function canTakeOver(inst: OcInstance): boolean {
-  return inst.enabled && (inst.state === 'connected' || inst.state === 'running');
+const activeActions = computed(() => busyList.value.map((b) => ({
+  name: b.title,
+  subname: `${dirBase(b.directory) || '未知项目'} · ${b.instanceLabel}`,
+  instance: b.instance,
+  sessionID: b.sessionID,
+})));
+function openActiveSheet(): void {
+  if (!busyList.value.length) return;
+  activeSheet.value = true;
+}
+function onActiveSelect(action: unknown): void {
+  activeSheet.value = false;
+  const a = action as { instance: string; sessionID: string };
+  if (!a?.instance || !a?.sessionID) return;
+  void router.push(`/opencode/session/${a.instance}/${a.sessionID}`);
 }
 
-async function load() {
-  loading.value = true;
-  try {
-    const d = await api.ocInstances();
-    instances.value = d.instances || [];
-  } catch (e: any) {
-    showFailToast(e?.message || '实例列表加载失败');
-  } finally {
-    loading.value = false;
-  }
+async function onRefresh(): Promise<void> {
+  refreshing.value = true;
+  await refresh();
+  refreshing.value = false;
 }
 
-async function loadSessions(inst: OcInstance) {
-  loadingSessions.value = true;
-  try {
-    const d = await api.ocSessions(inst.id);
-    sessions.value = d.sessions || [];
-  } catch (e: any) {
-    showFailToast(e?.message || '会话列表加载失败');
-    sessions.value = [];
-  } finally {
-    loadingSessions.value = false;
-  }
-}
-
-function toggle(inst: OcInstance) {
-  if (expandedId.value === inst.id) {
-    expandedId.value = '';
-    return;
-  }
-  expandedId.value = inst.id;
-  void loadSessions(inst);
-}
-
-function openSession(instId: string, sessId: string) {
-  router.push(`/opencode/session/${instId}/${sessId}`);
-}
-
-/** 新建并接管：不碰 heuristic 选中的会话；先选项目（会话登记到项目工作区） */
-async function createAndTakeOver(inst: OcInstance) {
-  creatingSession.value = inst.id;
-  try {
-    const dirs = await api.ocWorkdirs().catch(() => ({ items: [] as { label: string; workspace: string }[] }));
-    const list = dirs.items || [];
-    let projectId: string | undefined;
-    let projectName: string | undefined;
-    if (list.length) {
-      const index = await new Promise<number>((resolve) => {
-        projResolve.value = resolve;
-        projActions.value = list.map((p) => ({ name: p.label }));
-        projSheet.value = true;
-      });
-      if (index < 0 || !Number.isInteger(index)) { creatingSession.value = ''; return; }
-      projectId = list[index].workspace;
-      projectName = list[index].label;
-    }
-    const title = projectName ? `接管 · ${projectName}` : 'co-team 接管 ' + new Date().toISOString().slice(5, 16);
-    const created = await api.ocCreateSession(inst.id, title, projectId);
-    if (!created.ok || !created.session) {
-      showFailToast((created as any).error || '创建会话失败');
-      return;
-    }
-    openSession(inst.id, created.session.id);
-    if (expandedId.value !== inst.id) {
-      expandedId.value = inst.id;
-      void loadSessions(inst);
-    }
-    showSuccessToast(`已创建新会话并接管${projectName ? `（${projectName}）` : ''}`);
-  } catch (e: any) {
-    showFailToast(e?.message || '创建失败');
-  } finally {
-    creatingSession.value = '';
-  }
-}
-
-async function start(inst: OcInstance) {
+async function startInst(inst: OcInstance): Promise<void> {
   busyId.value = inst.id;
-  busyAct.value = 'start';
   try {
     await api.ocStartInstance(inst.id);
     showSuccessToast(`${inst.label || inst.id} 启动中…`);
-    await load();
+    await refresh();
   } catch (e: any) {
     showFailToast(e?.message || '启动失败');
   } finally {
     busyId.value = '';
-    busyAct.value = '';
   }
 }
-
-async function stop(inst: OcInstance) {
+async function stopInst(inst: OcInstance): Promise<void> {
   busyId.value = inst.id;
-  busyAct.value = 'stop';
   try {
     await api.ocStopInstance(inst.id);
     showSuccessToast(`${inst.label || inst.id} 已停止`);
-    await load();
+    await refresh();
   } catch (e: any) {
     showFailToast(e?.message || '停止失败');
   } finally {
     busyId.value = '';
-    busyAct.value = '';
   }
 }
 
-async function onRefresh() {
-  refreshing.value = true;
-  await load();
-  refreshing.value = false;
-}
-
-onMounted(() => {
-  void load();
-  // 实例状态轻轮询：starting→connected 等迁移不依赖人工下拉（与 web 面板同思路）
-  poll = window.setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 12_000);
-});
-onActivated(load);
-onBeforeUnmount(() => {
-  if (poll) { window.clearInterval(poll); poll = undefined; }
-});
+onActivated(() => { void refresh(); });
 </script>
 
 <style scoped>
 .page { min-height: 100vh; padding-bottom: 24px; }
-.tip-bar { margin: 10px 12px 0; padding: 8px 11px; font-size: 11px; color: var(--text-3); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px; line-height: 1.6; }
-.cards { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
-.inst-card { background: var(--bg-panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; }
-.inst-card:active { border-color: var(--accent); }
-.inst-card.disabled { opacity: .55; }
-.head { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; flex-wrap: wrap; }
-.head .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
-.head .sp { flex: 1; }
-.head .van-icon { color: var(--text-3); transition: transform .15s; }
-.head .van-icon.open { transform: rotate(180deg); }
-.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
-.dot.connected, .dot.running { background: var(--ok); }
-.dot.starting { background: var(--warn); animation: livepulse 1.2s infinite; }
-.dot.error { background: var(--danger); }
-.dot.stopped, .dot.off { background: var(--text-3); }
-@keyframes livepulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+.nav-act { font-size: 13px; color: var(--accent); }
+.active-banner { margin: 10px 12px 0; border: 1px solid rgba(63, 185, 111, 0.4); background: rgba(63, 185, 111, 0.09); color: var(--ok); font-size: 12.5px; border-radius: 10px; padding: 10px 13px; display: flex; align-items: center; gap: 8px; }
+.active-banner:active { filter: brightness(1.2); }
+.active-banner.idle { border-color: var(--line); background: var(--bg-inset); color: var(--text-3); }
+.active-banner b { font-size: 14px; }
+.active-banner .arr { margin-left: auto; color: var(--text-3); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.dot.pulse { animation: pu 1.3s infinite; }
+.dot.off { background: var(--text-3); }
+@keyframes pu { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.tip-bar { margin: 10px 12px 0; padding: 7px 10px; font-size: 10.5px; color: var(--text-3); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px; line-height: 1.6; }
+.cards { padding: 2px 0 10px; }
+.sec-title { font-size: 11px; color: var(--text-3); padding: 12px 14px 2px; letter-spacing: .06em; }
+.proj-card { margin: 8px 12px 0; background: var(--bg-panel); border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px; display: flex; align-items: center; gap: 10px; }
+.proj-card:active { border-color: var(--accent-line); }
+.picon { width: 38px; height: 38px; border-radius: 9px; background: var(--bg-raised); border: 1px solid var(--line-strong); display: grid; place-items: center; font-weight: 700; font-size: 16px; color: var(--accent); position: relative; flex: none; }
+.picon .pdot { position: absolute; top: -3px; right: -3px; width: 9px; height: 9px; border-radius: 50%; background: var(--ok); border: 2px solid var(--bg-panel); }
+.pbody { flex: 1; min-width: 0; }
+.pname { font-size: 13.5px; font-weight: 600; }
+.psub { font-size: 10.5px; color: var(--text-3); margin-top: 3px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.psub .last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.tag { font-size: 9px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--text-2); flex: none; }
+.tag.mg { color: var(--accent); border-color: var(--accent-line); }
+.tag.run { color: var(--ok); border-color: rgba(63, 185, 111, 0.4); background: rgba(63, 185, 111, 0.08); }
+.chev { color: var(--text-3); font-size: 13px; flex: none; }
+.empty { font-size: 12px; color: var(--text-3); text-align: center; padding: 36px 20px; line-height: 1.8; }
 
-.kind-tag { font-family: var(--font-mono, monospace); font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--text-2); background: var(--bg-inset); flex: none; }
-.kind-tag.managed { color: var(--accent); border-color: var(--accent-line); }
-.mode-tag { font-family: var(--font-mono, monospace); font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--text-3); flex: none; }
-.mode-tag.control { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
-
-.meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; flex-wrap: wrap; }
-.state-text { font-weight: 600; }
-.state-text.connected, .state-text.running { color: var(--ok); }
-.state-text.starting { color: var(--warn); }
-.state-text.error { color: var(--danger); }
-.state-text.stopped, .state-text.off { color: var(--text-3); font-weight: 400; }
-.dim { color: var(--text-3); }
-.root { color: var(--text-3); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.err { margin-top: 7px; font-size: 11px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 6px; padding: 6px 9px; line-height: 1.5; }
-.ops { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
-
-/* 会话列表（实例卡内展开） */
-.sess { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
-.sess-head { display: flex; align-items: center; justify-content: space-between; }
-.sess-lab { font-size: 11px; color: var(--text-3); }
-.refresh { font-size: 11px; color: var(--accent); padding: 2px 6px; }
-.sess-switch { display: flex; gap: 6px; margin: 6px 0 4px; }
-.sess-switch span { font-size: 11px; color: var(--text-3); border: 1px solid var(--line); border-radius: 99px; padding: 2px 10px; }
-.sess-switch span.cur { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.sess-empty { font-size: 11px; color: var(--text-3); padding: 8px 2px; line-height: 1.7; }
-.sess-item { display: flex; align-items: center; gap: 8px; padding: 9px 6px; border-radius: 6px; font-size: 12.5px; }
-.sess-item:active { background: var(--bg-raised); }
-.sess-item .st { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-1); }
-.sess-item .sid { font-size: 10px; color: var(--text-3); flex: none; }
-.sess-item .van-icon { color: var(--text-3); flex: none; }
-.dir-badge { flex: none; font-size: 9.5px; color: var(--text-3); background: var(--bg-inset); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; max-width: 26vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sess-item .sess-time { flex: none; font-size: 10px; color: var(--text-3); white-space: nowrap; }
-.sess-item .child-tag { flex: none; font-size: 9.5px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 4px; padding: 1px 5px; }
-
-.empty-desc { font-size: 12px; color: var(--text-3); line-height: 1.9; text-align: center; padding: 0 12px; }
-.empty-desc b { color: var(--text-2); }
+/* 实例弹层 */
+.sheet { padding: 12px 16px 18px; }
+.sh-h { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; padding-bottom: 8px; }
+.sh-h .x { color: var(--text-3); padding: 2px 6px; font-weight: 400; }
+.inst-row { display: flex; align-items: center; gap: 9px; padding: 11px 2px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.inst-row.disabled { opacity: .55; }
+.inst-row .dot { width: 7px; height: 7px; }
+.inst-row .dot.connected, .inst-row .dot.running { background: var(--ok); }
+.inst-row .dot.starting { background: var(--warn); }
+.inst-row .dot.error { background: var(--danger); }
+.inst-row .dot.stopped, .inst-row .dot.off { background: var(--text-3); }
+.ibody { flex: 1; min-width: 0; }
+.iname { font-weight: 600; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.isub { font-size: 10.5px; color: var(--text-3); margin-top: 2px; }
 </style>

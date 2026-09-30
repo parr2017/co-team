@@ -3,18 +3,20 @@ import { computed, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useDashboard } from './composables/useDashboard';
 import { useWs } from './composables/useWs';
+import { useOcBusy } from './composables/useOcBusy';
 import { setApiToken } from './api';
 import { tokenGateVisible, resolveTokenGate } from './tokenGate';
 
 const { tasks } = useDashboard();
+// OC tab 角标：跨实例活动会话数（useOcBusy 单例轮询，App 常驻即持续刷新）
+const { busyCount: ocBusyCount } = useOcBusy();
 
 const route = useRoute();
 const activeTab = computed(() => {
-  if (route.meta.tab === 'agents') return 'agents';
   if (route.meta.tab === 'projects') return 'projects';
   if (route.meta.tab === 'discussions') return 'discussions';
   if (route.meta.tab === 'convo') return 'convo';
-  if (route.meta.tab === 'metrics') return 'metrics';
+  if (route.meta.tab === 'oc') return 'oc';
   return 'tasks';
 });
 const showTabbar = computed(() => !!route.meta.tab);
@@ -42,7 +44,7 @@ function dismissTokenGate() {
 <template>
   <div class="app-root">
     <router-view v-slot="{ Component }">
-      <keep-alive include="TaskListView,AgentsView,ProjectsView,DiscussionListView,ConvoListView">
+      <keep-alive include="TaskListView,ProjectsView,DiscussionListView,ConvoListView,OpenCodeView,OCProjectView">
         <component :is="Component" />
       </keep-alive>
     </router-view>
@@ -58,8 +60,14 @@ function dismissTokenGate() {
       <van-tabbar-item to="/discussions" name="discussions" icon="friends-o">沟通</van-tabbar-item>
       <van-tabbar-item to="/convo" name="convo" icon="user-o">协作</van-tabbar-item>
       <van-tabbar-item to="/projects" name="projects" icon="apps-o">项目</van-tabbar-item>
-      <van-tabbar-item to="/agents" name="agents" icon="manager-o">成员</van-tabbar-item>
-      <van-tabbar-item to="/metrics" name="metrics" icon="bar-chart-o">指标</van-tabbar-item>
+      <van-tabbar-item to="/oc" name="oc">
+        OC
+        <template #icon="p">
+          <van-badge :content="ocBusyCount || ''" :show-zero="false">
+            <van-icon :name="'play-circle-o'" :class="p.active ? 'van-tabbar-item--active' : ''" />
+          </van-badge>
+        </template>
+      </van-tabbar-item>
       <van-tabbar-item to="/settings" name="settings" icon="setting-o">设置</van-tabbar-item>
     </van-tabbar>
 
