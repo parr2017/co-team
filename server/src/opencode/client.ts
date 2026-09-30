@@ -19,6 +19,8 @@ const MIN_VERSION = { major: 2, minor: 0, patch: 15 } as const;
 const UNSUPPORTED_ERROR = 'OpenCode 2.0.15 官方客户端不提供该能力';
 /** 工具调用上下文的跟踪上限（LRU 淘汰；单实例长跑数周也不涨内存） */
 const TOOL_CALL_TRACK_MAX = 1024;
+/** oc 对已定局表单（他端已答/已取消）的报错形态——实测 "Form already settled: <formID>" */
+const FORM_SETTLED_RE = /already settled|form not found|not found.*form|表单已/i;
 
 type OfficialClient = any;
 type RequestOptions = { signal?: AbortSignal };
@@ -101,6 +103,7 @@ function isSupportedVersion(version: string): boolean {
 export class OpencodeClient {
   readonly baseUrl: string;
   private readonly clientPromise: Promise<OfficialClient>;
+  private readonly authUsername: string;
   private readonly password?: string;
   private readonly timeoutMs: number;
   private readonly maxResultChars: number;
@@ -112,6 +115,7 @@ export class OpencodeClient {
 
   constructor(opts: OpencodeClientOptions) {
     this.baseUrl = new URL(opts.baseUrl).origin;
+    this.authUsername = opts.auth?.username || 'opencode';
     this.password = opts.auth?.password;
     this.timeoutMs = (opts.timeoutSec ?? DEFAULT_OC_TIMEOUT_SEC) * 1000;
     this.maxResultChars = opts.maxResultChars ?? DEFAULT_OC_MAX_RESULT_CHARS;
@@ -155,6 +159,47 @@ export class OpencodeClient {
   private async callTrue(request: (client: OfficialClient, options: RequestOptions) => Promise<unknown>): Promise<OcCallResult<boolean>> {
     const result = await this.call(request);
     return result.ok ? { ok: true, data: true } : { ok: false, error: result.error };
+  }
+
+  /**
+   * 直连 GET（绕过官方生成客户端）。location 定界查询必须用 `?location[directory]=…` 的 bracket
+   * 形式（2.0.16 实测：JSON 串/点号形式服务端都按 "Expected object" 拒收）——生成客户端对 query
+   * 对象的编码方式不可控，定界查询一律走这条实测过的直连封装。
+   */
+  private async rawGetJson(pathQuery: string): Promise<OcCallResult<unknown>> {
+    try {
+      const headers: Record<string, string> = {};
+      if (this.password) headers.authorization = `Basic ${Buffer.from(`${this.authUsername}:${this.password}`).toString('base64')}`;
+      const r = await fetch(`${this.baseUrl}${pathQuery}`, { headers, signal: AbortSignal.timeout(this.timeoutMs) });
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}: ${pathQuery.split('?')[0]}` };
+      return { ok: true, data: await r.json() };
+    } catch (error) {
+      return { ok: false, error: this.errorText(error) };
+    }
+  }
+
+  /**
+   * 权威 pending 列表跨目录合并（对账用）：form.list / permission.request.list 都按 location 定界，
+   * 不带 location 只查 serve 默认目录（桌面版实测是 HOME——跨项目表单/权限全部不可见）。
+   * 所以把候选目录逐个 scope 查一遍合并；只要有任一 scope 没查成功就整体 ok:false——
+   * 漏扫的 scope 里可能还有活条目，调用方（对账）绝不能据不完整扫描清理本地表。
+   */
+  private async listScopedMerged(path: string, directories?: string[]): Promise<OcCallResult<Record<string, any>[]>> {
+    const scopes: Array<string | undefined> = [...new Set((directories || []).filter(Boolean)), undefined];
+    const results = await Promise.all(scopes.map((d) => this.rawGetJson(path + (d ? `?location%5Bdirectory%5D=${encodeURIComponent(d)}` : ''))));
+    const failed = results.find((r) => !r.ok);
+    if (failed) return { ok: false, error: failed.error };
+    const merged: Record<string, any>[] = [];
+    const seen = new Set<string>();
+    for (const r of results) {
+      for (const item of ((r.data as { data?: Record<string, any>[] })?.data || [])) {
+        const id = String(item?.id || '');
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        merged.push(item);
+      }
+    }
+    return { ok: true, data: merged };
   }
 
   private async truncate<T>(promise: Promise<OcCallResult<T>>): Promise<OcCallResult<T>> {
@@ -416,15 +461,25 @@ export class OpencodeClient {
    * - `answers`（位置矩阵，旧）：按题序的 label 数组——兼容旧客户端。
    * 均先读 form 权威 schema（key/type/options），label 自动映射回 option value。
    */
-  async answerQuestion(requestID: string, answers: string[][] | Record<string, unknown>): Promise<OcCallResult<boolean>> {
+  /**
+   * 回答 opencode 的提问。两种作答形态：
+   * - `answer`（key-based，新）：Record<field.key, 值>——本端按 form schema 逐字段收口类型；
+   * - `answers`（位置矩阵，旧）：按题序的 label 数组——兼容旧客户端。
+   * 均先读 form 权威 schema（key/type/options），label 自动映射回 option value。
+   *
+   * form.list 按 location 定界（2.0.16 实测：无 location 只查 serve 默认目录，桌面版是 HOME——
+   * 跨项目会话的表单永远查不到，"回答了没反应"的根因）。所以按候选目录逐个 scope 找表单
+   * （opts.directories=该实例会话目录全集，hint 会话目录排最前），全部 scope 都查成功且没有，
+   * 才视为已定局（settled——他端已答/已取消，调用端撤卡）；探针失败 ≠ 已定局，返回 ok:false。
+   */
+  async answerQuestion(requestID: string, answers: string[][] | Record<string, unknown>, opts?: { directories?: string[] }): Promise<OcCallResult<boolean>> {
     try {
-      const listed = await this.call((client, options) => client.form.list(undefined, options));
-      if (!listed.ok || !listed.data) return { ok: false, error: listed.error || '读取 form 失败' };
-      const form = (listed.data as { data: Array<{ id: string; sessionID: string }> }).data.find((item) => item.id === requestID);
-      if (!form) return { ok: false, error: `未找到 form：${requestID}` };
+      const form = await this.locateForm(requestID, opts?.directories);
+      if (!form.ok) return { ok: false, error: form.error || '读取 form 失败' };
+      if (!form.form) return { ok: true, data: false, settled: true };
       const detail = await this.call((client, options) => client.session.form.get({
-        sessionID: form.sessionID,
-        formID: form.id,
+        sessionID: form.form!.sessionID,
+        formID: form.form!.id,
       }, options));
       if (!detail.ok || !detail.data) return { ok: false, error: detail.error || '读取 form 失败' };
       const fields = ((detail.data as { fields?: Array<{ key: string; type: string; options?: Array<{ value?: string; label?: string }> }> }).fields) || [];
@@ -442,10 +497,33 @@ export class OpencodeClient {
         });
       }
       // coerceFormAnswer 已按字段类型收口，这里断言回 SDK 的 reply 值域
-      return this.replyForm(form.sessionID, form.id, answer as Record<string, string | number | boolean | string[]>);
+      const replied = await this.replyForm(form.form!.sessionID, form.form!.id, answer as Record<string, string | number | boolean | string[]>);
+      // 已被处理过的表单（他端已答/已取消）不该让作答人吃 400：归一为 settled，让调用端撤卡
+      if (!replied.ok && FORM_SETTLED_RE.test(replied.error || '')) return { ok: true, data: false, settled: true };
+      return replied;
     } catch (error) {
       return { ok: false, error: this.errorText(error) };
     }
+  }
+
+  /**
+   * 跨目录定位表单：候选 scope 顺序 = hint 目录（opts 排他优先由调用方排好）→ 其余目录 → 默认 scope。
+   * 返回三态：found（form.form 存在）/ 全 scope 都查成功且无此表（form.form=undefined → 已定局）/
+   * 任一 scope 探针失败（ok:false → 状态未知，调用方不得当 settled——漏扫的 scope 里可能有活表单）。
+   */
+  private async locateForm(requestID: string, directories?: string[]): Promise<{ ok: boolean; error?: string; form?: { id: string; sessionID: string } }> {
+    const scopes: Array<string | undefined> = [...new Set((directories || []).filter(Boolean)), undefined];
+    let probeError = '';
+    let probesOk = 0;
+    for (const dir of scopes) {
+      const listed = await this.rawGetJson('/api/form' + (dir ? `?location%5Bdirectory%5D=${encodeURIComponent(dir)}` : ''));
+      if (!listed.ok) { probeError = probeError || listed.error || ''; continue; }
+      probesOk += 1;
+      const hit = (((listed.data as { data?: Array<{ id: string; sessionID: string }> })?.data) || []).find((item) => item.id === requestID);
+      if (hit) return { ok: true, form: hit };
+    }
+    if (probesOk < scopes.length) return { ok: false, error: probeError || '读取 form 失败（部分目录探针失败）' };
+    return { ok: true };
   }
 
   /** 按字段类型把 UI 值收口成 opencode form reply 的目标类型（label → option value 自动映射） */
@@ -479,13 +557,14 @@ export class OpencodeClient {
     }
   }
 
-  async rejectQuestion(requestID: string): Promise<OcCallResult<boolean>> {
+  async rejectQuestion(requestID: string, opts?: { directories?: string[] }): Promise<OcCallResult<boolean>> {
     try {
-      const listed = await this.call((client, options) => client.form.list(undefined, options));
-      if (!listed.ok || !listed.data) return { ok: false, error: listed.error || '读取 form 失败' };
-      const form = (listed.data as { data: Array<{ id: string; sessionID: string }> }).data.find((item) => item.id === requestID);
-      if (!form) return { ok: false, error: `未找到 form：${requestID}` };
-      return this.cancelForm(form.sessionID, form.id);
+      const form = await this.locateForm(requestID, opts?.directories);
+      if (!form.ok) return { ok: false, error: form.error || '读取 form 失败' };
+      if (!form.form) return { ok: true, data: false, settled: true };
+      const cancelled = await this.cancelForm(form.form!.sessionID, form.form!.id);
+      if (!cancelled.ok && FORM_SETTLED_RE.test(cancelled.error || '')) return { ok: true, data: false, settled: true };
+      return cancelled;
     } catch (error) {
       return { ok: false, error: this.errorText(error) };
     }
@@ -495,20 +574,15 @@ export class OpencodeClient {
    * oc 侧权威 pending 提问列表（form.list）：还在等人作答的表单。
    * 服务端 pending 聚合态只由 SSE 事件驱动（asked 入队/replied 出队），断流死窗丢一次
    * replied 事件条目就永久滞留——对账以这里为准收敛（已回答/已取消的不再出现在飞书）。
+   * form.list 按 location 定界（不带 location 只查 serve 默认目录），所以必须传全量候选目录。
    */
-  listPendingForms(): Promise<OcCallResult<Record<string, any>[]>> {
-    return this.call(async (client, options) => {
-      const r = await client.form.list(undefined, options);
-      return (((r as { data?: Record<string, any>[] }) || {}).data || []) as Record<string, any>[];
-    });
+  listPendingForms(directories?: string[]): Promise<OcCallResult<Record<string, any>[]>> {
+    return this.listScopedMerged('/api/form', directories);
   }
 
-  /** oc 侧权威 pending 权限申请列表（permission.request.list）：还在等人拍板的权限。 */
-  listPendingPermissions(): Promise<OcCallResult<Record<string, any>[]>> {
-    return this.call(async (client, options) => {
-      const r = await client.permission.request.list(undefined, options);
-      return (((r as { data?: Record<string, any>[] }) || {}).data || []) as Record<string, any>[];
-    });
+  /** oc 侧权威 pending 权限申请列表（permission.request.list，同样按 location 定界）。 */
+  listPendingPermissions(directories?: string[]): Promise<OcCallResult<Record<string, any>[]>> {
+    return this.listScopedMerged('/api/permission/request', directories);
   }
 
   appendPrompt(_text: string): Promise<OcCallResult<boolean>> {

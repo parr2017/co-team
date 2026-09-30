@@ -201,7 +201,11 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
       permission_id: body.permission_id,
       response: body.response,
     });
-    return c.json((r as { ok: boolean }).ok ? { ok: true } : { ok: false, error: (r as { error?: string }).error }, (r as { ok: boolean }).ok ? 200 : 400);
+    const ok = (r as { ok: boolean }).ok;
+    // settled = 该审批已被处理过（他端已批/已拒）：200 让调用端撤卡，而不是让审批人吃 400
+    const settled = (r as { settled?: boolean }).settled === true;
+    const error = (r as { error?: string }).error;
+    return c.json(ok ? { ok: true, ...(settled ? { settled: true } : {}) } : { ok: false, error, detail: error }, ok ? 200 : 400);
   });
 
   /**
@@ -232,12 +236,13 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
     if (!instance) return c.json({ detail: '缺少 instance 查询参数' }, 400);
     if (body.answer !== undefined && body.answer !== null && typeof body.answer === 'object' && !Array.isArray(body.answer)) {
       const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), body.answer as Record<string, unknown>);
-      return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+      // settled = 该提问已被处理过（他端已答/已取消）：200 让调用端撤卡，而不是让作答人吃 400
+      return c.json(r.ok ? { ok: true, ...(r.settled ? { settled: true } : {}) } : { ok: false, error: r.error, detail: r.error }, r.ok ? 200 : 400);
     }
     const answers = Array.isArray(body.answers) ? (body.answers as unknown[]).map((a) => (Array.isArray(a) ? a.map(String) : [String(a)])) : [];
     if (!answers.length) return c.json({ detail: 'answer（Record<key,值>）或 answers（按题序数组）必填其一' }, 400);
     const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), answers);
-    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+    return c.json(r.ok ? { ok: true, ...(r.settled ? { settled: true } : {}) } : { ok: false, error: r.error, detail: r.error }, r.ok ? 200 : 400);
   });
 
   /** 拒绝/不回答提问（agent 收到 rejected 自行继续） */
@@ -245,7 +250,7 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
     const instance = String(new URL(c.req.url).searchParams.get('instance') || '');
     if (!instance) return c.json({ detail: '缺少 instance 查询参数' }, 400);
     const r = await oc().rejectQuestion(undefined, instance, c.req.param('requestId'));
-    return c.json(r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? 200 : 400);
+    return c.json(r.ok ? { ok: true, ...(r.settled ? { settled: true } : {}) } : { ok: false, error: r.error, detail: r.error }, r.ok ? 200 : 400);
   });
 
   // ---------- TUI 同构接管面（对话镜像的实时数据与驱动通道） ----------

@@ -489,7 +489,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     // B2（2026-09-17）：错误带操作建议（hint）——组件用 showApiError 展示两行提示
     const { errorHint } = await import('../utils/apiError');
-    const detail = (body as any).detail || res.statusText;
+    // oc 系路由的错误是 {ok:false,error}，其余走 {detail}——都读，别让真实原因被 statusText 顶掉
+    const detail = (body as any).detail || (body as any).error || res.statusText;
     const err: Error & { hint?: string } = new Error(detail);
     err.hint = errorHint(String(detail));
     throw err;
@@ -1170,7 +1171,7 @@ export const api = {
   ocDiff: (instance: string, session: string) =>
     request<{ ok: boolean; diff: OcDiffFile[] }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/diff`),
   ocResolvePermission: (instance: string, session: string, permissionId: string, response: 'once' | 'always' | 'reject') =>
-    request<{ ok: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, {
+    request<{ ok: boolean; settled?: boolean }>(`/api/opencode/sessions/${encodeURIComponent(instance)}/${encodeURIComponent(session)}/permissions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permission_id: permissionId, response }),
     }),
   // ---- TUI 同构接管面 ----
@@ -1201,14 +1202,14 @@ export const api = {
   /** opencode pending 聚合（审批收件箱数据源：跨实例权限申请 + 提问） */
   ocPending: () =>
     request<{ permissions: Record<string, any>[]; questions: Record<string, any>[] }>('/api/opencode/pending'),
-  /** 回答 opencode 提问（answer 按字段 key 收口的值表；类型由服务端按 form schema 收口；需 control 档） */
+  /** 回答 opencode 提问（answer 按字段 key 收口的值表；settled=该提问已被他端处理，调用端撤卡） */
   ocAnswerQuestion: (instance: string, requestId: string, answer: Record<string, string | number | boolean | string[]>) =>
-    request<{ ok: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reply?instance=${encodeURIComponent(instance)}`, {
+    request<{ ok: boolean; settled?: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reply?instance=${encodeURIComponent(instance)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer }),
     }),
-  /** 拒绝/不回答 opencode 提问 */
+  /** 拒绝/不回答 opencode 提问（settled=提问已失效，调用端撤卡） */
   ocRejectQuestion: (instance: string, requestId: string) =>
-    request<{ ok: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reject?instance=${encodeURIComponent(instance)}`, { method: 'POST' }),
+    request<{ ok: boolean; settled?: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reject?instance=${encodeURIComponent(instance)}`, { method: 'POST' }),
   ocTuiSelectSession: (instance: string, sessionId: string) =>
     request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/select-session`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId }),

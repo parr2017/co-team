@@ -218,7 +218,7 @@ export async function runOpencodeTool(bridge: OpencodeBridge, agent: string | un
           return { tool: name, ok: false, error: "response 必须是 once | always | reject" };
         }
         const r = await bridge.answerPermission(agent, instance, sessionId, pid, response);
-        return { tool: name, ok: r.ok, instance, session: sessionId, ...(r.ok ? {} : { error: r.error }) };
+        return { tool: name, ok: r.ok, instance, session: sessionId, ...(r.ok ? (r.settled ? { settled: true } : {}) : { error: r.error }) };
       }
 
       case 'oc_shell': {

@@ -81,6 +81,8 @@ export interface OcCallResult<T = unknown> {
   data?: T;
   error?: string;
   truncated?: boolean;
+  /** 该提问/审批在 oc 侧已被处理过（已回答/已取消/已定局）——调用端应撤卡而非报错 */
+  settled?: boolean;
 }
 
 /** 能力探测结果：官方 2.x server.info + 固定端点契约 */

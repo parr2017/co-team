@@ -863,9 +863,15 @@ export class OpencodeManager implements OpencodeBridge {
    */
   private async reconcilePendingFor(st: InstanceState): Promise<void> {
     if (!st.client) return;
+    // 目录全集先行：form.list/permission.request.list 按 location 定界，漏扫目录会把活条目
+    // 误判成"权威没有"而误清（2026-09-30 实测桌面版默认 location=HOME，跨项目表单全部不可见）。
+    // 会话列表拿不到 = 无法做完整扫描 = 本拍不对账（漏推可由下一拍补回，误清不可挽回）。
+    const listed = await st.client.listSessions().catch(() => null);
+    if (!listed?.ok || !Array.isArray(listed.data)) return;
+    const directories = [...new Set((listed.data as Array<{ directory?: string }>).map((s) => String(s.directory || '')).filter(Boolean))];
     const [forms, perms] = await Promise.all([
-      st.client.listPendingForms().catch(() => null),
-      st.client.listPendingPermissions().catch(() => null),
+      st.client.listPendingForms(directories).catch(() => null),
+      st.client.listPendingPermissions(directories).catch(() => null),
     ]);
     if (forms?.ok && Array.isArray(forms.data)) {
       const rows = forms.data as Record<string, any>[];
@@ -1069,21 +1075,27 @@ export class OpencodeManager implements OpencodeBridge {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     this.audit('answer_permission', st, { session: sessionId, permission: permissionID, response });
-    return st.client!.answerPermission(sessionId, permissionID, response);
+    const r = await st.client!.answerPermission(sessionId, permissionID, response);
+    // 已被处理过的审批（他端已批/已拒）不让审批人吃 400：归一为 settled，调用端撤卡
+    if (!r.ok && /already|not found|未找到|不存在/i.test(r.error || '')) return { ok: true, data: false, settled: true };
+    return r;
   }
 
   /**
    * 回答 opencode 的提问（AskUserQuestion）。需 control 档——替用户做决定不能发生在只读实例上。
    * requestID 来自 question.asked 事件的 QuestionRequest.id；
    * answer 为 key-based（Record<field.key, 值>，新）或 answers 位置矩阵（string[][]，旧兼容）。
+   * hintSessionId（可选）：提问所属会话——form.list 按 location 定界，把该会话目录排到候选最前
+   * （实测跨目录表单无 hint 时也能靠目录全集扫到，hint 只是省两次探针）。
    */
-  async answerQuestion(agent: string | undefined, instance: string, requestID: string, answers: string[][] | Record<string, unknown>): Promise<OcCallResult<boolean>> {
+  async answerQuestion(agent: string | undefined, instance: string, requestID: string, answers: string[][] | Record<string, unknown>, hintSessionId?: string): Promise<OcCallResult<boolean>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
     this.audit('answer_question', st, { request: requestID, answers });
-    return st.client!.answerQuestion(requestID, answers);
+    const directories = await this.instanceDirectories(st, hintSessionId);
+    return st.client!.answerQuestion(requestID, answers, { directories });
   }
 
   /** 拒绝/不回答提问（需 control 档；agent 收到 rejected 后自行继续） */
@@ -1093,7 +1105,31 @@ export class OpencodeManager implements OpencodeBridge {
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
     this.audit('reject_question', st, { request: requestID });
-    return st.client!.rejectQuestion(requestID);
+    const directories = await this.instanceDirectories(st);
+    return st.client!.rejectQuestion(requestID, { directories });
+  }
+
+  /**
+   * 实例会话目录全集：form.list / permission.request.list 都按 location 定界（不带 location 只查
+   * serve 默认目录——桌面版是 HOME，跨项目条目全部不可见），定位/对账都需要扫全目录。
+   * hintSessionId 的目录排最前；列表拿不到返回空数组（调用方按"只扫默认 scope"降级，
+   * 对账侧必须把空集当"不完整扫描"拒绝清理）。
+   */
+  private async instanceDirectories(st: InstanceState, hintSessionId?: string): Promise<string[]> {
+    if (!st.client) return [];
+    const r = await st.client.listSessions().catch(() => null);
+    if (!r?.ok || !Array.isArray(r.data)) return [];
+    const dirs: string[] = [];
+    for (const s of r.data as Array<{ id?: string; directory?: string }>) {
+      const d = String(s.directory || '');
+      if (d && !dirs.includes(d)) dirs.push(d);
+    }
+    const hintDir = hintSessionId ? String((r.data as Array<{ id?: string; directory?: string }>).find((s) => s.id === hintSessionId)?.directory || '') : '';
+    if (hintDir) {
+      const i = dirs.indexOf(hintDir);
+      if (i > 0) { dirs.splice(i, 1); dirs.unshift(hintDir); }
+    }
+    return dirs;
   }
 
   async runShell(agent: string | undefined, instance: string, sessionId: string, command: string): Promise<OcCallResult<unknown>> {

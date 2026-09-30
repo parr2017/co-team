@@ -441,10 +441,11 @@ async function submitQ(q: StreamQuestion): Promise<void> {
   qBusy.value = { ...qBusy.value, [q.id]: true };
   try {
     const answer = buildFormAnswer(q.questions || [], qValuesOf(q));
-    await api.ocAnswerQuestion(instanceId.value, String(q.id), answer);
+    const r = await api.ocAnswerQuestion(instanceId.value, String(q.id), answer);
     dropFormDraft(q.id);
     resolvedQuestions.add(String(q.id));
-    showSuccessToast('已作答');
+    // settled = 提问已被他端处理过（如飞书里已答）：撤卡即可，不算出错
+    showSuccessToast(r.settled ? '该提问已被处理过，已移除' : '已作答');
   } catch (e: any) {
     showFailToast(e?.message || '作答失败，可重试');
   } finally {
@@ -454,9 +455,9 @@ async function submitQ(q: StreamQuestion): Promise<void> {
 
 async function rejectQuestion(requestId: string): Promise<void> {
   try {
-    await api.ocRejectQuestion(instanceId.value, requestId);
+    const r = await api.ocRejectQuestion(instanceId.value, requestId);
     resolvedQuestions.add(requestId);
-    showSuccessToast('已谢绝，opencode 将自行继续');
+    showSuccessToast(r.settled ? '该提问已失效，已移除' : '已谢绝，opencode 将自行继续');
   } catch (e: any) {
     showFailToast(e?.message || '操作失败');
   }
@@ -750,23 +751,39 @@ async function loadPtys() {
   } catch { /* 软错误 */ }
 }
 
-/** 权威 pending 水合：把「打开页面前就已挂起」的提问/审批补进本地流。
- *  question.asked/permission.asked 是纯事件驱动——事件发生在订阅之前就永远不会渲染，
- *  表现为「模型在等你拍板、页面上却没有卡可答」，对话就此卡死。 */
+/** 权威 pending 对账（双向）：把「打开页面前就已挂起」的提问/审批补进本地流——
+ *  question.asked/permission.asked 是纯事件驱动，事件发生在订阅之前就永远不会渲染，
+ *  表现为「模型在等你拍板、页面上却没有卡可答」，对话就此卡死；
+ *  同时把权威列表里已消失（他端已答/已取消，replied 帧在断流死窗里丢了）的滞留卡撤掉。 */
 async function loadPending() {
   const my = gen;
   try {
     const d = await api.ocPending();
     if (my !== gen) return;
+    const liveQuestions = new Set<string>();
+    const livePerms = new Set<string>();
     for (const q of d.questions || []) {
       if (String(q.instance || '') !== instanceId.value || String(q.sessionID || '') !== sessionId.value) continue;
+      liveQuestions.add(String(q.id));
       if (resolvedQuestions.has(String(q.id))) continue;
       stream.applyEvent({ type: 'question.asked', properties: q });
     }
     for (const p of d.permissions || []) {
       if (String(p.instance || '') !== instanceId.value || String(p.sessionID || '') !== sessionId.value) continue;
+      livePerms.add(String(p.id));
       if (resolvedPerms.has(String(p.id))) continue;
       stream.applyEvent({ type: 'permission.asked', properties: p });
+    }
+    // 滞留清理：本地还挂着、权威列表已没有 → 发 replied 帧走既有删除路径（服务端对账同款语义）
+    for (const q of snap.value.pendingQuestions) {
+      if (String(q.sessionID || '') === sessionId.value && !liveQuestions.has(String(q.id))) {
+        stream.applyEvent({ type: 'question.replied', properties: { requestID: String(q.id) } });
+      }
+    }
+    for (const p of snap.value.pendingPermissions) {
+      if (String(p.sessionID || '') === sessionId.value && !livePerms.has(String(p.id))) {
+        stream.applyEvent({ type: 'permission.replied', properties: { requestID: String(p.id) } });
+      }
     }
   } catch { /* 软错误：权威对账下一拍再补 */ }
 }
@@ -861,9 +878,10 @@ async function abortSession() {
 
 async function resolvePermission(permId: string, response: 'once' | 'always' | 'reject') {
   try {
-    await api.ocResolvePermission(instanceId.value, sessionId.value, permId, response);
+    const r = await api.ocResolvePermission(instanceId.value, sessionId.value, permId, response);
     resolvedPerms.add(permId);
-    showSuccessToast(response === 'reject' ? '已拒绝' : response === 'always' ? '已授权（不再询问）' : '已批准一次');
+    // settled = 该审批已被他端处理过：撤卡即可，不算出错
+    showSuccessToast(r.settled ? '该审批已被处理过，已移除' : response === 'reject' ? '已拒绝' : response === 'always' ? '已授权（不再询问）' : '已批准一次');
   } catch (e: any) {
     showFailToast(e?.message || '审批提交失败');
   }

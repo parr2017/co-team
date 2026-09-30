@@ -423,6 +423,29 @@ describe('OpencodeClient', () => {
     expect(tui).toEqual({ ok: false, error: 'OpenCode 2.0.15 官方客户端不提供该能力' });
   });
 
+  it('已定局表单归一为 settled——他端已答/已取消的提问再答再拒都让调用端撤卡，而不是 400', async () => {
+    vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/api/form') {
+        return new Response(JSON.stringify({ location: { directory: 'C:/p' }, data: [{ id: 'f1', sessionID: 's1', title: 'Pick', fields: [] }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if ((init?.method || 'GET') === 'GET' && path === '/api/session/s1/form/f1') {
+        return new Response(JSON.stringify({ data: { id: 'f1', sessionID: 's1', title: 'Pick', fields: [{ key: 'q0', type: 'string', options: [] }], state: {} } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (path === '/api/session/s1/form/f1/reply') {
+        // 场景 B：reply 打到已答复表单 → oc 报 "Form already settled"
+        return new Response(JSON.stringify({ message: 'Form already settled: f1' }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = new OpencodeClient({ baseUrl: 'http://127.0.0.1:9999' });
+    // 表单已不在权威列表：作答/谢绝都归一为 settled
+    expect(await client.answerQuestion('gone', { q0: 'A' })).toEqual({ ok: true, data: false, settled: true });
+    expect(await client.rejectQuestion('gone')).toEqual({ ok: true, data: false, settled: true });
+    // 表单还在但 reply 撞上 "Form already settled"：同样 settled
+    expect(await client.answerQuestion('f1', { q0: 'A' })).toEqual({ ok: true, data: false, settled: true });
+  });
+
   it('event.subscribe 保留 AbortSignal，并把 V2Event id/data/location 转为 OcEvent', async () => {
     vi.stubGlobal('fetch', async (_url: string | URL | Request, init?: RequestInit) => {
       expect(init?.signal).toBeInstanceOf(AbortSignal);

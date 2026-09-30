@@ -464,19 +464,36 @@ async function reloadAll(): Promise<void> {
   }
 }
 
-/** 权威 pending 水合：把「打开面板前就已挂起」的提问/审批补进本地流。
- *  question.asked/permission.asked 是纯事件驱动——事件发生在订阅之前就永远不会渲染，
- *  表现为「模型在等你拍板、面板上却没有卡可答」，对话就此卡死（与移动端同款修复）。 */
+/** 权威 pending 对账（双向）：把「打开面板前就已挂起」的提问/审批补进本地流——
+ *  question.asked/permission.asked 是纯事件驱动，事件发生在订阅之前就永远不会渲染，
+ *  表现为「模型在等你拍板、面板上却没有卡可答」，对话就此卡死；
+ *  同时把权威列表里已消失（他端已答/已取消，replied 帧在断流死窗里丢了）的滞留卡撤掉。
+ *  （与移动端同款修复。） */
 async function loadPending(): Promise<void> {
   try {
     const d = await api.ocPending();
+    const liveQuestions = new Set<string>();
+    const livePerms = new Set<string>();
     for (const q of d.questions || []) {
       if (String(q.instance || '') !== props.instance.id || String(q.sessionID || '') !== props.sessionId) continue;
+      liveQuestions.add(String(q.id));
       stream.applyEvent({ type: 'question.asked', properties: q });
     }
     for (const p of d.permissions || []) {
       if (String(p.instance || '') !== props.instance.id || String(p.sessionID || '') !== props.sessionId) continue;
+      livePerms.add(String(p.id));
       stream.applyEvent({ type: 'permission.asked', properties: p });
+    }
+    // 滞留清理：本地还挂着、权威列表已没有 → 发 replied 帧走既有删除路径（服务端对账同款语义）
+    for (const q of snap.value.pendingQuestions) {
+      if (String(q.sessionID || '') === props.sessionId && !liveQuestions.has(String(q.id))) {
+        stream.applyEvent({ type: 'question.replied', properties: { requestID: String(q.id) } });
+      }
+    }
+    for (const p of snap.value.pendingPermissions) {
+      if (String(p.sessionID || '') === props.sessionId && !livePerms.has(String(p.id))) {
+        stream.applyEvent({ type: 'permission.replied', properties: { requestID: String(p.id) } });
+      }
     }
     flush();
   } catch { /* 软错误：权威对账下一拍再补 */ }
@@ -766,7 +783,8 @@ async function submitQ(q: StreamQuestion): Promise<void> {
       dropFormDraft(q.id);
       stream.applyEvent({ type: 'question.replied', properties: { requestID: q.id } });
       flush();
-      ElMessage.success('已作答');
+      // settled = 提问已被他端处理过（如飞书里已答）：撤卡即可，不算出错
+      ElMessage.success(r.settled ? '该提问已被处理过，已移除' : '已作答');
     } else {
       ElMessage.warning(r.error || '作答失败，可重试');
     }
@@ -792,7 +810,7 @@ async function rejectQuestion(requestId: string): Promise<void> {
     if (r.ok) {
       stream.applyEvent({ type: 'question.rejected', properties: { requestID: requestId } });
       flush();
-      ElMessage.success('已谢绝，opencode 将自行继续');
+      ElMessage.success(r.settled ? '该提问已失效，已移除' : '已谢绝，opencode 将自行继续');
     } else {
       ElMessage.warning(r.error || '操作失败');
     }
@@ -801,9 +819,11 @@ async function rejectQuestion(requestId: string): Promise<void> {
 
 async function answerPerm(pid: string, response: 'once' | 'always' | 'reject'): Promise<void> {
   try {
-    await api.ocResolvePermission(props.instance.id, props.sessionId, pid, response);
+    const r = await api.ocResolvePermission(props.instance.id, props.sessionId, pid, response);
     stream.applyEvent({ type: 'permission.replied', properties: { permissionID: pid } });
     flush();
+    // settled = 该审批已被他端处理过：撤卡即可，不算出错
+    if (r?.settled) ElMessage.info('该审批已被处理过，已移除');
   } catch (e: any) { showApiError(e); }
 }
 
