@@ -12,6 +12,8 @@ import type { ModelConfig } from '../src/types';
 import type { OpencodeBridge } from '../src/opencode/types';
 
 const silent = { debug() {}, info() {}, warn() {}, error() {} } as any;
+/** 闸门观察窗（5s）+ 检查与结算余量——场景2「不动」断言前要跨过整个观察窗 */
+const ASK_GATE_WAIT_TEST_MS = 7_000;
 
 // ---------- 假 opencode server（落成临时 .cjs 由 manager 真 spawn；勿走 `-e`——
 // Windows shell:true 下 cmd 会把 JS 里的 => / < > 当重定向语法吃掉） ----------
@@ -26,6 +28,9 @@ let sseRes = null;
 const formsByDir = new Map();
 const permsByDir = new Map();
 let failFormList = false;
+// ask-gate 自愈测试态（/api/test/ask-gate 切换；interrupt/prompt 记数供断言）
+let askGateMode = 'off';
+let askGateCalls = { interrupts: 0, prompts: [] };
 const pushScoped = (store, dir, item) => { if (!store.has(dir)) store.set(dir, []); store.get(dir).push(item); };
 const removeScoped = (store, id) => { for (const arr of store.values()) { const i = arr.findIndex((x) => x.id === id); if (i >= 0) { arr.splice(i, 1); return true; } } return false; };
 const server = http.createServer((req, res) => {
@@ -40,11 +45,27 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && u.pathname === '/api/session') return json(200, { data: [{ id: 's1', title: 'first', location: { directory: 'C:/fake-project' }, time: { created: 1, updated: 100 } }, { id: 's2', title: 'second', location: { directory: 'C:/other' }, time: { created: 2, updated: 200 } }], cursor: {} });
   if (req.method === 'GET' && u.pathname === '/api/session/active') return json(200, { s1: { type: 'idle' } });
   if (req.method === 'POST' && u.pathname === '/api/session') return json(200, { data: { id: 'new-s', title: 'created' } });
-  if (req.method === 'GET' && u.pathname === '/api/session/s1/message') return json(200, { data: [{ id: 'm1', type: 'user', time: { created: 1 }, text: 'hello from fake' }], cursor: {} });
+  if (req.method === 'GET' && u.pathname === '/api/session/s1/message') {
+    // ask-gate 测试态：stuck = 消息尾带 running 的 question 工具分片（TUI 闸门锁着）；off = 默认
+    if (askGateMode !== 'off') {
+      // v2 平铺形状（message.list 原样）——projectMessage 投影后才有 tool part
+      const status = askGateMode === 'stuck' ? 'running' : 'completed';
+      return json(200, { data: [{ id: 'm9', type: 'assistant', time: { created: 9 }, content: [{ type: 'tool', name: 'question', state: { status, input: { questions: [{ key: 'how' }] } } }] }], cursor: {} });
+    }
+    return json(200, { data: [{ id: 'm1', type: 'user', time: { created: 1 }, text: 'hello from fake' }], cursor: {} });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/test/ask-gate') {
+    let body = ''; req.on('data', (c) => { body += c; }); req.on('end', () => { askGateMode = String(JSON.parse(body || '{}').mode || 'off'); return json(200, { ok: true }); });
+    return;
+  }
+  if (req.method === 'GET' && u.pathname === '/api/test/ask-gate-calls') return json(200, askGateCalls);
   if (req.method === 'GET' && u.pathname === '/api/session/s1/message/m1') return json(200, { data: { id: 'm1', type: 'user', time: { created: 1 }, text: 'hello from fake' } });
   if (req.method === 'POST' && u.pathname === '/api/session/s1/model') return empty(204);
-  if (req.method === 'POST' && u.pathname === '/api/session/s1/prompt') return json(200, { data: { id: 'm2', sessionID: 's1', type: 'user', time: { created: 1 }, payload: { text: '' }, delivery: 'queue' } });
-  if (req.method === 'POST' && u.pathname === '/api/session/s1/interrupt') return json(200, { interrupted: true });
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/prompt') {
+    let body = ''; req.on('data', (c) => { body += c; }); req.on('end', () => { try { askGateCalls.prompts.push(String(JSON.parse(body).text || '')); } catch { /* ignore */ } });
+    return json(200, { data: { id: 'm2', sessionID: 's1', type: 'user', time: { created: 1 }, payload: { text: '' }, delivery: 'queue' } });
+  }
+  if (req.method === 'POST' && u.pathname === '/api/session/s1/interrupt') { askGateCalls.interrupts += 1; return json(200, { interrupted: true }); }
   if (req.method === 'POST' && u.pathname === '/api/session/s1/revert/stage') return json(200, { data: { messageID: 'm1' } });
   if (req.method === 'POST' && u.pathname === '/api/session/s1/revert/commit') return empty(204);
   if (req.method === 'GET' && u.pathname === '/api/session/s1/diff') return json(200, { data: [{ file: 'a.ts', additions: 3, deletions: 1 }] });
@@ -439,7 +460,7 @@ describe('OpencodeClient', () => {
     expect((await client.answerPermission('s1', 'p1', 'always')).ok).toBe(true);
     expect(replyBody).toEqual({ decision: 'always' });
     expect((await client.answerQuestion('f1', [['a', 'b']])).ok).toBe(true);
-    expect(await client.rejectQuestion('f1')).toEqual({ ok: true, data: true });
+    expect(await client.rejectQuestion('f1')).toEqual({ ok: true, data: true, sessionID: 's1' });
     const todos = await client.sessionTodos('s1');
     const tui = await client.appendPrompt('x');
     expect(todos).toEqual({ ok: false, error: 'OpenCode 2.0.15 官方客户端不提供该能力' });
@@ -466,7 +487,7 @@ describe('OpencodeClient', () => {
     expect(await client.answerQuestion('gone', { q0: 'A' })).toEqual({ ok: true, data: false, settled: true });
     expect(await client.rejectQuestion('gone')).toEqual({ ok: true, data: false, settled: true });
     // 表单还在但 reply 撞上 "Form already settled"：同样 settled
-    expect(await client.answerQuestion('f1', { q0: 'A' })).toEqual({ ok: true, data: false, settled: true });
+    expect(await client.answerQuestion('f1', { q0: 'A' })).toEqual({ ok: true, data: false, settled: true, sessionID: 's1' });
   });
 
   it('event.subscribe 保留 AbortSignal，并把 V2Event id/data/location 转为 OcEvent', async () => {
@@ -866,6 +887,53 @@ describe('OpencodeManager', () => {
       killFakeServe(child);
     }
   }, 20000);
+
+  it('attached：远端代答后 TUI 闸门自愈——分片仍 running 则 interrupt+代答递模型，闸门已释放则不动', async () => {
+    const port = 38121;
+    const child = spawn('node', [fakeOcFile, 'serve', '--port', String(port)], { stdio: 'ignore', shell: true });
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) {
+      try { up = (await fetch(`http://127.0.0.1:${port}/api/info`)).ok; } catch { /* 未起 */ }
+      if (!up) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(up).toBe(true);
+    const calls = async () => (await (await fetch(`http://127.0.0.1:${port}/api/test/ask-gate-calls`)).json()) as { interrupts: number; prompts: string[] };
+    try {
+      const mgr = new OpencodeManager([
+        { id: 'gate', kind: 'attached-cli', url: `http://127.0.0.1:${port}`, mode: 'control' },
+      ], silent);
+      managers.push(mgr);
+      mgr.start();
+      expect(await waitFor(() => mgr.listInstances()[0]?.state === 'connected')).toBe(true);
+
+      // 场景1：TUI 闸门锁着（消息尾 question 分片仍 running）→ 观察窗后 interrupt + 代答消息递模型
+      await fetch(`http://127.0.0.1:${port}/api/test/ask-gate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'stuck' }) });
+      await fetch(`http://127.0.0.1:${port}/api/test/emit-form`, { method: 'POST' });
+      const replied = await mgr.answerQuestion(undefined, 'gate', 'form-9', { how: 'fix' });
+      expect(replied.ok).toBe(true);
+      expect(replied.sessionID).toBe('s1');
+      expect(await waitFor(async () => (await calls()).interrupts > 0, 15000)).toBe(true);
+      expect(await waitFor(async () => (await calls()).prompts.length > 0, 8000)).toBe(true);
+      let c = await calls();
+      const baseInterrupts = c.interrupts;
+      const basePrompts = c.prompts.length;
+      expect(baseInterrupts).toBe(1);
+      expect(c.prompts[0]).toContain('代答');
+      expect(c.prompts[0]).toContain('how=fix');
+
+      // 场景2：闸门已释放（分片 completed）→ 观察窗后不动（不新增 interrupt、不新增 prompt）
+      await fetch(`http://127.0.0.1:${port}/api/test/ask-gate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'released' }) });
+      await fetch(`http://127.0.0.1:${port}/api/test/emit-form`, { method: 'POST' });
+      const replied2 = await mgr.answerQuestion(undefined, 'gate', 'form-9', { how: 'fix' });
+      expect(replied2.ok).toBe(true);
+      await new Promise((r) => setTimeout(r, ASK_GATE_WAIT_TEST_MS));
+      c = await calls();
+      expect(c.interrupts).toBe(baseInterrupts);
+      expect(c.prompts.length).toBe(basePrompts);
+    } finally {
+      killFakeServe(child);
+    }
+  }, 25000);
 
   it('agent 可见性：未绑定的 agent 全部不可见', async () => {
     const mgr = new OpencodeManager([{ id: 'x', kind: 'attached-cli', url: 'http://127.0.0.1:1' }], silent);

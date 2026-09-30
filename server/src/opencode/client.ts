@@ -502,8 +502,8 @@ export class OpencodeClient {
       // coerceFormAnswer 已按字段类型收口，这里断言回 SDK 的 reply 值域
       const replied = await this.replyForm(form.form!.sessionID, form.form!.id, answer as Record<string, string | number | boolean | string[]>);
       // 已被处理过的表单（他端已答/已取消）不该让作答人吃 400：归一为 settled，让调用端撤卡
-      if (!replied.ok && FORM_SETTLED_RE.test(replied.error || '')) return { ok: true, data: false, settled: true };
-      return replied;
+      if (!replied.ok && FORM_SETTLED_RE.test(replied.error || '')) return { ok: true, data: false, settled: true, sessionID: form.form!.sessionID };
+      return replied.ok ? { ...replied, sessionID: form.form!.sessionID } : replied;
     } catch (error) {
       return { ok: false, error: this.errorText(error) };
     }
@@ -566,8 +566,8 @@ export class OpencodeClient {
       if (!form.ok) return { ok: false, error: form.error || '读取 form 失败' };
       if (!form.form) return { ok: true, data: false, settled: true };
       const cancelled = await this.cancelForm(form.form!.sessionID, form.form!.id);
-      if (!cancelled.ok && FORM_SETTLED_RE.test(cancelled.error || '')) return { ok: true, data: false, settled: true };
-      return cancelled;
+      if (!cancelled.ok && FORM_SETTLED_RE.test(cancelled.error || '')) return { ok: true, data: false, settled: true, sessionID: form.form!.sessionID };
+      return cancelled.ok ? { ...cancelled, sessionID: form.form!.sessionID } : cancelled;
     } catch (error) {
       return { ok: false, error: this.errorText(error) };
     }

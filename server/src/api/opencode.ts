@@ -232,24 +232,29 @@ export function registerOpencodeRoutes(app: Hono, ctx: ApiContext): void {
    */
   app.post('/api/opencode/questions/:requestId/reply', async (c) => {
     const body = await readJsonAuto<{ answers?: unknown; answer?: unknown }>(c);
-    const instance = String(new URL(c.req.url).searchParams.get('instance') || '');
+    const url = new URL(c.req.url);
+    const instance = String(url.searchParams.get('instance') || '');
+    // 会话提示：定局表单（form 已被答掉、form.list 扫不到）走 TUI 闸门自愈时靠它定位会话
+    const hintSession = String(url.searchParams.get('session') || '');
     if (!instance) return c.json({ detail: '缺少 instance 查询参数' }, 400);
     if (body.answer !== undefined && body.answer !== null && typeof body.answer === 'object' && !Array.isArray(body.answer)) {
-      const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), body.answer as Record<string, unknown>);
+      const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), body.answer as Record<string, unknown>, hintSession || undefined);
       // settled = 该提问已被处理过（他端已答/已取消）：200 让调用端撤卡，而不是让作答人吃 400
       return c.json(r.ok ? { ok: true, ...(r.settled ? { settled: true } : {}) } : { ok: false, error: r.error, detail: r.error }, r.ok ? 200 : 400);
     }
     const answers = Array.isArray(body.answers) ? (body.answers as unknown[]).map((a) => (Array.isArray(a) ? a.map(String) : [String(a)])) : [];
     if (!answers.length) return c.json({ detail: 'answer（Record<key,值>）或 answers（按题序数组）必填其一' }, 400);
-    const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), answers);
+    const r = await oc().answerQuestion(undefined, instance, c.req.param('requestId'), answers, hintSession || undefined);
     return c.json(r.ok ? { ok: true, ...(r.settled ? { settled: true } : {}) } : { ok: false, error: r.error, detail: r.error }, r.ok ? 200 : 400);
   });
 
   /** 拒绝/不回答提问（agent 收到 rejected 自行继续） */
   app.post('/api/opencode/questions/:requestId/reject', async (c) => {
-    const instance = String(new URL(c.req.url).searchParams.get('instance') || '');
+    const url = new URL(c.req.url);
+    const instance = String(url.searchParams.get('instance') || '');
+    const hintSession = String(url.searchParams.get('session') || '');
     if (!instance) return c.json({ detail: '缺少 instance 查询参数' }, 400);
-    const r = await oc().rejectQuestion(undefined, instance, c.req.param('requestId'));
+    const r = await oc().rejectQuestion(undefined, instance, c.req.param('requestId'), hintSession || undefined);
     return c.json(r.ok ? { ok: true, ...(r.settled ? { settled: true } : {}) } : { ok: false, error: r.error, detail: r.error }, r.ok ? 200 : 400);
   });
 

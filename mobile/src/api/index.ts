@@ -588,14 +588,14 @@ export const api = {
   /** opencode pending 聚合（审批收件箱数据源：跨实例权限申请 + 提问） */
   ocPending: () =>
     request<{ permissions: Record<string, any>[]; questions: Record<string, any>[] }>('/api/opencode/pending'),
-  /** 回答 opencode 提问（key-based 答案；settled=该提问已被他端处理，调用端撤卡） */
-  ocAnswerQuestion: (instance: string, requestId: string, answer: Record<string, string | number | boolean | string[]>) =>
-    request<{ ok: boolean; settled?: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reply?instance=${encodeURIComponent(instance)}`, {
+  /** 回答 opencode 提问（key-based 答案；settled=该提问已被他端处理，调用端撤卡；session 供定局表单自愈定位会话） */
+  ocAnswerQuestion: (instance: string, requestId: string, answer: Record<string, string | number | boolean | string[]>, session?: string) =>
+    request<{ ok: boolean; settled?: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reply?instance=${encodeURIComponent(instance)}${session ? `&session=${encodeURIComponent(session)}` : ''}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer }),
     }),
   /** 拒绝/不回答 opencode 提问（settled=提问已失效，调用端撤卡） */
-  ocRejectQuestion: (instance: string, requestId: string) =>
-    request<{ ok: boolean; settled?: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reject?instance=${encodeURIComponent(instance)}`, { method: 'POST' }),
+  ocRejectQuestion: (instance: string, requestId: string, session?: string) =>
+    request<{ ok: boolean; settled?: boolean; error?: string }>(`/api/opencode/questions/${encodeURIComponent(requestId)}/reject?instance=${encodeURIComponent(instance)}${session ? `&session=${encodeURIComponent(session)}` : ''}`, { method: 'POST' }),
   /** 把 TUI 导航到指定会话（让位式接管：co-team 独占前 TUI 切走） */
   ocTuiSelectSession: (instance: string, sessionId: string) =>
     request<{ ok: boolean; error?: string }>(`/api/opencode/tui/${encodeURIComponent(instance)}/select-session`, {

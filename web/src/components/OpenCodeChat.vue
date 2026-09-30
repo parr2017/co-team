@@ -802,7 +802,7 @@ async function submitQ(q: StreamQuestion): Promise<void> {
   qBusy.value = { ...qBusy.value, [q.id]: true };
   try {
     const answer = buildFormAnswer(q.questions || [], qValuesOf(q));
-    const r = await api.ocAnswerQuestion(props.instance.id, q.id, answer);
+    const r = await api.ocAnswerQuestion(props.instance.id, q.id, answer, props.sessionId);
     if (r.ok) {
       dropFormDraft(q.id);
       stream.applyEvent({ type: 'question.replied', properties: { requestID: q.id } });
@@ -830,7 +830,7 @@ function copyQuestion(q: StreamQuestion, fmt: 'markdown' | 'json'): void {
 
 async function rejectQuestion(requestId: string): Promise<void> {
   try {
-    const r = await api.ocRejectQuestion(props.instance.id, requestId);
+    const r = await api.ocRejectQuestion(props.instance.id, requestId, props.sessionId);
     if (r.ok) {
       stream.applyEvent({ type: 'question.rejected', properties: { requestID: requestId } });
       flush();

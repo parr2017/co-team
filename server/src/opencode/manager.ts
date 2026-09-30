@@ -42,6 +42,10 @@ const SERVE_PASSWORD_WAIT_MS = 8_000;
 const SSE_BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000];
 const RESTART_BACKOFF_MS = [2_000, 5_000, 15_000, 60_000];
 const PROBE_TIMEOUT_MS = 8_000;
+/** 远端代答后等闸门释放的观察窗：reply 直通场景分片 ms 级终态，5s 足够宽裕 */
+const ASK_GATE_CHECK_DELAY_MS = 5_000;
+/** interrupt 结算 + 已排队 steer 消息入列的缓冲 */
+const ASK_GATE_UNBLOCK_SETTLE_MS = 1_500;
 
 interface InstanceState {
   cfg: OpencodeInstanceConfig;
@@ -94,6 +98,17 @@ function msgId(m: unknown): string {
 /** 缓存键：实例 + 会话 */
 function cacheKey(instance: string, sessionId: string): string {
   return instance + '::' + sessionId;
+}
+
+/** 代答摘要（递给模型的可读答案串；key=value 分号连接，数组顿号连接） */
+function summarizeAskAnswers(answers?: string[][] | Record<string, unknown>): string {
+  if (!answers) return '（用户未给出具体内容）';
+  if (Array.isArray(answers)) {
+    return answers.map((per, i) => `第${i + 1}题=${(per || []).join('、') || '（空）'}`).join('；');
+  }
+  return Object.entries(answers)
+    .map(([k, v]) => `${k}=${Array.isArray(v) ? (v as unknown[]).join('、') : String(v)}`)
+    .join('；');
 }
 
 /** 单条消息的 UI 裁剪：剥 info.system（UserMessage 的 system prompt，几百 KB，UI 不用）；
@@ -1095,19 +1110,102 @@ export class OpencodeManager implements OpencodeBridge {
     this.audit('answer_question', st, { request: requestID, answers });
     const directories = await this.instanceDirectories(st, hintSessionId);
     if (!directories) return { ok: false, error: '无法读取实例会话列表——定位表单需要扫描全部目录，请稍后重试' };
-    return st.client!.answerQuestion(requestID, answers, { directories });
+    const r = await st.client!.answerQuestion(requestID, answers, { directories });
+    if (r.ok) {
+      // 回带 sessionID 优先（定位成功时已知）；定局表单回退 hint / pending 聚合里的归属
+      const sid = r.sessionID || hintSessionId || this.pendingQuestionSession(st, requestID);
+      if (sid) this.scheduleAskGateCheck(st, sid, requestID, 'answer', answers);
+    }
+    return r;
   }
 
-  /** 拒绝/不回答提问（需 control 档；agent 收到 rejected 后自行继续） */
-  async rejectQuestion(agent: string | undefined, instance: string, requestID: string): Promise<OcCallResult<boolean>> {
+  /** 拒绝/不回答提问（需 control 档；agent 收到 rejected 后自行继续）。hintSessionId：定局表单回查会话用 */
+  async rejectQuestion(agent: string | undefined, instance: string, requestID: string, hintSessionId?: string): Promise<OcCallResult<boolean>> {
     const { st, err } = this.resolve(agent, instance);
     if (err || !st) return { ok: false, error: err };
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
     this.audit('reject_question', st, { request: requestID });
-    const directories = await this.instanceDirectories(st);
+    const directories = await this.instanceDirectories(st, hintSessionId);
     if (!directories) return { ok: false, error: '无法读取实例会话列表——定位表单需要扫描全部目录，请稍后重试' };
-    return st.client!.rejectQuestion(requestID, { directories });
+    const r = await st.client!.rejectQuestion(requestID, { directories });
+    if (r.ok) {
+      const sid = r.sessionID || hintSessionId || this.pendingQuestionSession(st, requestID);
+      if (sid) this.scheduleAskGateCheck(st, sid, requestID, 'reject');
+    }
+    return r;
+  }
+
+  /** pending 聚合里某提问的归属会话（定局表单回查用；对账已清掉时返回 undefined） */
+  private pendingQuestionSession(st: InstanceState, requestID: string): string | undefined {
+    const p = this.pendingQuestions.get(st.cfg.id)?.get(requestID);
+    const sid = String((p as { sessionID?: unknown } | undefined)?.sessionID || '');
+    return sid || undefined;
+  }
+
+  /**
+   * 远端代答后的「TUI 提问闸门」自检自愈：
+   * ask 类提问在桌面版/TUI 上挂着原始等待——HTTP form.reply 只落库定局，TUI 的框不会被关、
+   * 模型不会被唤醒，会话从此卡死（2026-09-30 实测：手机/飞书答题成功后模型 1 小时无响应，
+   * 后续消息全部排队无人处理，页面「打断」按钮也解不开；只有 session.interrupt 能捅破——
+   * interrupt 后提问分片 running→error，排队的 steer 消息立刻开新回合被处理）。
+   * 所以答题/谢绝成功 5s 后检查提问工具分片：仍 running/pending = 闸门还锁着 → interrupt 解锁，
+   * 再把答案（或谢绝语义）作为消息递给模型让它继续。TUI 上遗留的框已失效，用户再按只会收到
+   * already settled 报错，无害。
+   */
+  private readonly askGateChecks = new Set<string>();
+
+  private scheduleAskGateCheck(
+    st: InstanceState,
+    sessionId: string,
+    requestID: string,
+    mode: 'answer' | 'reject',
+    answers?: string[][] | Record<string, unknown>,
+  ): void {
+    const key = `${st.cfg.id}:${sessionId}:${requestID}`;
+    if (this.askGateChecks.has(key)) return;
+    this.askGateChecks.add(key);
+    setTimeout(() => {
+      void this.checkAskGate(st, sessionId, requestID, key, mode, answers);
+    }, ASK_GATE_CHECK_DELAY_MS);
+  }
+
+  private async checkAskGate(
+    st: InstanceState,
+    sessionId: string,
+    requestID: string,
+    key: string,
+    mode: 'answer' | 'reject',
+    answers?: string[][] | Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      if (!st.client || st.state !== 'connected') return;
+      const r = await st.client.listMessages(sessionId, 12);
+      if (!r.ok || !Array.isArray(r.data)) return;
+      let stuck = false;
+      for (const m of r.data as Record<string, any>[]) {
+        for (const p of ((m.parts || []) as Record<string, any>[])) {
+          if (p?.type !== 'tool') continue;
+          const name = String(p.tool || '').toLowerCase();
+          const input = p.state?.input as Record<string, unknown> | undefined;
+          const isAsk = name === 'question' || name === 'askuserquestion' || (!!input && Array.isArray(input.questions));
+          const live = p.state?.status === 'running' || p.state?.status === 'pending';
+          if (isAsk && live) stuck = true;
+        }
+      }
+      // 闸门已释放（TUI 用户自己答了 / 无 TUI 场景 reply 直通）——不动
+      if (!stuck) return;
+      this.audit('ask_gate_unblock', st, { session: sessionId, request: requestID, mode });
+      await st.client.abortSession(sessionId);
+      // 等 interrupt 结算 + 已排队 steer 消息入列，再递答案（队列顺序：先到的用户消息先处理）
+      await new Promise((resolve) => setTimeout(resolve, ASK_GATE_UNBLOCK_SETTLE_MS));
+      const text = mode === 'reject'
+        ? '[co-team 代答] 你刚才的提问已被用户谢绝（不回答）。桌面版/TUI 上若仍显示提问框请忽略——它已失效。请自行酌情继续。'
+        : `[co-team 代答] 你刚才的提问已收到回答：${summarizeAskAnswers(answers)}。桌面版/TUI 上若仍显示提问框请忽略——回答已生效，按回答继续即可。`;
+      await st.client.prompt(sessionId, text);
+    } catch { /* 自愈失败不影响主链：用户仍可在 TUI 处理 */ } finally {
+      this.askGateChecks.delete(key);
+    }
   }
 
   /**

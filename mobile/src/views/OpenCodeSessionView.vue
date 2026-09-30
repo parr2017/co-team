@@ -441,7 +441,7 @@ async function submitQ(q: StreamQuestion): Promise<void> {
   qBusy.value = { ...qBusy.value, [q.id]: true };
   try {
     const answer = buildFormAnswer(q.questions || [], qValuesOf(q));
-    const r = await api.ocAnswerQuestion(instanceId.value, String(q.id), answer);
+    const r = await api.ocAnswerQuestion(instanceId.value, String(q.id), answer, sessionId.value);
     dropFormDraft(q.id);
     resolvedQuestions.add(String(q.id));
     // settled = 提问已被他端处理过（如飞书里已答）：撤卡即可，不算出错
@@ -455,7 +455,7 @@ async function submitQ(q: StreamQuestion): Promise<void> {
 
 async function rejectQuestion(requestId: string): Promise<void> {
   try {
-    const r = await api.ocRejectQuestion(instanceId.value, requestId);
+    const r = await api.ocRejectQuestion(instanceId.value, requestId, sessionId.value);
     resolvedQuestions.add(requestId);
     showSuccessToast(r.settled ? '该提问已失效，已移除' : '已谢绝，opencode 将自行继续');
   } catch (e: any) {

@@ -83,6 +83,8 @@ export interface OcCallResult<T = unknown> {
   truncated?: boolean;
   /** 该提问/审批在 oc 侧已被处理过（已回答/已取消/已定局）——调用端应撤卡而非报错 */
   settled?: boolean;
+  /** 操作命中的会话（提问/审批定位成功时回带）——远端代答后的 TUI 闸门自愈依赖它 */
+  sessionID?: string;
 }
 
 /** 能力探测结果：官方 2.x server.info + 固定端点契约 */
