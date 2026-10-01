@@ -17,7 +17,8 @@
 
     <div class="tip-bar">接管 opencode：托管实例由 co-team 拉起，attached 接管你已在跑的 CLI / 桌面版</div>
 
-    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+    <van-pull-refresh v-model="refreshing" class="pull-wrap" @refresh="onRefresh">
+      <div class="pull">
       <div class="cards">
         <div class="sec-title">项目 · {{ projects.length }}</div>
         <div v-for="p in projects" :key="p.dir" class="proj-card" @click="openProject(p.dir)">
@@ -33,6 +34,7 @@
           <span class="chev">›</span>
         </div>
         <div v-if="loaded && !projects.length" class="empty">暂无项目——在 opencode 里发一条消息，或点右上「实例」新建会话</div>
+      </div>
       </div>
     </van-pull-refresh>
 
@@ -151,7 +153,10 @@ onActivated(() => { void refresh(); });
 </script>
 
 <style scoped>
-.page { min-height: 100vh; padding-bottom: 24px; }
+/* 固定壳（100dvh）内部滚动：page 撑满 → pull-wrap 占余 → .pull 滚动（照 TaskListView 模式） */
+.page { height: 100%; display: flex; flex-direction: column; background: var(--bg-page); }
+.pull-wrap { flex: 1; min-height: 0; overflow: hidden; }
+.pull { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
 .nav-act { font-size: 13px; color: var(--accent); }
 .active-banner { margin: 10px 12px 0; border: 1px solid rgba(63, 185, 111, 0.4); background: rgba(63, 185, 111, 0.09); color: var(--ok); font-size: 12.5px; border-radius: 10px; padding: 10px 13px; display: flex; align-items: center; gap: 8px; }
 .active-banner:active { filter: brightness(1.2); }

@@ -8,7 +8,8 @@
 
     <van-search v-model="search" placeholder="搜索会话"  />
 
-    <van-pull-refresh :model-value="refreshing" @refresh="onRefresh">
+    <van-pull-refresh :model-value="refreshing" class="pull-wrap" @refresh="onRefresh">
+      <div class="pull">
       <div class="groups">
         <template v-for="g in grouped" :key="g.name">
           <div class="group-label">{{ g.name }}</div>
@@ -27,6 +28,7 @@
           </div>
         </template>
         <van-empty v-if="!grouped.length" description="还没有会话，点右上角新建" />
+      </div>
       </div>
     </van-pull-refresh>
 
@@ -154,7 +156,10 @@ onActivated(load);
 </script>
 
 <style scoped>
-.page { min-height: 100vh; padding-bottom: 70px; }
+/* 固定壳（100dvh）内部滚动：page 撑满 → pull-wrap 占余 → .pull 滚动 */
+.page { height: 100%; display: flex; flex-direction: column; background: var(--bg-page); }
+.pull-wrap { flex: 1; min-height: 0; overflow: hidden; }
+.pull { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(66px + env(safe-area-inset-bottom, 0px)); }
 .groups { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .group-label { font-size: 11px; color: var(--text-3); padding: 4px 2px; }
 .conv-card { background: var(--bg-panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; display: flex; flex-direction: column; gap: 4px; }

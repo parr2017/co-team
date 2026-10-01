@@ -8,7 +8,8 @@
 
     <div class="projline mono">{{ decodedDir }}</div>
 
-    <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
+    <van-pull-refresh v-model="refreshing" class="pull-wrap" @refresh="onRefresh">
+      <div class="pull">
       <div class="cards">
         <div class="chips">
           <span class="chip" :class="{ on: scope === 'project' }" @click="scope = 'project'">本项目 {{ projectRows.length }}</span>
@@ -28,6 +29,7 @@
         <div v-else class="empty">本项目还没有会话——点下方「新建会话」开始，或在 opencode / 桌面版里发一条消息</div>
 
         <div class="fab" :class="{ dis: creating }" @click="createSession">{{ creating ? '创建中…' : '＋ 新建会话（登记到本项目）' }}</div>
+      </div>
       </div>
     </van-pull-refresh>
 
@@ -142,7 +144,10 @@ onActivated(() => { void onRefresh(); });
 </script>
 
 <style scoped>
-.page { min-height: 100vh; padding-bottom: 24px; }
+/* 固定壳（100dvh）内部滚动：page 撑满 → pull-wrap 占余 → .pull 滚动 */
+.page { height: 100%; display: flex; flex-direction: column; background: var(--bg-page); }
+.pull-wrap { flex: 1; min-height: 0; overflow: hidden; }
+.pull { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
 .projline { padding: 8px 14px 0; font-size: 10px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cards { padding: 2px 0 10px; }
 .chips { display: flex; gap: 6px; padding: 10px 14px 2px; }

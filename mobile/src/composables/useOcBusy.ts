@@ -34,7 +34,9 @@ let timer: number | undefined;
 let inFlight = false;
 
 async function poll(): Promise<void> {
-  if (inFlight || document.visibilityState !== 'visible') return;
+  // 挂载/下拉触发的拉取不设可见性门槛（后台深链进页也要有首屏数据）；
+  // 只有 12s 轮询 tick 在调它前先看可见性，避免后台空转
+  if (inFlight) return;
   inFlight = true;
   try {
     const d = await api.ocInstances();
@@ -161,7 +163,7 @@ export interface OcSessionRow { instId: string; instLabel: string; id: string; t
 export function useOcBusy() {
   if (timer === undefined) {
     void poll();
-    timer = window.setInterval(poll, 12_000);
+    timer = window.setInterval(() => { if (document.visibilityState === 'visible') void poll(); }, 12_000);
   }
   return { instances, busyList, busyCount, projects, sessionRows, loaded, refresh: poll };
 }
