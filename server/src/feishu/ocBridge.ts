@@ -25,7 +25,9 @@ export interface OcFormField {
   key: string;
   type?: string; // input | select | multiselect | number | boolean | external
   question?: string;
-  options?: { label?: string; value?: string }[];
+  /** 题目详细描述（oc 字段的 description——只显示 question 时用户"根本无法回答"的缺失信息） */
+  description?: string;
+  options?: { label?: string; value?: string; description?: string }[];
   required?: boolean;
 }
 
@@ -67,17 +69,25 @@ export function buildOcFormCard(state: OcFormState): Record<string, unknown> {
   for (const f of state.fields) {
     const answered = state.answers[f.key] !== undefined;
     if (!answered && f.required) missing.push(f.question || f.key);
-    elements.push(md(`${answered ? '✅' : '❔'} ${f.question || f.key}${f.required ? '（必填）' : ''}`));
+    elements.push(md(`${answered ? '✅' : '❔'} **${f.question || f.key}**${f.required ? '（必填）' : ''}`));
+    // 题目详细描述：正文完整展示（过长的收尾提示回面板看全量）——只有一行短标题时"根本无法回答"
+    if (f.description) {
+      elements.push(md(f.description.length > 600 ? `${f.description.slice(0, 600)}\n…（截断，完整描述回面板）` : f.description));
+    }
     const opts = (f.options || []).slice(0, 6);
     if (opts.length) {
       for (const o of opts) {
         const val = o.value ?? o.label ?? '';
         const selected = state.answers[f.key] === val;
         elements.push({
-          tag: 'button', text: { tag: 'plain_text', content: `${selected ? '✅ ' : ''}${(o.label || val).slice(0, 24)}` },
+          tag: 'button', text: { tag: 'plain_text', content: `${selected ? '✅ ' : ''}${(o.label || val).slice(0, 40)}` },
           type: selected ? 'primary' : 'default', size: 'small',
           behaviors: [{ type: 'callback', value: { act: 'oc_form_pick', key: f.key, value: val } }],
         });
+        // 选项说明跟在按钮下方（有才显示）——选项之间常常差着关键细节（推荐理由/后果提示）
+        if (o.description) {
+          elements.push(md(`　↳ ${o.description.length > 200 ? `${o.description.slice(0, 200)}…` : o.description}`));
+        }
       }
     } else if (f.type === 'boolean') {
       for (const [label, val] of [['是', true], ['否', false]] as const) {
@@ -88,18 +98,17 @@ export function buildOcFormCard(state: OcFormState): Record<string, unknown> {
           behaviors: [{ type: 'callback', value: { act: 'oc_form_pick', key: f.key, value: val } }],
         });
       }
+    }
+    // 自定义录入：每个题都给自由输入通道（选项外的答案/补充说明）——提交时填写了就优先于点选
+    const hasCustom = opts.length > 0 || f.type === 'boolean';
+    if (hasCustom) {
+      inputEls.push(inputField(`in_${f.key}`, `其他：自定义答案（选填，填写后优先于选项）`));
     } else {
       inputEls.push(inputField(`in_${f.key}`, `回答：${(f.question || f.key).slice(0, 30)}`));
     }
   }
-  if (inputEls.length) {
-    elements.push(form(`ocform_${state.request_id}`, inputEls.concat([submitBtn('✅ 提交回答', 'go')])));
-  } else {
-    elements.push({
-      tag: 'button', text: { tag: 'plain_text', content: '✅ 提交回答' }, type: 'primary', size: 'medium',
-      behaviors: [{ type: 'callback', value: { act: 'oc_form_submit' } }],
-    });
-  }
+  // 统一提交：点选 + 自定义录入一起上——不再点选即自动提交（否则自定义录入没机会填）
+  elements.push(form(`ocform_${state.request_id}`, inputEls.concat([submitBtn('✅ 提交回答', 'go')])));
   // 忽略 = 此卡不再推送（这条与本会话不想在飞书处理）；不动 oc 侧状态，面板里仍可作答
   elements.push(btn('忽略此提问', 'default', { act: 'oc_ignore', instance: state.instance, request_id: state.request_id }));
   if (missing.length) elements.push(note(`⚠ 必填未作答：${missing.join('、').slice(0, 120)}`));
@@ -724,9 +733,10 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
             }
           }
           if (input.messageId) await busSet(`feishu:route:${input.messageId}`, state, BIND_TTL_SEC).catch(() => {});
-          const allAnswered = state.fields.length > 0 && state.fields.every((f) => state.answers[f.key] !== undefined);
           const missingRequired = state.fields.filter((f) => f.required && state.answers[f.key] === undefined);
-          const readyToSubmit = (submitAct && !missingRequired.length && Object.keys(state.answers).length > 0) || (act === 'oc_form_pick' && allAnswered);
+          // 只认显式提交（表单提交按钮）：点选仅记录答案并刷新卡——每题都带自定义录入框，
+          // 点选即自动提交会让"录入内容和点选一起回答"永远没机会发生
+          const readyToSubmit = submitAct && !missingRequired.length && Object.keys(state.answers).length > 0;
           if (readyToSubmit) {
             // session_id 作 hint：form.list 按 location 定界，把提问所属会话的目录排扫描最前
             const ok = await deps.answerQuestion(state.instance, state.request_id, state.answers, state.session_id);

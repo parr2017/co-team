@@ -460,49 +460,73 @@ describe('oc 桥', () => {
     expect(await busGet('feishu:oc:permseen:per-unknown')).not.toBeNull();
   });
 
-  it('选择题点选即答：全部作答后自动提交（✓ 标记）', async () => {
+  it('选择题点选记录答案刷新卡（不再点选即自动提交——自定义录入没机会填）；完整问题信息上卡（描述正文+选项说明+自定义录入）', async () => {
     const deps = makeOcDeps();
-    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q2', requestID: 'q2', title: '修复方式', questions: [{ key: 'how', type: 'select', question: '怎么处理？', required: true, options: [{ label: '修，授权改功能', value: 'fix' }, { label: '只记录', value: 'record' }] }] }] }));
+    deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{
+      instance: 'main-exec', id: 'q2', requestID: 'q2', title: '提交 3.4b',
+      questions: [{
+        key: 'how', type: 'select', question: '怎么处理？', required: true,
+        description: '3.4b 的改动（14 改 + 6 新增，含文档同步）已全部验证通过。是否现在提交？',
+        options: [
+          { label: '提交，不推送（推荐）', value: 'fix', description: '按前几批的做法：本地 commit，仓库无远端不推送' },
+          { label: '只记录', value: 'record', description: '保留工作区改动，等看过代码再决定' },
+        ],
+      }],
+    }] }));
     const bridge = createOcBridge(deps);
     await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
     await bridge.scanPendingOnce(cfg);
     expect(sendCardMock).toHaveBeenCalledTimes(1);
-    const card = sendCardMock.mock.calls[0][2] as Record<string, any>;
-    expect(JSON.stringify(card)).toContain('修，授权改功能');
+    const cardJson = JSON.stringify(sendCardMock.mock.calls[0][2]);
+    // 完整问题信息：题目描述正文 + 每个选项的说明都上卡（此前只有一行短标题"根本无法回答"）
+    expect(cardJson).toContain('3.4b 的改动（14 改 + 6 新增，含文档同步）已全部验证通过');
+    expect(cardJson).toContain('↳ 按前几批的做法：本地 commit，仓库无远端不推送');
+    expect(cardJson).toContain('↳ 保留工作区改动，等看过代码再决定');
+    // 每题带自定义录入框（填写后优先于选项）
+    expect(cardJson).toContain('自定义答案');
 
-    // 点选项 1 → 单题全答 → 自动提交
+    // 点选项 1 → 只记录答案返回刷新卡（✓ 标记），不再自动提交
     await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
       value: { act: 'oc_form_pick', key: 'how', value: 'fix' },
     });
-    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q2', { how: 'fix' }, undefined);
+    expect(deps.answerQuestion).not.toHaveBeenCalled();
+
+    // 表单提交：自定义录入覆盖点选，一起发给 oc
     const r1 = await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
-      value: { act: 'oc_form_pick', key: 'how', value: 'fix' },
+      formValue: { in_how: '先提交一半，剩下的等验收' },
     });
+    expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q2', { how: '先提交一半，剩下的等验收' }, undefined);
     expect(JSON.stringify(r1)).toContain('已提交回答');
   });
 
-  it('多题表单：逐题点选未答完时返回刷新卡（✓ 标记），不提交', async () => {
+  it('多题表单：逐题点选全部答完仍返回刷新卡（统一走提交按钮）；只点选不填录入时按点选提交', async () => {
     const deps = makeOcDeps();
     deps.pendingAll = vi.fn(() => ({ permissions: [], questions: [{ instance: 'main-exec', id: 'q3', requestID: 'q3', title: 'T', questions: [{ key: 'a', type: 'select', question: '题一', options: [{ label: 'x', value: 'x' }] }, { key: 'b', type: 'select', question: '题二', options: [{ label: 'y', value: 'y' }] }] }] }));
     const bridge = createOcBridge(deps);
     await busSet('feishu:oc:notify_chat', { chat_id: 'oc1' }, 3600);
     await bridge.scanPendingOnce(cfg);
-    // 点题一 → 未全答 → 返回刷新表单卡（不提交）
+    // 点题一 → 返回刷新表单卡（不提交）
     const r1 = await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
       value: { act: 'oc_form_pick', key: 'a', value: 'x' },
     });
     expect(deps.answerQuestion).not.toHaveBeenCalled();
-    const refreshed = (r1 as any).card as Record<string, any>;
-    expect(JSON.stringify(refreshed)).toContain('✅');
-    // 点题二 → 全答 → 自动提交
-    await bridge.handleCardAction(cfg, {
+    expect(JSON.stringify((r1 as any).card)).toContain('✅');
+    // 点题二 → 全答 → 仍刷新卡（不再自动提交）
+    const r2 = await bridge.handleCardAction(cfg, {
       operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1',
       value: { act: 'oc_form_pick', key: 'b', value: 'y' },
     });
+    expect(deps.answerQuestion).not.toHaveBeenCalled();
+    expect(JSON.stringify((r2 as any).card)).toContain('✅');
+    // 用户点「提交回答」（表单，自定义录入留空）→ 按点选提交
+    const r3 = await bridge.handleCardAction(cfg, {
+      operatorOpenId: 'ou_admin', messageId: 'om_new1', chatId: 'oc1', formValue: {},
+    });
     expect(deps.answerQuestion).toHaveBeenCalledWith('main-exec', 'q3', { a: 'x', b: 'y' }, undefined);
+    expect(JSON.stringify(r3)).toContain('已提交回答');
   });
 
   it('提问卡带来源/项目（会话目录 → 项目名）；标题不再只挂实例 id', async () => {
