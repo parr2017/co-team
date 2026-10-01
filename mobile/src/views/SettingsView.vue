@@ -1,6 +1,6 @@
 <template>
   <div class="settings-page">
-    <van-nav-bar title="设置" left-arrow @click-left="$router.back()" />
+    <van-nav-bar safe-area-inset-top title="设置" left-arrow fixed placeholder @click-left="$router.back()" />
 
     <div class="section">
       <div class="section-title">命令权限</div>

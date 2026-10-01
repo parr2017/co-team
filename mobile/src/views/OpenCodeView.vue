@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <van-nav-bar title="OC" fixed placeholder>
+    <van-nav-bar safe-area-inset-top title="OC" fixed placeholder>
       <template #left>
         <span class="nav-act" @click="instSheet = true">实例</span>
       </template>

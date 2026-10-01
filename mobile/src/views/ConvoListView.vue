@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <van-nav-bar title="协作会话" fixed placeholder>
+    <van-nav-bar safe-area-inset-top title="协作会话" fixed placeholder>
       <template #right>
         <van-icon name="plus" size="18" @click="newDlg = true" />
       </template>

@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <van-nav-bar left-arrow fixed placeholder @click-left="router.back()">
+    <van-nav-bar safe-area-inset-top left-arrow fixed placeholder @click-left="router.back()">
       <template #title>
         <span class="nav-title">{{ detail?.title || '协作会话' }}</span>
       </template>

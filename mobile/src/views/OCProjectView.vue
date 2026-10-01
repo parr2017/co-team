@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <van-nav-bar :title="projectName" left-arrow left-text="OC" @click-left="router.back()" fixed placeholder>
+    <van-nav-bar safe-area-inset-top :title="projectName" left-arrow left-text="OC" @click-left="router.back()" fixed placeholder>
       <template #right>
         <van-icon name="replay" size="17" @click="onRefresh" />
       </template>
