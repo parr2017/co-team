@@ -8,8 +8,8 @@
 
     <div class="projline mono">{{ decodedDir }}</div>
 
-    <van-pull-refresh v-model="refreshing" class="pull-wrap" @refresh="onRefresh">
-      <div class="pull">
+    <van-pull-refresh v-model="refreshing" class="pull-wrap" :disabled="pullDisabled" @refresh="onRefresh">
+      <div class="pull" @scroll="onPullScroll">
       <div class="cards">
         <div class="chips">
           <span class="chip" :class="{ on: scope === 'project' }" @click="scope = 'project'">本项目 {{ projectRows.length }}</span>
@@ -66,6 +66,11 @@ const projectKey = computed(() => normDir(decodedDir.value));
 const projectName = computed(() => dirBase(decodedDir.value));
 
 const refreshing = ref(false);
+/** 滚动离顶即禁用拉刷新（同 OC 首页，Vant reachTop 在固定壳下恒为 0） */
+const pullDisabled = ref(false);
+function onPullScroll(e: Event): void {
+  pullDisabled.value = (e.target as HTMLElement).scrollTop > 4;
+}
 const scope = ref<'project' | 'all'>('project');
 const creating = ref(false);
 const instPickSheet = ref(false);

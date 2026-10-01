@@ -17,8 +17,8 @@
 
     <div class="tip-bar">接管 opencode：托管实例由 co-team 拉起，attached 接管你已在跑的 CLI / 桌面版</div>
 
-    <van-pull-refresh v-model="refreshing" class="pull-wrap" @refresh="onRefresh">
-      <div class="pull">
+    <van-pull-refresh v-model="refreshing" class="pull-wrap" :disabled="pullDisabled" @refresh="onRefresh">
+      <div class="pull" @scroll="onPullScroll">
       <div class="cards">
         <div class="sec-title">项目 · {{ projects.length }}</div>
         <div v-for="p in projects" :key="p.dir" class="proj-card" @click="openProject(p.dir)">
@@ -79,6 +79,12 @@ const router = useRouter();
 const { instances, busyList, busyCount, projects, loaded, refresh } = useOcBusy();
 
 const refreshing = ref(false);
+/** 滚动离顶即禁用拉刷新：Vant 的 reachTop 按"组件根的滚动父级"算，固定壳下恒为 0，
+ *  中部下滑会被误判成下拉刷新劫持手势（列表回不去顶）——以真实内层 scrollTop 为准 */
+const pullDisabled = ref(false);
+function onPullScroll(e: Event): void {
+  pullDisabled.value = (e.target as HTMLElement).scrollTop > 4;
+}
 const activeSheet = ref(false);
 const instSheet = ref(false);
 const busyId = ref('');

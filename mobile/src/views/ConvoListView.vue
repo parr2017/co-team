@@ -8,8 +8,8 @@
 
     <van-search v-model="search" placeholder="搜索会话"  />
 
-    <van-pull-refresh :model-value="refreshing" class="pull-wrap" @refresh="onRefresh">
-      <div class="pull">
+    <van-pull-refresh :model-value="refreshing" class="pull-wrap" :disabled="pullDisabled" @refresh="onRefresh">
+      <div class="pull" @scroll="onPullScroll">
       <div class="groups">
         <template v-for="g in grouped" :key="g.name">
           <div class="group-label">{{ g.name }}</div>
@@ -84,6 +84,11 @@ const agents = ref<{ name: string; role?: string }[]>([]);
 const models = ref<{ id: string; name: string; provider?: string }[]>([]);
 const search = ref('');
 const refreshing = ref(false);
+/** 滚动离顶即禁用拉刷新（Vant reachTop 在固定壳下恒为 0，中部下滑会被劫持） */
+const pullDisabled = ref(false);
+function onPullScroll(e: Event): void {
+  pullDisabled.value = (e.target as HTMLElement).scrollTop > 4;
+}
 const newDlg = ref(false);
 const creating = ref(false);
 const form = reactive({ project_id: '', title: '', model_id: '', agent_id: 'partner' });

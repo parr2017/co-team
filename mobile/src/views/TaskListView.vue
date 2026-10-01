@@ -34,6 +34,12 @@ const total = ref(0);
 const page = ref(1);
 const loading = ref(false);
 const refreshing = ref(false);
+/** 滚动离顶即禁用拉刷新：Vant reachTop 按组件根的滚动父级计算，固定壳下恒为 0，
+ *  列表中部的下滑手势会被误判为下拉刷新（列表回不去顶）——以真实内层 scrollTop 为准 */
+const pullDisabled = ref(false);
+function onPullScroll(e: Event): void {
+  pullDisabled.value = (e.target as HTMLElement).scrollTop > 4;
+}
 const finished = ref(false);
 const error = ref('');
 
@@ -433,8 +439,8 @@ function openOcPending(row: OcPendingRow): void {
 
     <!-- pull-refresh must NOT be the scroll container itself (Vant swallows
          touch scrolling when overflow:auto sits on the same node) -->
-    <van-pull-refresh v-model="refreshing" class="pull-wrap" @refresh="onRefresh">
-      <div class="pull">
+    <van-pull-refresh v-model="refreshing" class="pull-wrap" :disabled="pullDisabled" @refresh="onRefresh">
+      <div class="pull" @scroll="onPullScroll">
         <van-list
           v-model:loading="loading"
           :finished="finished"
