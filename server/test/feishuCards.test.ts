@@ -4,7 +4,7 @@
  * 多一个飞书不认的属性则**整卡被拒**（230099 / 200621），用户那边表现为"什么都没收到"。
  */
 import { describe, expect, it } from 'vitest';
-import { card2, collapse, inputField, md, note, submitBtn, form } from '../src/feishu/cards';
+import { card2, clipMiddle, collapse, inputField, md, note, submitBtn, form } from '../src/feishu/cards';
 
 describe('feishu cards 构件', () => {
   it('card2：2.0 骨架 + header 模板', () => {
@@ -42,5 +42,20 @@ describe('feishu cards 构件', () => {
     expect(f.tag).toBe('form');
     expect(btn.form_action_type).toBe('submit');
     expect(btn.name).toBe('go');
+  });
+});
+
+describe('clipMiddle 中段截断', () => {
+  it('短文本原样返回；超长保首尾、中段省略并注明省略字数；输出不超预算', () => {
+    expect(clipMiddle('短文本', 100)).toBe('短文本');
+    const long = 'HEAD-' + 'x'.repeat(1500) + 'MIDDLE-MARK-NEVER-SHOWN' + 'y'.repeat(1500) + '-TAIL';
+    const out = clipMiddle(long, 600, '描述');
+    expect(out.startsWith('HEAD-')).toBe(true);   // 开头保留
+    expect(out.endsWith('-TAIL')).toBe(true);     // 结尾保留（结论不吃掉）
+    expect(out).toContain('中间省略');
+    expect(out).toContain('完整描述回面板');
+    expect(out.length).toBeLessThanOrEqual(600 + 10); // 预算内（hint 行微差）
+    // 中段内容确实被省略
+    expect(out).not.toContain('MIDDLE-MARK-NEVER-SHOWN');
   });
 });

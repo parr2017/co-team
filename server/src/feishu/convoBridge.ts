@@ -14,7 +14,7 @@ import type { FeishuConfig } from '../config';
 import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
-import { buildResultCard, card2, cardResponse, form, inputField, md, note, projectLabelOf, sourceLine, submitBtn, btnRow } from './cards';
+import { buildResultCard, card2, cardResponse, clipMiddle, form, inputField, md, note, projectLabelOf, sourceLine, submitBtn, btnRow } from './cards';
 import { buildConvoListCard, buildConvoEnterCard, buildProjectPickerCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
 
@@ -280,7 +280,8 @@ export function createConvoBridge(deps: ConvoBridgeDeps): ConvoBridge {
             const msg = payload.message as { role?: string; kind?: string; text?: string };
             if (msg?.role !== 'assistant' || msg?.kind !== 'text' || !msg.text) return;
             const title = bound.title || convoId;
-            const body = msg.text.length > REPLY_MAX ? `${msg.text.slice(0, REPLY_MAX)}\n\n…（截断，完整内容回面板）` : msg.text;
+            // 首尾保留、中段省略——agent 回复的结论常在结尾，头部截断会把结论吃掉
+            const body = clipMiddle(msg.text, REPLY_MAX, '内容');
             // 终稿卡带输入框：回复此卡 = 向该会话发言（不受当前模式影响）
             const card = card2('blue', `💬 ${title}`, [
               md(body),

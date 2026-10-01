@@ -125,6 +125,19 @@ export function buildResultCard(title: string, lines: string[]): Record<string, 
   );
 }
 
+/**
+ * 中段截断：首尾保留、中间省略并注明省略字数。提问描述/agent 回复这类长文，开头交代背景、
+ * 结尾给出结论，两端都重要——头部截断会把结论吃掉。max 是输出总长预算（含省略提示行）。
+ */
+export function clipMiddle(text: string, max: number, label = '内容'): string {
+  if (text.length <= max) return text;
+  // 44 = 省略提示行（含字数，最长 ~30 字）+ 两个换行的预算
+  const keep = Math.max(max - 44, 2);
+  const head = Math.ceil(keep / 2);
+  const tail = keep - head;
+  return `${text.slice(0, head)}\n…（中间省略 ${text.length - head - tail} 字，完整${label}回面板）…\n${text.slice(-tail)}`;
+}
+
 /** 响应帧包装：裸卡片 JSON 会被飞书当空响应回滚。 */
 export function cardResponse(card: Record<string, unknown>): Record<string, unknown> {
   return { card: { type: 'raw', data: card } };

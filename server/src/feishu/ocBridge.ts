@@ -14,7 +14,7 @@ import type { FeishuConfig } from '../config';
 import type { FeishuSession } from './session';
 import { getSession, setSession } from './session';
 import { sendCard, sendText } from './messageService';
-import { btn, buildResultCard, btnRow, card2, cardResponse, collapse, form, inputField, md, note, projectLabelOf, sourceLine, submitBtn } from './cards';
+import { btn, buildResultCard, btnRow, card2, cardResponse, clipMiddle, collapse, form, inputField, md, note, projectLabelOf, sourceLine, submitBtn } from './cards';
 import { clipText, permViewOf } from '@co-team/opencode-sync';
 import { buildOcSessionsCard, buildOcModelsCard, buildOcAgentsCard, buildOcInstancesCard, buildProjectPickerCard } from './listCards';
 import type { CardActionInput } from './approvalCards';
@@ -70,9 +70,9 @@ export function buildOcFormCard(state: OcFormState): Record<string, unknown> {
     const answered = state.answers[f.key] !== undefined;
     if (!answered && f.required) missing.push(f.question || f.key);
     elements.push(md(`${answered ? '✅' : '❔'} **${f.question || f.key}**${f.required ? '（必填）' : ''}`));
-    // 题目详细描述：正文完整展示（过长的收尾提示回面板看全量）——只有一行短标题时"根本无法回答"
+    // 题目详细描述：完整展示（首尾保留、中段省略——开头背景与结尾结论都重要）
     if (f.description) {
-      elements.push(md(f.description.length > 600 ? `${f.description.slice(0, 600)}\n…（截断，完整描述回面板）` : f.description));
+      elements.push(md(clipMiddle(f.description, 2400, '描述')));
     }
     const opts = (f.options || []).slice(0, 6);
     if (opts.length) {
@@ -86,7 +86,7 @@ export function buildOcFormCard(state: OcFormState): Record<string, unknown> {
         });
         // 选项说明跟在按钮下方（有才显示）——选项之间常常差着关键细节（推荐理由/后果提示）
         if (o.description) {
-          elements.push(md(`　↳ ${o.description.length > 200 ? `${o.description.slice(0, 200)}…` : o.description}`));
+          elements.push(md(`　↳ ${clipMiddle(o.description, 400, '说明')}`));
         }
       }
     } else if (f.type === 'boolean') {
@@ -297,7 +297,7 @@ export function createOcBridge(deps: OcBridgeDeps): OcBridge {
     const lastUser = recent.filter((m) => m.role === 'user').map((m) => m.text.replace(/\s+/g, ' ')).at(-1) || '';
     const replyText = (await deps.readLastReply(instance, sid).catch(() => null)) || '';
     const body = replyText
-      ? replyText.length > 2400 ? `${replyText.slice(0, 2400)}\n\n…（截断，完整内容回面板）` : replyText
+      ? clipMiddle(replyText, 2400, '内容')
       : `会话 ${sid.slice(0, 12)} ${failed ? '执行出错' : '执行完成'}（无文本输出）`;
     const card = card2(failed ? 'red' : 'green', `🖥 OpenCode · ${instance} · ${failed ? '出错' : '已完成'}`, [
       md(`**会话** ${title}\n**目录** ${directory || '（未知）'}\n${body}`),
