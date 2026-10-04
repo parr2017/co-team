@@ -271,8 +271,8 @@
     <van-popup v-model:show="modelSheet" position="bottom" round :style="{ maxHeight: '60%' }">
       <div class="sheet">
         <div class="sh-h"><span>选择模型</span><span class="x" @click="modelSheet = false">✕</span></div>
-        <div class="si" :class="{ cur: !selectedModel }" @click="selectedModel = ''; modelSheet = false">opencode 默认</div>
-        <div v-for="mo in models" :key="mo.value" class="si" :class="{ cur: selectedModel === mo.value }" @click="pickModel(mo.value)">
+        <div class="si" :class="{ cur: !effectiveModelValue }" @click="selectedModel = ''; modelSheet = false">opencode 默认</div>
+        <div v-for="mo in models" :key="mo.value" class="si" :class="{ cur: effectiveModelValue === mo.value }" @click="pickModel(mo.value)">
           <span class="si-nm">{{ mo.label }}</span>
           <span class="si-tg mono">{{ mo.provider }}</span>
         </div>
@@ -284,8 +284,8 @@
     <van-popup v-model:show="agentSheet" position="bottom" round :style="{ maxHeight: '60%' }">
       <div class="sheet">
         <div class="sh-h"><span>选择 agent</span><span class="x" @click="agentSheet = false">✕</span></div>
-        <div class="si" :class="{ cur: !selectedAgent }" @click="selectedAgent = ''; agentSheet = false">默认 agent</div>
-        <div v-for="a in agents" :key="a.name" class="si" :class="{ cur: selectedAgent === a.name }" @click="pickAgent(a.name)">
+        <div class="si" :class="{ cur: !effectiveAgent }" @click="selectedAgent = ''; agentSheet = false">默认 agent</div>
+        <div v-for="a in agents" :key="a.name" class="si" :class="{ cur: effectiveAgent === a.name }" @click="pickAgent(a.name)">
           <span class="si-nm">{{ a.display || a.name }}</span>
           <span class="si-tg">{{ a.description || a.mode || '' }}</span>
         </div>
@@ -529,6 +529,8 @@ const models = ref<ModelOption[]>([]);
 const selectedModel = ref('');
 /** 会话当前实际模型（v2 session 元数据带 {providerID,id,variant}）——徽章/胶囊展示真值 */
 const sessionModel = ref<{ providerID: string; modelID: string; variant?: string } | null>(null);
+/** 会话当前 agent（同源元数据）——agent 表单高亮当前项 */
+const sessionAgent = ref('');
 const modelSheet = ref(false);
 const agents = ref<OcAgentInfo[]>([]);
 const selectedAgent = ref('');
@@ -547,6 +549,29 @@ const modelLabel = computed(() => {
   return '默认模型';
 });
 const modelBadge = computed(() => modelLabel.value);
+/** 表单高亮用的"当前生效模型"：本地选过用本地值，否则用会话真值 */
+const effectiveModelValue = computed(() => {
+  if (selectedModel.value) return selectedModel.value;
+  const m = sessionModel.value;
+  return m?.modelID ? `${m.providerID}/${m.modelID}` : '';
+});
+/** 表单高亮用的"当前生效 agent" */
+const effectiveAgent = computed(() => selectedAgent.value || sessionAgent.value);
+/** 表单打开后把当前项滚进视野（popup 过渡 transform 会让 scrollIntoView 失灵——手动找滚动祖先定位） */
+function scrollCurIntoView(): void {
+  void nextTick(() => {
+    setTimeout(() => {
+      const cur = document.querySelector('.sheet .si.cur') as HTMLElement | null;
+      if (!cur) return;
+      let scroller: HTMLElement | null = cur.parentElement;
+      while (scroller && scroller.scrollHeight <= scroller.clientHeight + 2) scroller = scroller.parentElement;
+      if (!scroller) { cur.scrollIntoView({ block: 'center' }); return; }
+      const rect = cur.getBoundingClientRect();
+      const box = scroller.getBoundingClientRect();
+      scroller.scrollTop += rect.top - box.top - (scroller.clientHeight - rect.height) / 2;
+    }, 60);
+  });
+}
 
 // PTY 实时终端
 const ptySheet = ref(false);
@@ -663,6 +688,7 @@ async function loadInstanceAndTitle() {
     explicitTitle.value = found?.title || '';
     const m = found?.model as { providerID?: unknown; id?: unknown; variant?: unknown } | undefined;
     sessionModel.value = m && m.id ? { providerID: String(m.providerID || ''), modelID: String(m.id), variant: m.variant ? String(m.variant) : undefined } : null;
+    sessionAgent.value = String((found as { agent?: unknown } | undefined)?.agent || '');
   } catch { /* 标题缺失不阻塞消息流 */ }
 }
 
@@ -989,9 +1015,10 @@ function flattenProviders(d: OcModelsInfo): ModelOption[] {
 
 async function openModels() {
   modelSheet.value = true;
-  if (models.value.length) return;
+  if (models.value.length) { scrollCurIntoView(); return; }
   try {
     models.value = flattenProviders(await api.ocModels(instanceId.value));
+    scrollCurIntoView();
   } catch (e: any) {
     showFailToast(e?.message || '模型列表获取失败');
   }
@@ -999,10 +1026,11 @@ async function openModels() {
 
 async function openAgents() {
   agentSheet.value = true;
-  if (agents.value.length) return;
+  if (agents.value.length) { scrollCurIntoView(); return; }
   try {
     const d = await api.ocAgents(instanceId.value);
     agents.value = d.agents || [];
+    scrollCurIntoView();
   } catch (e: any) {
     showFailToast(e?.message || 'agent 列表获取失败');
   }
