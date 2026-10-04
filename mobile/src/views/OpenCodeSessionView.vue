@@ -188,7 +188,7 @@
     <div v-if="canControl" class="composer">
       <div class="comp-row">
         <span class="hint">{{ snap.busy ? 'opencode 工作中 · 可继续发' : 'Enter 发送 · Shift+Enter 换行 · / 开头走命令' }}</span>
-        <span v-if="!isManaged" class="pill mono" @click="openModels">{{ modelLabel }} ▾</span>
+        <span class="pill mono" @click="openModels">{{ modelLabel }} ▾</span>
         <span class="pill mono" @click="openAgents">{{ selectedAgent || '默认 agent' }} ▾</span>
       </div>
       <div class="input-flat">
@@ -524,20 +524,29 @@ let lpTimer: number | undefined;
 
 // 模型 / agent 下拉
 interface ModelOption { value: string; label: string; provider: string; }
-const isManaged = computed(() => instance.value?.kind === 'managed');
 const canControl = computed(() => instance.value?.mode === 'control');
 const models = ref<ModelOption[]>([]);
 const selectedModel = ref('');
+/** 会话当前实际模型（v2 session 元数据带 {providerID,id,variant}）——徽章/胶囊展示真值 */
+const sessionModel = ref<{ providerID: string; modelID: string; variant?: string } | null>(null);
 const modelSheet = ref(false);
 const agents = ref<OcAgentInfo[]>([]);
 const selectedAgent = ref('');
 const agentSheet = ref(false);
 const modelLabel = computed(() => {
-  if (!selectedModel.value) return '默认模型';
-  const f = models.value.find((x) => x.value === selectedModel.value);
-  return f ? f.label : shortId(selectedModel.value);
+  if (selectedModel.value) {
+    const f = models.value.find((x) => x.value === selectedModel.value);
+    return f ? f.label : shortId(selectedModel.value);
+  }
+  const m = sessionModel.value;
+  if (m?.modelID) {
+    const f = models.value.find((x) => x.value === `${m.providerID}/${m.modelID}`);
+    if (f) return f.label;
+    return m.variant ? `${m.modelID} · ${m.variant}` : m.modelID;
+  }
+  return '默认模型';
 });
-const modelBadge = computed(() => (isManaged.value ? '注入模型' : modelLabel.value));
+const modelBadge = computed(() => modelLabel.value);
 
 // PTY 实时终端
 const ptySheet = ref(false);
@@ -652,6 +661,8 @@ async function loadInstanceAndTitle() {
     instance.value = (insts.instances || []).find((x) => x.id === instanceId.value) || null;
     const found = (sess.sessions || []).find((s) => s.id === sessionId.value);
     explicitTitle.value = found?.title || '';
+    const m = found?.model as { providerID?: unknown; id?: unknown; variant?: unknown } | undefined;
+    sessionModel.value = m && m.id ? { providerID: String(m.providerID || ''), modelID: String(m.id), variant: m.variant ? String(m.variant) : undefined } : null;
   } catch { /* 标题缺失不阻塞消息流 */ }
 }
 
@@ -997,11 +1008,7 @@ async function openAgents() {
   }
 }
 
-function onBadgeClick() {
-  if (isManaged.value) {
-    showToast('managed 实例：模型由 co-team 模型池注入');
-    return;
-  }
+function onBadgeClick(): void {
   void openModels();
 }
 
@@ -1274,8 +1281,12 @@ async function pickModel(value: string) {
   modelSheet.value = false;
   try {
     const r = await api.ocSwitchModel(instanceId.value, sessionId.value, value);
-    if (r.ok) showSuccessToast(`模型已切换：${value}`);
-    else showFailToast(r.error || '切换失败');
+    if (r.ok) {
+      showSuccessToast(`模型已切换：${value}`);
+      void loadInstanceAndTitle();
+    } else {
+      showFailToast(r.error || '切换失败');
+    }
   } catch (e: any) {
     showFailToast(e?.message || '切换失败');
   }
