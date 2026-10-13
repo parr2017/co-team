@@ -735,10 +735,12 @@ export class OpencodeManager implements OpencodeBridge {
     if (err || !st) return { ok: false, error: err };
     const gate = this.requireControl(st);
     if (gate) return { ok: false, error: gate };
-    this.audit('create_session', st, { title, directory: directory || st.projectRoot || st.cfg.project_root });
+    // 目录大小写必须与磁盘一致（canonicalDir）：否则 opencode 指令源初始化会栈溢出，首条消息静默失败
+    const dir = canonicalDir(directory || st.projectRoot || st.cfg.project_root || '');
+    this.audit('create_session', st, { title, directory: dir });
     // 会话登记到项目目录（directory 缺省=实例绑定目录）：否则 opencode 把它放进全局项目，
     // agent 的工作目录跑错项目，面板「本项目」过滤也看不到
-    return st.client!.createSession(title, directory || st.projectRoot || st.cfg.project_root);
+    return st.client!.createSession(title, dir);
   }
 
   /**
@@ -1561,6 +1563,24 @@ function pickFreePort(): Promise<number> {
       srv.close(() => (port ? resolve(port) : reject(new Error('no free port'))));
     });
   });
+}
+
+/**
+ * 目录规范化：Windows 上 opencode 的指令源（AGENTS.md 等）初始化对目录大小写敏感——
+ * 传入字符串与磁盘实际大小写不一致时（如 `d:\pxx\vizainuse` vs 实为 `D:\pxx\VIZAInUse`），
+ * opencode 内部递归解析指令源会 RangeError: Maximum call stack size exceeded，进而
+ * Instructions.InitializationBlocked，会话首条消息静默失败（outcome=failed，无助手回复）。
+ * 用 realpathSync.native 取回磁盘真实大小写；空串/空白返回空串，目录尚不存在时原样返回
+ * （交给上游建目录/报错）。
+ */
+export function canonicalDir(dir: string): string {
+  const p = String(dir || '').trim();
+  if (!p) return p;
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
 }
 
 /**

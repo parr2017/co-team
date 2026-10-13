@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { OpencodeClient } from '../src/opencode/client';
-import { OpencodeManager, discoverDesktopPort, trimMessageForUi, validateOpencodeInstanceConfigs } from '../src/opencode/manager';
+import { OpencodeManager, canonicalDir, discoverDesktopPort, trimMessageForUi, validateOpencodeInstanceConfigs } from '../src/opencode/manager';
 import { buildOpencodeJson, resolveModelRef, writeInstanceConfig } from '../src/opencode/modelInjection';
 import { extractLastAssistantText, isOcTool, runOpencodeTool } from '../src/opencode/ocTools';
 import { applyToolCalls } from '../src/tools';
@@ -44,7 +44,17 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && u.pathname === '/api/session') return json(200, { data: [{ id: 's1', title: 'first', location: { directory: 'C:/fake-project' }, time: { created: 1, updated: 100 } }, { id: 's2', title: 'second', location: { directory: 'C:/other' }, time: { created: 2, updated: 200 } }], cursor: {} });
   if (req.method === 'GET' && u.pathname === '/api/session/active') return json(200, { s1: { type: 'idle' } });
-  if (req.method === 'POST' && u.pathname === '/api/session') return json(200, { data: { id: 'new-s', title: 'created' } });
+  if (req.method === 'POST' && u.pathname === '/api/session') {
+    // 回显 location.directory，供「目录大小写规范化」断言（真 opencode 按传入原样登记 location）
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      let dir;
+      try { dir = JSON.parse(body || '{}')?.location?.directory; } catch { /* ignore */ }
+      return json(200, { data: { id: 'new-s', title: 'created', ...(dir ? { location: { directory: dir } } : {}) } });
+    });
+    return;
+  }
   if (req.method === 'GET' && u.pathname === '/api/session/s1/message') {
     // ask-gate 测试态：stuck = 消息尾带 running 的 question 工具分片（TUI 闸门锁着）；off = 默认
     if (askGateMode !== 'off') {
@@ -642,6 +652,13 @@ describe('OpencodeManager', () => {
     const created = await mgr.createSession('dev', 't1', 'co-team 派活');
     expect(created.ok).toBe(true);
     expect((created.data as any).id).toBe('new-s');
+    // 目录大小写规范化：传错大小写时，发给 opencode 的 location.directory 必须是磁盘真实大小写
+    // （否则 opencode 指令源初始化栈溢出，会话首条消息静默失败——见 canonicalDir 注释）
+    const realTmp = fs.realpathSync.native(tmp);
+    const wrongCase = realTmp.toUpperCase() === realTmp ? realTmp.toLowerCase() : realTmp.toUpperCase();
+    const cased = await mgr.createSession('dev', 't1', '大小写', wrongCase);
+    expect(cased.ok).toBe(true);
+    expect(((cased.data as any).location?.directory) ?? (cased.data as any).directory).toBe(realTmp);
 
     const sent = await mgr.sendPrompt('dev', 't1', 's1', '跑个测试', { providerID: 'p', modelID: 'm' });
     expect(sent.ok).toBe(true);
@@ -964,6 +981,26 @@ describe('OpencodeManager', () => {
 });
 
 // ---------- 校验器 ----------
+
+describe('canonicalDir（目录大小写规范化）', () => {
+  it('把大小写不符的路径还原为磁盘真实大小写', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'CoteamCase-'));
+    const real = fs.realpathSync.native(tmpDir);
+    const wrong = real.toUpperCase() === real ? real.toLowerCase() : real.toUpperCase();
+    expect(canonicalDir(wrong)).toBe(real);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('目录不存在时原样返回（不抛错）', () => {
+    const missing = path.join(os.tmpdir(), 'coteam-does-not-exist-' + Date.now());
+    expect(canonicalDir(missing)).toBe(missing);
+  });
+
+  it('空串/空白返回空串（trim 后）', () => {
+    expect(canonicalDir('')).toBe('');
+    expect(canonicalDir('   ')).toBe('');
+  });
+});
 
 describe('validateOpencodeInstanceConfigs', () => {
   it('三类 kind 合法条目落字段', () => {
