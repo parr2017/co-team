@@ -2188,8 +2188,8 @@ export function createApi(ctx: ApiContext): Hono {
               return r?.ok && r.data?.session ? { id: r.data.session.id, title: r.data.session.title } : null;
             },
             listSessions: ocSessions,
-            createSession: async (instanceId, title) => {
-              const r = await oc.createSession(undefined, instanceId, title).catch(() => null);
+            createSession: async (instanceId, title, directory) => {
+              const r = await oc.createSession(undefined, instanceId, title, directory).catch(() => null);
               return r?.ok && r.data ? { id: r.data.id, title: r.data.title } : null;
             },
             sendPrompt: async (instanceId, sessionId, prompt) => {

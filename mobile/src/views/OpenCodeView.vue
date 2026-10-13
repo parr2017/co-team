@@ -33,10 +33,32 @@
           </div>
           <span class="chev">›</span>
         </div>
-        <div v-if="loaded && !projects.length" class="empty">暂无项目——在 opencode 里发一条消息，或点右上「实例」新建会话</div>
+        <div v-if="loaded && !projects.length" class="empty">暂无项目——点下方「新建会话」，或在 opencode / 桌面版里发一条消息</div>
+
+        <div class="fab" :class="{ dis: creating }" @click="openNewSession">{{ creating ? '创建中…' : '＋ 新建会话（登记到项目）' }}</div>
       </div>
       </div>
     </van-pull-refresh>
+
+    <!-- 项目/目录选择 -->
+    <van-popup v-model:show="newSheet" position="bottom" round :style="{ maxHeight: '72%' }">
+      <div class="sheet">
+        <div class="sh-h"><span>新建会话 · 选择项目</span><span class="x" @click="newSheet = false">✕</span></div>
+        <div class="new-dirs">
+          <div v-for="d in newDirs" :key="d.workspace" class="si" @click="pickNewProject(d)">
+            <span class="si-nm">{{ d.name }}</span>
+            <span class="si-tg mono">{{ dirBase(d.workspace) }}</span>
+          </div>
+          <div v-if="!newDirs.length" class="sh">暂无已知项目——选一个目录新建</div>
+        </div>
+        <div class="si new-custom" @click="pickCustomDir">
+          <span class="si-nm">选择其他目录…</span>
+          <span class="si-tg">📁</span>
+        </div>
+      </div>
+    </van-popup>
+
+    <DirPicker v-model:show="dirPick" title="选择会话目录" @pick="onDirPicked" />
 
     <!-- 活动会话直达弹层 -->
     <van-action-sheet v-model:show="activeSheet" :title="'活动会话 · ' + busyCount" :actions="activeActions" @select="onActiveSelect" cancel-text="取消" />
@@ -73,7 +95,8 @@ import { computed, onActivated, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { showFailToast, showSuccessToast } from 'vant';
 import { api, type OcInstance } from '../api';
-import { useOcBusy, dirBase, relTime } from '../composables/useOcBusy';
+import DirPicker from '../components/DirPicker.vue';
+import { useOcBusy, dirBase, relTime, normDir } from '../composables/useOcBusy';
 
 const router = useRouter();
 const { instances, busyList, busyCount, projects, loaded, refresh } = useOcBusy();
@@ -122,6 +145,81 @@ function onActiveSelect(action: unknown): void {
   const a = action as { instance: string; sessionID: string };
   if (!a?.instance || !a?.sessionID) return;
   void router.push(`/opencode/session/${a.instance}/${a.sessionID}`);
+}
+
+// ---------- 新建会话（登记到项目/目录） ----------
+const newSheet = ref(false);
+const creating = ref(false);
+const dirPick = ref(false);
+const newDirs = ref<{ id: string; name: string; workspace: string }[]>([]);
+
+/** 合并 co-team 项目与既有会话目录（去重，项目名优先） */
+function mergeDirs(projects: { id: string; name: string; workspace: string }[], dirs: { label: string; workspace: string }[]): { id: string; name: string; workspace: string }[] {
+  const map = new Map<string, { id: string; name: string; workspace: string }>();
+  for (const d of dirs) map.set(normDir(d.workspace), { id: d.workspace, name: `（会话目录）${d.label}`, workspace: d.workspace });
+  for (const p of projects) map.set(normDir(p.workspace), { id: p.id, name: p.name, workspace: p.workspace });
+  return [...map.values()].slice(0, 30);
+}
+
+async function openNewSession(): Promise<void> {
+  if (creating.value) return;
+  if (!instances.value.some((i) => i.enabled && (i.state === 'connected' || i.state === 'running'))) {
+    showFailToast('没有已连接的实例');
+    return;
+  }
+  try {
+    const [proj, wd] = await Promise.all([
+      api.listProjects().catch(() => ({ projects: [] as { id: string; name: string; workspace: string }[] })),
+      api.ocWorkdirs().catch(() => ({ items: [] as { label: string; workspace: string }[] })),
+    ]);
+    newDirs.value = mergeDirs(proj.projects || [], wd.items || []);
+  } catch {
+    newDirs.value = [];
+  }
+  newSheet.value = true;
+}
+
+/** 服务目标目录的已连接实例：project_root 命中优先，否则首个在线实例 */
+function pickInstance(dir: string): OcInstance | undefined {
+  const live = instances.value.filter((i) => i.enabled && (i.state === 'connected' || i.state === 'running'));
+  const key = normDir(dir);
+  return live.find((i) => normDir(i.project_root) === key) || live[0];
+}
+
+function pickNewProject(d: { workspace: string }): void {
+  newSheet.value = false;
+  void doCreate(d.workspace);
+}
+function pickCustomDir(): void {
+  newSheet.value = false;
+  dirPick.value = true;
+}
+function onDirPicked(path: string): void {
+  void doCreate(path);
+}
+
+async function doCreate(directory: string): Promise<void> {
+  const inst = pickInstance(directory);
+  if (!inst) {
+    showFailToast('没有已连接的实例');
+    return;
+  }
+  creating.value = true;
+  try {
+    const title = `会话 ${new Date().toISOString().slice(5, 16).replace('T', ' ')}`;
+    const created = await api.ocCreateSession(inst.id, title, directory);
+    if (!created.ok || !created.session) {
+      showFailToast((created as any).error || '创建会话失败');
+      return;
+    }
+    showSuccessToast('已创建并进入');
+    await refresh();
+    void router.push(`/opencode/session/${inst.id}/${created.session.id}`);
+  } catch (e: any) {
+    showFailToast(e?.message || '创建失败');
+  } finally {
+    creating.value = false;
+  }
 }
 
 async function onRefresh(): Promise<void> {
@@ -189,6 +287,12 @@ onActivated(() => { void refresh(); });
 .tag.run { color: var(--ok); border-color: rgba(63, 185, 111, 0.4); background: rgba(63, 185, 111, 0.08); }
 .chev { color: var(--text-3); font-size: 13px; flex: none; }
 .empty { font-size: 12px; color: var(--text-3); text-align: center; padding: 36px 20px; line-height: 1.8; }
+.fab { margin: 16px 12px 0; background: var(--accent); color: var(--accent-text); text-align: center; font-size: 13px; font-weight: 600; border-radius: 10px; padding: 11px; }
+.fab.dis { opacity: .6; }
+
+/* 新建会话弹层 */
+.new-dirs { max-height: 46vh; overflow-y: auto; }
+.new-custom { color: var(--accent); border-top: 1px solid var(--line); margin-top: 6px; }
 
 /* 实例弹层 */
 .sheet { padding: 12px 16px 18px; }
